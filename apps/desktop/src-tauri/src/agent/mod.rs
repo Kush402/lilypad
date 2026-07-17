@@ -18,10 +18,14 @@
 // this once the runner is driven from `session/`.
 #![allow(dead_code, unused_imports)]
 
+pub mod executor;
+pub mod llm;
 pub mod protocol;
 pub mod runner;
 pub mod security;
 
+pub use executor::SkillsExecutor;
+pub use llm::{LlmBrain, LlmProvider};
 pub use protocol::{
     AgentInbound, AgentOutbound, AgentTier, RunOutcome, StepKind, StepState, ToolClass,
 };
