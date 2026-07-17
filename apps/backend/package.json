@@ -1,7 +1,7 @@
 {
   "name": "@lilypad/backend",
   "version": "0.1.0",
-  "description": "Lilypad backend — Fastify REST + WebSocket signaling, Redis pairing, Postgres",
+  "description": "Lilypad backend \u2014 Fastify REST + WebSocket signaling, Redis pairing, Postgres",
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
@@ -27,8 +27,7 @@
     "drizzle-orm": "^0.38.3",
     "fastify": "^5.2.1",
     "ioredis": "^5.4.2",
-    "postgres": "^3.4.5",
-    "zod": "^3.24.1"
+    "postgres": "^3.4.5"
   },
   "devDependencies": {
     "@types/node": "^22.10.5",

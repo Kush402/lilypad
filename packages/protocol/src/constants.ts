@@ -15,9 +15,6 @@ export const PROTOCOL_VERSION = 2 as const;
  * identity card — see `docs/audit/m3/mobile-ux.md` Finding 9. */
 export const QR_PAYLOAD_VERSION = 2 as const;
 
-/** Single-use pairing token lifetime, in seconds (product spec: 60s). */
-export const DEFAULT_PAIRING_TOKEN_TTL_SECONDS = 60 as const;
-
 /** WebSocket signaling endpoint path on the backend. */
 export const SIGNALING_PATH = '/ws/signal' as const;
 

@@ -29,7 +29,7 @@ function detectLanIp(): string | null {
 if (!process.env.PUBLIC_BASE_URL || !process.env.SIGNALING_URL) {
   const ip = detectLanIp();
   if (ip) {
-    const port = process.env.PORT ?? '8080';
+    const port = process.env.BACKEND_PORT ?? '8080';
     process.env.PUBLIC_BASE_URL ??= `http://${ip}:${port}`;
     process.env.SIGNALING_URL ??= `ws://${ip}:${port}/ws/signal`;
   }

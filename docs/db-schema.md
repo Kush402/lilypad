@@ -65,6 +65,7 @@ Pairs a user's desktop with a mobile they've chosen to trust (skip re-approval).
 | key                       | value                                                                    | TTL                      |
 | ------------------------- | ------------------------------------------------------------------------ | ------------------------ |
 | `lilypad:pairing:<token>` | JSON `{ roomId, desktopDeviceId, desktopDeviceName, scopes, createdAt }` | 60s, single-use (GETDEL) |
+| `lilypad:room-auth:<roomId>` | device-binding record consulted at `register` time (seat-hijack defense) |
 | `lilypad:room:<roomId>`   | signaling room membership/state                                          | session lifetime (M2)    |
 
 ## Migrations

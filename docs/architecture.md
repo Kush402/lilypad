@@ -21,7 +21,7 @@ and developer shortcuts.
 
 | Component    | Tech                      | Responsibility                                                                                               |
 | ------------ | ------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| **Desktop**  | Rust + Tauri v2, React UI | Floating bubble, tray, QR overlay, approve/deny, plugin host, capture/encode/input (M3/M4), WebRTC peer (M2) |
+| **Desktop**  | Rust + Tauri v2, React UI | Floating bubble, tray, QR overlay, approve/deny, capture/encode/input backends, capture/encode/input (M3/M4), WebRTC peer (M2) |
 | **Mobile**   | React Native (bare)       | Login, device list, QR scanner, low-latency viewer, input toolbar                                            |
 | **Backend**  | Node + Fastify            | REST (health, pairing, later auth/devices/sessions), WebSocket signaling, Redis pairing, Postgres data       |
 | **Admin**    | React + Vite              | Users, devices, sessions, TURN usage, billing (M6)                                                           |
@@ -77,8 +77,8 @@ See the root [README](../README.md). Monorepo via pnpm workspaces + Turborepo:
 
 ## Where things are implemented across milestones
 
-- **M1 (now):** repo, infra, backend `/health` + pairing service, desktop shell +
-  plugin host, mobile scanner. See [milestones.md](./milestones.md).
+- **M1 (done):** repo, infra, backend `/health` + pairing service, desktop shell +
+  capture/encode/input backends, mobile scanner. See [milestones.md](./milestones.md).
 - **M2:** WS signaling room routing + WebRTC with a fake video track.
 - **M3:** real capture + hardware H.264 encode.
 - **M4:** input injection.

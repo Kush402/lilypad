@@ -4,7 +4,7 @@ Backend base URL defaults to `http://localhost:8080` (`PUBLIC_BASE_URL`).
 Request/response bodies are zod-validated from
 [`@lilypad/protocol`](../packages/protocol/src).
 
-Legend: ✅ implemented in M1 · 🔜 later milestone.
+Legend: ✅ implemented · 🔜 later milestone.
 
 ## `GET /health` ✅
 
@@ -23,6 +23,8 @@ Liveness + dependency checks.
 ## `POST /pairing/create` ✅
 
 Called by the **desktop** to mint a single-use QR token (60s TTL in Redis).
+Rate-limited per IP: **30 requests/minute** (tighter than the global limiter —
+this endpoint is unauthenticated pre-M5 and mints Redis state per call).
 
 ```jsonc
 // request
@@ -55,11 +57,15 @@ and graceful `session-end` on shutdown. Transport guards: per-IP connection cap,
 per-socket message-rate limit, unregistered-socket idle close, room cap, and a
 64 KB frame-size limit. See [signaling-protocol.md](./signaling-protocol.md).
 
-## `GET /metrics` ✅
+## `GET /metrics` ✅ 🔒
 
 Operational snapshot for scrapers/operators: `activeRooms` (live gauge) plus
 monotonic counters `sessionsStarted`, `sessionsEnded`, `roomsRejectedAtCapacity`,
 `peersReaped`.
+
+Requires `Authorization: Bearer $METRICS_BEARER_TOKEN`; returns **401** without
+it. The token is optional in development and **required in production**
+(enforced at boot by the env safety guard).
 
 ## Auth 🔜 M5
 
@@ -76,6 +82,8 @@ billing.
 
 ## Errors
 
-`400 invalid_request` (zod issues array) · `410 token_invalid` · `429` (rate
-limit) · `503` (health degraded). Rate limit is a generous global default in M1;
-per-route tightening (especially pairing/auth) lands in M6.
+`400 invalid_request` (zod issues array) · `401 unauthorized` (`/metrics`
+without a valid bearer token) · `410 token_invalid` · `429` (rate limit) ·
+`503` (health degraded). Rate limiting: a generous global default (120/min per
+IP) plus a tighter per-route limit on `POST /pairing/create` (30/min per IP);
+auth-route limits land with M5.

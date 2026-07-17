@@ -9,7 +9,7 @@ Architecture + technical design + DB schema + API + protocols + plugin interface
 
 - threat model + this plan. (This `docs/` folder.)
 
-## M1 — Scaffold + pairing skeleton ✅ (current)
+## M1 — Scaffold + pairing skeleton ✅
 
 - Monorepo (pnpm + Turborepo), shared `protocol`/`shared` packages.
 - Docker Compose: Postgres, Redis, coturn.
@@ -34,7 +34,7 @@ token redeems (single-use, 60s expiry) → approve/deny UI is drivable.
   render, input DataChannel bridge — written + typechecked. Running it needs a
   device + native build tooling (see blocker below).
 
-## M3 — Real capture + encode ✅ ScreenCaptureKit real; VideoToolbox pending
+## M3 — Real capture + encode ✅ ScreenCaptureKit + VideoToolbox real
 
 - ✅ **Media pipeline** (`src/media/`): CaptureBackend → BGRA→I420 convert →
   H.264 encoder → bounded queue (drop/backpressure) → WebRTC track, with metrics

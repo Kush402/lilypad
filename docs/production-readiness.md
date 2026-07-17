@@ -59,7 +59,7 @@ PLI round-trip).
 ### Critical
 
 - **Backend C1 — no signaling authentication.** Rooms are auto-created from client-supplied `roomId`; seats are claimed first-come; the WS never checks the pairing token. Anyone who learns a `roomId` can register as the desktop/mobile and drive the handshake. This is the M5 auth milestone. **Do not expose to the internet until fixed.** Fix: gate the WS on the redeemed pairing token bound server-side to roomId/role/deviceId.
-- **No version control.** The working tree is not a git repo — no history, no remote, one disk failure from total loss. `git init` + remote is the highest-leverage single action. (Left to the user; VCS setup is theirs to own.)
+- ~~No version control~~ **Resolved 2026-07-17**: the repo is under git with an initial baseline commit. Remaining: add a remote for off-machine backup.
 
 ### High
 

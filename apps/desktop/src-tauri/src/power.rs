@@ -57,6 +57,12 @@ mod imp {
         }
     }
 
+    impl Default for DisplaySleepGuard {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
     impl Drop for DisplaySleepGuard {
         fn drop(&mut self) {
             if let Some(id) = self.id.take() {
@@ -72,6 +78,7 @@ mod imp {
     /// No-op on platforms without an implementation yet (Windows will use
     /// `SetThreadExecutionState(ES_DISPLAY_REQUIRED)` when the Windows
     /// capture backend lands).
+    #[derive(Default)]
     pub struct DisplaySleepGuard;
 
     impl DisplaySleepGuard {

@@ -86,7 +86,7 @@ const pairApproved = z.object({
 const pairDenied = z.object({
   type: z.literal('pair-denied'),
   ...envelope,
-  payload: z.object({ reason: z.string().nullable() }),
+  payload: z.object({ reason: z.string().max(MAX_REASON_LEN).nullable() }),
 });
 
 const offer = z.object({
@@ -122,7 +122,7 @@ const sessionStart = z.object({
 const sessionEnd = z.object({
   type: z.literal('session-end'),
   ...envelope,
-  payload: z.object({ reason: z.string().nullable() }),
+  payload: z.object({ reason: z.string().max(MAX_REASON_LEN).nullable() }),
 });
 
 const errorMsg = z.object({
@@ -147,7 +147,7 @@ const heartbeat = z.object({
 const pause = z.object({
   type: z.literal('pause'),
   ...envelope,
-  payload: z.object({ reason: z.string().nullable().optional() }),
+  payload: z.object({ reason: z.string().max(MAX_REASON_LEN).nullable().optional() }),
 });
 
 const resume = z.object({
@@ -161,7 +161,7 @@ const renegotiate = z.object({
   type: z.literal('renegotiate'),
   ...envelope,
   payload: z.object({
-    reason: z.string().nullable().optional(),
+    reason: z.string().max(MAX_REASON_LEN).nullable().optional(),
     iceRestart: z.boolean().optional(),
   }),
 });
@@ -170,7 +170,7 @@ const renegotiate = z.object({
 const disconnect = z.object({
   type: z.literal('disconnect'),
   ...envelope,
-  payload: z.object({ reason: z.string().nullable().optional() }),
+  payload: z.object({ reason: z.string().max(MAX_REASON_LEN).nullable().optional() }),
 });
 
 /** `Motion` = today's default (30fps, real-display-aware resolution capped

@@ -7,8 +7,8 @@
  * anything software can detect and repair.
  */
 import { spawnSync } from 'node:child_process';
-import { appendFileSync, existsSync, readFileSync } from 'node:fs';
-import { homedir, platform } from 'node:os';
+import { appendFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveCargo, zshSourcesCargo, which } from './doctor.mjs';
@@ -97,7 +97,11 @@ if (!which('docker')) {
     }
     spawnSync('sleep', ['1']);
   }
-  ready ? ok('Postgres is accepting connections') : warn('Postgres did not report ready in 30s — check `docker ps`');
+  if (ready) {
+    ok('Postgres is accepting connections');
+  } else {
+    warn('Postgres did not report ready in 30s — check `docker ps`');
+  }
 
   // ── 5. Migrations ──
   log('Running database migrations');

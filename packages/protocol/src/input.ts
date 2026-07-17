@@ -167,7 +167,3 @@ export type InputBatch = z.infer<typeof InputBatchSchema>;
 export function encodeInputBatch(events: InputEvent[]): string {
   return JSON.stringify({ kind: 'input_batch', events } satisfies InputBatch);
 }
-
-export function decodeInputBatch(raw: string): InputBatch {
-  return InputBatchSchema.parse(JSON.parse(raw));
-}

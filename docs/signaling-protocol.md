@@ -32,6 +32,9 @@ Every message shares:
 | `disconnect`       | either                    | `{ reason? }` — graceful teardown                      |
 | `heartbeat`        | peer → server             | `{ seq? }` — liveness; stale peers are reaped          |
 | `session-end`      | server → both             | `{ reason }`                                           |
+| `frame-size`       | desktop → mobile          | `{ width, height, mode }` — capture size for touch mapping |
+| `set-capture-mode` | mobile → desktop          | `{ mode: "motion" \| "text" }` — switch capture/encode mode |
+| `clipboard-update` | desktop → mobile          | `{ text }` — desktop clipboard changed                 |
 | `error`            | server → peer             | `{ code, message }`                                    |
 | `ping` / `pong`    | keepalive                 | `{}`                                                   |
 
@@ -75,5 +78,7 @@ The routing lives in a transport-agnostic
 [`SignalingHub`](../apps/backend/src/signaling/hub.ts) (unit-tested with fake
 peers + smoke-tested over live WebSockets); the Fastify route is a thin adapter.
 
-**Next:** the desktop (webrtc-rs) and mobile (react-native-webrtc) peers that
-consume this signaling to establish the media path — M2 client side into M3.
+**Also implemented (M3–M4):** the desktop (webrtc-rs) and mobile
+(react-native-webrtc) peers consuming this signaling, the full media path
+(capture → encode → RTP), `frame-size`/`set-capture-mode` mode switching, and
+`clipboard-update` sync — verified end-to-end on real hardware.

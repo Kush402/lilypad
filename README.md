@@ -9,15 +9,18 @@ public internet**, not just the same Wi-Fi.
 Transport is **WebRTC + STUN + TURN (coturn)**. No custom video protocol, no
 LAN-only design, **no silent remote access**.
 
-> **Status: Milestone 1** — repo, infra, backend health + pairing service,
-> desktop shell (bubble/QR/approve), mobile QR scanner. See
-> [docs/milestones.md](docs/milestones.md).
+> **Status: v1.0 (closed beta)** — the full loop works end-to-end on real
+> hardware: QR pairing, desktop approval, live H.264 screen streaming
+> (ScreenCaptureKit → VideoToolbox → WebRTC), touch/keyboard/clipboard input
+> injection, pinch-zoom viewer, reconnect, and keep-awake on both ends.
+> Remaining pre-production items are tracked in
+> [docs/production-readiness.md](docs/production-readiness.md).
 
 ## Monorepo layout
 
 ```
 apps/
-  desktop/   Tauri v2 + Rust — bubble, tray, QR overlay, plugin host, capture/input
+  desktop/   Tauri v2 + Rust — bubble, tray, QR overlay, capture/encode, input injection
   mobile/    React Native (bare) — scanner, viewer, dev input toolbar
   backend/   Fastify — REST (health, pairing) + WS signaling, Redis, Postgres
   admin/     React + Vite — dashboard (wired in M6)
@@ -107,18 +110,60 @@ LILYPAD_SIGNALING=ws://localhost:8080/ws/signal LILYPAD_ROOM=demo \
 > the bulk without a full recompile; `pnpm clean:cargo` reclaims the rest when
 > you need the space more than the fast rebuild.
 
-## How pairing works (M1)
+## How a session works
 
-1. Desktop clicks bubble → `POST /pairing/create` → single-use token (Redis, 60s).
+1. Desktop clicks the bubble → `POST /pairing/create` → single-use token (Redis, 60s TTL).
 2. Desktop shows the QR (`{ token, roomId, apiBaseUrl, signalingUrl }`).
 3. Phone scans → `POST /pairing/redeem` → token is **burned** (single-use).
-4. Desktop shows **Approve/Deny** (full signaling + streaming in M2–M4).
+4. Desktop shows **Approve / Deny** — no session ever starts silently.
+5. On approve, both peers get fresh time-limited TURN credentials and exchange
+   SDP/ICE over the WebSocket signaling room.
+6. WebRTC connects: H.264 video streams desktop → phone; touch/keyboard/
+   clipboard events flow phone → desktop over a DataChannel, gated by the
+   session's granted scope (`view` vs `control`) at the injection boundary.
+7. A dropped transport mid-session holds the seat for a grace window and
+   recovers with an ICE restart instead of ending the session.
+
+## Testing
+
+```bash
+pnpm --filter @lilypad/backend exec vitest run   # backend (unit + route + protocol drift)
+pnpm --filter @lilypad/mobile test               # mobile (jest, gesture/screen/logic)
+pnpm --filter @lilypad/mobile typecheck
+cd apps/desktop/src-tauri && cargo test          # desktop (unit + fault-injection + soak)
+```
+
+All suites are expected green before any commit.
+
+## Troubleshooting
+
+| Symptom | Cause / fix |
+| --- | --- |
+| Phone can't reach backend after scanning | Phone and laptop must be on the same network for LAN dev. The backend auto-detects its LAN IP at boot — restart `pnpm --filter @lilypad/backend dev` after switching networks. |
+| Desktop shows a blank window in dev | The Vite dev server died (it must outlive the Tauri process). Restart `tauri dev`, or run Vite and the binary separately. |
+| macOS keeps re-asking for Screen Recording | Unsigned dev builds get a new code signature each rebuild, so TCC re-prompts. When launched from a terminal, macOS attributes the permission to the *terminal app* — grant it there. A signed production bundle does not have this problem. |
+| `pairing/create` returns 429 | Per-IP rate limit (30/min). Wait a minute; don't script against it. |
+| Session dies when the phone locks | Fixed in v1.0 (keep-awake + display-sleep assertions) — if you still see it, check `RUST_LOG=info` desktop output for `capture stream stopped`. |
 
 ## Docs
 
-Start with [docs/architecture.md](docs/architecture.md) and
-[docs/technical-design.md](docs/technical-design.md).
+| Topic | Where |
+| --- | --- |
+| Architecture & design | [docs/architecture.md](docs/architecture.md) · [docs/technical-design.md](docs/technical-design.md) |
+| REST + signaling API | [docs/api.md](docs/api.md) · [docs/signaling-protocol.md](docs/signaling-protocol.md) |
+| Input protocol | [docs/input-protocol.md](docs/input-protocol.md) |
+| Database schema | [docs/db-schema.md](docs/db-schema.md) |
+| Security / threat model | [docs/threat-model.md](docs/threat-model.md) · [SECURITY.md](SECURITY.md) |
+| Operations & deployment | [docs/operations.md](docs/operations.md) |
+| End-user guide | [docs/user-guide.md](docs/user-guide.md) |
+| Production readiness | [docs/production-readiness.md](docs/production-readiness.md) |
+| Changelog | [CHANGELOG.md](CHANGELOG.md) |
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). Security reports: [SECURITY.md](SECURITY.md).
 
 ## License
 
-Proprietary — all rights reserved (placeholder).
+Proprietary — all rights reserved. (A final license is a pending business
+decision; do not redistribute until one is chosen.)

@@ -11,8 +11,11 @@ Carried over the WebRTC **DataChannel** (`lilypad-input`, reliable + ordered),
 - **Pointer moves are coalesced** on the sender (batched, ~120Hz cap /
   `POINTER_COALESCE_MS`). Down/up, clicks, keys, and shortcuts are sent
   **immediately**.
+- **Every event carries `seq`** — a monotonic per-session counter that is the
+  ordering/duplicate-rejection discriminant on the desktop.
 - **Every event is timestamped** (`ts`, ms since epoch on the sender) for
-  ordering + input-latency metrics.
+  latency measurement and telemetry **only** — `ts` never drives correctness
+  decisions (client clocks are not trusted).
 - Events are sent in an `input_batch` envelope: `{ kind:"input_batch", events:[…] }`.
 
 ## Events
@@ -20,8 +23,8 @@ Carried over the WebRTC **DataChannel** (`lilypad-input`, reliable + ordered),
 | kind                          | fields                                                                                             |
 | ----------------------------- | -------------------------------------------------------------------------------------------------- |
 | `pointer_move`                | `x, y`                                                                                             |
-| `pointer_down` / `pointer_up` | `x, y, button` (`left`/`right`/`middle`)                                                           |
-| `click`                       | `x, y, button, count` (1–3)                                                                        |
+| `pointer_down` / `pointer_up` | `x, y, button` (`left`/`right`/`middle`), `modifiers[]`                                            |
+| `click`                       | `x, y, button, count` (1–3, drives macOS clickState), `modifiers[]`                                |
 | `scroll`                      | `x, y, dx, dy` (CSS px; +dy scrolls down)                                                          |
 | `key_down` / `key_up`         | `code` (UI Events `code`, e.g. `KeyA`,`Enter`,`Tab`), `modifiers[]`, `repeat`                      |
 | `text_input`                  | `text` (committed IME/autocorrect text)                                                            |
@@ -32,11 +35,13 @@ Modifiers are OS-agnostic (`ctrl`,`alt`,`shift`,`meta`); the desktop maps
 `meta`→⌘ on macOS / Win key on Windows, and dev shortcuts to the right chord per
 platform (e.g. `copy` → ⌘C or Ctrl+C).
 
-## Interaction modes (mobile)
+## Interaction model (mobile)
 
-- **Trackpad mode:** relative pointer movement (like a laptop trackpad); good for
-  precision on a small screen.
-- **Direct touch mode:** tap maps to an absolute pointer position on the frame.
+Direct touch: a tap maps to an absolute pointer position on the frame
+(letterbox-aware, settle-window debounced). Precision on a small screen comes
+from the **pinch-zoom viewport** (taps map through the zoom transform) and the
+**Zoom lock** mode (gestures steer the viewport locally instead of the remote)
+— see `apps/mobile/src/lib/touch.ts` and `viewport.ts`.
 
 ## Injection (desktop) ✅ macOS real, Windows compile-complete
 
@@ -47,7 +52,8 @@ state) → InputBackend → OS`.
 - **`InputDispatcher`** ([dispatcher.rs](../apps/desktop/src-tauri/src/input/dispatcher.rs)) is OS-agnostic and fully unit-tested behind a mock: it
   rejects all input unless the gate is open (session Connected **and** the
   input DataChannel open), drops stale/duplicate events by comparing each
-  event's `ts` against the last accepted `ts` for its (kind, identifier) key,
+  event's `seq` against the last accepted `seq` for its (kind, identifier)
+  key (`ts` is only a legacy fallback for pre-`seq` senders),
   tracks held pointer buttons/keys to emit drag vs. move and to **release
   everything** on disconnect (never leaves a stuck modifier key or a
   mid-drag button held), and maps the `shortcut` action set to a
