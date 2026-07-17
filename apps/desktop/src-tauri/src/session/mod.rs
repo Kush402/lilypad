@@ -190,6 +190,27 @@ impl SessionRunner {
     ) -> Result<bool> {
         match env.msg_type.as_str() {
             "pair-request" => {
+                // Ignore a duplicate pair-request once a session is already
+                // past approval. A phone on a slow/lossy link (cellular over
+                // the tunnel) that doesn't receive `session-start` promptly
+                // RE-SENDS `pair-request`; without this guard the desktop
+                // re-prompts and re-approves, and the second approval's
+                // `session-start` (a fresh sessionId) tears down the peer that
+                // is still negotiating the first one — so the handshake never
+                // completes off-LAN, while on LAN it finishes before the retry
+                // and the bug is invisible. Only honor a pair-request while
+                // still waiting to pair.
+                let state = self.fsm.state();
+                if !matches!(
+                    state,
+                    SessionState::Registered | SessionState::AwaitingApproval
+                ) {
+                    log::info!(
+                        target: "lilypad::session",
+                        "ignoring duplicate pair-request while session is {state:?} (stale retry)"
+                    );
+                    return Ok(false);
+                }
                 if let Ok(p) =
                     serde_json::from_value::<messages::PairRequestPayload>(env.payload.clone())
                 {
@@ -556,10 +577,12 @@ pub async fn run_session(
     log::info!(target: "lilypad::session", "registered as desktop in room {room_id}");
 
     let (peer_ev_tx, mut peer_ev_rx) = mpsc::unbounded_channel::<PeerEvent>();
-    // Mirrors `@lilypad/protocol`'s `APP_HEARTBEAT_INTERVAL_MS` (8s) — see
+    // Mirrors `@lilypad/protocol`'s `APP_HEARTBEAT_INTERVAL_MS` (4s) — see
     // docs/audit/m3/reconnect-lifecycle.md Finding 6's cross-tier timing
     // budget (this must stay well under the backend's heartbeat timeout).
-    let mut heartbeat = tokio::time::interval(Duration::from_secs(8));
+    // Also the app-level WS keepalive: a slower interval let an idle socket be
+    // dropped on cellular-through-tunnel paths before the first beat.
+    let mut heartbeat = tokio::time::interval(Duration::from_millis(4_000));
     let mut clipboard_poll = tokio::time::interval(CLIPBOARD_POLL_INTERVAL);
     let mut runner = SessionRunner::new(room_id.clone(), events);
 
@@ -635,12 +658,30 @@ pub async fn run_session(
             ctrl = control_rx.recv() => {
                 match ctrl {
                     Some(Control::Approve(scopes)) => {
-                        log::info!(target: "lilypad::session", "user approved session");
-                        // A dead signaling writer must end the session with a
-                        // clear reason, never bubble an Err with no Ended event.
-                        if let Err(e) = sig.send(Envelope::pair_approved(&room_id, &scopes)) {
-                            runner.end(format!("signaling send failed: {e}"));
-                            break;
+                        // Idempotent approval: a second Approve (a double-tap /
+                        // re-render in the desktop UI, or a re-prompt from a
+                        // retried pair-request) must NOT issue a second
+                        // pair-approved — the backend mints a fresh sessionId
+                        // per approval, and the second session-start tears down
+                        // the peer still negotiating the first. Only the first
+                        // approval, while awaiting it, is honored.
+                        let state = runner.fsm.state();
+                        if !matches!(
+                            state,
+                            SessionState::Registered | SessionState::AwaitingApproval
+                        ) {
+                            log::info!(
+                                target: "lilypad::session",
+                                "ignoring duplicate approve while session is {state:?}"
+                            );
+                        } else {
+                            log::info!(target: "lilypad::session", "user approved session");
+                            // A dead signaling writer must end the session with a
+                            // clear reason, never bubble an Err with no Ended event.
+                            if let Err(e) = sig.send(Envelope::pair_approved(&room_id, &scopes)) {
+                                runner.end(format!("signaling send failed: {e}"));
+                                break;
+                            }
                         }
                     }
                     Some(Control::Deny) => {

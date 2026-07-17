@@ -144,6 +144,12 @@ export class ViewerConnection {
     // generic 'connecting' spinner for both. See
     // docs/audit/m3/mobile-ux.md Finding 1.
     this.cb.onState('awaiting_approval');
+    // Fire one heartbeat immediately, then on the interval: `setInterval`
+    // waits a full interval before its first call, which on a cellular path
+    // through the tunnel left the freshly-registered socket idle long enough
+    // to be dropped before it ever sent a keepalive (observed ~7s drop
+    // mid-approval). The immediate beat closes that initial idle window.
+    this.sig.heartbeat();
     this.heartbeat = setInterval(() => this.sig.heartbeat(), APP_HEARTBEAT_INTERVAL_MS);
     this.lifecycle = new AppLifecycleController({
       onBackground: () => this.sig.pause('backgrounded'),

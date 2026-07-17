@@ -113,8 +113,17 @@ export function reconnectBackoffMs(attempt: number): number {
 /** How often a live client (desktop or mobile) sends a heartbeat frame.
  * Mirrored by hand in the desktop's Rust session runner
  * (`apps/desktop/src-tauri/src/session/mod.rs`) since Rust can't import
- * this constant directly. */
-export const APP_HEARTBEAT_INTERVAL_MS = 8_000 as const;
+ * this constant directly.
+ *
+ * Doubles as the application-level WS keepalive: on a cellular path through
+ * the Cloudflare tunnel, an idle socket was being dropped at ~7s (observed:
+ * the mobile registered then vanished one second before its first 8s
+ * heartbeat, killing the room mid-approval). 4s keeps the socket warm under
+ * that idle threshold while staying well inside the backend's 25s reap window
+ * (still 6 heartbeats' tolerance). WS ping/pong control frames aren't a
+ * reliable keepalive here — they aren't guaranteed to traverse the quick
+ * tunnel — so this data-frame heartbeat is the load-bearing one. */
+export const APP_HEARTBEAT_INTERVAL_MS = 4_000 as const;
 
 /** Backend: a peer is reaped if silent this long — three missed heartbeats'
  * worth of jitter tolerance, not one. */
