@@ -11,10 +11,14 @@ import {
   APP_HEARTBEAT_INTERVAL_MS,
   MAX_ICE_RESTARTS,
   iceRecoveryTimeoutMs,
+  AgentOutboundSchema,
+  encodeAgentMessage,
   type IceServer,
   type SessionScope,
   type SignalingMessage,
   type CaptureMode,
+  type AgentStep,
+  type AgentRunEnd,
 } from '@lilypad/protocol';
 import { MobileSignaling, type SignalingLifecycleEvent } from './signaling';
 import { AppLifecycleController } from './lifecycle';
@@ -55,6 +59,12 @@ export interface ViewerCallbacks {
   /** The desktop's OS clipboard changed. See
    * `docs/audit/m3/prior-art.md` Finding 6. */
   onClipboardUpdate: (text: string) => void;
+  /** The AI agent emitted a step on its live feed (desktop → phone over the
+   * reliable input channel). Optional — a viewer that doesn't surface the
+   * agent simply omits it. See docs/m5.3-ai-executor-plan.md §6. */
+  onAgentStep?: (step: AgentStep) => void;
+  /** The AI agent run ended (completed/stopped/denied/failed). */
+  onAgentRunEnd?: (end: AgentRunEnd) => void;
 }
 
 /**
@@ -84,6 +94,8 @@ export class ViewerConnection {
   private pc: RTCPeerConnection | null = null;
   private readonly sig: MobileSignaling;
   private input: InputSender | null = null;
+  /** Monotonic suffix for run ids minted by `sendAgentCommand`. */
+  private agentRunCounter = 0;
   private dataChannel: { send: (d: string) => void; close: () => void; label?: string } | null =
     null;
   /** The unreliable move channel — separate from `dataChannel` above since
@@ -156,6 +168,48 @@ export class ViewerConnection {
 
   get inputSender(): InputSender | null {
     return this.input;
+  }
+
+  /** Parse and dispatch an agent step-feed frame from the desktop. Frames that
+   * aren't valid agent-outbound messages (nothing else is sent on this channel
+   * today, but be defensive) are silently ignored. */
+  private handleAgentFrame(data: unknown): void {
+    if (typeof data !== 'string') return;
+    let json: unknown;
+    try {
+      json = JSON.parse(data);
+    } catch {
+      return;
+    }
+    const parsed = AgentOutboundSchema.safeParse(json);
+    if (!parsed.success) return;
+    if (parsed.data.kind === 'agent_step') this.cb.onAgentStep?.(parsed.data);
+    else this.cb.onAgentRunEnd?.(parsed.data);
+  }
+
+  /** Dispatch a natural-language task to the desktop agent. Returns the runId
+   * so the caller can correlate the step feed and later stop/decision calls.
+   * A closed channel drops the send (the caller sees no feed and can retry). */
+  sendAgentCommand(text: string): string {
+    const runId = `run-${Date.now()}-${(this.agentRunCounter += 1)}`;
+    this.sendAgent({ kind: 'agent_command', runId, text, ts: Date.now() });
+    return runId;
+  }
+
+  sendAgentStop(runId: string): void {
+    this.sendAgent({ kind: 'agent_stop', runId, ts: Date.now() });
+  }
+
+  sendAgentDecision(runId: string, stepId: string, approve: boolean): void {
+    this.sendAgent({ kind: 'agent_decision', runId, stepId, approve, ts: Date.now() });
+  }
+
+  private sendAgent(msg: Parameters<typeof encodeAgentMessage>[0]): void {
+    try {
+      this.dataChannel?.send(encodeAgentMessage(msg));
+    } catch {
+      /* channel not open — drop */
+    }
   }
 
   /** Ask the desktop to switch capture/encode mode. See
@@ -316,6 +370,14 @@ export class ViewerConnection {
             /* channel not open */
           }
         });
+        // The desktop sends the AI agent's step feed back on this same
+        // reliable channel — listen for it (input, by contrast, is send-only
+        // from the phone). Non-agent frames are ignored here.
+        if (typeof e.channel.addEventListener === 'function') {
+          e.channel.addEventListener('message', (ev: { data: unknown }) => {
+            this.handleAgentFrame(ev.data);
+          });
+        }
         if (this.moveDataChannel) this.wireMoveChannel();
       } else if (e.channel?.label === INPUT_MOVE_CHANNEL_LABEL) {
         this.moveDataChannel = e.channel;

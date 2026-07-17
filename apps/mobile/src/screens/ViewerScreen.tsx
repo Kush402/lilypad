@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import {
   InputAccessoryView,
   Keyboard,
@@ -40,6 +40,8 @@ import {
   type Viewport,
 } from '../lib/viewport';
 import { PressRepeater } from '../lib/pressRepeat';
+import { agentFeedReducer, INITIAL_AGENT_FEED } from '../lib/agentFeed';
+import { AgentPanel } from './AgentPanel';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Viewer'>;
 
@@ -156,6 +158,8 @@ export function ViewerScreen({ route, navigation }: Props) {
   const win = useWindowDimensions();
   const isLandscape = win.width > win.height;
   const [trayOpen, setTrayOpen] = useState(false);
+  const [askOpen, setAskOpen] = useState(false);
+  const [agentFeed, dispatchAgent] = useReducer(agentFeedReducer, INITIAL_AGENT_FEED);
   // Source video pixel size, from the desktop's `frame-size` signal. `null`
   // until it arrives (full-bleed fallback) — see Finding 1.
   const videoSize = useRef<{ x: number; y: number } | null>(null);
@@ -218,8 +222,13 @@ export function ViewerScreen({ route, navigation }: Props) {
         Clipboard.setString(text);
         if (clipboardToastTimer.current) clearTimeout(clipboardToastTimer.current);
         setClipboardToast(true);
-        clipboardToastTimer.current = setTimeout(() => setClipboardToast(false), CLIPBOARD_TOAST_MS);
+        clipboardToastTimer.current = setTimeout(
+          () => setClipboardToast(false),
+          CLIPBOARD_TOAST_MS,
+        );
       },
+      onAgentStep: (step) => dispatchAgent({ type: 'step', step }),
+      onAgentRunEnd: (end) => dispatchAgent({ type: 'run_end', end }),
     });
     connRef.current = conn;
     conn.start().catch((e) => setError(toAppError(e)));
@@ -253,14 +262,17 @@ export function ViewerScreen({ route, navigation }: Props) {
   // `frame-size` echo) so the button feels responsive; `onFrameSize` above
   // is still the source of truth and will correct this if the switch fails
   // silently (best-effort send) or the desktop was already mid-switch.
-  const requestCaptureMode = useCallback((mode: CaptureMode) => {
-    if (mode === captureMode) return;
-    connRef.current?.requestCaptureMode(mode);
-    setCaptureModeState(mode);
-    if (modeToastTimer.current) clearTimeout(modeToastTimer.current);
-    setModeToast(true);
-    modeToastTimer.current = setTimeout(() => setModeToast(false), MODE_TOAST_MS);
-  }, [captureMode]);
+  const requestCaptureMode = useCallback(
+    (mode: CaptureMode) => {
+      if (mode === captureMode) return;
+      connRef.current?.requestCaptureMode(mode);
+      setCaptureModeState(mode);
+      if (modeToastTimer.current) clearTimeout(modeToastTimer.current);
+      setModeToast(true);
+      modeToastTimer.current = setTimeout(() => setModeToast(false), MODE_TOAST_MS);
+    },
+    [captureMode],
+  );
 
   // "Still there?" nudge — only meaningful while genuinely waiting on a
   // human at the laptop, not during any other state.
@@ -315,7 +327,13 @@ export function ViewerScreen({ route, navigation }: Props) {
             inp?.pointerUp(it.x, it.y);
             break;
           case 'click':
-            inp?.click(it.x, it.y, it.button, it.count, consumeSticky(stickyModsRef, setStickyMods));
+            inp?.click(
+              it.x,
+              it.y,
+              it.button,
+              it.count,
+              consumeSticky(stickyModsRef, setStickyMods),
+            );
             break;
           case 'scroll':
             inp?.scroll(it.x, it.y, it.dx, it.dy);
@@ -445,6 +463,23 @@ export function ViewerScreen({ route, navigation }: Props) {
     setZoomLock(next);
   }, []);
 
+  // The fourth lock: "Ask". While the panel is open, typed text is a command
+  // to the AI agent (dispatched over the input channel), not keystrokes to the
+  // Mac. See docs/m5.3-ai-executor-plan.md §6.
+  const sendAgentCommand = useCallback((text: string) => {
+    const runId = connRef.current?.sendAgentCommand(text);
+    if (runId) dispatchAgent({ type: 'command_sent', runId });
+  }, []);
+  const stopAgent = useCallback(() => {
+    if (agentFeed.runId) connRef.current?.sendAgentStop(agentFeed.runId);
+  }, [agentFeed.runId]);
+  const decideAgent = useCallback(
+    (stepId: string, approve: boolean) => {
+      if (agentFeed.runId) connRef.current?.sendAgentDecision(agentFeed.runId, stepId, approve);
+    },
+    [agentFeed.runId],
+  );
+
   // Landscape is a full-bleed video surface: the navigation header would
   // burn a permanent strip of the exact screen space rotating is meant to
   // reclaim. (Feature-checked: the test harness's navigation stub has no
@@ -480,6 +515,13 @@ export function ViewerScreen({ route, navigation }: Props) {
             onPress={toggleZoomLock}
           >
             <Text style={[styles.keyText, zoomLock && styles.stickyKeyTextActive]}>Zoom</Text>
+          </Pressable>
+          <Pressable
+            testID="mode-toggle-ask"
+            style={[styles.modeKey, askOpen && styles.modeKeyActive]}
+            onPress={() => setAskOpen((v) => !v)}
+          >
+            <Text style={[styles.keyText, askOpen && styles.stickyKeyTextActive]}>Ask</Text>
           </Pressable>
           <Text style={styles.stickyHint}>
             {zoomLock
@@ -545,6 +587,15 @@ export function ViewerScreen({ route, navigation }: Props) {
             ),
           )}
         </ScrollView>
+      ) : null}
+
+      {canControl && askOpen ? (
+        <AgentPanel
+          feed={agentFeed}
+          onSend={sendAgentCommand}
+          onStop={stopAgent}
+          onDecide={decideAgent}
+        />
       ) : null}
 
       <View style={styles.controls}>

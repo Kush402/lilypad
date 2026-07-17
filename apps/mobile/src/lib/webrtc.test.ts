@@ -33,8 +33,25 @@ jest.mock('react-native-webrtc', () => {
     /** Test helper: simulate the desktop (offerer) opening a named
      * DataChannel. Returns the fake channel so a test can assert on its
      * `.send()` calls. */
-    dispatchDataChannel(label: string): { label: string; send: jest.Mock; close: jest.Mock } {
-      const channel = { label, send: jest.fn(), close: jest.fn() };
+    dispatchDataChannel(label: string): {
+      label: string;
+      send: jest.Mock;
+      close: jest.Mock;
+      addEventListener: jest.Mock;
+      emitMessage: (data: unknown) => void;
+    } {
+      const msgListeners: ((e: { data: unknown }) => void)[] = [];
+      const channel = {
+        label,
+        send: jest.fn(),
+        close: jest.fn(),
+        // Mirrors the real RTCDataChannel: the desktop sends the agent step
+        // feed back on the reliable input channel, so the client listens here.
+        addEventListener: jest.fn((type: string, cb: (e: { data: unknown }) => void) => {
+          if (type === 'message') msgListeners.push(cb);
+        }),
+        emitMessage: (data: unknown) => msgListeners.forEach((cb) => cb({ data })),
+      };
       (this.listeners.datachannel ?? []).forEach((cb) => cb({ channel }));
       return channel;
     }
@@ -132,6 +149,8 @@ function makeCallbacks() {
     onStats: jest.fn(),
     onFrameSize: jest.fn(),
     onClipboardUpdate: jest.fn(),
+    onAgentStep: jest.fn(),
+    onAgentRunEnd: jest.fn(),
   } satisfies ViewerCallbacks;
 }
 
@@ -544,6 +563,79 @@ describe('ViewerConnection', () => {
 
       expect(critical.send).toHaveBeenCalledTimes(1);
       expect(move.send).not.toHaveBeenCalled();
+    });
+  });
+
+  // ── AI agent channel (docs/m5.3-ai-executor-plan.md §6) ──────────────────
+
+  describe('agent messaging over the reliable input channel', () => {
+    it('sends an agent_command frame and returns a runId', async () => {
+      const cb = makeCallbacks();
+      const { conn, peer } = await startConnected(cb);
+      const critical = peer.dispatchDataChannel(INPUT_CHANNEL_LABEL);
+
+      const runId = conn.sendAgentCommand('open Safari');
+
+      expect(typeof runId).toBe('string');
+      expect(critical.send).toHaveBeenCalledTimes(1);
+      const sent = JSON.parse(critical.send.mock.calls[0][0]);
+      expect(sent).toMatchObject({ kind: 'agent_command', runId, text: 'open Safari' });
+    });
+
+    it('sends stop and decision frames', async () => {
+      const cb = makeCallbacks();
+      const { conn, peer } = await startConnected(cb);
+      const critical = peer.dispatchDataChannel(INPUT_CHANNEL_LABEL);
+
+      conn.sendAgentStop('run-9');
+      conn.sendAgentDecision('run-9', 'run-9-1', true);
+
+      const kinds = critical.send.mock.calls.map((c: string[]) => JSON.parse(c[0]).kind);
+      expect(kinds).toEqual(['agent_stop', 'agent_decision']);
+      expect(JSON.parse(critical.send.mock.calls[1][0])).toMatchObject({
+        kind: 'agent_decision',
+        stepId: 'run-9-1',
+        approve: true,
+      });
+    });
+
+    it('dispatches incoming step and run_end frames to the callbacks', async () => {
+      const cb = makeCallbacks();
+      const { peer } = await startConnected(cb);
+      const critical = peer.dispatchDataChannel(INPUT_CHANNEL_LABEL);
+
+      critical.emitMessage(
+        JSON.stringify({
+          kind: 'agent_step',
+          runId: 'r',
+          stepId: 'r-1',
+          step: 'action',
+          summary: 'Open Safari',
+          tier: 'skill',
+          class: 'sensitive',
+          state: 'running',
+          ts: 1,
+        }),
+      );
+      critical.emitMessage(
+        JSON.stringify({ kind: 'agent_run_end', runId: 'r', outcome: 'completed', ts: 2 }),
+      );
+
+      expect(cb.onAgentStep).toHaveBeenCalledTimes(1);
+      expect(cb.onAgentStep.mock.calls[0][0]).toMatchObject({ stepId: 'r-1', state: 'running' });
+      expect(cb.onAgentRunEnd).toHaveBeenCalledTimes(1);
+    });
+
+    it('ignores non-agent frames (input batches) on the channel', async () => {
+      const cb = makeCallbacks();
+      const { peer } = await startConnected(cb);
+      const critical = peer.dispatchDataChannel(INPUT_CHANNEL_LABEL);
+
+      critical.emitMessage(JSON.stringify({ kind: 'input_batch', events: [] }));
+      critical.emitMessage('not json');
+
+      expect(cb.onAgentStep).not.toHaveBeenCalled();
+      expect(cb.onAgentRunEnd).not.toHaveBeenCalled();
     });
   });
 });
