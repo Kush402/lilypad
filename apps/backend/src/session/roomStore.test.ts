@@ -10,12 +10,7 @@ class FakeRedis implements RoomKvStore {
   async get(key: string): Promise<string | null> {
     return this.data.get(key) ?? null;
   }
-  async set(
-    key: string,
-    value: string,
-    _mode: 'EX' = 'EX',
-    ttlSeconds = 3600,
-  ): Promise<unknown> {
+  async set(key: string, value: string, _mode: 'EX' = 'EX', ttlSeconds = 3600): Promise<unknown> {
     this.setCalls.push({ key, ttlSeconds });
     this.data.set(key, value);
     return 'OK';

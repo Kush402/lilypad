@@ -322,11 +322,7 @@ describe('MessageRouter — clipboard-update', () => {
   it('rejects a mobile sender (phone → desktop clipboard sync already travels over the DataChannel, not signaling)', () => {
     const router = new MessageRouter();
     const room = connectedSeatsRoom();
-    const actions = router.route(
-      room,
-      'mobile',
-      msg('clipboard-update', 'mobile', { text: 'x' }),
-    );
+    const actions = router.route(room, 'mobile', msg('clipboard-update', 'mobile', { text: 'x' }));
     expect(actions).toEqual([
       {
         kind: 'reject',

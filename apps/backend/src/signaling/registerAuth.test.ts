@@ -120,22 +120,14 @@ describe('decideRegisterGate', () => {
 
   it('proceeds when verify authorizes the attempt', async () => {
     const verify = vi.fn().mockResolvedValue(true);
-    const decision = await decideRegisterGate(
-      registerMsg('desktop', 'desktop-01'),
-      false,
-      verify,
-    );
+    const decision = await decideRegisterGate(registerMsg('desktop', 'desktop-01'), false, verify);
     expect(decision).toEqual({ action: 'proceed' });
     expect(verify).toHaveBeenCalledWith('room-1', 'desktop', 'desktop-01');
   });
 
   it('rejects with the attempt details when verify denies the attempt', async () => {
     const verify = vi.fn().mockResolvedValue(false);
-    const decision = await decideRegisterGate(
-      registerMsg('mobile', 'intruder-01'),
-      false,
-      verify,
-    );
+    const decision = await decideRegisterGate(registerMsg('mobile', 'intruder-01'), false, verify);
     expect(decision).toEqual({
       action: 'reject_unauthorized',
       attempt: { roomId: 'room-1', role: 'mobile', deviceId: 'intruder-01' },
@@ -144,11 +136,7 @@ describe('decideRegisterGate', () => {
 
   it('maps a verify() rejection to a distinct "error" action, not "reject_unauthorized"', async () => {
     const verify = vi.fn().mockRejectedValue(new Error('redis down'));
-    const decision = await decideRegisterGate(
-      registerMsg('desktop', 'desktop-01'),
-      false,
-      verify,
-    );
+    const decision = await decideRegisterGate(registerMsg('desktop', 'desktop-01'), false, verify);
     expect(decision).toEqual({
       action: 'error',
       attempt: { roomId: 'room-1', role: 'desktop', deviceId: 'desktop-01' },
@@ -157,7 +145,11 @@ describe('decideRegisterGate', () => {
 
   it('proceeds for a malformed register-shaped message without ever calling verify', async () => {
     const verify = vi.fn();
-    const decision = await decideRegisterGate({ type: 'register', roomId: 'room-1' }, false, verify);
+    const decision = await decideRegisterGate(
+      { type: 'register', roomId: 'room-1' },
+      false,
+      verify,
+    );
     expect(decision).toEqual({ action: 'proceed' });
     expect(verify).not.toHaveBeenCalled();
   });

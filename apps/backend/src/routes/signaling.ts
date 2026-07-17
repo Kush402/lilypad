@@ -6,7 +6,11 @@ import {
   encodeSignal,
 } from '@lilypad/protocol';
 import { SignalingHub, type Peer } from '../signaling/hub.js';
-import { IpConnectionLimiter, TokenBucket, isUnexpectedBrowserOrigin } from '../signaling/guards.js';
+import {
+  IpConnectionLimiter,
+  TokenBucket,
+  isUnexpectedBrowserOrigin,
+} from '../signaling/guards.js';
 import { decideRegisterGate } from '../signaling/registerAuth.js';
 import { SessionManager } from '../session/manager.js';
 import { RoomStore } from '../session/roomStore.js';

@@ -17,9 +17,11 @@ describe('parseAllowedOrigins', () => {
   });
 
   it('parses a comma-separated list, trimming whitespace around each entry', () => {
-    expect(parseAllowedOrigins('https://a.example, https://b.example ,https://c.example')).toEqual(
-      ['https://a.example', 'https://b.example', 'https://c.example'],
-    );
+    expect(parseAllowedOrigins('https://a.example, https://b.example ,https://c.example')).toEqual([
+      'https://a.example',
+      'https://b.example',
+      'https://c.example',
+    ]);
   });
 
   it('drops empty entries from stray commas', () => {

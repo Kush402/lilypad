@@ -37,6 +37,15 @@ const EnvSchema = z.object({
   // addresses) are actually trusted proxies.
   TRUST_PROXY: z.string().default(''),
 
+  // Zero-config internet reach: when "1", the backend spawns a Cloudflare
+  // quick tunnel (requires the `cloudflared` binary) and advertises the
+  // tunnel's https/wss URLs in QR payloads instead of the LAN URLs — the
+  // phone can then pair and signal from anywhere with no deployed backend.
+  // Media still negotiates its own path via ICE (public STUN, or TURN when
+  // deployed); the tunnel carries signaling only. Dev/solo-user feature —
+  // production deployments pin PUBLIC_BASE_URL/SIGNALING_URL instead.
+  TUNNEL: z.enum(['0', '1']).default('0'),
+
   // ICE config advertised to clients (used from M2).
   STUN_URL: z.string().default('stun:localhost:3478'),
   TURN_URL: z.string().default('turn:localhost:3478'),

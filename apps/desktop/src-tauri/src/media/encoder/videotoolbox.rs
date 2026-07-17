@@ -104,17 +104,68 @@ pub struct VideoToolboxEncoder {
     surface_flip: usize,
 }
 
+/// Upper bound on the encoder's per-frame quantizer. VideoToolbox's default
+/// ceiling lets QP climb high enough on a bitrate-starved GUI frame to smear
+/// text into illegibility; capping it trades a frame drop (recovered by the
+/// next delta) for never rendering unreadable text. ~40 keeps 12pt text
+/// legible at desktop resolutions while still allowing meaningful
+/// compression. See docs/m5-ai-remote-controller.md §3 item 5.
+const MAX_ALLOWED_FRAME_QP: i32 = 40;
+
 fn build_session(s: &EncoderSettings) -> Result<CompressionSession> {
-    CompressionSessionBuilder::new(s.width as i32, s.height as i32, Codec::H264)
+    let session = CompressionSessionBuilder::new(s.width as i32, s.height as i32, Codec::H264)
         .with_real_time(true)
         // No B-frames: low latency over compression efficiency.
         .with_allow_frame_reordering(false)
-        // Short GOP: VideoToolbox forces a periodic IDR at this interval.
+        // GOP length. A live session forces a fresh IDR on demand (PLI /
+        // reconnect) via `reset()`, so this is set effectively infinite —
+        // periodic IDRs at desktop bitrates only cause quality pumping and
+        // bitrate spikes that trip the ABR loop. See §3 item 2.
         .with_max_keyframe_interval(s.keyframe_interval.max(1) as i32)
         .with_average_bit_rate(s.bitrate_kbps.saturating_mul(1000) as i32)
         .with_expected_frame_rate(f64::from(s.fps.max(1)))
         .build()
-        .map_err(|e| anyhow!("VideoToolbox session create failed: {e:?}"))
+        .map_err(|e| anyhow!("VideoToolbox session create failed: {e:?}"))?;
+
+    // Additional low-latency + quality knobs the builder doesn't expose,
+    // set post-create (all are documented live-settable compression
+    // properties). Non-fatal if a given macOS version rejects one — the
+    // session still works, just without that refinement.
+    // MaxFrameDelayCount=0: emit each encoded frame immediately, never hold
+    // one back for lookahead — removes up to a few frames of encoder-internal
+    // latency (§3 item 4).
+    let _ = set_i32_property(
+        &session,
+        unsafe { ffi::kVTCompressionPropertyKey_MaxFrameDelayCount },
+        0,
+    );
+    // Legibility floor for desktop text (§3 item 5).
+    let _ = set_i32_property(
+        &session,
+        unsafe { ffi::kVTCompressionPropertyKey_MaxAllowedFrameQP },
+        MAX_ALLOWED_FRAME_QP,
+    );
+    Ok(session)
+}
+
+/// Set an Int32-valued compression property on a live session. Factored out
+/// of `set_bitrate` so the low-latency knobs set at build time share the
+/// exact same CFNumber create-set-release dance.
+///
+/// SAFETY: `key` must be a valid static VideoToolbox CFStringRef property
+/// key; the CFNumber is created valid and released right after per Core
+/// Foundation's create-rule.
+fn set_i32_property(session: &CompressionSession, key: ffi::CFStringRef, value: i32) -> Result<()> {
+    unsafe {
+        let value_ref = ffi::CFNumberCreate(
+            ffi::kCFAllocatorDefault,
+            ffi::kCFNumberSInt32Type,
+            core::ptr::from_ref(&value).cast(),
+        );
+        let result = session.set_property(key, value_ref.cast());
+        ffi::CFRelease(value_ref.cast());
+        result.map_err(|e| anyhow!("VTSessionSetProperty failed: {e:?}"))
+    }
 }
 
 impl VideoToolboxEncoder {

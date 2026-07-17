@@ -8,7 +8,8 @@ import type {
   SessionScope,
 } from '@lilypad/protocol';
 import { redis } from '../redis.js';
-import { config, env } from '../config.js';
+import { config } from '../config.js';
+import { advertisedUrls } from './advertisedUrls.js';
 import { RoomAuthStore } from './roomAuth.js';
 
 const defaultRoomAuthStore = new RoomAuthStore(redis);
@@ -65,11 +66,12 @@ export async function createPairing(
   // Finding 1.
   await roomAuth.recordDesktop(roomId, req.deviceId);
 
+  const urls = advertisedUrls();
   return {
     token,
     roomId,
-    apiBaseUrl: env.PUBLIC_BASE_URL,
-    signalingUrl: env.SIGNALING_URL,
+    apiBaseUrl: urls.apiBaseUrl,
+    signalingUrl: urls.signalingUrl,
     expiresInSeconds: config.pairingTokenTtlSeconds,
   };
 }
@@ -106,7 +108,7 @@ export async function redeemPairing(
   // M2 will push a `pair-request` to the desktop over its signaling socket here.
   return {
     roomId: record.roomId,
-    signalingUrl: env.SIGNALING_URL,
+    signalingUrl: advertisedUrls().signalingUrl,
     scopes: record.scopes,
     desktopDeviceName: record.desktopDeviceName,
   };

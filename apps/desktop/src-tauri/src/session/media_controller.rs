@@ -87,7 +87,14 @@ fn resolved_pipeline_config(mode: CaptureMode) -> PipelineConfig {
             width: w,
             height: h,
             fps,
-            keyframe_interval: fps, // ~1s GOP regardless of mode
+            // Effectively infinite GOP: a live session forces a fresh IDR on
+            // demand (viewer PLI/FIR, drop recovery, reconnect) through the
+            // pipeline's force-keyframe path, so periodic IDRs would only
+            // burn bitrate on giant frames every second and pump quality on
+            // static desktop content. See docs/m5-ai-remote-controller.md §3
+            // item 2. (~10 min at 30fps; the on-demand path is the real
+            // keyframe source.)
+            keyframe_interval: fps.saturating_mul(600),
             ..crate::media::EncoderSettings::default()
         },
     };

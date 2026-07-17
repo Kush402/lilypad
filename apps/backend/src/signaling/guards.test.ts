@@ -71,9 +71,7 @@ describe('isUnexpectedBrowserOrigin', () => {
   });
 
   it('flags a same-hostname Origin on a different port', () => {
-    expect(isUnexpectedBrowserOrigin('http://192.168.0.173:9999', '192.168.0.173:8080')).toBe(
-      true,
-    );
+    expect(isUnexpectedBrowserOrigin('http://192.168.0.173:9999', '192.168.0.173:8080')).toBe(true);
   });
 
   it('flags a malformed Origin', () => {

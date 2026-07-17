@@ -44,7 +44,11 @@ describe('pairing service', () => {
   it('mints a token with a 60s TTL and a room', async () => {
     const redis = new FakePairingRedis();
     const { roomAuth } = fakeRoomAuth();
-    const res = await createPairing({ deviceId: 'desktop-abc', platform: 'macos' }, redis, roomAuth);
+    const res = await createPairing(
+      { deviceId: 'desktop-abc', platform: 'macos' },
+      redis,
+      roomAuth,
+    );
     expect(res.token.length).toBeGreaterThanOrEqual(16);
     expect(res.roomId).toBeTruthy();
     expect(res.expiresInSeconds).toBe(60);
@@ -87,7 +91,11 @@ describe('pairing service', () => {
     it('createPairing authorizes the desktop device for the minted room', async () => {
       const redis = new FakePairingRedis();
       const { roomAuth } = fakeRoomAuth();
-      const created = await createPairing({ deviceId: 'desktop-abc', platform: 'macos' }, redis, roomAuth);
+      const created = await createPairing(
+        { deviceId: 'desktop-abc', platform: 'macos' },
+        redis,
+        roomAuth,
+      );
 
       expect(await roomAuth.verify(created.roomId, 'desktop', 'desktop-abc')).toBe(true);
       expect(await roomAuth.verify(created.roomId, 'desktop', 'someone-else')).toBe(false);
@@ -98,7 +106,11 @@ describe('pairing service', () => {
     it('redeemPairing extends the record with the redeeming mobile device', async () => {
       const redis = new FakePairingRedis();
       const { roomAuth } = fakeRoomAuth();
-      const created = await createPairing({ deviceId: 'desktop-abc', platform: 'macos' }, redis, roomAuth);
+      const created = await createPairing(
+        { deviceId: 'desktop-abc', platform: 'macos' },
+        redis,
+        roomAuth,
+      );
       await redeemPairing({ token: created.token, deviceId: 'mobile-xyz' }, redis, roomAuth);
 
       expect(await roomAuth.verify(created.roomId, 'mobile', 'mobile-xyz')).toBe(true);
@@ -109,7 +121,11 @@ describe('pairing service', () => {
     it('a different device claiming the mobile seat does not verify after redemption', async () => {
       const redis = new FakePairingRedis();
       const { roomAuth } = fakeRoomAuth();
-      const created = await createPairing({ deviceId: 'desktop-abc', platform: 'macos' }, redis, roomAuth);
+      const created = await createPairing(
+        { deviceId: 'desktop-abc', platform: 'macos' },
+        redis,
+        roomAuth,
+      );
       await redeemPairing({ token: created.token, deviceId: 'mobile-xyz' }, redis, roomAuth);
 
       expect(await roomAuth.verify(created.roomId, 'mobile', 'intruder-99')).toBe(false);

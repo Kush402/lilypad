@@ -57,7 +57,11 @@ export class RoomAuthStore {
   /** Called when `/pairing/redeem` succeeds — extends the same record with
    * the redeeming mobile device, refreshing the TTL so the claim window
    * covers the WS `register` race that follows redemption too. */
-  async recordMobile(roomId: string, desktopDeviceId: string, mobileDeviceId: string): Promise<void> {
+  async recordMobile(
+    roomId: string,
+    desktopDeviceId: string,
+    mobileDeviceId: string,
+  ): Promise<void> {
     const record: RoomAuthRecord = { desktopDeviceId, mobileDeviceId };
     await this.write(roomId, record);
   }

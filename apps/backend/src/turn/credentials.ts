@@ -51,6 +51,15 @@ export function generateTurnCredential(opts: TurnCredentialOptions = {}): TurnCr
 }
 
 /**
+ * Public STUN fallback so srflx candidates work on real internet paths even
+ * when the configured STUN/TURN is a localhost dev coturn (useless off-LAN,
+ * e.g. when pairing rides the quick tunnel). Harmless on LAN — host
+ * candidates still win the ICE race there. Symmetric-NAT cases still need a
+ * deployed TURN relay; this covers the majority that don't.
+ */
+const PUBLIC_STUN_URLS = ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'];
+
+/**
  * ICE servers advertised to a peer in `pair-approved`: STUN first (host/srflx),
  * then TURN over UDP + TCP with a fresh time-limited credential.
  */
@@ -61,6 +70,7 @@ export function buildIceServers(opts: TurnCredentialOptions = {}): {
   const cred = generateTurnCredential(opts);
   const iceServers: IceServer[] = [
     { urls: env.STUN_URL },
+    { urls: PUBLIC_STUN_URLS },
     {
       urls: env.TURN_URL,
       username: cred.username,

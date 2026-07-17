@@ -56,4 +56,10 @@ describe('TURN credentials (coturn use-auth-secret)', () => {
     expect(turn?.username).toBe(credential.username);
     expect(turn?.credential).toBe(credential.credential);
   });
+
+  it('always includes public STUN fallback for off-LAN paths', () => {
+    const { iceServers } = buildIceServers({ secret: SECRET, now: NOW });
+    const flat = iceServers.flatMap((s) => (Array.isArray(s.urls) ? s.urls : [s.urls]));
+    expect(flat).toContain('stun:stun.l.google.com:19302');
+  });
 });
