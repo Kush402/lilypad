@@ -135,7 +135,7 @@ fixable things, not a codec change.
 
 | #   | Improvement                                                                                                                                                          | Why                                                                                                      | Expected gain                                        | Cost                                              |
 | --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- | ---------------------------------------------------- | ------------------------------------------------- |
-| 1   | **Minimize receiver jitter buffer** — send playout-delay RTP header ext (min≈0, max≈50–100ms); patch react-native-webrtc to set a low `jitterBufferTarget`           | Largest hidden latency in the glass-to-glass chain; Multi.app measured ~90ms here on this exact scenario | **~50–90ms**                                         | Low–med                                           |
+| 1   | **Minimize receiver jitter buffer** — ~~send playout-delay RTP header ext; patch react-native-webrtc to set a low `jitterBufferTarget`~~ **WON'T-FIX (M5)**: no video jitter API in the JitsiWebRTC prebuilt framework, no playout-delay ext in `rtp-0.11.0`; see M5.2 note below | Largest hidden latency in the glass-to-glass chain; Multi.app measured ~90ms here on this exact scenario | **~50–90ms** _(blocked)_                             | ~~Low–med~~ (framework rebuild)                   |
 | 2   | **Kill the 1s GOP → infinite GOP + PLI-triggered IDR**                                                                                                               | Periodic IDRs cause quality pumping and bitrate spikes that trip our own AIMD on static desktop content  | Large steady-state quality gain at same bitrate      | Low                                               |
 | 3   | **Delay-based congestion control on TWCC** — enable `configure_twcc` in webrtc-rs, add a trendline estimator, use `min(delay-based, existing loss-based)`            | Loss-based-only reacts _after_ queues fill; Parsec/Stadia/GCC all act on delay gradients pre-loss        | Eliminates periodic latency spikes; smoother bitrate | Med (few hundred lines; str0m's BWE as reference) |
 | 4   | **Verify VideoToolbox zero-latency flags** (`EnableLowLatencyRateControl`, `RealTime`, `AllowFrameReordering=false`, `MaxFrameDelayCount=0`)                         | Table stakes; enables per-frame rate control item 3 needs                                                | Up to a few frames if not already set                | Trivial                                           |
@@ -254,14 +254,34 @@ valuable — the product is better after each one even if the next never ships.
 ### M5.2 — Streaming polish _(makes the remote control itself excellent — table stakes before AI)_
 
 - **Purpose**: Parsec-class responsiveness.
-- **Tasks**: streaming ROI items 1–4 (jitter buffer, infinite GOP + PLI IDR,
-  TWCC delay-based CC, verify VT low-latency flags); then item 5 (QP clamp +
-  static refresh).
+- **Tasks**: streaming ROI items 2, 4, 5 (infinite GOP + PLI IDR, verify VT
+  low-latency flags, QP clamp + static refresh) — **shipped**. Item 1 (jitter
+  buffer) and item 3 (TWCC delay-based CC) — **won't-fix for M5** (see below).
 - **Dependencies**: M5.1 (validate on real internet paths, not just LAN).
-- **Risks**: RN-webrtc jitter-buffer patch maintenance; delay estimator tuning.
-- **Success**: measured glass-to-glass latency down ~50–90ms; no quality
-  pumping on static screens; smooth under induced loss.
+- **Success**: RTP timestamp pacing fix removed the drift-over-time lag (the
+  bulk of the felt latency); no quality pumping on static screens; smooth
+  under induced loss.
 - **Complexity**: Medium.
+
+> **Item 1 — receiver jitter buffer — won't-fix for M5 (verified 2026-07-17).**
+> The prebuilt JitsiWebRTC `WebRTC.framework` that `react-native-webrtc@124.0.7`
+> links exposes only **audio** jitter controls (`audioJitterBufferMaxPackets`,
+> `audioJitterBufferFastAccelerate`); `RTCRtpReceiver` has no
+> `jitterBufferMinimumDelay`/`jitterBufferTarget`, and the JS layer none either.
+> The sender-side alternative (playout-delay RTP header extension) isn't in
+> `rtp-0.11.0` and can't be injected through `TrackLocalStaticSample`'s internal
+> packetizer without rewriting the send path to `TrackLocalStaticRTP` + hand
+> H.264 packetization. Both routes are disproportionate for a payoff that only
+> materializes on jittery cellular and that libwebrtc may clamp anyway. The RTP
+> timestamp pacing fix (steady 30fps delivery) already shrinks libwebrtc's
+> *adaptive* jitter buffer for free — the realistic win here is banked.
+> Revisit only if a source-built libwebrtc becomes worthwhile for other reasons.
+
+> **Item 3 — TWCC delay-based CC — won't-fix for M5.** webrtc-rs emits TWCC
+> feedback but ships no delay-based bandwidth estimator; writing one is a
+> research-grade effort needing real-network tuning. The loss-based AIMD + REMB
+> path already adapts. Revisit post-M5 if cellular telemetry shows AIMD
+> under-reacting to bufferbloat.
 
 ### M5.3 — AI executor foundation _(the headline capability)_
 
