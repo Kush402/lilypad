@@ -58,6 +58,18 @@ const EnvSchema = z.object({
   TURN_SECRET: z.string().default('lilypad_dev_turn_secret'),
   TURN_REALM: z.string().default('lilypad.local'),
 
+  // A publicly-reachable TURN relay, advertised to both peers IN ADDITION to
+  // the (LAN) coturn above. The local coturn is unreachable off-LAN, so
+  // cellular↔home-NAT sessions have no relay to fall back to when a direct
+  // STUN path can't be sustained — the connection forms briefly, then dies on
+  // the first NAT rebind. Set these three (e.g. a free Metered/Twilio relay,
+  // or your own deployed coturn's public address + a static credential) to
+  // give off-LAN peers a working relay. Empty = not advertised (LAN/same-Wi-Fi
+  // only). This is the un-deployed-dev bridge for M6's "deploy TURN" item.
+  PUBLIC_TURN_URL: z.string().default(''),
+  PUBLIC_TURN_USERNAME: z.string().default(''),
+  PUBLIC_TURN_CREDENTIAL: z.string().default(''),
+
   // Comma-separated allowlist of origins permitted to make cross-origin
   // browser requests in production (e.g. a deployed `apps/admin` SPA).
   // Empty means "no cross-origin browser client is allowed yet" — a

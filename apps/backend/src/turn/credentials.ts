@@ -77,5 +77,17 @@ export function buildIceServers(opts: TurnCredentialOptions = {}): {
       credential: cred.credential,
     },
   ];
+  // A publicly-reachable TURN relay (when configured) is what actually makes
+  // cellular↔home-NAT work: the LAN coturn above is unreachable off-LAN, so
+  // without this a direct STUN path is the only option and it can't survive a
+  // cellular NAT rebind. Advertised in addition to (not instead of) the local
+  // coturn, which still wins on-LAN. Only emitted when all three are set.
+  if (env.PUBLIC_TURN_URL && env.PUBLIC_TURN_USERNAME && env.PUBLIC_TURN_CREDENTIAL) {
+    iceServers.push({
+      urls: env.PUBLIC_TURN_URL,
+      username: env.PUBLIC_TURN_USERNAME,
+      credential: env.PUBLIC_TURN_CREDENTIAL,
+    });
+  }
   return { iceServers, credential: cred };
 }

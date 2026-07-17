@@ -62,4 +62,31 @@ describe('TURN credentials (coturn use-auth-secret)', () => {
     const flat = iceServers.flatMap((s) => (Array.isArray(s.urls) ? s.urls : [s.urls]));
     expect(flat).toContain('stun:stun.l.google.com:19302');
   });
+
+  it('advertises a public TURN relay only when all three vars are configured', async () => {
+    const { env } = await import('../config.js');
+    const orig = {
+      url: env.PUBLIC_TURN_URL,
+      user: env.PUBLIC_TURN_USERNAME,
+      cred: env.PUBLIC_TURN_CREDENTIAL,
+    };
+    try {
+      // Not configured → no public TURN entry.
+      (env as { PUBLIC_TURN_URL: string }).PUBLIC_TURN_URL = '';
+      let servers = buildIceServers({ secret: SECRET, now: NOW }).iceServers;
+      expect(servers.find((s) => s.urls === 'turn:relay.example:3478')).toBeUndefined();
+
+      // All three set → advertised with the static credential.
+      (env as { PUBLIC_TURN_URL: string }).PUBLIC_TURN_URL = 'turn:relay.example:3478';
+      (env as { PUBLIC_TURN_USERNAME: string }).PUBLIC_TURN_USERNAME = 'user1';
+      (env as { PUBLIC_TURN_CREDENTIAL: string }).PUBLIC_TURN_CREDENTIAL = 'pass1';
+      servers = buildIceServers({ secret: SECRET, now: NOW }).iceServers;
+      const relay = servers.find((s) => s.urls === 'turn:relay.example:3478');
+      expect(relay).toMatchObject({ username: 'user1', credential: 'pass1' });
+    } finally {
+      (env as { PUBLIC_TURN_URL: string }).PUBLIC_TURN_URL = orig.url;
+      (env as { PUBLIC_TURN_USERNAME: string }).PUBLIC_TURN_USERNAME = orig.user;
+      (env as { PUBLIC_TURN_CREDENTIAL: string }).PUBLIC_TURN_CREDENTIAL = orig.cred;
+    }
+  });
 });
