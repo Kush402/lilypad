@@ -1,0 +1,22 @@
+# macOS deployment target for this crate.
+#
+# ScreenCaptureKit's own minimum is 12.3, but the screencapturekit-rs Swift
+# bridge (and its apple-cf/apple-metal dependencies) compile Swift object
+# files targeting macOS 13.0+. Without an explicit deployment target, Rust's
+# default (11.0) is *lower* than what those Swift objects were built for,
+# which makes the linker require Swift's back-deployment concurrency shims
+# (swiftCompatibility56 / swiftCompatibilityConcurrency) — shims that aren't
+# bundled with this toolchain, causing "symbol(s) not found" link failures.
+# Setting the target to 13.0 matches what the Swift code actually needs, so
+# no back-deployment shimming is required at all.
+[env]
+MACOSX_DEPLOYMENT_TARGET = "13.0"
+
+[target.aarch64-apple-darwin]
+# apple-metal's build script points the linker at the full-Xcode toolchain
+# layout (.../Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/macosx),
+# which doesn't exist on a Command-Line-Tools-only install. The Swift
+# back-deployment compatibility libs (swiftCompatibility56,
+# swiftCompatibilityConcurrency, ...) that linking needs are present, just
+# under CLT's own direct path — add it so the linker actually finds them.
+rustflags = ["-L", "/Library/Developer/CommandLineTools/usr/lib/swift/macosx"]

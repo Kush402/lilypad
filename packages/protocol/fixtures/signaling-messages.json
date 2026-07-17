@@ -1,0 +1,161 @@
+{
+  "register": {
+    "type": "register",
+    "roomId": "room-fixture-01",
+    "from": "desktop",
+    "ts": 1700000000000,
+    "payload": { "role": "desktop", "deviceId": "desktop-fixture-01" }
+  },
+  "pair-request": {
+    "type": "pair-request",
+    "roomId": "room-fixture-01",
+    "from": "mobile",
+    "ts": 1700000000000,
+    "payload": {
+      "deviceId": "mobile-fixture-01",
+      "deviceName": "Fixture iPhone",
+      "requestedScopes": ["view", "control"]
+    }
+  },
+  "pair-approved": {
+    "type": "pair-approved",
+    "roomId": "room-fixture-01",
+    "from": "desktop",
+    "ts": 1700000000000,
+    "payload": { "grantedScopes": ["view", "control"] }
+  },
+  "pair-denied": {
+    "type": "pair-denied",
+    "roomId": "room-fixture-01",
+    "from": "desktop",
+    "ts": 1700000000000,
+    "payload": { "reason": "not now" }
+  },
+  "offer": {
+    "type": "offer",
+    "roomId": "room-fixture-01",
+    "from": "desktop",
+    "ts": 1700000000000,
+    "payload": { "type": "offer", "sdp": "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\n" }
+  },
+  "answer": {
+    "type": "answer",
+    "roomId": "room-fixture-01",
+    "from": "mobile",
+    "ts": 1700000000000,
+    "payload": { "type": "answer", "sdp": "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\n" }
+  },
+  "ice-candidate": {
+    "type": "ice-candidate",
+    "roomId": "room-fixture-01",
+    "from": "desktop",
+    "ts": 1700000000000,
+    "payload": {
+      "candidate": "candidate:1 1 UDP 2130706431 192.0.2.1 54400 typ host",
+      "sdpMid": "0",
+      "sdpMLineIndex": 0
+    }
+  },
+  "session-start": {
+    "type": "session-start",
+    "roomId": "room-fixture-01",
+    "from": "mobile",
+    "ts": 1700000000000,
+    "payload": {
+      "sessionId": "session-fixture-01",
+      "grantedScopes": ["view", "control"],
+      "iceServers": [
+        { "urls": "stun:stun.fixture.example:3478" },
+        {
+          "urls": ["turn:turn.fixture.example:3478"],
+          "username": "fixture-user",
+          "credential": "fixture-credential"
+        }
+      ]
+    }
+  },
+  "session-end": {
+    "type": "session-end",
+    "roomId": "room-fixture-01",
+    "from": "desktop",
+    "ts": 1700000000000,
+    "payload": { "reason": "disconnected" }
+  },
+  "error": {
+    "type": "error",
+    "roomId": "",
+    "from": "desktop",
+    "ts": 1700000000000,
+    "payload": { "code": "bad_message", "message": "malformed signaling frame" }
+  },
+  "ping": {
+    "type": "ping",
+    "roomId": "room-fixture-01",
+    "from": "mobile",
+    "ts": 1700000000000,
+    "payload": {}
+  },
+  "pong": {
+    "type": "pong",
+    "roomId": "room-fixture-01",
+    "from": "desktop",
+    "ts": 1700000000000,
+    "payload": {}
+  },
+  "heartbeat": {
+    "type": "heartbeat",
+    "roomId": "room-fixture-01",
+    "from": "desktop",
+    "ts": 1700000000000,
+    "payload": { "seq": 42 }
+  },
+  "pause": {
+    "type": "pause",
+    "roomId": "room-fixture-01",
+    "from": "mobile",
+    "ts": 1700000000000,
+    "payload": { "reason": "backgrounded" }
+  },
+  "resume": {
+    "type": "resume",
+    "roomId": "room-fixture-01",
+    "from": "mobile",
+    "ts": 1700000000000,
+    "payload": {}
+  },
+  "renegotiate": {
+    "type": "renegotiate",
+    "roomId": "room-fixture-01",
+    "from": "mobile",
+    "ts": 1700000000000,
+    "payload": { "reason": "resolution changed", "iceRestart": true }
+  },
+  "disconnect": {
+    "type": "disconnect",
+    "roomId": "room-fixture-01",
+    "from": "desktop",
+    "ts": 1700000000000,
+    "payload": { "reason": "desktop disconnected" }
+  },
+  "frame-size": {
+    "type": "frame-size",
+    "roomId": "room-fixture-01",
+    "from": "desktop",
+    "ts": 1700000000000,
+    "payload": { "width": 1920, "height": 1080, "mode": "motion" }
+  },
+  "clipboard-update": {
+    "type": "clipboard-update",
+    "roomId": "room-fixture-01",
+    "from": "desktop",
+    "ts": 1700000000000,
+    "payload": { "text": "copied from the fixture" }
+  },
+  "set-capture-mode": {
+    "type": "set-capture-mode",
+    "roomId": "room-fixture-01",
+    "from": "mobile",
+    "ts": 1700000000000,
+    "payload": { "mode": "text" }
+  }
+}

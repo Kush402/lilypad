@@ -1,0 +1,127 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Longer soak tiers (docs/audit/m3/testing-reliability.md Finding 7) —
+    # deliberately NOT run on every push/PR: this class of test is slow by
+    # design (real wall-clock duration) and would poison the "required
+    # checks" trust model if it blocked normal development. The smoke tier
+    # (~15s, tests/soak.rs's default) already runs on every push/PR for free
+    # as part of the `rust` job's normal `cargo test` below.
+    - cron: '0 3 * * *' # nightly 4h soak, 03:00 UTC
+    - cron: '0 1 * * 0' # weekly 24h soak, Sunday 01:00 UTC
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Backend/env schema requires these to be present even though CI never
+  # boots real infra — every value here is a harmless placeholder.
+  NODE_ENV: test
+
+jobs:
+  typescript:
+    name: TypeScript — typecheck, lint, format, test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Enable corepack (pins pnpm via package.json#packageManager)
+        run: corepack enable
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm turbo run typecheck
+
+      - name: Lint
+        run: pnpm turbo run lint
+
+      - name: Format check
+        run: pnpm format:check
+
+      - name: Test
+        run: pnpm turbo run test
+
+  rust:
+    # ScreenCaptureKit + VideoToolbox are macOS-only (see apps/desktop/src-tauri/Cargo.toml
+    # target.'cfg(target_os = "macos")' deps) — the desktop crate will not compile on Linux.
+    name: Rust — fmt, clippy, test (macOS)
+    runs-on: macos-14
+    defaults:
+      run:
+        working-directory: apps/desktop/src-tauri
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri
+
+      - name: Format check
+        run: cargo fmt --check
+
+      - name: Clippy (deny warnings)
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test
+
+  soak-nightly:
+    # 4h tier: docs/audit/m3/testing-reliability.md Finding 7. Only the
+    # nightly cron trigger runs this — never a push/PR, and never the same
+    # run as the weekly tier below. `timeout-minutes` must exceed the soak
+    # duration itself (GitHub's default job timeout is 360 minutes, which
+    # would kill this run partway through otherwise).
+    if: github.event.schedule == '0 3 * * *'
+    name: Soak (nightly, 4h)
+    runs-on: macos-14
+    timeout-minutes: 300
+    defaults:
+      run:
+        working-directory: apps/desktop/src-tauri
+    env:
+      LILYPAD_SOAK_SECS: 14400
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri
+      - name: Soak test
+        run: cargo test --test soak -- --nocapture
+
+  soak-weekly:
+    # 24h tier: docs/audit/m3/testing-reliability.md Finding 7. Same
+    # timeout-minutes note as soak-nightly above — 24h exceeds GitHub's
+    # default 360-minute job timeout.
+    if: github.event.schedule == '0 1 * * 0'
+    name: Soak (weekly, 24h)
+    runs-on: macos-14
+    timeout-minutes: 1500
+    defaults:
+      run:
+        working-directory: apps/desktop/src-tauri
+    env:
+      LILYPAD_SOAK_SECS: 86400
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri
+      - name: Soak test
+        run: cargo test --test soak -- --nocapture

@@ -1,0 +1,8 @@
+node_modules
+dist
+build
+.turbo
+apps/desktop/src-tauri/target
+apps/mobile/ios/Pods
+apps/mobile/android
+pnpm-lock.yaml

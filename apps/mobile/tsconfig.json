@@ -1,0 +1,11 @@
+{
+  "extends": "@react-native/typescript-config/tsconfig.json",
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    "moduleResolution": "Bundler",
+    "types": ["react-native", "jest"],
+    "skipLibCheck": true
+  },
+  "include": ["App.tsx", "src", "index.js"],
+  "exclude": ["node_modules", "ios", "android"]
+}

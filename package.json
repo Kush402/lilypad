@@ -1,0 +1,39 @@
+{
+  "name": "lilypad",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Lilypad — internet-first, phone-first remote laptop control",
+  "packageManager": "pnpm@10.33.2",
+  "engines": {
+    "node": ">=20",
+    "pnpm": ">=9"
+  },
+  "scripts": {
+    "doctor": "node scripts/doctor.mjs",
+    "bootstrap": "node scripts/bootstrap.mjs",
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
+    "clean": "node scripts/clean.mjs",
+    "clean:build": "node scripts/clean.mjs build",
+    "clean:cargo": "node scripts/clean.mjs cargo",
+    "clean:mobile": "node scripts/clean.mjs mobile",
+    "clean:deps": "node scripts/clean.mjs deps",
+    "clean:all": "node scripts/clean.mjs all",
+    "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,md,yml,yaml}\"",
+    "format:check": "prettier --check \"**/*.{ts,tsx,js,jsx,json,md,yml,yaml}\"",
+    "infra:up": "docker compose -f infra/docker-compose.yml up -d",
+    "infra:down": "docker compose -f infra/docker-compose.yml down",
+    "infra:logs": "docker compose -f infra/docker-compose.yml logs -f"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.18.0",
+    "eslint": "^9.18.0",
+    "prettier": "^3.4.2",
+    "turbo": "^2.3.3",
+    "typescript": "^5.7.3",
+    "typescript-eslint": "^8.20.0"
+  }
+}

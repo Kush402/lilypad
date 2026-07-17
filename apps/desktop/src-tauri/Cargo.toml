@@ -1,0 +1,65 @@
+[package]
+name = "lilypad-desktop"
+version = "0.1.0"
+description = "Lilypad desktop — floating bubble, QR pairing, plugin host"
+authors = ["Lilypad"]
+edition = "2021"
+rust-version = "1.77"
+
+[lib]
+name = "lilypad_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "image-png", "macos-private-api"] }
+tauri-plugin-shell = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+thiserror = "2"
+anyhow = "1"
+log = "0.4"
+# Without an installed logger every log::warn!/info! in the app is silently
+# dropped — diagnosing on-device sessions requires RUST_LOG to actually work.
+env_logger = "0.11"
+uuid = { version = "1", features = ["v4"] }
+
+# ── WebRTC transport (M2) ────────────────────────────────────────────────────
+webrtc = "0.11"
+# rustls TLS (matches reqwest's rustls choice) so wss:// signaling works in
+# production — without a TLS feature, connect_async on a wss:// URL fails.
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+futures-util = "0.3"
+bytes = "1"
+
+# ── Media pipeline (M3) ──────────────────────────────────────────────────────
+# Software H.264 encoder (real, cross-platform) — the verifiable default.
+# VideoToolbox is the macOS hardware path (compile-complete, wired on device).
+openh264 = "0.6"
+
+# ── Input injection (M4) ─────────────────────────────────────────────────────
+# Cross-platform clipboard (paste bridge); real on every desktop OS.
+arboard = "3"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# "highsierra" unlocks CGEvent::new_scroll_event (macOS 10.13+ API); Lilypad's
+# minimum macOS target is already ScreenCaptureKit's 12.3+.
+core-graphics = { version = "0.25", features = ["highsierra"] }
+core-foundation = "0.10"
+screencapturekit = "8"
+videotoolbox = "0.18"
+apple-cf = { version = ">=0.9, <0.10", default-features = false, features = ["cm", "iosurface", "cv"] }
+
+[features]
+# by default Tauri runs in production mode unless `tauri dev` sets this.
+custom-protocol = ["tauri/custom-protocol"]
+
+[dev-dependencies]
+env_logger = "0.11"
+# RSS sampling for the soak-test harness (tests/soak.rs) — `getrusage` is
+# available on every Unix `libc` already resolves for, no new OS dependency.
+libc = "0.2"

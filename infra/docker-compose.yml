@@ -1,0 +1,58 @@
+# Lilypad local infrastructure: Postgres (data), Redis (ephemeral pairing/rooms),
+# coturn (STUN + TURN for internet-first WebRTC NAT traversal).
+#
+#   docker compose -f infra/docker-compose.yml up -d
+#
+# Env comes from ../.env (copy ../.env.example). coturn is used from Milestone 2.
+
+name: lilypad
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-lilypad}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-lilypad_dev_password}
+      POSTGRES_DB: ${POSTGRES_DB:-lilypad}
+    ports:
+      - '${POSTGRES_PORT:-5432}:5432'
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/00-init.sql:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-lilypad} -d ${POSTGRES_DB:-lilypad}']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ['redis-server', '--save', '', '--appendonly', 'no']
+    ports:
+      - '${REDIS_PORT:-6379}:6379'
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  coturn:
+    image: coturn/coturn:4.6
+    restart: unless-stopped
+    # Published ports keep this portable on macOS/Windows Docker Desktop (where
+    # host networking is unreliable). The relay range is deliberately small for
+    # dev. For real internet deployment, run coturn on a public host with
+    # `network_mode: host`, a wide relay range, and a real external-ip.
+    # coturn is used from Milestone 2 onward; Milestone 1 does not touch it.
+    ports:
+      - '${TURN_PORT:-3478}:3478/udp'
+      - '${TURN_PORT:-3478}:3478/tcp'
+      - '${TURN_MIN_PORT:-49160}-${TURN_MAX_PORT:-49200}:49160-49200/udp'
+    volumes:
+      - ./coturn/turnserver.conf:/etc/coturn/turnserver.conf:ro
+    command: ['-c', '/etc/coturn/turnserver.conf']
+
+volumes:
+  pgdata:

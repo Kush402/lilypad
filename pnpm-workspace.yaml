@@ -1,0 +1,8 @@
+packages:
+  - 'apps/*'
+  - 'packages/*'
+
+# Bare React Native manages its own native deps; keep hoist patterns predictable
+# for react-native and its Metro bundler.
+publicHoistPattern:
+  - '*'
