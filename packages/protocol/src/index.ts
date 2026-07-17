@@ -8,3 +8,4 @@ export * from './qr.js';
 export * from './pairing.js';
 export * from './signaling.js';
 export * from './input.js';
+export * from './agent.js';

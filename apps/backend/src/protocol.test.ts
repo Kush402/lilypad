@@ -4,6 +4,9 @@ import {
   InputBatchSchema,
   QrPayloadSchema,
   decodeQrPayload,
+  AgentInboundSchema,
+  AgentOutboundSchema,
+  AgentMessageSchema,
 } from '@lilypad/protocol';
 
 describe('signaling schema', () => {
@@ -127,5 +130,110 @@ describe('QR payload schema', () => {
         signalingUrl: 'ws://x',
       }).success,
     ).toBe(false);
+  });
+});
+
+// Agent messages ride the same peer-to-peer DataChannel as input, never
+// through the backend — this schema is the only validation boundary a
+// malformed or hostile agent payload passes. See docs/m5.3-ai-executor-plan.md.
+describe('agent protocol schema', () => {
+  it('accepts a well-formed command (phone → desktop)', () => {
+    const r = AgentInboundSchema.safeParse({
+      kind: 'agent_command',
+      runId: 'run-1',
+      text: 'open the newest PDF in Downloads',
+      ts: 1,
+    });
+    expect(r.success).toBe(true);
+  });
+
+  it('accepts stop and decision inbound messages', () => {
+    expect(AgentInboundSchema.safeParse({ kind: 'agent_stop', runId: 'r', ts: 1 }).success).toBe(
+      true,
+    );
+    expect(
+      AgentInboundSchema.safeParse({
+        kind: 'agent_decision',
+        runId: 'r',
+        stepId: 's',
+        approve: false,
+        ts: 1,
+      }).success,
+    ).toBe(true);
+  });
+
+  it('rejects an empty command', () => {
+    expect(
+      AgentInboundSchema.safeParse({ kind: 'agent_command', runId: 'r', text: '', ts: 1 }).success,
+    ).toBe(false);
+  });
+
+  it('rejects an oversized command payload', () => {
+    expect(
+      AgentInboundSchema.safeParse({
+        kind: 'agent_command',
+        runId: 'r',
+        text: 'x'.repeat(4 * 1024 + 1),
+        ts: 1,
+      }).success,
+    ).toBe(false);
+  });
+
+  it('does not accept an outbound step on the inbound schema (direction is enforced)', () => {
+    const step = {
+      kind: 'agent_step',
+      runId: 'r',
+      stepId: 's',
+      step: 'action',
+      summary: 'clicking Save',
+      tier: 'ax',
+      class: 'sensitive',
+      state: 'running',
+      ts: 1,
+    };
+    expect(AgentInboundSchema.safeParse(step).success).toBe(false);
+    // …but it is a valid outbound message.
+    expect(AgentOutboundSchema.safeParse(step).success).toBe(true);
+  });
+
+  it('accepts a run-end outbound message', () => {
+    expect(
+      AgentOutboundSchema.safeParse({
+        kind: 'agent_run_end',
+        runId: 'r',
+        outcome: 'completed',
+        ts: 1,
+      }).success,
+    ).toBe(true);
+  });
+
+  it('rejects an unknown tool class', () => {
+    expect(
+      AgentOutboundSchema.safeParse({
+        kind: 'agent_step',
+        runId: 'r',
+        stepId: 's',
+        step: 'action',
+        summary: 'x',
+        class: 'nuke',
+        state: 'held',
+        ts: 1,
+      }).success,
+    ).toBe(false);
+  });
+
+  it('the combined message schema demuxes both directions', () => {
+    expect(
+      AgentMessageSchema.safeParse({ kind: 'agent_command', runId: 'r', text: 'hi', ts: 1 })
+        .success,
+    ).toBe(true);
+    expect(
+      AgentMessageSchema.safeParse({
+        kind: 'agent_run_end',
+        runId: 'r',
+        outcome: 'stopped',
+        ts: 1,
+      }).success,
+    ).toBe(true);
   });
 });

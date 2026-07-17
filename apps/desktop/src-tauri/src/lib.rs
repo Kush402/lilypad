@@ -7,6 +7,7 @@
 // rather than faking calls to them.
 #![allow(dead_code)]
 
+mod agent;
 mod commands;
 mod health;
 // Public so a headless example / integration test can drive a real session
