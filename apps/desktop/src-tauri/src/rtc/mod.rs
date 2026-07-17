@@ -92,7 +92,8 @@ pub enum PeerEvent {
 pub struct WebRtcPeer {
     pc: Arc<RTCPeerConnection>,
     video_track: Arc<TrackLocalStaticSample>,
-    #[allow(dead_code)]
+    /// Kept alive for the peer's lifetime and used to send the agent step feed
+    /// back to the phone (`send_input_data`).
     input_channel: Arc<RTCDataChannel>,
     /// Kept alive for the peer's lifetime, same reason as `input_channel`
     /// above — dropping it would close the channel.
@@ -316,6 +317,14 @@ impl WebRtcPeer {
                 ..Default::default()
             })
             .await?;
+        Ok(())
+    }
+
+    /// Send a frame to the phone over the reliable `lilypad-input` DataChannel
+    /// (desktop → phone). Used for the AI agent's step feed — the same channel
+    /// the phone sends input/agent frames on, in the reverse direction.
+    pub async fn send_input_data(&self, data: Vec<u8>) -> Result<()> {
+        self.input_channel.send(&Bytes::from(data)).await?;
         Ok(())
     }
 

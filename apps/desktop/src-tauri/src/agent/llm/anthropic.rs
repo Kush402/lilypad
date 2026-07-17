@@ -26,6 +26,10 @@ pub struct AnthropicConfig {
     pub vision: bool,
 }
 
+/// Default model for the agent when none is configured. A current,
+/// computer-use-capable Claude (tier-3 vision lands in a later slice).
+const DEFAULT_MODEL: &str = "claude-opus-4-8";
+
 impl AnthropicConfig {
     pub fn new(api_key: impl Into<String>, model: impl Into<String>) -> Self {
         AnthropicConfig {
@@ -35,6 +39,29 @@ impl AnthropicConfig {
             max_tokens: DEFAULT_MAX_TOKENS,
             vision: true,
         }
+    }
+
+    /// Interim key source for first-light testing (the proper path is the
+    /// settings UI + OS secure store — a later slice). Reads
+    /// `LILYPAD_ANTHROPIC_API_KEY` (required), `LILYPAD_AGENT_MODEL`
+    /// (optional), and `LILYPAD_AGENT_BASE_URL` (optional). Returns `None`
+    /// when no key is set, so the agent stays inert unless explicitly enabled.
+    pub fn from_env() -> Option<Self> {
+        let api_key = std::env::var("LILYPAD_ANTHROPIC_API_KEY").ok()?;
+        if api_key.trim().is_empty() {
+            return None;
+        }
+        let model = std::env::var("LILYPAD_AGENT_MODEL")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| DEFAULT_MODEL.to_string());
+        let mut config = AnthropicConfig::new(api_key, model);
+        if let Ok(base) = std::env::var("LILYPAD_AGENT_BASE_URL") {
+            if !base.trim().is_empty() {
+                config.base_url = base;
+            }
+        }
+        Some(config)
     }
 }
 

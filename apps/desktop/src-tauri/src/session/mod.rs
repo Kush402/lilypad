@@ -27,6 +27,7 @@ use anyhow::Result;
 use serde::Serialize;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
+use crate::agent::{self, AgentController};
 use crate::input::Scope;
 use crate::media::CaptureMode;
 use crate::rtc::{IceServerConfig, PeerEvent, WebRtcPeer};
@@ -136,6 +137,12 @@ struct SessionRunner {
     ice_restarts: u32,
     recovery_deadline: Option<Instant>,
     events: UnboundedSender<SessionEvent>,
+    /// The AI executor for this session; agent frames on the input channel are
+    /// routed here. Inert until an `agent_command` arrives.
+    agent: AgentController,
+    /// Whether this session was granted `control` scope — the admission gate
+    /// for agent commands (mirrors the input-injection scope).
+    granted_control: bool,
 }
 
 impl SessionRunner {
@@ -151,6 +158,8 @@ impl SessionRunner {
             ice_restarts: 0,
             recovery_deadline: None,
             events,
+            agent: AgentController::new(),
+            granted_control: false,
         }
     }
 
@@ -222,6 +231,13 @@ impl SessionRunner {
                         })
                         .collect(),
                 );
+                // The agent may only act in a control-scoped session — record
+                // the grant for the command-admission gate (same authority as
+                // input injection above).
+                self.granted_control = p
+                    .granted_scopes
+                    .iter()
+                    .any(|s| matches!(s, messages::SessionScope::Control));
                 let ice_servers: Vec<IceServerConfig> = p
                     .ice_servers
                     .iter()
@@ -361,7 +377,18 @@ impl SessionRunner {
             self.gate.set_channel_open(false);
         }
         if let PeerEvent::InputMessage(bytes) = &ev {
-            self.gate.handle_message(bytes.clone());
+            // Demux: an agent frame (command/stop/decision) routes to the AI
+            // executor; anything else is human input. A human input frame while
+            // a run is active is instant takeover — touch always wins, enforced
+            // here on the desktop (authoritative) so a dropped message can't
+            // strand the agent in control.
+            if let Some(inbound) = agent::parse_inbound(bytes) {
+                self.agent
+                    .handle_inbound(inbound, self.granted_control, self.peer.clone());
+            } else {
+                self.agent.on_human_input();
+                self.gate.handle_message(bytes.clone());
+            }
         }
         match &ev {
             PeerEvent::VideoLossReport { fraction_lost } => {
@@ -656,6 +683,9 @@ pub async fn run_session(
     // Never inject after disconnect: disable + release held keys/buttons
     // immediately, then let Drop join the worker thread.
     runner.gate.disable();
+    // Cancel any in-flight agent run — it must not keep driving the Mac after
+    // the session it belongs to has ended.
+    runner.agent.cancel_active();
     // stop() joins the media thread, which can be parked up to the capture
     // frame-wait timeout (~2s) — it internally runs that off the runtime
     // worker.

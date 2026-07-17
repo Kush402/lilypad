@@ -10,24 +10,25 @@
 //! thin per-OS action surface, so the risky logic never needs a live Mac to
 //! test.
 //!
-// The safety core + runner land before the session wiring that consumes them
-// (see `docs/m5.3-ai-executor-plan.md` build order steps 1–2 vs 3). Until the
-// DataChannel demux + LLM provider slice wires this subsystem into the live
-// binary, its public surface is exercised only by unit tests, so silence the
-// not-yet-consumed warnings here rather than scatter per-item allows. REMOVE
-// this once the runner is driven from `session/`.
+// A handful of the convenience re-exports below and helper methods are part of
+// the subsystem's coherent public surface but not all consumed outside their
+// defining module yet (later tiers/UI will); allow that without scattering
+// per-item attributes.
 #![allow(dead_code, unused_imports)]
 
+pub mod controller;
 pub mod executor;
 pub mod llm;
 pub mod protocol;
 pub mod runner;
 pub mod security;
 
+pub use controller::{authorize_command, AgentController, CommandGate};
 pub use executor::SkillsExecutor;
 pub use llm::{LlmBrain, LlmProvider};
 pub use protocol::{
-    AgentInbound, AgentOutbound, AgentTier, RunOutcome, StepKind, StepState, ToolClass,
+    parse_inbound, AgentInbound, AgentOutbound, AgentTier, RunOutcome, StepKind, StepState,
+    ToolClass,
 };
 pub use runner::{gate, AgentRunner, Brain, Cancel, Decision, Executor, Gate, Observation};
 pub use security::{classify, is_forbidden, requires_hold, Action};

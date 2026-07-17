@@ -129,6 +129,25 @@ impl AgentInbound {
     }
 }
 
+/// The agent message kinds, used to cheaply tell an agent frame apart from an
+/// input frame on the shared DataChannel without a full parse.
+const AGENT_KINDS: &[&str] = &["agent_command", "agent_stop", "agent_decision"];
+
+/// Demux one raw DataChannel frame: return `Some(AgentInbound)` iff it is a
+/// well-formed agent message, else `None` (the caller treats `None` as input
+/// traffic). Peeks the `kind` discriminant first so ordinary input batches —
+/// the overwhelming majority of frames — never pay a full agent-schema parse.
+/// A frame whose `kind` is an agent kind but which fails to parse (oversized,
+/// malformed) is dropped as `None` rather than acted on — fail closed.
+pub fn parse_inbound(bytes: &[u8]) -> Option<AgentInbound> {
+    let peek: serde_json::Value = serde_json::from_slice(bytes).ok()?;
+    let kind = peek.get("kind")?.as_str()?;
+    if !AGENT_KINDS.contains(&kind) {
+        return None;
+    }
+    serde_json::from_slice(bytes).ok()
+}
+
 /// Messages the desktop agent sends to the phone (desktop → phone). Built on
 /// this side, so summaries are truncated at construction rather than rejected.
 #[allow(clippy::enum_variant_names)]
@@ -278,5 +297,27 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(v["kind"], "agent_run_end");
         assert_eq!(v["outcome"], "completed");
+    }
+
+    #[test]
+    fn parse_inbound_accepts_agent_frames_only() {
+        let cmd = br#"{"kind":"agent_command","runId":"r","text":"hi","ts":1}"#;
+        assert!(matches!(
+            parse_inbound(cmd),
+            Some(AgentInbound::AgentCommand { .. })
+        ));
+        // An input batch is not an agent frame.
+        let input = br#"{"kind":"input_batch","events":[]}"#;
+        assert!(parse_inbound(input).is_none());
+        // Garbage / non-JSON.
+        assert!(parse_inbound(b"not json").is_none());
+    }
+
+    #[test]
+    fn parse_inbound_fails_closed_on_malformed_agent_frame() {
+        // Right kind, but text violates the bound → dropped, not acted on.
+        let big = "x".repeat(MAX_COMMAND_LEN + 1);
+        let frame = format!(r#"{{"kind":"agent_command","runId":"r","text":"{big}","ts":1}}"#);
+        assert!(parse_inbound(frame.as_bytes()).is_none());
     }
 }
