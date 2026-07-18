@@ -359,10 +359,32 @@ describe('ViewerConnection', () => {
       expect(cb.onState).not.toHaveBeenCalled();
     });
 
-    it('ends the session unconditionally on "lost"', async () => {
-      const cb = makeCallbacks();
-      const { sig } = await startConnected(cb);
+    it('keeps retrying on "lost" while media is healthy (backend holds the seat)', async () => {
+      jest.useFakeTimers();
+      try {
+        const cb = makeCallbacks();
+        const { sig } = await startConnected(cb);
 
+        sig.onLifecycle({ kind: 'lost', error: new Error('gave up after 4 reconnect attempts') });
+
+        // A working stream must NOT die because one signaling outage
+        // outlasted the retry budget — observed live on flappy cellular.
+        expect(cb.onError).not.toHaveBeenCalled();
+        expect(cb.onState).toHaveBeenCalledWith('reconnecting_signaling');
+        expect(sig.close).not.toHaveBeenCalled();
+
+        jest.advanceTimersByTime(4_000);
+        expect(sig.beginReconnect).toHaveBeenCalled();
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('ends the session on "lost" when the peer is not connected', async () => {
+      const cb = makeCallbacks();
+      const { sig, peer } = await startConnected(cb);
+
+      peer.setState('failed'); // peerConnected -> false
       sig.onLifecycle({ kind: 'lost', error: new Error('gave up after 4 reconnect attempts') });
 
       expect(cb.onError).toHaveBeenCalledWith({

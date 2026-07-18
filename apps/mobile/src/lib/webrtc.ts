@@ -115,6 +115,9 @@ export class ViewerConnection {
   private peerConnected = false;
   private iceRestartAttempts = 0;
   private recoveryDeadline: ReturnType<typeof setTimeout> | null = null;
+  /** Pacing timer between signaling-reconnect cycles after a `lost` verdict
+   * while media is still healthy (see `onSignalingLifecycle`). */
+  private lostRetryTimer: ReturnType<typeof setTimeout> | null = null;
   private statsPoll: ReturnType<typeof setInterval> | null = null;
   private lastInboundBytes: number | null = null;
   private lastStatsAt: number | null = null;
@@ -162,12 +165,14 @@ export class ViewerConnection {
       },
       // A new network path is available — ask for a fresh ICE-restart offer
       // proactively rather than waiting for the peer connection to notice
-      // the old path is dead and time out on its own (Finding 4). Bounded by
-      // the desktop's own shared restart budget regardless of how often this
-      // fires; harmless if the peer isn't up yet (renegotiate is a no-op
-      // without a peer to restart, mirrored server-side too).
+      // the old path is dead and time out on its own (Finding 4). ONLY when
+      // the peer is actually unhealthy: flappy cellular fires this event
+      // constantly (observed live: every ~11s), and restarting a HEALTHY
+      // connection each time was the lag itself — candidate regathering,
+      // keyframe storms, bitrate pinned to the floor. A working path keeps
+      // working; the ICE-failure handler still owns the broken case.
       onNetworkRestored: () => {
-        if (this.pc) this.sig.renegotiate();
+        if (this.pc && !this.peerConnected) this.sig.renegotiate();
       },
     });
   }
@@ -332,13 +337,25 @@ export class ViewerConnection {
         }
         break;
       case 'lost':
-        // Matches the desktop's `SignalingClientEvent::Lost` handling: end
-        // the session unconditionally, even if media still nominally flows —
-        // without signaling there is no way to recover on ICE failure, honor
-        // `session-end`, or ever renegotiate again.
-        this.cb.onError(appError('signaling_lost', event.error.message));
-        this.cb.onState('ended');
-        this.close();
+        // With live media, a lost signaling transport is a nuisance, not a
+        // death: the backend holds the seat for exactly this case ("mid-
+        // session transport drop — session continues peer-to-peer") and the
+        // same-device eviction lets a later reconnect reclaim it. Ending a
+        // WORKING stream because one ~8s cellular outage outlasted the
+        // 4-attempt retry budget executed healthy sessions live. Keep
+        // retrying in paced cycles instead; signaling recovers whenever the
+        // radio does. Without media, signaling IS the session — end it.
+        if (this.peerConnected) {
+          this.cb.onState('reconnecting_signaling');
+          this.lostRetryTimer = setTimeout(() => {
+            this.lostRetryTimer = null;
+            if (this.pc) this.sig.beginReconnect(getDeviceId());
+          }, 4000);
+        } else {
+          this.cb.onError(appError('signaling_lost', event.error.message));
+          this.cb.onState('ended');
+          this.close();
+        }
         break;
     }
   }
@@ -551,6 +568,10 @@ export class ViewerConnection {
     this.lifecycle?.dispose();
     this.lifecycle = null;
     this.clearRecoveryDeadline();
+    if (this.lostRetryTimer) {
+      clearTimeout(this.lostRetryTimer);
+      this.lostRetryTimer = null;
+    }
     this.stopStatsPolling();
     if (this.heartbeat) {
       clearInterval(this.heartbeat);
