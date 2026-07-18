@@ -14,12 +14,34 @@
 //! tool's result on the next turn.
 
 pub mod anthropic;
+pub mod openai_compat;
 
 use anyhow::{anyhow, Result};
 use serde_json::json;
 
 use crate::agent::runner::{Brain, Decision, Observation};
 use crate::agent::{Action, AgentTier};
+
+/// What a configured provider+model combination can actually do — as
+/// implemented by OUR adapter, not as marketed by the vendor. The planner and
+/// capability resolver consume these; provider NAMES never leave this module
+/// (enforced by the `engine_is_provider_blind` tripwire in `agent/mod.rs`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ProviderCaps {
+    /// Model accepts image input — gates tier-3 (vision) routing.
+    pub vision: bool,
+    /// Native tool/function calling (all current adapters require this).
+    pub tool_calling: bool,
+    /// Enforced JSON output mode, distinct from tool calling.
+    pub json_mode: bool,
+    /// Adapter streams tokens (none do yet — step feed granularity is the
+    /// run loop, not tokens).
+    pub streaming: bool,
+    /// Comfortable with long observation transcripts (AX trees).
+    pub long_context: bool,
+    /// Vendor-native computer-use tooling available and wired.
+    pub computer_use: bool,
+}
 
 /// Who authored a conversation turn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -93,9 +115,77 @@ pub trait LlmProvider {
         tools: &[ToolSpec],
     ) -> impl std::future::Future<Output = Result<AssistantReply>> + Send;
 
-    /// Whether this provider's configured model accepts image input — gates
-    /// tier-3 (vision) routing. Tier-1/2 work regardless.
-    fn supports_vision(&self) -> bool;
+    /// What this provider+model combination can do (see [`ProviderCaps`]).
+    fn caps(&self) -> ProviderCaps;
+}
+
+/// The configured provider, resolved from settings/env. This enum — not any
+/// concrete adapter — is the ONLY provider surface the engine (controller/
+/// runner/executors) is allowed to touch.
+pub enum ProviderChoice {
+    Anthropic(anthropic::AnthropicConfig),
+    OpenAiCompat(openai_compat::OpenAiCompatConfig),
+}
+
+impl ProviderChoice {
+    /// Interim config source (settings UI + keychain is a later slice).
+    /// First match wins; `None` keeps the agent inert.
+    pub fn from_env() -> Option<Self> {
+        if let Some(c) = anthropic::AnthropicConfig::from_env() {
+            return Some(ProviderChoice::Anthropic(c));
+        }
+        if let Some(c) = openai_compat::OpenAiCompatConfig::from_env() {
+            return Some(ProviderChoice::OpenAiCompat(c));
+        }
+        None
+    }
+}
+
+/// User-facing guidance when no provider is configured. Lives here (provider
+/// land) so the engine never has to name a vendor.
+pub const NOT_CONFIGURED_MESSAGE: &str = "No AI provider is configured on the desktop \
+(set LILYPAD_ANTHROPIC_API_KEY, or LILYPAD_OPENAI_API_KEY / LILYPAD_OPENAI_BASE_URL \
+for any OpenAI-compatible endpoint).";
+
+/// Dispatch wrapper so the engine can hold "whichever provider is configured"
+/// without generics leaking into the controller.
+pub enum AnyProvider {
+    Anthropic(anthropic::AnthropicProvider),
+    OpenAiCompat(openai_compat::OpenAiCompatProvider),
+}
+
+impl AnyProvider {
+    pub fn new(choice: ProviderChoice) -> Self {
+        match choice {
+            ProviderChoice::Anthropic(c) => {
+                AnyProvider::Anthropic(anthropic::AnthropicProvider::new(c))
+            }
+            ProviderChoice::OpenAiCompat(c) => {
+                AnyProvider::OpenAiCompat(openai_compat::OpenAiCompatProvider::new(c))
+            }
+        }
+    }
+}
+
+impl LlmProvider for AnyProvider {
+    async fn complete(
+        &self,
+        system: &str,
+        messages: &[ChatMessage],
+        tools: &[ToolSpec],
+    ) -> Result<AssistantReply> {
+        match self {
+            AnyProvider::Anthropic(p) => p.complete(system, messages, tools).await,
+            AnyProvider::OpenAiCompat(p) => p.complete(system, messages, tools).await,
+        }
+    }
+
+    fn caps(&self) -> ProviderCaps {
+        match self {
+            AnyProvider::Anthropic(p) => p.caps(),
+            AnyProvider::OpenAiCompat(p) => p.caps(),
+        }
+    }
 }
 
 /// The system prompt framing the agent's job and its tool-first contract.
@@ -367,8 +457,11 @@ mod tests {
                 .pop_front()
                 .unwrap_or_default())
         }
-        fn supports_vision(&self) -> bool {
-            false
+        fn caps(&self) -> ProviderCaps {
+            ProviderCaps {
+                tool_calling: true,
+                ..ProviderCaps::default()
+            }
         }
     }
 

@@ -18,7 +18,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 use tokio::task::JoinHandle;
 
-use crate::agent::llm::anthropic::{AnthropicConfig, AnthropicProvider};
+use crate::agent::llm::{AnyProvider, ProviderChoice, NOT_CONFIGURED_MESSAGE};
 use crate::agent::protocol::{AgentInbound, AgentOutbound, RunOutcome, StepKind, StepState};
 use crate::agent::runner::{AgentRunner, Cancel};
 use crate::agent::{LlmBrain, SkillsExecutor};
@@ -142,8 +142,8 @@ impl AgentController {
             return;
         };
 
-        let config = AnthropicConfig::from_env();
-        match authorize_command(control_scoped, config.is_some()) {
+        let choice = ProviderChoice::from_env();
+        match authorize_command(control_scoped, choice.is_some()) {
             CommandGate::DenyNoControl => {
                 Self::send_refusal(
                     &peer,
@@ -153,16 +153,12 @@ impl AgentController {
                 return;
             }
             CommandGate::DenyNoProvider => {
-                Self::send_refusal(
-                    &peer,
-                    &run_id,
-                    "No AI provider is configured on the desktop (set LILYPAD_ANTHROPIC_API_KEY).",
-                );
+                Self::send_refusal(&peer, &run_id, NOT_CONFIGURED_MESSAGE);
                 return;
             }
             CommandGate::Run => {}
         }
-        let config = config.expect("authorize_command guaranteed a provider");
+        let choice = choice.expect("authorize_command guaranteed a provider");
 
         // Feed forwarder: runner step events → phone, over the reliable input
         // channel.
@@ -181,7 +177,7 @@ impl AgentController {
         let run_cancel = cancel.clone();
         let run_id_task = run_id.clone();
         let task = tokio::spawn(async move {
-            let brain = LlmBrain::new(AnthropicProvider::new(config));
+            let brain = LlmBrain::new(AnyProvider::new(choice));
             let executor = SkillsExecutor;
             let mut runner = AgentRunner::new(brain, executor, steps_tx, now_ms);
             let outcome = runner

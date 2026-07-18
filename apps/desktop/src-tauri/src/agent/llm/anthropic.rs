@@ -8,7 +8,7 @@
 use anyhow::{anyhow, Context, Result};
 use serde_json::{json, Value};
 
-use super::{AssistantReply, Block, ChatMessage, LlmProvider, Role, ToolCall, ToolSpec};
+use super::{AssistantReply, Block, ChatMessage, LlmProvider, ProviderCaps, Role, ToolCall, ToolSpec};
 
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 const DEFAULT_BASE_URL: &str = "https://api.anthropic.com";
@@ -230,8 +230,17 @@ impl LlmProvider for AnthropicProvider {
         parse_reply(&json)
     }
 
-    fn supports_vision(&self) -> bool {
-        self.config.vision
+    fn caps(&self) -> ProviderCaps {
+        ProviderCaps {
+            vision: self.config.vision,
+            tool_calling: true,
+            json_mode: false,
+            streaming: false,
+            long_context: true,
+            // The vendor tool exists but this adapter hasn't wired it (tier-3
+            // slice); advertising it before then would misroute the planner.
+            computer_use: false,
+        }
     }
 }
 

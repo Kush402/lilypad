@@ -32,3 +32,46 @@ pub use protocol::{
 };
 pub use runner::{gate, AgentRunner, Brain, Cancel, Decision, Executor, Gate, Observation};
 pub use security::{classify, is_forbidden, requires_hold, Action};
+
+#[cfg(test)]
+mod agnosticism {
+    /// Tripwire for the model-agnostic mandate (`docs/ask-architecture-audit.md`
+    /// §6): the ENGINE — controller, runner, gate, executors, wire protocol —
+    /// must never name a vendor. Providers live exclusively behind
+    /// `llm::ProviderChoice`/`AnyProvider`; if this test fails, provider logic
+    /// leaked out of the adapter layer.
+    #[test]
+    fn engine_is_provider_blind() {
+        let engine_sources: &[(&str, &str)] = &[
+            ("controller.rs", include_str!("controller.rs")),
+            ("runner.rs", include_str!("runner.rs")),
+            ("security.rs", include_str!("security.rs")),
+            ("protocol.rs", include_str!("protocol.rs")),
+            ("executor/mod.rs", include_str!("executor/mod.rs")),
+            ("executor/skills.rs", include_str!("executor/skills.rs")),
+        ];
+        // Vendor identifiers, matched case-insensitively. "gpt-" and
+        // "claude-" (with hyphen) so prose words can't false-positive.
+        let forbidden = [
+            "anthropic",
+            "openai",
+            "claude-",
+            "gpt-",
+            "gemini",
+            "deepseek",
+            "openrouter",
+            "ollama",
+            "mistral",
+        ];
+        for (file, source) in engine_sources {
+            let lower = source.to_lowercase();
+            for needle in forbidden {
+                assert!(
+                    !lower.contains(needle),
+                    "provider identifier `{needle}` leaked into engine file `{file}` — \
+                     provider-specific logic belongs in agent/llm/ adapters only"
+                );
+            }
+        }
+    }
+}
