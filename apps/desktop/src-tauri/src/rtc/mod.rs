@@ -109,7 +109,7 @@ pub struct WebRtcPeer {
     pc: Arc<RTCPeerConnection>,
     video_track: Arc<TrackLocalStaticSample>,
     /// Kept alive for the peer's lifetime and used to send the agent step feed
-    /// back to the phone (`send_input_data`).
+    /// back to the phone (`send_input_text`).
     input_channel: Arc<RTCDataChannel>,
     /// Kept alive for the peer's lifetime, same reason as `input_channel`
     /// above — dropping it would close the channel.
@@ -351,8 +351,13 @@ impl WebRtcPeer {
     /// Send a frame to the phone over the reliable `lilypad-input` DataChannel
     /// (desktop → phone). Used for the AI agent's step feed — the same channel
     /// the phone sends input/agent frames on, in the reverse direction.
-    pub async fn send_input_data(&self, data: Vec<u8>) -> Result<()> {
-        self.input_channel.send(&Bytes::from(data)).await?;
+    /// Send a UTF-8 text frame to the phone on the reliable input channel
+    /// (desktop → phone agent step feed). TEXT, not binary: react-native-
+    /// webrtc delivers binary frames as ArrayBuffer, and the phone's
+    /// agent-frame parser (JSON) accepts only strings — binary frames were
+    /// silently dropped, leaving the phone stuck on "Thinking…" forever.
+    pub async fn send_input_text(&self, data: String) -> Result<()> {
+        self.input_channel.send_text(data).await?;
         Ok(())
     }
 

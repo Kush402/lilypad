@@ -180,10 +180,30 @@ export class ViewerConnection {
    * aren't valid agent-outbound messages (nothing else is sent on this channel
    * today, but be defensive) are silently ignored. */
   private handleAgentFrame(data: unknown): void {
-    if (typeof data !== 'string') return;
+    // The desktop sends agent frames as TEXT, but accept binary too — an
+    // older desktop build sent them as ArrayBuffer, and dropping those left
+    // the panel on "Thinking…" forever with no visible failure.
+    let text: string;
+    if (typeof data === 'string') {
+      text = data;
+    } else if (data instanceof ArrayBuffer) {
+      // Guarded global lookup: TextDecoder isn't in the RN type surface (and
+      // may be absent on older Hermes) — legacy tolerance only, so a missing
+      // decoder just drops the frame like before.
+      const Decoder = (globalThis as { TextDecoder?: new () => { decode(b: ArrayBuffer): string } })
+        .TextDecoder;
+      if (!Decoder) return;
+      try {
+        text = new Decoder().decode(data);
+      } catch {
+        return;
+      }
+    } else {
+      return;
+    }
     let json: unknown;
     try {
-      json = JSON.parse(data);
+      json = JSON.parse(text);
     } catch {
       return;
     }

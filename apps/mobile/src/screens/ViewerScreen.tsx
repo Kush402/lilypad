@@ -471,7 +471,17 @@ export function ViewerScreen({ route, navigation }: Props) {
     if (runId) dispatchAgent({ type: 'command_sent', runId });
   }, []);
   const stopAgent = useCallback(() => {
-    if (agentFeed.runId) connRef.current?.sendAgentStop(agentFeed.runId);
+    if (agentFeed.runId) {
+      connRef.current?.sendAgentStop(agentFeed.runId);
+      // Optimistic local stop: the desktop's own run-end (if it arrives) is a
+      // harmless duplicate, but if the desktop-side run already died — or the
+      // link is broken — waiting for it leaves Stop looking dead and the
+      // panel on "Thinking…" forever. Stop must always visibly stop.
+      dispatchAgent({
+        type: 'run_end',
+        end: { kind: 'agent_run_end', runId: agentFeed.runId, outcome: 'stopped', ts: Date.now() },
+      });
+    }
   }, [agentFeed.runId]);
   const decideAgent = useCallback(
     (stepId: string, approve: boolean) => {

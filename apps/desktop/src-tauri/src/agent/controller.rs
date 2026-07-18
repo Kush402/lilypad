@@ -170,7 +170,7 @@ impl AgentController {
         let peer_fwd = Arc::clone(&peer);
         let forwarder = tokio::spawn(async move {
             while let Some(msg) = steps_rx.recv().await {
-                if let Err(e) = peer_fwd.send_input_data(msg.encode().into_bytes()).await {
+                if let Err(e) = peer_fwd.send_input_text(msg.encode()).await {
                     log::warn!(target: "lilypad::agent", "failed to send agent step to phone: {e}");
                 }
             }
@@ -215,8 +215,8 @@ impl AgentController {
         let end = AgentOutbound::run_end(run_id, RunOutcome::Denied, now_ms());
         let peer = Arc::clone(peer);
         tokio::spawn(async move {
-            let _ = peer.send_input_data(step.encode().into_bytes()).await;
-            let _ = peer.send_input_data(end.encode().into_bytes()).await;
+            let _ = peer.send_input_text(step.encode()).await;
+            let _ = peer.send_input_text(end.encode()).await;
         });
     }
 }
