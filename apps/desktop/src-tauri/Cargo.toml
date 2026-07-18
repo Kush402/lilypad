@@ -55,6 +55,11 @@ videotoolbox = "0.18"
 apple-cf = { version = ">=0.9, <0.10", default-features = false, features = ["cm", "iosurface", "cv"] }
 # setrlimit / setsid / killpg for the agent sandbox harness (agent/sandbox).
 libc = "0.2"
+# Screenshot capture → downscale → PNG for the agent's tier-3 vision fallback
+# (agent/executor/vision). `image` with only the png codec; base64 for the
+# data the model receives. base64 0.21 matches the version already in the lock.
+image = { version = "0.25", default-features = false, features = ["png"] }
+base64 = "0.21"
 
 [features]
 # by default Tauri runs in production mode unless `tauri dev` sets this.

@@ -131,15 +131,32 @@ fn message_to_json(msg: &ChatMessage) -> Vec<Value> {
                         tool_use_id,
                         content,
                         is_error,
-                    } => out.push(json!({
-                        "role": "tool",
-                        "tool_call_id": tool_use_id,
-                        "content": if *is_error {
+                        image_base64,
+                    } => {
+                        let text = if *is_error {
                             format!("ERROR: {content}")
                         } else {
                             content.clone()
-                        },
-                    })),
+                        };
+                        out.push(json!({
+                            "role": "tool",
+                            "tool_call_id": tool_use_id,
+                            "content": text,
+                        }));
+                        // The chat-completions `tool` role can't carry an
+                        // image, so a screenshot rides in a following user
+                        // message (image_url data URL) — the standard way to
+                        // feed a vision model an image mid-conversation.
+                        if let Some(png) = image_base64 {
+                            out.push(json!({
+                                "role": "user",
+                                "content": [{
+                                    "type": "image_url",
+                                    "image_url": { "url": format!("data:image/png;base64,{png}") },
+                                }],
+                            }));
+                        }
+                    }
                     Block::ToolUse { .. } => {} // never authored by the user
                 }
             }
@@ -296,7 +313,7 @@ impl LlmProvider for OpenAiCompatProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::llm::{tier1_tools, SYSTEM_PROMPT};
+    use crate::agent::llm::{base_tools, SYSTEM_PROMPT};
 
     fn user(text: &str) -> ChatMessage {
         ChatMessage {
@@ -310,7 +327,7 @@ mod tests {
         let body = build_body(
             SYSTEM_PROMPT,
             &[user("Task: open safari")],
-            &tier1_tools(),
+            &base_tools(),
             "some-model",
             512,
         );
@@ -356,6 +373,7 @@ mod tests {
                 tool_use_id: "c1".into(),
                 content: "no such app".into(),
                 is_error: true,
+                image_base64: None,
             }],
         };
         let body = build_body("s", &[msg], &[], "m", 10);
@@ -363,6 +381,27 @@ mod tests {
         assert_eq!(m["role"], "tool");
         assert_eq!(m["tool_call_id"], "c1");
         assert_eq!(m["content"], "ERROR: no such app");
+    }
+
+    #[test]
+    fn tool_result_image_rides_in_a_following_user_message() {
+        let msg = ChatMessage {
+            role: Role::User,
+            blocks: vec![Block::ToolResult {
+                tool_use_id: "c1".into(),
+                content: "screenshot".into(),
+                is_error: false,
+                image_base64: Some("QUJD".into()),
+            }],
+        };
+        let body = build_body("s", &[msg], &[], "m", 10);
+        // messages[0] is the system prompt; then the tool message; then the
+        // image as a user message (the chat API can't put images in `tool`).
+        assert_eq!(body["messages"][1]["role"], "tool");
+        assert_eq!(body["messages"][2]["role"], "user");
+        let img = &body["messages"][2]["content"][0];
+        assert_eq!(img["type"], "image_url");
+        assert_eq!(img["image_url"]["url"], "data:image/png;base64,QUJD");
     }
 
     #[test]

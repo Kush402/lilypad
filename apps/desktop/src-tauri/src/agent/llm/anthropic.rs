@@ -96,12 +96,32 @@ fn block_to_json(block: &Block) -> Value {
             tool_use_id,
             content,
             is_error,
-        } => json!({
-            "type": "tool_result",
-            "tool_use_id": tool_use_id,
-            "content": content,
-            "is_error": is_error,
-        }),
+            image_base64,
+        } => {
+            // With an image, the tool_result content is an array of blocks
+            // (text + image); without one, a plain string. Anthropic accepts
+            // both, and images inside tool_result are supported natively.
+            let content_json = match image_base64 {
+                Some(png) => json!([
+                    { "type": "text", "text": content },
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/png",
+                            "data": png,
+                        },
+                    },
+                ]),
+                None => json!(content),
+            };
+            json!({
+                "type": "tool_result",
+                "tool_use_id": tool_use_id,
+                "content": content_json,
+                "is_error": is_error,
+            })
+        }
     }
 }
 
@@ -247,7 +267,7 @@ impl LlmProvider for AnthropicProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::llm::{tier1_tools, SYSTEM_PROMPT};
+    use crate::agent::llm::{base_tools, SYSTEM_PROMPT};
 
     fn user(text: &str) -> ChatMessage {
         ChatMessage {
@@ -261,7 +281,7 @@ mod tests {
         let body = build_body(
             SYSTEM_PROMPT,
             &[user("Task: open safari")],
-            &tier1_tools(),
+            &base_tools(),
             "claude-opus-4-8",
             512,
         );
@@ -288,6 +308,7 @@ mod tests {
                 tool_use_id: "t1".into(),
                 content: "launched Safari".into(),
                 is_error: false,
+                image_base64: None,
             }],
         };
         let body = build_body(SYSTEM_PROMPT, &[msg], &[], "m", 10);
@@ -295,6 +316,25 @@ mod tests {
         assert_eq!(block["type"], "tool_result");
         assert_eq!(block["tool_use_id"], "t1");
         assert_eq!(block["is_error"], false);
+    }
+
+    #[test]
+    fn tool_result_with_image_becomes_a_content_array_with_an_image_block() {
+        let msg = ChatMessage {
+            role: Role::User,
+            blocks: vec![Block::ToolResult {
+                tool_use_id: "t1".into(),
+                content: "screenshot".into(),
+                is_error: false,
+                image_base64: Some("QUJD".into()),
+            }],
+        };
+        let body = build_body(SYSTEM_PROMPT, &[msg], &[], "m", 10);
+        let content = &body["messages"][0]["content"][0]["content"];
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(content[1]["type"], "image");
+        assert_eq!(content[1]["source"]["media_type"], "image/png");
+        assert_eq!(content[1]["source"]["data"], "QUJD");
     }
 
     #[test]

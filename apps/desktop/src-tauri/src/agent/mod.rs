@@ -53,6 +53,7 @@ mod agnosticism {
             ("executor/skills.rs", include_str!("executor/skills.rs")),
             ("executor/sandbox_exec.rs", include_str!("executor/sandbox_exec.rs")),
             ("executor/ax_exec.rs", include_str!("executor/ax_exec.rs")),
+            ("executor/vision.rs", include_str!("executor/vision.rs")),
             ("executor/verify.rs", include_str!("executor/verify.rs")),
             ("sandbox/mod.rs", include_str!("sandbox/mod.rs")),
             ("sandbox/profile.rs", include_str!("sandbox/profile.rs")),

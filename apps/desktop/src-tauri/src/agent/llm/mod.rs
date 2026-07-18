@@ -66,6 +66,10 @@ pub enum Block {
         tool_use_id: String,
         content: String,
         is_error: bool,
+        /// Optional PNG screenshot (base64) attached to this tool result — the
+        /// tier-3 vision observation. Providers that support image input
+        /// render it; text-only paths ignore it.
+        image_base64: Option<String>,
     },
 }
 
@@ -245,9 +249,27 @@ comes back. When the task is fully done, call `finish` with a short summary. \
 Do not ask the user questions — act, and rely on the approval prompts for \
 anything consequential.";
 
-/// The tools available in this slice: tier-1 skills + `finish`. Later slices
-/// extend this with AX-tree and vision tools.
-pub fn tier1_tools() -> Vec<ToolSpec> {
+/// The full agent toolset for a provider with the given capabilities. The
+/// vision tool (`take_screenshot`) is advertised ONLY when the model accepts
+/// image input — offering it to a text-only model would invite a dead end.
+/// Skills, AX, and sandbox tools are always available.
+pub fn agent_tools(caps: ProviderCaps) -> Vec<ToolSpec> {
+    let mut tools = base_tools();
+    if caps.vision {
+        tools.push(ToolSpec {
+            name: "take_screenshot",
+            description: "Capture the screen as an image to see content the accessibility tree \
+                          can't expose (canvas, images, custom-drawn UI). Use only when \
+                          read_ax_tree isn't enough — it's slower. After looking, act through \
+                          the other tools.",
+            input_schema: json!({ "type": "object", "properties": {} }),
+        });
+    }
+    tools
+}
+
+/// Tools available to every provider (vision-independent). `finish` last.
+fn base_tools() -> Vec<ToolSpec> {
     vec![
         ToolSpec {
             name: "open_app",
@@ -396,6 +418,11 @@ pub fn decision_from_tool_call(call: &ToolCall) -> Result<Decision> {
             tier: AgentTier::Ax,
             action: Action::ReadAxTree,
         }),
+        "take_screenshot" => Ok(Decision::Act {
+            summary: "Look at the screen (screenshot)".to_string(),
+            tier: AgentTier::Vision,
+            action: Action::Screenshot,
+        }),
         "ax_press" => {
             let id = call
                 .input
@@ -473,9 +500,13 @@ pub struct LlmBrain<P: LlmProvider> {
 
 impl<P: LlmProvider> LlmBrain<P> {
     pub fn new(provider: P) -> Self {
+        // Build the toolset from what THIS provider can do — vision tools only
+        // for a vision-capable model (capability-based planning, no vendor
+        // names).
+        let tools = agent_tools(provider.caps());
         LlmBrain {
             provider,
-            tools: tier1_tools(),
+            tools,
             system: SYSTEM_PROMPT.to_string(),
             messages: Vec::new(),
             pending_tool_use: None,
@@ -504,6 +535,7 @@ impl<P: LlmProvider + Send> Brain for LlmBrain<P> {
                         tool_use_id: id,
                         content: obs.summary.clone(),
                         is_error: !obs.ok,
+                        image_base64: obs.image_png_base64.clone(),
                     }],
                 });
             }
@@ -575,6 +607,32 @@ mod tests {
             } => assert_eq!(name, "Safari"),
             _ => panic!("wrong decision"),
         }
+    }
+
+    #[test]
+    fn vision_tool_is_gated_on_capability() {
+        let with_vision = agent_tools(ProviderCaps { vision: true, ..Default::default() });
+        assert!(with_vision.iter().any(|t| t.name == "take_screenshot"));
+        // AX/skill tools are always present, vision-independent.
+        assert!(with_vision.iter().any(|t| t.name == "read_ax_tree"));
+
+        let no_vision = agent_tools(ProviderCaps::default());
+        assert!(!no_vision.iter().any(|t| t.name == "take_screenshot"));
+        assert!(no_vision.iter().any(|t| t.name == "read_ax_tree"));
+    }
+
+    #[test]
+    fn maps_take_screenshot_to_vision_tier() {
+        let d = decision_from_tool_call(&ToolCall {
+            id: "1".into(),
+            name: "take_screenshot".into(),
+            input: json!({}),
+        })
+        .unwrap();
+        assert!(matches!(
+            d,
+            Decision::Act { action: Action::Screenshot, tier: AgentTier::Vision, .. }
+        ));
     }
 
     #[test]

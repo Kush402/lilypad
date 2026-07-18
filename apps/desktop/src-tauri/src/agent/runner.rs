@@ -50,6 +50,9 @@ pub struct Observation {
     pub summary: String,
     /// Whether the action succeeded (false → the brain should adapt/retry).
     pub ok: bool,
+    /// Optional PNG screenshot (base64) the brain folds back as an image block
+    /// — the tier-3 vision observation. `None` for every text-only tier.
+    pub image_png_base64: Option<String>,
 }
 
 impl Observation {
@@ -57,12 +60,23 @@ impl Observation {
         Observation {
             summary: summary.into(),
             ok: true,
+            image_png_base64: None,
         }
     }
     pub fn fail(summary: impl Into<String>) -> Self {
         Observation {
             summary: summary.into(),
             ok: false,
+            image_png_base64: None,
+        }
+    }
+    /// A successful observation carrying a PNG screenshot (base64) for a
+    /// vision-capable model to look at.
+    pub fn ok_with_image(summary: impl Into<String>, png_base64: String) -> Self {
+        Observation {
+            summary: summary.into(),
+            ok: true,
+            image_png_base64: Some(png_base64),
         }
     }
 }

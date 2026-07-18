@@ -11,11 +11,13 @@ pub mod ax_exec;
 pub mod sandbox_exec;
 pub mod skills;
 pub mod verify;
+pub mod vision;
 
 pub use ax_exec::AxExecutor;
 pub use sandbox_exec::SandboxExecutor;
 pub use skills::{plan_command, CommandSpec, SkillsExecutor};
 pub use verify::{check, postcondition, resolve_user_path, Postcondition};
+pub use vision::VisionExecutor;
 
 use anyhow::Result;
 
@@ -24,15 +26,15 @@ use crate::agent::Action;
 
 /// Routes each [`Action`] to the executor that owns its tier — the single
 /// `Executor` the runner drives:
+///   - `Screenshot` → the vision tier (P4)
 ///   - `ReadAxTree` / `AxPress` → the accessibility tier (P3)
 ///   - `RunScript` → the sandbox tier (P2)
 ///   - everything else → tier-1 skills (P1)
-///
-/// The vision tier (P4) slots in here behind the same trait in a later slice.
 pub struct TieredExecutor {
     skills: SkillsExecutor,
     sandbox: SandboxExecutor,
     ax: AxExecutor,
+    vision: VisionExecutor,
 }
 
 impl TieredExecutor {
@@ -41,6 +43,7 @@ impl TieredExecutor {
             skills: SkillsExecutor,
             sandbox: SandboxExecutor::from_env()?,
             ax: AxExecutor::default(),
+            vision: VisionExecutor,
         })
     }
 }
@@ -48,6 +51,7 @@ impl TieredExecutor {
 impl Executor for TieredExecutor {
     async fn execute(&mut self, action: &Action) -> Result<Observation> {
         match action {
+            Action::Screenshot => self.vision.execute(action).await,
             Action::ReadAxTree | Action::AxPress { .. } => self.ax.execute(action).await,
             Action::RunScript { .. } => self.sandbox.execute(action).await,
             _ => self.skills.execute(action).await,
