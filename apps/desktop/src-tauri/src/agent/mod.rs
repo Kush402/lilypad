@@ -16,6 +16,7 @@
 // per-item attributes.
 #![allow(dead_code, unused_imports)]
 
+pub mod ax;
 pub mod controller;
 pub mod executor;
 pub mod llm;
@@ -51,9 +52,12 @@ mod agnosticism {
             ("executor/mod.rs", include_str!("executor/mod.rs")),
             ("executor/skills.rs", include_str!("executor/skills.rs")),
             ("executor/sandbox_exec.rs", include_str!("executor/sandbox_exec.rs")),
+            ("executor/ax_exec.rs", include_str!("executor/ax_exec.rs")),
             ("executor/verify.rs", include_str!("executor/verify.rs")),
             ("sandbox/mod.rs", include_str!("sandbox/mod.rs")),
             ("sandbox/profile.rs", include_str!("sandbox/profile.rs")),
+            ("ax/tree.rs", include_str!("ax/tree.rs")),
+            ("ax/mod.rs", include_str!("ax/mod.rs")),
         ];
         // Vendor identifiers, matched case-insensitively. "gpt-" and
         // "claude-" (with hyphen) so prose words can't false-positive.

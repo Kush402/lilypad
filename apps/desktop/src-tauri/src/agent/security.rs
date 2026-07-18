@@ -36,8 +36,9 @@ pub enum Action {
     Scroll { x: f64, y: f64, dx: f64, dy: f64 },
     /// A pointer click at a normalized coordinate.
     Click { x: f64, y: f64, count: u8 },
-    /// Press an accessibility element by its resolved path.
-    AxPress { path: String },
+    /// Press an accessibility element by the `id` it was given in the most
+    /// recent `read_ax_tree` snapshot.
+    AxPress { element_id: usize },
     /// Type literal text.
     TypeText { text: String },
     /// A key chord, e.g. `["meta","KeyS"]` for ⌘S.
@@ -257,7 +258,7 @@ mod tests {
         assert_eq!(classify(&Action::Click { x: 0.5, y: 0.5, count: 1 }), ToolClass::Sensitive);
         assert_eq!(classify(&Action::TypeText { text: "hi".into() }), ToolClass::Sensitive);
         assert_eq!(classify(&Action::OpenApp { name: "Safari".into() }), ToolClass::Sensitive);
-        assert_eq!(classify(&Action::AxPress { path: "AXButton/Save".into() }), ToolClass::Sensitive);
+        assert_eq!(classify(&Action::AxPress { element_id: 7 }), ToolClass::Sensitive);
         assert_eq!(classify(&Action::RunShortcut { name: "Note".into() }), ToolClass::Sensitive);
         assert_eq!(classify(&Action::OpenFile { path: "~/a.pdf".into() }), ToolClass::Sensitive);
         assert_eq!(classify(&Action::NewFolder { path: "~/R".into() }), ToolClass::Sensitive);

@@ -288,6 +288,26 @@ pub fn tier1_tools() -> Vec<ToolSpec> {
             }),
         },
         ToolSpec {
+            name: "read_ax_tree",
+            description: "Read the focused app's accessibility tree — the fast, reliable way to \
+                          see what's on screen and what can be acted on. Each element is listed \
+                          as [id] Role \"label\" = value, and actionable ones are marked \
+                          {pressable}. Prefer this over vision. Read again after an action to \
+                          see the updated state.",
+            input_schema: json!({ "type": "object", "properties": {} }),
+        },
+        ToolSpec {
+            name: "ax_press",
+            description: "Press a pressable element by the [id] shown in the most recent \
+                          read_ax_tree (a button, menu item, link, checkbox). Read the tree \
+                          first to get ids.",
+            input_schema: json!({
+                "type": "object",
+                "properties": { "id": { "type": "integer", "minimum": 0, "description": "Element id from read_ax_tree" } },
+                "required": ["id"],
+            }),
+        },
+        ToolSpec {
             name: "run_script",
             description: "Run a small script under a secure sandbox for computation or file \
                           work that no specific tool covers (e.g. compressing a folder, \
@@ -369,6 +389,25 @@ pub fn decision_from_tool_call(call: &ToolCall) -> Result<Decision> {
                 summary: format!("Create folder {path}"),
                 tier: AgentTier::Skill,
                 action: Action::NewFolder { path },
+            })
+        }
+        "read_ax_tree" => Ok(Decision::Act {
+            summary: "Read the screen (accessibility tree)".to_string(),
+            tier: AgentTier::Ax,
+            action: Action::ReadAxTree,
+        }),
+        "ax_press" => {
+            let id = call
+                .input
+                .get("id")
+                .and_then(|v| v.as_u64())
+                .ok_or_else(|| anyhow!("ax_press missing integer field `id`"))?;
+            Ok(Decision::Act {
+                summary: format!("Press element [{id}]"),
+                tier: AgentTier::Ax,
+                action: Action::AxPress {
+                    element_id: id as usize,
+                },
             })
         }
         "run_script" => {
