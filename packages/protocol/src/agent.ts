@@ -31,8 +31,11 @@ const WithTs = z.object({
 const RunId = z.string().min(1).max(MAX_ID_LEN);
 const StepId = z.string().min(1).max(MAX_ID_LEN);
 
-/** Which executor tier produced/backs a step. Ordered cheap → expensive. */
-export const AgentTierSchema = z.enum(['skill', 'ax', 'vision']);
+/** Which executor tier produced/backs a step. Ordered cheap → expensive:
+ * `skill` (deterministic OS command) · `sandbox` (model-generated code run
+ * under Seatbelt) · `ax` (accessibility-tree action) · `vision` (pixel
+ * fallback). */
+export const AgentTierSchema = z.enum(['skill', 'sandbox', 'ax', 'vision']);
 export type AgentTier = z.infer<typeof AgentTierSchema>;
 
 /**

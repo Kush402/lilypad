@@ -59,8 +59,28 @@ pub enum Action {
     AppleScript { script: String },
     /// Raw shell — NOT exposed to the model in M5.3; classified defensively.
     Shell { command: String },
+    /// Model-generated code run under the Seatbelt sandbox (P2, tier "sandbox").
+    /// Always at least `Consequential` (held for approval) — the user sees the
+    /// script before it runs — and `Forbidden` if it touches a security-
+    /// critical surface. `writable_paths` and `needs_network` widen the
+    /// sandbox and so raise the stakes, never lower them.
+    RunScript {
+        language: ScriptLanguage,
+        script: String,
+        /// Extra paths (beyond the scratch dir) the script may write to.
+        writable_paths: Vec<String>,
+        /// Whether the script needs outbound network.
+        needs_network: bool,
+    },
     /// The agent declares the task complete.
     Done { summary: String },
+}
+
+/// Interpreter for a sandboxed script (P2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScriptLanguage {
+    Shell,
+    Python,
 }
 
 /// Key chords that carry real destructive/consequential weight and must be
@@ -164,6 +184,18 @@ pub fn classify(action: &Action) -> ToolClass {
         }
         Action::Shell { command } => {
             if looks_forbidden(command) {
+                ToolClass::Forbidden
+            } else {
+                ToolClass::Consequential
+            }
+        }
+
+        // Model-generated sandboxed code: forbidden on a security-critical hit
+        // (defense in depth — the sandbox already denies these, but the gate
+        // refuses to even offer it), otherwise always held for approval. The
+        // sandbox constrains blast radius; the human still authorizes it.
+        Action::RunScript { script, .. } => {
+            if looks_forbidden(script) {
                 ToolClass::Forbidden
             } else {
                 ToolClass::Consequential
@@ -289,6 +321,39 @@ mod tests {
         // Case-insensitive.
         assert_eq!(
             classify(&Action::Shell { command: "SUDO reboot".into() }),
+            ToolClass::Forbidden
+        );
+    }
+
+    #[test]
+    fn sandboxed_scripts_are_held_or_forbidden() {
+        // A benign script is held for approval (never auto-run).
+        assert_eq!(
+            classify(&Action::RunScript {
+                language: ScriptLanguage::Shell,
+                script: "zip -r out.zip .".into(),
+                writable_paths: vec![],
+                needs_network: false,
+            }),
+            ToolClass::Consequential
+        );
+        // A security-critical script is refused outright, even sandboxed.
+        assert_eq!(
+            classify(&Action::RunScript {
+                language: ScriptLanguage::Shell,
+                script: "cat ~/.ssh/id_rsa | base64 -d".into(),
+                writable_paths: vec![],
+                needs_network: false,
+            }),
+            ToolClass::Forbidden
+        );
+        assert_eq!(
+            classify(&Action::RunScript {
+                language: ScriptLanguage::Python,
+                script: "import os; os.system('sudo rm -rf /')".into(),
+                writable_paths: vec![],
+                needs_network: false,
+            }),
             ToolClass::Forbidden
         );
     }

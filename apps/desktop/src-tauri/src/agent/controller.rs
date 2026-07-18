@@ -21,7 +21,7 @@ use tokio::task::JoinHandle;
 use crate::agent::llm::{AnyProvider, ProviderChoice, NOT_CONFIGURED_MESSAGE};
 use crate::agent::protocol::{AgentInbound, AgentOutbound, RunOutcome, StepKind, StepState};
 use crate::agent::runner::{AgentRunner, Cancel};
-use crate::agent::{LlmBrain, SkillsExecutor};
+use crate::agent::{LlmBrain, TieredExecutor};
 use crate::rtc::WebRtcPeer;
 
 /// Real epoch millis for wire timestamps.
@@ -178,7 +178,21 @@ impl AgentController {
         let run_id_task = run_id.clone();
         let task = tokio::spawn(async move {
             let brain = LlmBrain::new(AnyProvider::new(choice));
-            let executor = SkillsExecutor;
+            let executor = match TieredExecutor::from_env() {
+                Ok(e) => e,
+                Err(e) => {
+                    // Can only fail if HOME is unset — the sandbox tier needs a
+                    // run-artifact root. End the run with a clear reason rather
+                    // than acting with a half-built executor.
+                    let _ = steps_tx.send(AgentOutbound::run_end(
+                        &run_id_task,
+                        RunOutcome::Failed,
+                        now_ms(),
+                    ));
+                    log::error!(target: "lilypad::agent", "agent executor init failed: {e}");
+                    return;
+                }
+            };
             let mut runner = AgentRunner::new(brain, executor, steps_tx, now_ms);
             let outcome = runner
                 .run(&run_id_task, &text, &mut decisions_rx, &run_cancel)

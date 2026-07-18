@@ -47,6 +47,9 @@ where
 #[serde(rename_all = "snake_case")]
 pub enum AgentTier {
     Skill,
+    /// Model-generated code run under the Seatbelt sandbox (P2). Mirrors
+    /// `AgentTierSchema` in `@lilypad/protocol` `agent.ts`.
+    Sandbox,
     Ax,
     Vision,
 }

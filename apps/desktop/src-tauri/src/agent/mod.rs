@@ -25,7 +25,7 @@ pub mod sandbox;
 pub mod security;
 
 pub use controller::{authorize_command, AgentController, CommandGate};
-pub use executor::SkillsExecutor;
+pub use executor::{SandboxExecutor, SkillsExecutor, TieredExecutor};
 pub use llm::{LlmBrain, LlmProvider};
 pub use protocol::{
     parse_inbound, AgentInbound, AgentOutbound, AgentTier, RunOutcome, StepKind, StepState,
@@ -50,6 +50,10 @@ mod agnosticism {
             ("protocol.rs", include_str!("protocol.rs")),
             ("executor/mod.rs", include_str!("executor/mod.rs")),
             ("executor/skills.rs", include_str!("executor/skills.rs")),
+            ("executor/sandbox_exec.rs", include_str!("executor/sandbox_exec.rs")),
+            ("executor/verify.rs", include_str!("executor/verify.rs")),
+            ("sandbox/mod.rs", include_str!("sandbox/mod.rs")),
+            ("sandbox/profile.rs", include_str!("sandbox/profile.rs")),
         ];
         // Vendor identifiers, matched case-insensitively. "gpt-" and
         // "claude-" (with hyphen) so prose words can't false-positive.

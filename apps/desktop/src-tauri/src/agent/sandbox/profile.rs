@@ -19,13 +19,15 @@
 
 use std::path::{Path, PathBuf};
 
-/// What one sandboxed run is permitted to touch.
+/// What one sandboxed run is permitted to touch. Reads are broad (secrets
+/// denied, see below), so only WRITE widening and network need enumerating.
 #[derive(Debug, Clone)]
 pub struct SandboxPolicy {
-    /// The per-run scratch dir: the only writable location. Read + write.
+    /// The per-run scratch dir: always writable.
     pub scratch_dir: PathBuf,
-    /// Extra read-only paths the plan explicitly named (home-jailed already).
-    pub readable_paths: Vec<PathBuf>,
+    /// Extra paths (beyond scratch) the script may write to — home-jailed by
+    /// the executor before it reaches here (e.g. a plan-named output folder).
+    pub writable_paths: Vec<PathBuf>,
     /// Whether outbound network is permitted. Default false; only true when a
     /// network-needing step has been approved.
     pub allow_network: bool,
@@ -35,7 +37,7 @@ impl SandboxPolicy {
     pub fn read_only(scratch_dir: PathBuf) -> Self {
         SandboxPolicy {
             scratch_dir,
-            readable_paths: Vec::new(),
+            writable_paths: Vec::new(),
             allow_network: false,
         }
     }
@@ -102,11 +104,15 @@ pub fn build_profile(policy: &SandboxPolicy, home: &Path) -> String {
     p.push_str("(allow file-read*)\n");
 
     // ── writes ───────────────────────────────────────────────────────────
-    // Only the scratch dir, plus the stdio devices.
+    // The scratch dir, any explicitly-granted (approved, home-jailed) output
+    // paths, plus the stdio devices. Nothing else.
     p.push_str(&format!(
         "(allow file-write* (subpath {}))\n",
         sbpl_quote(&policy.scratch_dir)
     ));
+    for w in &policy.writable_paths {
+        p.push_str(&format!("(allow file-write* (subpath {}))\n", sbpl_quote(w)));
+    }
     p.push_str("(allow file-write-data (literal \"/dev/null\") (literal \"/dev/stdout\") (literal \"/dev/stderr\"))\n");
 
     // ── network ──────────────────────────────────────────────────────────
@@ -144,7 +150,7 @@ mod tests {
     }
 
     #[test]
-    fn scratch_is_the_only_writable_location() {
+    fn scratch_is_writable_and_by_default_nothing_else_is() {
         let prof = profile(&SandboxPolicy::read_only("/tmp/run-xyz".into()));
         assert!(prof.contains("(allow file-write* (subpath \"/tmp/run-xyz\"))"));
         // The only other write allowance is the stdio devices — no home, no /.
@@ -154,6 +160,17 @@ mod tests {
             || l.contains("/dev/null")
             || l.contains("/dev/stdout")
             || l.contains("/dev/stderr")));
+    }
+
+    #[test]
+    fn granted_writable_paths_are_added_to_the_write_jail() {
+        let policy = SandboxPolicy {
+            scratch_dir: "/tmp/r".into(),
+            writable_paths: vec!["/Users/kush/Downloads".into()],
+            allow_network: false,
+        };
+        let prof = profile(&policy);
+        assert!(prof.contains("(allow file-write* (subpath \"/Users/kush/Downloads\"))"));
     }
 
     #[test]
@@ -172,24 +189,6 @@ mod tests {
             // Explicit deny must precede the broad allow so it stays authoritative.
             assert!(prof.find(&deny).unwrap() < allow_at, "{sensitive} denied too late");
         }
-    }
-
-    #[test]
-    fn plan_named_readable_paths_are_never_writable() {
-        // Reads are broad now; the invariant that matters is that a plan-named
-        // path never becomes WRITABLE.
-        let policy = SandboxPolicy {
-            scratch_dir: "/tmp/r".into(),
-            readable_paths: vec!["/Users/kush/Downloads".into()],
-            allow_network: false,
-        };
-        let prof = profile(&policy);
-        let write_section: String = prof
-            .lines()
-            .filter(|l| l.contains("file-write"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(!write_section.contains("/Users/kush/Downloads"));
     }
 
     #[test]

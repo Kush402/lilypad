@@ -98,7 +98,7 @@ pub async fn run(
         .with_context(|| format!("resolving scratch dir {}", policy.scratch_dir.display()))?;
     let policy = SandboxPolicy {
         scratch_dir: real_scratch,
-        readable_paths: policy.readable_paths.clone(),
+        writable_paths: policy.writable_paths.clone(),
         allow_network: policy.allow_network,
     };
 

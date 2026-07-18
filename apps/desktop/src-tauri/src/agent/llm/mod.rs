@@ -17,10 +17,11 @@ pub mod anthropic;
 pub mod openai_compat;
 pub mod store;
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, bail, Result};
 use serde_json::json;
 
 use crate::agent::runner::{Brain, Decision, Observation};
+use crate::agent::security::ScriptLanguage;
 use crate::agent::{Action, AgentTier};
 
 /// What a configured provider+model combination can actually do — as
@@ -287,6 +288,34 @@ pub fn tier1_tools() -> Vec<ToolSpec> {
             }),
         },
         ToolSpec {
+            name: "run_script",
+            description: "Run a small script under a secure sandbox for computation or file \
+                          work that no specific tool covers (e.g. compressing a folder, \
+                          transforming files). The script runs with writes restricted to a \
+                          scratch area, no network, and secrets unreadable, and ALWAYS \
+                          requires the user's approval first. Prefer a specific tool when one \
+                          fits. Print any result the user should see to stdout.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "language": { "type": "string", "enum": ["shell", "python"] },
+                    "script": { "type": "string", "description": "The script source." },
+                    "writable_paths": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Folders under the home directory the script must write \
+                                        to besides the scratch area (e.g. an output folder). \
+                                        Omit if the script only needs the scratch area."
+                    },
+                    "needs_network": {
+                        "type": "boolean",
+                        "description": "Set true only if the script must reach the network."
+                    }
+                },
+                "required": ["language", "script"],
+            }),
+        },
+        ToolSpec {
             name: "finish",
             description: "Call when the task is complete. Provide a one-line summary of what was done.",
             input_schema: json!({
@@ -342,10 +371,50 @@ pub fn decision_from_tool_call(call: &ToolCall) -> Result<Decision> {
                 action: Action::NewFolder { path },
             })
         }
+        "run_script" => {
+            let language = match call.input.get("language").and_then(|v| v.as_str()) {
+                Some("shell") => ScriptLanguage::Shell,
+                Some("python") => ScriptLanguage::Python,
+                other => bail!("run_script: unknown or missing language {other:?}"),
+            };
+            let script = field("script")?;
+            let writable_paths = call
+                .input
+                .get("writable_paths")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(str::to_string))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            let needs_network = call
+                .input
+                .get("needs_network")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            Ok(Decision::Act {
+                summary: format!("Run {} script", lang_label(language)),
+                tier: AgentTier::Sandbox,
+                action: Action::RunScript {
+                    language,
+                    script,
+                    writable_paths,
+                    needs_network,
+                },
+            })
+        }
         "finish" => Ok(Decision::Finish {
             summary: field("summary").unwrap_or_else(|_| "Task complete".to_string()),
         }),
         other => Err(anyhow!("model called unknown tool `{other}`")),
+    }
+}
+
+fn lang_label(language: ScriptLanguage) -> &'static str {
+    match language {
+        ScriptLanguage::Shell => "shell",
+        ScriptLanguage::Python => "python",
     }
 }
 
@@ -467,6 +536,40 @@ mod tests {
             } => assert_eq!(name, "Safari"),
             _ => panic!("wrong decision"),
         }
+    }
+
+    #[test]
+    fn maps_run_script_to_sandbox_tier() {
+        let d = decision_from_tool_call(&ToolCall {
+            id: "1".into(),
+            name: "run_script".into(),
+            input: json!({
+                "language": "python",
+                "script": "print(1+1)",
+                "writable_paths": ["~/Downloads"],
+                "needs_network": true,
+            }),
+        })
+        .unwrap();
+        match d {
+            Decision::Act {
+                action: Action::RunScript { language, writable_paths, needs_network, .. },
+                tier: AgentTier::Sandbox,
+                ..
+            } => {
+                assert_eq!(language, ScriptLanguage::Python);
+                assert_eq!(writable_paths, vec!["~/Downloads".to_string()]);
+                assert!(needs_network);
+            }
+            _ => panic!("wrong decision"),
+        }
+        // Unknown language is rejected, not guessed.
+        assert!(decision_from_tool_call(&ToolCall {
+            id: "1".into(),
+            name: "run_script".into(),
+            input: json!({ "language": "ruby", "script": "puts 1" }),
+        })
+        .is_err());
     }
 
     #[test]
