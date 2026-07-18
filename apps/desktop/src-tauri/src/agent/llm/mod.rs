@@ -267,6 +267,26 @@ pub fn tier1_tools() -> Vec<ToolSpec> {
             }),
         },
         ToolSpec {
+            name: "open_file",
+            description: "Open a file in its default application. The path must be inside the \
+                          user's home folder (use ~/ or a path under it).",
+            input_schema: json!({
+                "type": "object",
+                "properties": { "path": { "type": "string", "description": "File path under the home folder" } },
+                "required": ["path"],
+            }),
+        },
+        ToolSpec {
+            name: "new_folder",
+            description: "Create a folder (and any missing parents). The path must be inside the \
+                          user's home folder.",
+            input_schema: json!({
+                "type": "object",
+                "properties": { "path": { "type": "string", "description": "Folder path under the home folder" } },
+                "required": ["path"],
+            }),
+        },
+        ToolSpec {
             name: "finish",
             description: "Call when the task is complete. Provide a one-line summary of what was done.",
             input_schema: json!({
@@ -304,6 +324,22 @@ pub fn decision_from_tool_call(call: &ToolCall) -> Result<Decision> {
                 summary: format!("Open {url}"),
                 tier: AgentTier::Skill,
                 action: Action::OpenUrl { url },
+            })
+        }
+        "open_file" => {
+            let path = field("path")?;
+            Ok(Decision::Act {
+                summary: format!("Open file {path}"),
+                tier: AgentTier::Skill,
+                action: Action::OpenFile { path },
+            })
+        }
+        "new_folder" => {
+            let path = field("path")?;
+            Ok(Decision::Act {
+                summary: format!("Create folder {path}"),
+                tier: AgentTier::Skill,
+                action: Action::NewFolder { path },
             })
         }
         "finish" => Ok(Decision::Finish {

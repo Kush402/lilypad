@@ -48,6 +48,10 @@ pub enum Action {
     OpenUrl { url: String },
     /// Reveal a path in Finder (tier-1 skill).
     RevealInFinder { path: String },
+    /// Open a file in its default app (tier-1 skill). Path is user-dir jailed.
+    OpenFile { path: String },
+    /// Create a folder (tier-1 skill). Path is user-dir jailed.
+    NewFolder { path: String },
     /// Trigger a macOS Shortcut by name (tier-1 skill).
     RunShortcut { name: String },
     /// Raw AppleScript/JXA — NOT exposed to the model in M5.3; classified
@@ -133,6 +137,8 @@ pub fn classify(action: &Action) -> ToolClass {
         | Action::TypeText { .. }
         | Action::OpenApp { .. }
         | Action::RevealInFinder { .. }
+        | Action::OpenFile { .. }
+        | Action::NewFolder { .. }
         | Action::RunShortcut { .. } => ToolClass::Sensitive,
 
         // A URL is sensitive unless it smells like a scheme that can execute or
@@ -221,6 +227,8 @@ mod tests {
         assert_eq!(classify(&Action::OpenApp { name: "Safari".into() }), ToolClass::Sensitive);
         assert_eq!(classify(&Action::AxPress { path: "AXButton/Save".into() }), ToolClass::Sensitive);
         assert_eq!(classify(&Action::RunShortcut { name: "Note".into() }), ToolClass::Sensitive);
+        assert_eq!(classify(&Action::OpenFile { path: "~/a.pdf".into() }), ToolClass::Sensitive);
+        assert_eq!(classify(&Action::NewFolder { path: "~/R".into() }), ToolClass::Sensitive);
     }
 
     #[test]

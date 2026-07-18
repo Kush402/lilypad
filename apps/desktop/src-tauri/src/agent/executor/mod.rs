@@ -8,5 +8,7 @@
 //! trait; for now the tier-1 [`skills::SkillsExecutor`] is the whole surface.
 
 pub mod skills;
+pub mod verify;
 
 pub use skills::{plan_command, CommandSpec, SkillsExecutor};
+pub use verify::{check, postcondition, resolve_user_path, Postcondition};
