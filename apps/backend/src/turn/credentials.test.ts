@@ -83,6 +83,18 @@ describe('TURN credentials (coturn use-auth-secret)', () => {
       servers = buildIceServers({ secret: SECRET, now: NOW }).iceServers;
       const relay = servers.find((s) => s.urls === 'turn:relay.example:3478');
       expect(relay).toMatchObject({ username: 'user1', credential: 'pass1' });
+
+      // Comma-separated URL list → one entry advertising every transport
+      // variant (cellular carriers often block UDP:80; TCP 443 survives).
+      (env as { PUBLIC_TURN_URL: string }).PUBLIC_TURN_URL =
+        'turn:relay.example:80, turn:relay.example:443?transport=tcp ,';
+      servers = buildIceServers({ secret: SECRET, now: NOW }).iceServers;
+      const multi = servers.find((s) => Array.isArray(s.urls) && s.username === 'user1');
+      expect(multi).toMatchObject({
+        urls: ['turn:relay.example:80', 'turn:relay.example:443?transport=tcp'],
+        username: 'user1',
+        credential: 'pass1',
+      });
     } finally {
       (env as { PUBLIC_TURN_URL: string }).PUBLIC_TURN_URL = orig.url;
       (env as { PUBLIC_TURN_USERNAME: string }).PUBLIC_TURN_USERNAME = orig.user;

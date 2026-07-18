@@ -83,8 +83,17 @@ export function buildIceServers(opts: TurnCredentialOptions = {}): {
   // cellular NAT rebind. Advertised in addition to (not instead of) the local
   // coturn, which still wins on-LAN. Only emitted when all three are set.
   if (env.PUBLIC_TURN_URL && env.PUBLIC_TURN_USERNAME && env.PUBLIC_TURN_CREDENTIAL) {
+    // Comma-separated so one env var can advertise every transport variant
+    // the provider offers (e.g. UDP 80 + UDP 443 + TCP 443). Cellular
+    // carriers commonly block or degrade UDP on port 80 — advertising a
+    // single `turn:...:80` left phones with no usable relay on such paths,
+    // silently downgrading them to fragile direct pairs. Both clients
+    // accept a string[] here (`IceServerSchema.urls` is string|string[]).
+    const urls = env.PUBLIC_TURN_URL.split(',')
+      .map((u) => u.trim())
+      .filter((u) => u.length > 0);
     iceServers.push({
-      urls: env.PUBLIC_TURN_URL,
+      urls: urls.length === 1 ? urls[0]! : urls,
       username: env.PUBLIC_TURN_USERNAME,
       credential: env.PUBLIC_TURN_CREDENTIAL,
     });
