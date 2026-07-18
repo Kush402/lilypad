@@ -95,7 +95,20 @@ export class MobileSignaling {
   }
 
   private emit(msg: SignalingMessage): void {
-    this.ws?.send(encodeSignal(msg));
+    // Guard on OPEN, not just non-null: `attach()` assigns `this.ws` before
+    // the socket opens, and RN's WebSocket.send THROWS on a CONNECTING
+    // socket. In a Release build that unhandled throw is a fatal abort —
+    // observed live as the cellular crash-on-flap (the 4s heartbeat firing
+    // while a reconnect attempt was still connecting; crash reports'
+    // SIGABRT-in-void-TurboModule is ExceptionsManager reporting it).
+    // Dropping the frame is always safer: heartbeats have a next tick, and
+    // everything else rides the reconnect → re-register recovery path.
+    if (this.ws?.readyState !== WebSocket.OPEN) return;
+    try {
+      this.ws.send(encodeSignal(msg));
+    } catch {
+      /* socket died between check and send — the close handler recovers */
+    }
   }
 
   isReconnecting(): boolean {

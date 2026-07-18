@@ -27,6 +27,13 @@ class FakeWebSocket {
   }
 
   send(data: string): void {
+    // Faithful to RN's WebSocket: sending on a not-yet-open socket THROWS
+    // (`INVALID_STATE_ERR`). In a Release build an unhandled throw here is a
+    // fatal abort — the fake must be as hostile as the real thing so a
+    // missing readyState guard fails tests instead of crashing phones.
+    if (this.readyState !== FakeWebSocket.OPEN) {
+      throw new Error('INVALID_STATE_ERR');
+    }
     this.sent.push(data);
   }
 
@@ -79,6 +86,21 @@ describe('MobileSignaling', () => {
 
   afterEach(() => {
     jest.useRealTimers();
+  });
+
+  it('drops frames while the socket is still CONNECTING instead of throwing (release-fatal)', async () => {
+    const sig = new MobileSignaling('wss://x', 'room1', () => {});
+    const p = sig.connect();
+    const ws = lastSocket();
+    // `attach()` has already assigned the socket but it hasn't opened — the
+    // 4s heartbeat interval firing in this window was the live cellular
+    // crash (RN send() throws, unhandled JS error aborts a Release build).
+    expect(() => sig.heartbeat()).not.toThrow();
+    expect(ws.sent).toHaveLength(0);
+    ws.open();
+    await p;
+    sig.heartbeat();
+    expect(ws.sentType('heartbeat')).toBeTruthy();
   });
 
   it('connect() resolves once the socket opens', async () => {
