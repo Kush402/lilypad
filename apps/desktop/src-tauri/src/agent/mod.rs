@@ -21,6 +21,7 @@ pub mod executor;
 pub mod llm;
 pub mod protocol;
 pub mod runner;
+pub mod sandbox;
 pub mod security;
 
 pub use controller::{authorize_command, AgentController, CommandGate};

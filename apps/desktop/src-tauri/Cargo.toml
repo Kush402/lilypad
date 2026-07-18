@@ -53,6 +53,8 @@ core-foundation = "0.10"
 screencapturekit = "8"
 videotoolbox = "0.18"
 apple-cf = { version = ">=0.9, <0.10", default-features = false, features = ["cm", "iosurface", "cv"] }
+# setrlimit / setsid / killpg for the agent sandbox harness (agent/sandbox).
+libc = "0.2"
 
 [features]
 # by default Tauri runs in production mode unless `tauri dev` sets this.
