@@ -172,6 +172,30 @@ describe('SignalingHub — never trust the client', () => {
     expect(b.closed).toBeTruthy();
   });
 
+  it('SAME device re-registering on a new socket evicts the zombie, not the client', () => {
+    const { hub, desktop, mobile } = connectedRoom();
+    const freshMobile = new FakePeer();
+    hub.handleMessage(freshMobile, reg('mobile', 'mobile-01'));
+
+    // zombie transport closed by the server, fresh transport seated cleanly
+    expect(mobile.closed).toEqual({ code: 4408, reason: 'superseded by same-device reconnect' });
+    expect(freshMobile.find('error')).toBeUndefined();
+    expect(freshMobile.closed).toBeNull();
+
+    // the zombie's eventual close event must NOT clear the fresh seat:
+    // the room still relays mobile-originated traffic afterwards
+    hub.handleClose(mobile);
+    hub.handleMessage(
+      freshMobile,
+      frame('pair-request', 'mobile', {
+        deviceId: 'mobile-01',
+        deviceName: 'phone',
+        requestedScopes: ['view'],
+      }),
+    );
+    expect(desktop.find('pair-request')).toBeTruthy();
+  });
+
   it('blocks role spoofing (from must match the registered seat)', () => {
     const { hub, mobile } = connectedRoom();
     // mobile peer claims to be the desktop

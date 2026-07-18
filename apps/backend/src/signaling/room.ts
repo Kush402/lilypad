@@ -6,7 +6,8 @@ import type { Peer } from './peer.js';
 /** Outcome of claiming a seat. Failure reasons mirror the wire error codes
  * `SignalingHub` sends back to a rejected peer. */
 export type SeatResult =
-  { ok: true; reclaimed: boolean } | { ok: false; reason: 'seat_taken' | 'seat_reserved' };
+  | { ok: true; reclaimed: boolean; evicted?: Peer }
+  | { ok: false; reason: 'seat_taken' | 'seat_reserved' };
 
 /** Matches `SignalingHubDeps.onStateChange`'s shape. */
 export type RoomStateChangeListener = (
@@ -122,15 +123,35 @@ export class Room {
     return result;
   }
 
-  /** Claim a seat for `peer`. Rejects a seat already held by someone else,
-   * and a vacated-but-still-in-grace seat claimed by a different device than
-   * the one that held it — otherwise the grace window would be a seat-hijack
-   * window. `reclaimed` tells the caller whether this was a same-device
-   * re-registration within grace (worth a log line), vs. a fresh claim. */
+  /** Claim a seat for `peer`. Rejects a seat already held by a DIFFERENT
+   * device, and a vacated-but-still-in-grace seat claimed by a different
+   * device than the one that held it — otherwise the grace window would be a
+   * seat-hijack window. `reclaimed` tells the caller whether this was a
+   * same-device re-registration within grace (worth a log line), vs. a
+   * fresh claim.
+   *
+   * A seat held by the SAME device on a different `Peer` is a zombie-socket
+   * replacement, not a conflict: the client's old transport died without the
+   * server noticing (no close event yet, heartbeat not yet stale) and the
+   * client reconnected. Newest transport wins — seat it and hand the stale
+   * `Peer` back as `evicted` for the orchestrator to close. Rejecting here
+   * strands the client permanently (observed live on cellular-through-
+   * tunnel: the dropped phone burned its whole 4-attempt/~7.5s reconnect
+   * budget on `seat_taken` rejections while the zombie sat un-reaped for
+   * 25s — the retry budget can never outlast the heartbeat timeout).
+   * Device identity is trusted here exactly as far as the grace-reclaim
+   * check below trusts it: `deviceId` was already verified against the
+   * pairing-time Redis binding by the register gate (`registerAuth.ts`). */
   registerSeat(role: DeviceKind, peer: Peer, deviceId: string, now: number): SeatResult {
     const current = this.peers[role];
     if (current && current !== peer) {
-      return { ok: false, reason: 'seat_taken' };
+      if (this.deviceIds[role] !== deviceId) {
+        return { ok: false, reason: 'seat_taken' };
+      }
+      this.peers[role] = peer;
+      this.lastSeen[role] = now;
+      delete this.vacatedAt[role];
+      return { ok: true, reclaimed: false, evicted: current };
     }
     const reclaimed = this.vacatedAt[role] !== undefined;
     if (reclaimed && this.deviceIds[role] !== deviceId) {

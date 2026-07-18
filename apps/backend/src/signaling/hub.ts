@@ -317,6 +317,17 @@ export class SignalingHub {
     if (result.reclaimed) {
       log.signaling.info({ roomId: msg.roomId, role }, 'peer re-registered within grace');
     }
+    if (result.evicted) {
+      // Same-device reconnect over a zombie socket: drop our context for the
+      // stale transport BEFORE closing it, so its close event finds no ctx
+      // and cannot clear the seat the new transport now holds.
+      this.ctx.delete(result.evicted);
+      result.evicted.close(4408, 'superseded by same-device reconnect');
+      log.signaling.info(
+        { roomId: msg.roomId, role },
+        'zombie socket evicted by same-device reconnect',
+      );
+    }
     this.ctx.set(peer, { roomId: msg.roomId, role, deviceId: msg.payload.deviceId });
     log.signaling.info({ roomId: msg.roomId, role }, 'peer registered');
 

@@ -47,6 +47,28 @@ describe('Room — seat registration', () => {
     expect(room.isVacatedPastGrace('desktop', 1_000_000)).toBe(false); // vacatedAt cleared
   });
 
+  it('evicts a zombie socket when the SAME device re-registers on a new peer', () => {
+    const room = makeRoom();
+    const zombie = new FakePeer();
+    const fresh = new FakePeer();
+    room.registerSeat('mobile', zombie, 'device-01', 100);
+
+    const result = room.registerSeat('mobile', fresh, 'device-01', 200);
+    expect(result).toEqual({ ok: true, reclaimed: false, evicted: zombie });
+    expect(room.seat('mobile')).toBe(fresh);
+    expect(room.deviceIdFor('mobile')).toBe('device-01');
+  });
+
+  it('zombie eviction clears a pending vacatedAt (no stale grace bookkeeping)', () => {
+    const room = makeRoom();
+    const zombie = new FakePeer();
+    room.registerSeat('mobile', zombie, 'device-01', 100);
+    room.markVacated('mobile', 150);
+
+    room.registerSeat('mobile', new FakePeer(), 'device-01', 200);
+    expect(room.isVacatedPastGrace('mobile', 1_000_000)).toBe(false);
+  });
+
   it('rejects a DIFFERENT device claiming a vacated seat within grace', () => {
     const room = makeRoom();
     room.registerSeat('desktop', new FakePeer(), 'device-01', 100);
