@@ -569,3 +569,77 @@ fn close_window(app: &AppHandle, label: &str) {
         let _ = win.close();
     }
 }
+
+// ── AI provider settings (Ask) ────────────────────────────────────────────────
+// Non-secret selection persists in the app-support JSON; the API key goes to
+// the macOS keychain and NEVER to disk or back out to the UI (only `has_key`).
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentConfigDto {
+    pub provider_kind: Option<String>,
+    pub model: Option<String>,
+    pub base_url: Option<String>,
+    pub vision: bool,
+    pub has_key: bool,
+    /// Which source currently wins: "env" (dev override active — settings
+    /// below are stored but ignored), "settings", or "none" (agent inert).
+    pub source: &'static str,
+}
+
+#[tauri::command]
+pub fn get_agent_config() -> AgentConfigDto {
+    use crate::agent::llm::{store, ProviderChoice};
+    let settings = store::load_settings();
+    let has_key = settings
+        .provider_kind
+        .as_deref()
+        .map(|k| store::keychain_get(k).is_some())
+        .unwrap_or(false);
+    let source = if ProviderChoice::from_env().is_some() {
+        "env"
+    } else if ProviderChoice::from_settings().is_some() {
+        "settings"
+    } else {
+        "none"
+    };
+    AgentConfigDto {
+        provider_kind: settings.provider_kind,
+        model: settings.model,
+        base_url: settings.base_url,
+        vision: settings.vision,
+        has_key,
+        source,
+    }
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetAgentConfigArgs {
+    pub provider_kind: String,
+    pub model: Option<String>,
+    pub base_url: Option<String>,
+    pub vision: Option<bool>,
+    /// When present and non-empty, stored in the keychain; never echoed back.
+    pub api_key: Option<String>,
+}
+
+#[tauri::command]
+pub fn set_agent_config(args: SetAgentConfigArgs) -> Result<AgentConfigDto, String> {
+    use crate::agent::llm::store;
+    if !matches!(args.provider_kind.as_str(), "anthropic" | "openai_compat") {
+        return Err(format!("unknown provider kind `{}`", args.provider_kind));
+    }
+    if let Some(key) = args.api_key.as_deref().map(str::trim).filter(|k| !k.is_empty()) {
+        store::keychain_set(&args.provider_kind, key).map_err(|e| e.to_string())?;
+    }
+    let settings = store::AgentSettings {
+        provider_kind: Some(args.provider_kind),
+        model: args.model.filter(|s| !s.trim().is_empty()),
+        base_url: args.base_url.filter(|s| !s.trim().is_empty()),
+        vision: args.vision.unwrap_or(false),
+    };
+    store::save_settings(&settings).map_err(|e| e.to_string())?;
+    log::info!(target: "lilypad::audit", "agent_provider_configured — settings saved");
+    Ok(get_agent_config())
+}

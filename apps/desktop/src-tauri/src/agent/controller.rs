@@ -142,7 +142,7 @@ impl AgentController {
             return;
         };
 
-        let choice = ProviderChoice::from_env();
+        let choice = ProviderChoice::resolve();
         match authorize_command(control_scoped, choice.is_some()) {
             CommandGate::DenyNoControl => {
                 Self::send_refusal(

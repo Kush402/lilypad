@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { AgentProviderCard } from './AgentProviderCard';
 
 type PermissionKind = 'screen_capture' | 'accessibility';
 const KINDS: readonly PermissionKind[] = ['screen_capture', 'accessibility'];
@@ -164,6 +165,8 @@ export function Setup() {
           </section>
         );
       })}
+
+      <AgentProviderCard />
 
       {allGranted ? (
         <section className="control__active">

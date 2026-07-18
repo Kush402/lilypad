@@ -227,6 +227,8 @@ pub fn run() {
             commands::request_permission,
             commands::open_permission_settings,
             commands::restart_app,
+            commands::get_agent_config,
+            commands::set_agent_config,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Lilypad desktop");

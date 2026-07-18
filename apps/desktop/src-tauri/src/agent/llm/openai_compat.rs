@@ -14,7 +14,7 @@ use serde_json::{json, Value};
 use super::{AssistantReply, Block, ChatMessage, LlmProvider, ProviderCaps, Role, ToolCall, ToolSpec};
 
 const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
-const DEFAULT_MODEL: &str = "gpt-4o-mini";
+pub const DEFAULT_MODEL: &str = "gpt-4o-mini";
 const DEFAULT_MAX_TOKENS: u32 = 1024;
 
 /// Config for any chat-completions endpoint. `base_url` includes the version
@@ -45,6 +45,7 @@ impl OpenAiCompatConfig {
     ///   - `LILYPAD_OPENAI_API_KEY` set → hosted endpoint (base defaults to
     ///     OpenAI, override with `LILYPAD_OPENAI_BASE_URL`)
     ///   - only `LILYPAD_OPENAI_BASE_URL` set → local/keyless endpoint
+    ///
     /// `LILYPAD_AGENT_MODEL` selects the model either way.
     pub fn from_env() -> Option<Self> {
         let api_key = std::env::var("LILYPAD_OPENAI_API_KEY")

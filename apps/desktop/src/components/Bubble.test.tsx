@@ -12,6 +12,7 @@ vi.mock('../lib/useAppState', () => ({
 vi.mock('../lib/tauri', () => ({
   api: {
     createPairing: vi.fn().mockResolvedValue(undefined),
+    showQrWindow: vi.fn().mockResolvedValue(undefined),
   },
 }));
 
@@ -37,13 +38,17 @@ describe('Bubble', () => {
     vi.clearAllMocks();
   });
 
-  it('idle: click starts a new pairing', async () => {
+  it('idle: click opens the QR window (which is the sole pairing creator)', async () => {
     mockState('idle');
     render(<Bubble />);
 
     fireEvent.click(screen.getByRole('button'));
 
-    await waitFor(() => expect(api.createPairing).toHaveBeenCalledTimes(1));
+    // The bubble no longer mints a pairing itself — that caused a double
+    // pairing per click (see commit 9490187). It opens the overlay, whose
+    // mount effect is the single `createPairing` caller.
+    await waitFor(() => expect(api.showQrWindow).toHaveBeenCalledTimes(1));
+    expect(api.createPairing).not.toHaveBeenCalled();
     expect(WebviewWindow.getByLabel).not.toHaveBeenCalled();
   });
 

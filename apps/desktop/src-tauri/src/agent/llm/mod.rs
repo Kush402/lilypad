@@ -15,6 +15,7 @@
 
 pub mod anthropic;
 pub mod openai_compat;
+pub mod store;
 
 use anyhow::{anyhow, Result};
 use serde_json::json;
@@ -128,8 +129,7 @@ pub enum ProviderChoice {
 }
 
 impl ProviderChoice {
-    /// Interim config source (settings UI + keychain is a later slice).
-    /// First match wins; `None` keeps the agent inert.
+    /// Env-var config (dev override). First match wins.
     pub fn from_env() -> Option<Self> {
         if let Some(c) = anthropic::AnthropicConfig::from_env() {
             return Some(ProviderChoice::Anthropic(c));
@@ -139,13 +139,59 @@ impl ProviderChoice {
         }
         None
     }
+
+    /// Settings-file + keychain config (the production path).
+    pub fn from_settings() -> Option<Self> {
+        let settings = store::load_settings();
+        let kind = settings.provider_kind.as_deref()?;
+        let api_key = store::keychain_get(kind);
+        match kind {
+            "anthropic" => {
+                let model = settings
+                    .model
+                    .unwrap_or_else(|| anthropic::DEFAULT_MODEL.to_string());
+                let mut c = anthropic::AnthropicConfig::new(api_key?, model);
+                if let Some(base) = settings.base_url {
+                    c.base_url = base;
+                }
+                c.vision = settings.vision;
+                Some(ProviderChoice::Anthropic(c))
+            }
+            "openai_compat" => {
+                // Keyless is legitimate for local endpoints, but only when an
+                // explicit base URL says where to go — the hosted default
+                // without a key would just 401.
+                if api_key.is_none() && settings.base_url.is_none() {
+                    return None;
+                }
+                let model = settings
+                    .model
+                    .unwrap_or_else(|| openai_compat::DEFAULT_MODEL.to_string());
+                let mut c = openai_compat::OpenAiCompatConfig::new(
+                    api_key.unwrap_or_else(|| "none".into()),
+                    model,
+                );
+                if let Some(base) = settings.base_url {
+                    c.base_url = base;
+                }
+                c.vision = settings.vision;
+                Some(ProviderChoice::OpenAiCompat(c))
+            }
+            _ => None,
+        }
+    }
+
+    /// Full resolution: env (dev override) → settings+keychain → none.
+    pub fn resolve() -> Option<Self> {
+        Self::from_env().or_else(Self::from_settings)
+    }
 }
 
 /// User-facing guidance when no provider is configured. Lives here (provider
 /// land) so the engine never has to name a vendor.
-pub const NOT_CONFIGURED_MESSAGE: &str = "No AI provider is configured on the desktop \
-(set LILYPAD_ANTHROPIC_API_KEY, or LILYPAD_OPENAI_API_KEY / LILYPAD_OPENAI_BASE_URL \
-for any OpenAI-compatible endpoint).";
+pub const NOT_CONFIGURED_MESSAGE: &str = "No AI provider is configured on the desktop — \
+open Lilypad's Setup window to add one (or set LILYPAD_ANTHROPIC_API_KEY / \
+LILYPAD_OPENAI_API_KEY for a dev override).";
 
 /// Dispatch wrapper so the engine can hold "whichever provider is configured"
 /// without generics leaking into the controller.

@@ -28,7 +28,7 @@ pub struct AnthropicConfig {
 
 /// Default model for the agent when none is configured. A current,
 /// computer-use-capable Claude (tier-3 vision lands in a later slice).
-const DEFAULT_MODEL: &str = "claude-opus-4-8";
+pub const DEFAULT_MODEL: &str = "claude-opus-4-8";
 
 impl AnthropicConfig {
     pub fn new(api_key: impl Into<String>, model: impl Into<String>) -> Self {
