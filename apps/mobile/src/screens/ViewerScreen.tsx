@@ -519,7 +519,14 @@ export function ViewerScreen({ route, navigation }: Props) {
           <Pressable
             testID="mode-toggle-ask"
             style={[styles.modeKey, askOpen && styles.modeKeyActive]}
-            onPress={() => setAskOpen((v) => !v)}
+            onPress={() =>
+              setAskOpen((v) => {
+                // Closing the panel must also release its keyboard — the
+                // panel unmounts and an orphaned keyboard has no dismisser.
+                if (v) Keyboard.dismiss();
+                return !v;
+              })
+            }
           >
             <Text style={[styles.keyText, askOpen && styles.stickyKeyTextActive]}>Ask</Text>
           </Pressable>

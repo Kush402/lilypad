@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { View, Text, TextInput, Pressable, ScrollView, StyleSheet } from 'react-native';
+import { Keyboard, View, Text, TextInput, Pressable, ScrollView, StyleSheet } from 'react-native';
 import { theme } from '../theme';
 import { heldStep, type AgentFeedState, type AgentStepView } from '../lib/agentFeed';
 
@@ -62,6 +62,10 @@ export function AgentPanel({ feed, onSend, onStop, onDecide }: AgentPanelProps):
     if (!t) return;
     onSend(t);
     setText('');
+    // The command is dispatched — give the screen back to the step feed /
+    // live stream. Without this (and `submitBehavior` below) a multiline
+    // TextInput on iOS leaves the keyboard up with no way to dismiss it.
+    Keyboard.dismiss();
   };
 
   return (
@@ -77,6 +81,11 @@ export function AgentPanel({ feed, onSend, onStop, onDecide }: AgentPanelProps):
           editable={!feed.running}
           onSubmitEditing={submit}
           returnKeyType="send"
+          // On iOS a multiline TextInput turns Return into a newline key and
+          // ignores returnKeyType/onSubmitEditing entirely — the keyboard
+          // becomes undismissable. blurAndSubmit restores Return-to-send
+          // (tasks are one-liners; there's no need for literal newlines).
+          submitBehavior="blurAndSubmit"
           autoCapitalize="sentences"
           multiline
         />
