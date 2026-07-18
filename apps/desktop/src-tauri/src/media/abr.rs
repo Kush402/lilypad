@@ -29,6 +29,15 @@ pub struct AbrConfig {
     /// Fraction of the REMB estimate to actually use (headroom for audio/RTCP
     /// overhead and estimate error).
     pub remb_headroom: f64,
+    /// How far above the REMB cap a clean-link probe may reach. REMB reports
+    /// what the receiver currently OBSERVES — roughly the send rate — so a
+    /// hard cap is a deadlock: sending 1000 kbps yields REMB ≈ 1000 which
+    /// forbids ever sending more (observed live: an entire cellular session
+    /// pinned at the 1000 floor with 0% loss). A bounded overshoot turns the
+    /// cap into a ladder: probe 25% past the estimate, the receiver observes
+    /// the higher rate, REMB rises, the next probe climbs further; loss (or a
+    /// REMB that stops growing) still ends the climb at true capacity.
+    pub probe_margin: f64,
 }
 
 impl Default for AbrConfig {
@@ -55,6 +64,7 @@ impl Default for AbrConfig {
             increase_factor: 1.08,
             increase_interval: Duration::from_secs(1),
             remb_headroom: 0.95,
+            probe_margin: 1.25,
         }
     }
 }
@@ -81,8 +91,9 @@ impl BitrateController {
     }
 
     fn ceiling(&self) -> u32 {
-        self.remb_cap_kbps
-            .map_or(self.cfg.max_kbps, |cap| cap.min(self.cfg.max_kbps))
+        self.remb_cap_kbps.map_or(self.cfg.max_kbps, |cap| {
+            (((cap as f64) * self.cfg.probe_margin) as u32).min(self.cfg.max_kbps)
+        })
     }
 
     /// Apply a new target, returning Some(kbps) only when it actually changed.
@@ -188,23 +199,25 @@ mod tests {
     }
 
     #[test]
-    fn remb_caps_immediately_and_for_future_increases() {
+    fn remb_cap_is_a_ladder_not_a_deadlock() {
         let mut c = ctl();
-        // Receiver estimates 1 Mbps → 950 after headroom, but the quality
-        // floor wins: an early conservative estimate must not starve the
-        // stream below legibility.
-        assert_eq!(c.on_remb(1_000_000), Some(1000));
-        // A clean link can't probe past the cap.
+        // Receiver estimates 1 Mbps → cap 1000 (floor-clamped). The probe
+        // ceiling is cap × 1.25 = 1250, so the current 2500 pulls down to
+        // the ceiling — not all the way to the estimate.
+        assert_eq!(c.on_remb(1_000_000), Some(1250));
+        // Clean-link probing stalls at the ceiling…
         let mut t = Instant::now();
         for _ in 0..20 {
             t += Duration::from_secs(3);
             c.on_loss_report(0.0, t);
         }
-        assert_eq!(c.current_kbps(), 1000);
-        // A higher estimate lifts the cap and probing resumes.
-        assert_eq!(c.on_remb(4_000_000), None); // current is below the new cap
+        assert_eq!(c.current_kbps(), 1250);
+        // …until the receiver observes the higher send rate and its estimate
+        // rises — each rise unlocks the next rung (this is the ladder that
+        // was previously a deadlock: REMB ≈ send rate could never grow).
+        assert_eq!(c.on_remb(1_250_000), None); // current below new ceiling
         t += Duration::from_secs(3);
-        assert_eq!(c.on_loss_report(0.0, t), Some(1080)); // 1000 * 1.08
+        assert_eq!(c.on_loss_report(0.0, t), Some(1350)); // 1250 * 1.08
     }
 
     #[test]

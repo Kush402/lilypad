@@ -100,9 +100,12 @@ const MAX_ICE_RESTARTS: u32 = 2;
 /// `ICE_RECOVERY_TIMEOUT_MS` table.
 /// How recently phone-originated traffic must have arrived to outvote a
 /// pessimistic ICE state. Comfortably above the phone's 1s stats/RTCP cadence
-/// and its input-event stream, well below the time a truly dead path would
-/// need to be declared (the restart machinery still owns that case).
-const TRAFFIC_LIVENESS_WINDOW: Duration = Duration::from_secs(5);
+/// AND above a typical cellular radio transition (observed live: ~2-8s
+/// uplink pauses every ~11s on a flappy carrier — a 5s window let those
+/// blips trigger ICE restarts that broke a stream which resumed on its own
+/// seconds later). Stability outranks fast failure detection here: a truly
+/// dead path stays silent past 12s and the restart machinery still owns it.
+const TRAFFIC_LIVENESS_WINDOW: Duration = Duration::from_secs(12);
 
 fn recovery_timeout_for_attempt(attempt: u32) -> Duration {
     if attempt <= 1 {
