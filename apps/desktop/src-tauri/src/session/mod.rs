@@ -98,6 +98,12 @@ const MAX_ICE_RESTARTS: u32 = 2;
 /// relayed-only candidate pair after a faster direct path already failed, so
 /// it gets more time than the first. Mirrors `@lilypad/protocol`'s
 /// `ICE_RECOVERY_TIMEOUT_MS` table.
+/// How recently phone-originated traffic must have arrived to outvote a
+/// pessimistic ICE state. Comfortably above the phone's 1s stats/RTCP cadence
+/// and its input-event stream, well below the time a truly dead path would
+/// need to be declared (the restart machinery still owns that case).
+const TRAFFIC_LIVENESS_WINDOW: Duration = Duration::from_secs(5);
+
 fn recovery_timeout_for_attempt(attempt: u32) -> Duration {
     if attempt <= 1 {
         Duration::from_secs(12)
@@ -138,6 +144,14 @@ struct SessionRunner {
     clipboard: ClipboardWatcher,
     peer: Option<Arc<WebRtcPeer>>,
     peer_connected: bool,
+    /// Last moment any phone-originated traffic arrived (input frames, RTCP
+    /// loss reports, REMB, keyframe requests). Ground truth that outranks the
+    /// ICE state machine: observed live (2026-07-17, cellular relay path)
+    /// webrtc-rs declared the connection `failed` ~8s after connect while
+    /// video, RTCP feedback and the input DataChannel all kept flowing — the
+    /// "failed"-triggered restarts then killed a de-facto working session,
+    /// and the traffic-blind input gate blocked every injection meanwhile.
+    last_peer_traffic: Option<Instant>,
     ice_restarts: u32,
     recovery_deadline: Option<Instant>,
     events: UnboundedSender<SessionEvent>,
@@ -159,6 +173,7 @@ impl SessionRunner {
             clipboard: ClipboardWatcher::new(),
             peer: None,
             peer_connected: false,
+            last_peer_traffic: None,
             ice_restarts: 0,
             recovery_deadline: None,
             events,
@@ -354,7 +369,31 @@ impl SessionRunner {
     /// out of `run_session` entirely — matching the original inline
     /// `select!` arm's behavior bit-for-bit, including its bypass of the
     /// normal teardown sequence on that specific failure).
+    /// Fresh inbound traffic from the phone proves the path works regardless
+    /// of what the ICE state machine currently claims.
+    fn peer_traffic_fresh(&self) -> bool {
+        self.last_peer_traffic
+            .is_some_and(|t| t.elapsed() < TRAFFIC_LIVENESS_WINDOW)
+    }
+
     async fn handle_peer_event(&mut self, ev: PeerEvent, sig: &SignalingClient) -> Result<bool> {
+        // Any phone-originated event is liveness ground truth — record it
+        // before the state machinery below gets a chance to act pessimistic.
+        if matches!(
+            ev,
+            PeerEvent::InputMessage(_)
+                | PeerEvent::VideoRemb { .. }
+                | PeerEvent::VideoLossReport { .. }
+                | PeerEvent::VideoKeyframeRequest
+        ) {
+            self.last_peer_traffic = Some(Instant::now());
+            if !self.peer_connected {
+                // ICE says down, traffic says up: traffic wins for injection
+                // gating — the loss reports/REMB prove the viewer is
+                // receiving video, which is the property the gate protects.
+                self.gate.set_peer_connected(true);
+            }
+        }
         if let PeerEvent::ConnectionState(s) = &ev {
             // Begin streaming once the peer connection is live (SRTP ready).
             if s == "connected" && !self.media.is_started() {
@@ -381,14 +420,25 @@ impl SessionRunner {
                     self.clipboard.seed();
                 }
             }
-            self.gate.set_peer_connected(self.peer_connected);
+            self.gate
+                .set_peer_connected(self.peer_connected || self.peer_traffic_fresh());
 
             // A failed connection is recoverable if the network path changed
             // (Wi-Fi → cellular, new interface): try a bounded number of ICE
             // restarts before giving up. Without this, a dead peer left a
-            // zombie session.
-            if s == "failed" && self.attempt_ice_restart(sig).await? {
-                return Ok(true);
+            // zombie session. But a "failed" verdict with fresh inbound
+            // traffic is a false negative (see `last_peer_traffic`) — the
+            // restart it would trigger tears down a working session, so
+            // traffic outvotes the state machine here.
+            if s == "failed" {
+                if self.peer_traffic_fresh() {
+                    log::warn!(
+                        target: "lilypad::session",
+                        "ICE reports failed but peer traffic is live — ignoring"
+                    );
+                } else if self.attempt_ice_restart(sig).await? {
+                    return Ok(true);
+                }
             }
             if s == "closed" {
                 self.end("peer connection closed");
@@ -713,7 +763,17 @@ pub async fn run_session(
             _ = heartbeat.tick() => {
                 let _ = sig.send(Envelope::heartbeat(&room_id));
                 if let Some(deadline) = runner.recovery_deadline {
-                    if !runner.peer_connected && Instant::now() >= deadline {
+                    if runner.peer_traffic_fresh() {
+                        // De-facto recovered: traffic is flowing even if the
+                        // ICE state never (re)announced `connected`. Ending
+                        // the session here would kill a working stream.
+                        log::info!(
+                            target: "lilypad::session",
+                            "recovery deadline lifted — peer traffic is live"
+                        );
+                        runner.recovery_deadline = None;
+                        runner.ice_restarts = 0;
+                    } else if !runner.peer_connected && Instant::now() >= deadline {
                         runner.end("connection did not recover in time");
                         break;
                     }

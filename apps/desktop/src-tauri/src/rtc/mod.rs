@@ -47,6 +47,22 @@ pub struct IceServerConfig {
     pub credential: String,
 }
 
+/// One-line diagnostic form of an SDP candidate string: its type (host/
+/// srflx/relay), transport, and address — enough to tell whether a relay
+/// path exists without logging the full attribute soup.
+fn summarize_candidate(candidate: &str) -> String {
+    let fields: Vec<&str> = candidate.split_whitespace().collect();
+    let transport = fields.get(2).copied().unwrap_or("?");
+    let addr = fields.get(4).copied().unwrap_or("?");
+    let port = fields.get(5).copied().unwrap_or("?");
+    let typ = fields
+        .windows(2)
+        .find(|w| w[0] == "typ")
+        .and_then(|w| w.get(1).copied())
+        .unwrap_or("?");
+    format!("typ {typ} {transport} {addr}:{port}")
+}
+
 impl From<IceServerConfig> for RTCIceServer {
     fn from(c: IceServerConfig) -> Self {
         RTCIceServer {
@@ -231,6 +247,14 @@ impl WebRtcPeer {
                 Box::pin(async move {
                     if let Some(c) = c {
                         if let Ok(init) = c.to_json() {
+                            // Candidate-type visibility (host/srflx/relay) is the
+                            // load-bearing diagnostic for "why did cellular ICE
+                            // fail" — a session with no relay candidate on either
+                            // side can only ride fragile direct pairs.
+                            log::info!(
+                                target: "lilypad::rtc",
+                                "local candidate: {}", summarize_candidate(&init.candidate)
+                            );
                             let _ = ev.send(PeerEvent::IceCandidate {
                                 candidate: init.candidate,
                                 sdp_mid: init.sdp_mid,
@@ -297,6 +321,10 @@ impl WebRtcPeer {
         sdp_mid: Option<String>,
         sdp_mline_index: Option<u16>,
     ) -> Result<()> {
+        log::info!(
+            target: "lilypad::rtc",
+            "remote candidate: {}", summarize_candidate(&candidate)
+        );
         self.pc
             .add_ice_candidate(RTCIceCandidateInit {
                 candidate,
