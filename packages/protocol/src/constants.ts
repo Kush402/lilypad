@@ -157,8 +157,16 @@ export const MAX_ICE_RESTARTS = 2 as const;
  * path already failed. Capped at the last entry for any attempt beyond the
  * table's length. Mirrored by hand in the desktop's Rust
  * `recovery_timeout_for_attempt` (`session/mod.rs`).
+ *
+ * The attempt-2 budget was 20s; a live Wi-Fi→cellular migration
+ * (2026-07-17) showed the restarted path coming alive ~18s after the
+ * restart offer (the phone's PLI keyframe request reached the desktop over
+ * the NEW pair) — and the 20s deadline tore the session down at the cusp.
+ * A cellular restart pays for relay allocation plus candidate trickle over
+ * a still-reconnecting tunnel socket; 30s gives that real-world path room
+ * while still bounding a truly dead peer.
  */
-export const ICE_RECOVERY_TIMEOUT_MS = [12_000, 20_000] as const;
+export const ICE_RECOVERY_TIMEOUT_MS = [12_000, 30_000] as const;
 
 export function iceRecoveryTimeoutMs(attempt: number): number {
   const idx = Math.min(Math.max(attempt - 1, 0), ICE_RECOVERY_TIMEOUT_MS.length - 1);

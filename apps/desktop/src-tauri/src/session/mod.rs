@@ -102,7 +102,11 @@ fn recovery_timeout_for_attempt(attempt: u32) -> Duration {
     if attempt <= 1 {
         Duration::from_secs(12)
     } else {
-        Duration::from_secs(20)
+        // 30s (was 20s): a live Wi-Fi→cellular migration showed the restarted
+        // path coming alive ~18s after the restart offer (phone's PLI arrived
+        // over the new pair) and the 20s deadline killed it at the cusp.
+        // Mirrors ICE_RECOVERY_TIMEOUT_MS in @lilypad/protocol constants.ts.
+        Duration::from_secs(30)
     }
 }
 

@@ -234,7 +234,13 @@ export class ViewerConnection {
         this.setupPeer(m.payload.iceServers);
         break;
       case 'offer':
-        void this.handleOffer(m.payload.sdp);
+        // A rejected offer application must not vanish: mid-session this is
+        // an ICE-restart offer, and silently dropping it strands the session
+        // in a dead-path state until the desktop's recovery deadline kills
+        // it with no trace of why.
+        this.handleOffer(m.payload.sdp).catch((err) => {
+          this.cb.onError(appError('unknown', `applying offer failed: ${String(err)}`));
+        });
         break;
       case 'ice-candidate':
         void this.pc
