@@ -67,6 +67,11 @@ impl OpenAiCompatConfig {
         if let Some(base) = base_url {
             config.base_url = base;
         }
+        // Opt in to the vision tier for a vision-capable model (e.g. Gemini,
+        // GPT-4o). Off by default — the endpoint zoo includes text-only models.
+        config.vision = std::env::var("LILYPAD_AGENT_VISION")
+            .map(|v| matches!(v.trim(), "1" | "true" | "yes"))
+            .unwrap_or(false);
         Some(config)
     }
 }
