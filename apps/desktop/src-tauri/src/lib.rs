@@ -217,6 +217,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::get_state,
             commands::create_pairing,
+            commands::show_qr_window,
             commands::simulate_pair_request,
             commands::approve_session,
             commands::deny_session,

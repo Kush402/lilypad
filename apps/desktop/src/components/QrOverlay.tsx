@@ -25,8 +25,14 @@ export function QrOverlay() {
   // re-creating the callback (and re-running the mount effect) every time
   // a fresh payload arrives.
   const hasPayloadRef = useRef(false);
+  // Collapses concurrent generates into one pairing: StrictMode double-runs
+  // the mount effect in dev, and a rapid "New code" double-click does the
+  // same in prod — each extra call minted a room whose session runner
+  // instantly overwrote the previous one's control channel.
+  const inFlightRef = useRef(false);
 
   const generate = useCallback(async () => {
+    if (inFlightRef.current) return;
     // Regenerating is only a "New code" replacing an unscanned/expired one
     // when nothing else is at stake. If a phone has already redeemed the
     // token (an approval is pending or a session is live), regenerating
@@ -47,6 +53,7 @@ export function QrOverlay() {
 
     setError('');
     setDataUrl('');
+    inFlightRef.current = true;
     try {
       const p = await api.createPairing();
       hasPayloadRef.current = true;
@@ -59,7 +66,12 @@ export function QrOverlay() {
       });
       setDataUrl(url);
     } catch (err) {
-      setError(String(err));
+      // `permissions_required` is expected and already handled: the Rust
+      // command opens/focuses the Setup window itself (this used to be
+      // filtered in Bubble.tsx when it was the caller).
+      if (String(err) !== 'permissions_required') setError(String(err));
+    } finally {
+      inFlightRef.current = false;
     }
   }, []);
 

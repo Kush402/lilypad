@@ -675,6 +675,7 @@ pub async fn run_session(
                                 "ignoring duplicate approve while session is {state:?}"
                             );
                         } else {
+                            log::info!(target: "lilypad::audit", "session_start — approved by user");
                             log::info!(target: "lilypad::session", "user approved session");
                             // A dead signaling writer must end the session with a
                             // clear reason, never bubble an Err with no Ended event.

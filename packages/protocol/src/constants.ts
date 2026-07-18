@@ -100,7 +100,7 @@ export function reconnectBackoffMs(attempt: number): number {
  * visible at a glance:
  *
  *   app heartbeat interval  <<  backend heartbeat timeout  <  backend reregister grace
- *          (8s)                        (25s)                        (15s* — see below)
+ *          (4s)                        (25s)                        (15s* — see below)
  *
  * `*` the reregister grace guards a DIFFERENT failure (a vacated seat
  * waiting for the SAME device to reclaim it, `LifecyclePolicy`) than the

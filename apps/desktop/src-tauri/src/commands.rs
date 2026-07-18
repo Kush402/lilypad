@@ -293,13 +293,29 @@ pub fn simulate_pair_request(app: AppHandle, state: State<'_, SharedState>) -> R
     }
 }
 
+/// Open (or focus) the QR overlay WITHOUT minting a pairing. The overlay's
+/// own mount effect is the single place `create_pairing` is called from —
+/// previously the bubble ALSO called it on an idle click, so every click
+/// minted two rooms (three under dev StrictMode): the bubble's room was
+/// orphaned instantly when the overlay's runner overwrote `control_tx`, and
+/// an unlucky interleave could leave the displayed QR pointing at the dead
+/// room. One creator, no race.
+#[tauri::command]
+pub fn show_qr_window(app: AppHandle) -> Result<(), String> {
+    open_window(&app, "qr-overlay", "Lilypad — Pair", 360.0, 500.0)
+}
+
 #[tauri::command]
 pub fn approve_session(app: AppHandle, state: State<'_, SharedState>) -> Result<(), String> {
     let (tx, scopes) = {
         let s = lock_state(&state);
         (s.control_tx.clone(), s.offered_scopes.clone())
     };
-    log::info!(target: "lilypad::audit", "session_start — approved by user");
+    // The audit `session_start` line is NOT written here: this command fires
+    // on every Approve tap, including duplicates the runner ignores (its
+    // idempotent-approval guard). The runner writes the audit event in the
+    // one branch where the approval is actually honored — an audit trail
+    // must record sessions that started, not buttons that were pressed.
     let result = match tx {
         Some(tx) => tx.send(Control::Approve(scopes)).map_err(|e| e.to_string()),
         // No active runner (offline dev) — reflect Active locally.

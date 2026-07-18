@@ -37,6 +37,7 @@ export interface AppStateDto {
 export const api = {
   getState: () => invoke<AppStateDto>('get_state'),
   createPairing: () => invoke<QrPayloadDto>('create_pairing'),
+  showQrWindow: () => invoke<void>('show_qr_window'),
   /** DEV-only (M1): stand in for a phone redeeming the token. Refuses in
    * release builds server-side too (see `commands::simulate_pair_request`). */
   simulatePairRequest: () => invoke<void>('simulate_pair_request'),

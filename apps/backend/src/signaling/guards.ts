@@ -79,8 +79,10 @@ export function isUnexpectedBrowserOrigin(
   originHeader: string | string[] | undefined,
   hostHeader: string | string[] | undefined,
 ): boolean {
-  if (originHeader === undefined) return false;
+  // An empty header ARRAY (`[][0]` → undefined) is the same "no Origin sent"
+  // case as the header being absent — treat both as the native-client path.
   const origin = Array.isArray(originHeader) ? originHeader[0] : originHeader;
+  if (origin === undefined) return false;
   const host = Array.isArray(hostHeader) ? hostHeader[0] : hostHeader;
   if (!host) return true;
   try {

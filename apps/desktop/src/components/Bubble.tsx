@@ -47,15 +47,12 @@ export function Bubble() {
       case 'idle': {
         setBusy(true);
         try {
-          await api.createPairing();
+          // Open the overlay only — the overlay's mount effect is the single
+          // caller of `create_pairing` (previously both fired, minting two
+          // rooms per click and risking a QR for an already-dead room).
+          await api.showQrWindow();
         } catch (err) {
-          // The backend refuses to pair (and already opens/focuses Setup
-          // itself, see `commands::create_pairing`) when a required
-          // permission is missing — an expected, already-handled condition,
-          // not a real error. See docs/audit/m3/desktop-ux.md Finding 1.
-          if (String(err) !== 'permissions_required') {
-            console.error('createPairing failed', err);
-          }
+          console.error('showQrWindow failed', err);
         } finally {
           setBusy(false);
         }
