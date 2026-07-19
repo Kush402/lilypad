@@ -56,7 +56,15 @@ export function DeviceListScreen({ navigation }: Props) {
         });
       } catch (e) {
         const err = toAppError(e);
-        Alert.alert(pair.name ?? 'Laptop', err.message);
+        // A dead/changed backend address (an ephemeral dev tunnel that
+        // rotated, a moved deployment) surfaces as server/network errors
+        // against the STORED apiBaseUrl — tell the user the one action that
+        // actually fixes it, not just "try again".
+        const message =
+          err.code === 'server_error' || err.code === 'network_unreachable'
+            ? `${err.message}\n\nIf this keeps happening, the laptop's server address may have changed — scan its QR code once to refresh it.`
+            : err.message;
+        Alert.alert(pair.name ?? 'Laptop', message);
       } finally {
         setConnecting(null);
       }
