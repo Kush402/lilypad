@@ -80,6 +80,13 @@ export async function signalingRoutes(app: FastifyInstance): Promise<void> {
     },
     onStateChange: (roomId, sessionId, from, to) =>
       log.session.info({ roomId, sessionId, from, to }, 'session state'),
+    onRoomClosed: (roomId) => {
+      // A dead room's auth record must not outlive it (zombie-room guard —
+      // see RoomAuthStore.delete). Fire-and-forget like every other hook.
+      void roomAuth
+        .delete(roomId)
+        .catch((err) => log.signaling.warn({ err, roomId }, 'room-auth record delete failed'));
+    },
     onPairDenied: (info) => {
       void auditLog
         .pairDenied({

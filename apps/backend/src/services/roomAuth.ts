@@ -15,15 +15,25 @@ interface RoomAuthRecord {
 export interface RoomAuthRedis {
   set(key: string, value: string, mode: 'EX', ttlSeconds: number): Promise<unknown>;
   get(key: string): Promise<string | null>;
+  del(key: string): Promise<unknown>;
 }
 
-/** How long a room's authorization record survives with no further write —
- * long enough to cover minting the QR, displaying it, the user scanning it,
- * and redeeming (the pairing token itself already expires in 60s, but the
- * room-auth record additionally needs to outlive the WS `register` race that
- * follows redemption, hence a more generous window here). Independent of,
- * and deliberately looser than, `PAIRING_TOKEN_TTL_SECONDS`. */
+/** How long a room's authorization record survives before any device has
+ * redeemed the token — long enough to cover minting the QR, displaying it,
+ * the user scanning it, and redeeming. Independent of, and deliberately
+ * looser than, `PAIRING_TOKEN_TTL_SECONDS`. */
 const ROOM_CLAIM_WINDOW_SECONDS = 10 * 60;
+
+/** Once a mobile device has redeemed, the record must live as long as the
+ * SESSION may: every mid-session signaling reconnect (phone lock, network
+ * flip, backend restart + room resurrection) re-runs the register gate
+ * against this record, and an expired record hard-rejects the reconnect
+ * (4403) — killing the renegotiate/ICE-restart channel for a session whose
+ * media still flows. Matches `RoomStore`'s 6h room-record window
+ * (`session/roomStore.ts`), and `verify()` additionally slides it on every
+ * successful re-register so even longer sessions keep their auth alive.
+ * See `docs/m5.4-trusted-devices-audit.md` BUG-1. */
+const SESSION_AUTH_WINDOW_SECONDS = 6 * 60 * 60;
 
 /**
  * Redis-backed source of truth for "which devices is this room actually for,"
@@ -44,26 +54,30 @@ const ROOM_CLAIM_WINDOW_SECONDS = 10 * 60;
 export class RoomAuthStore {
   constructor(
     private readonly store: RoomAuthRedis,
-    private readonly ttlSeconds: number = ROOM_CLAIM_WINDOW_SECONDS,
+    private readonly claimTtlSeconds: number = ROOM_CLAIM_WINDOW_SECONDS,
+    private readonly sessionTtlSeconds: number = SESSION_AUTH_WINDOW_SECONDS,
   ) {}
 
   /** Called when `/pairing/create` mints a room — the desktop is the only
-   * device known at this point. */
+   * device known at this point, and the record only needs to survive the
+   * scan-and-redeem window. */
   async recordDesktop(roomId: string, desktopDeviceId: string): Promise<void> {
     const record: RoomAuthRecord = { desktopDeviceId, mobileDeviceId: null };
-    await this.write(roomId, record);
+    await this.write(roomId, record, this.claimTtlSeconds);
   }
 
   /** Called when `/pairing/redeem` succeeds — extends the same record with
-   * the redeeming mobile device, refreshing the TTL so the claim window
-   * covers the WS `register` race that follows redemption too. */
+   * the redeeming mobile device. From this point the record guards every
+   * mid-session reconnect, so it gets the session window, not the claim
+   * window (BUG-1: a 10-min TTL here rejected any signaling reconnect more
+   * than 10 minutes into a session). */
   async recordMobile(
     roomId: string,
     desktopDeviceId: string,
     mobileDeviceId: string,
   ): Promise<void> {
     const record: RoomAuthRecord = { desktopDeviceId, mobileDeviceId };
-    await this.write(roomId, record);
+    await this.write(roomId, record, this.sessionTtlSeconds);
   }
 
   /** Does `deviceId` match the device the pairing flow actually issued this
@@ -72,7 +86,12 @@ export class RoomAuthStore {
    * out of thin air can never pass this check, which also closes the
    * room-exhaustion DoS Finding 1 describes (no `Room` gets created for an
    * unauthorized attempt at all). `false` for `role: 'mobile'` before
-   * redemption — there is nothing to match yet. */
+   * redemption — there is nothing to match yet.
+   *
+   * A successful verification also SLIDES the record's TTL back out to the
+   * session window: reconnects are exactly the signal that the session is
+   * still alive and will need this record again. Best-effort — a failed
+   * refresh must never turn a valid verification into a rejection. */
   async verify(roomId: string, role: DeviceKind, deviceId: string): Promise<boolean> {
     const raw = await this.store.get(redisKeys.roomAuth(roomId));
     if (!raw) return false;
@@ -83,10 +102,26 @@ export class RoomAuthStore {
       return false; // corrupt record can't be verified safe — fail closed
     }
     const expected = role === 'desktop' ? record.desktopDeviceId : record.mobileDeviceId;
-    return expected !== null && expected === deviceId;
+    const ok = expected !== null && expected === deviceId;
+    if (ok) {
+      try {
+        await this.store.set(redisKeys.roomAuth(roomId), raw, 'EX', this.sessionTtlSeconds);
+      } catch {
+        /* refresh is an optimization; verification stands */
+      }
+    }
+    return ok;
   }
 
-  private async write(roomId: string, record: RoomAuthRecord): Promise<void> {
-    await this.store.set(redisKeys.roomAuth(roomId), JSON.stringify(record), 'EX', this.ttlSeconds);
+  /** Called when the room itself ends (`SignalingHub.endRoom` via the
+   * `onRoomClosed` hook) — a dead room's auth record must not outlive it,
+   * or the two bound devices could re-register into the dead `roomId` and
+   * resurrect a zombie room the session lifecycle already tore down. */
+  async delete(roomId: string): Promise<void> {
+    await this.store.del(redisKeys.roomAuth(roomId));
+  }
+
+  private async write(roomId: string, record: RoomAuthRecord, ttlSeconds: number): Promise<void> {
+    await this.store.set(redisKeys.roomAuth(roomId), JSON.stringify(record), 'EX', ttlSeconds);
   }
 }

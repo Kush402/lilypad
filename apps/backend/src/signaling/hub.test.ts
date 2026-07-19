@@ -83,6 +83,29 @@ function connectedRoom() {
   return { hub, desktop, mobile };
 }
 
+describe('SignalingHub — onRoomClosed hook', () => {
+  it('fires exactly once per torn-down room, session or not', () => {
+    const closed: string[] = [];
+    const hub = new SignalingHub({
+      buildIceServers: () => ICE,
+      now: () => 0,
+      onRoomClosed: (roomId) => closed.push(roomId),
+    });
+    const desktop = new FakePeer();
+    const mobile = new FakePeer();
+    hub.handleMessage(desktop, reg('desktop', 'desktop-01'));
+    hub.handleMessage(mobile, reg('mobile', 'mobile-01'));
+
+    // Pre-session teardown (pair-denied path ends the room too).
+    hub.handleMessage(mobile, frame('disconnect', 'mobile', { reason: 'user cancelled' }));
+    expect(closed).toEqual([ROOM]);
+
+    // A room that never existed can't fire it again.
+    hub.handleClose(desktop);
+    expect(closed).toEqual([ROOM]);
+  });
+});
+
 describe('SignalingHub — happy path', () => {
   it('runs pair → approve → offer/answer → ICE → disconnect', () => {
     const { hub, desktop, mobile } = connectedRoom();

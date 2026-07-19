@@ -38,6 +38,11 @@ export interface SignalingHubDeps {
     to: SessionState,
   ) => void;
   onSessionEnd?: (sessionId: string, reason: string) => void;
+  /** Fired whenever a room is torn down, session or not — the hook for
+   * cleaning up room-scoped external state (today: the room's
+   * `RoomAuthStore` record, which must not outlive the room it guards —
+   * see `docs/m5.4-trusted-devices-audit.md` BUG-1). */
+  onRoomClosed?: (roomId: string) => void;
   /** Fired when the desktop explicitly denies a pending pair request. The
    * room ends right here, before a session ever gets minted, so
    * `onSessionEnd` (only fired when `room.sessionId` is set — see
@@ -440,6 +445,7 @@ export class SignalingHub {
         .delete(room.id)
         .catch((err) => log.signaling.warn({ err, roomId: room.id }, 'room record delete failed'));
     }
+    this.deps.onRoomClosed?.(room.id);
     log.signaling.info({ roomId: room.id, reason }, 'room closed');
   }
 
