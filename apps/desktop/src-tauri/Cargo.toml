@@ -4,7 +4,8 @@ version = "0.1.0"
 description = "Lilypad desktop — floating bubble, QR pairing, plugin host"
 authors = ["Lilypad"]
 edition = "2021"
-rust-version = "1.77"
+# 1.82: `Option::is_none_or` (used by the media congestion controller).
+rust-version = "1.82"
 
 [lib]
 name = "lilypad_desktop_lib"
