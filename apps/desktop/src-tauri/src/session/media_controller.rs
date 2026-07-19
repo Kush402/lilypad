@@ -237,6 +237,7 @@ impl MediaController {
 
         let media_fail_tx = self.media_fail_tx.clone();
         let paused = Arc::clone(&self.paused);
+        let control = pipeline.control();
         tokio::spawn(async move {
             // RTP timestamps advance by each sample's DURATION — stamping a
             // fixed 1/fps regardless of real inter-frame spacing makes the
@@ -247,6 +248,16 @@ impl MediaController {
             // observed on-device as "the Mac did it, the phone shows it
             // late". Stamp the real gap between capture timestamps instead.
             let mut last_ts: Option<Duration> = None;
+            // A failed send is a NETWORK condition (path migration, ICE
+            // restart in flight — e.g. "No route to host" the instant the
+            // radio path flips), not a pipeline failure. The session's
+            // recovery machinery owns connection life/death; breaking out
+            // here used to masquerade as "pipeline stopped unexpectedly"
+            // and tear down a session that ICE restart was about to save.
+            // Drop frames while the path is down, keep draining, and force
+            // a fresh IDR once sends succeed again so the viewer doesn't
+            // smear on delta frames whose references never arrived.
+            let mut dropped_sends: u64 = 0;
             while let Some(sample) = rx.recv().await {
                 if paused.load(Ordering::Relaxed) {
                     continue; // drop the frame — capture/encode still run, we just don't send
@@ -256,9 +267,22 @@ impl MediaController {
                     _ => frame_dur,
                 };
                 last_ts = Some(sample.timestamp);
-                if let Err(e) = peer.send_video_sample(sample.data, dur).await {
-                    log::warn!(target: "lilypad::media", "send_video_sample failed: {e}");
-                    break;
+                match peer.send_video_sample(sample.data, dur).await {
+                    Ok(()) => {
+                        if dropped_sends > 0 {
+                            log::info!(target: "lilypad::media",
+                                "video send recovered after {dropped_sends} dropped frame(s) — forcing IDR");
+                            control.request_keyframe();
+                            dropped_sends = 0;
+                        }
+                    }
+                    Err(e) => {
+                        if dropped_sends == 0 {
+                            log::warn!(target: "lilypad::media",
+                                "send_video_sample failed — dropping frames until the path recovers: {e}");
+                        }
+                        dropped_sends += 1;
+                    }
                 }
             }
             // The sample channel closed. If we didn't ask the pipeline to
