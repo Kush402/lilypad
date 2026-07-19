@@ -42,3 +42,6 @@ apps/mobile/.expo/
 
 # Coverage
 coverage/
+
+# Xcode per-user IDE state (window layout etc.) — never meaningful in git
+**/xcuserdata/

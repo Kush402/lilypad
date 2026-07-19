@@ -170,10 +170,28 @@ token redeems (single-use, 60s expiry) → approve/deny UI is drivable.
   a real perf issue found by benchmarking (the permission check is an XPC
   round-trip to `tccd`; now cached with a 500ms TTL).
 
-## M5 — Auth + trusted devices
+## M5 — Auth + trusted devices (in progress)
 
-Email/password (then Google/Apple), device binding, trusted devices, session
-expiry, permission scopes, audit logs wired to Postgres.
+### M5.3 — Ask AI operator ✅
+
+On-device tiered agent (P1 skills → P2 sandboxed codegen → P3 accessibility →
+P4 vision), security gate with phone-side approvals, instant human takeover,
+model-agnostic provider layer (Anthropic + any OpenAI-compatible endpoint),
+keychain key storage. See `ask-architecture-audit.md` / `m5.3-ai-executor-plan.md`.
+
+### M5.4 — Persistent trusted devices ✅
+
+Pair once (QR + approve + "Trust this device"), reconnect forever: keychain
+device identity + saved pairs on the phone (My Devices → Connect), desktop
+presence channel + ring/auto-approve, `trusted_devices` rows with per-pair
+auto-connect + revocation, desktop Trusted Devices dashboard. See
+`m5.4-trusted-devices-audit.md`.
+
+### M5 remainder — accounts + cryptographic device identity
+
+Email/password (then Google/Apple), Ed25519 device keys + challenge-response
+(the `m5-auth-design.md` spec — upgrades the self-asserted deviceId strings in
+place), session expiry, per-device scope policies.
 
 ## M6 — Harden + productize
 

@@ -9,12 +9,13 @@ public internet**, not just the same Wi-Fi.
 Transport is **WebRTC + STUN + TURN (coturn)**. No custom video protocol, no
 LAN-only design, **no silent remote access**.
 
-> **Status: v1.0 (closed beta)** — the full loop works end-to-end on real
-> hardware: QR pairing, desktop approval, live H.264 screen streaming
-> (ScreenCaptureKit → VideoToolbox → WebRTC), touch/keyboard/clipboard input
-> injection, pinch-zoom viewer, reconnect, and keep-awake on both ends.
-> Remaining pre-production items are tracked in
-> [docs/production-readiness.md](docs/production-readiness.md).
+> **Status (2026-07-19, post-M5.4)** — working end-to-end on real hardware
+> over cellular: **pair once with a QR, reconnect forever without one** (My
+> Devices → Connect rings the Mac; trusted devices auto-connect), live H.264
+> streaming (ScreenCaptureKit → VideoToolbox → WebRTC) with self-healing
+> recovery machinery, touch/keyboard/clipboard input, pinch-zoom viewer, a
+> trusted-devices dashboard on the desktop, and the **Ask** AI operator
+> (tiered, sandboxed, model-agnostic) driving the Mac from the phone.
 
 ## Monorepo layout
 
@@ -156,7 +157,9 @@ All suites are expected green before any commit.
 | Security / threat model | [docs/threat-model.md](docs/threat-model.md) · [SECURITY.md](SECURITY.md) |
 | Operations & deployment | [docs/operations.md](docs/operations.md) |
 | End-user guide | [docs/user-guide.md](docs/user-guide.md) |
-| Production readiness | [docs/production-readiness.md](docs/production-readiness.md) |
+| Trusted devices (M5.4) | [docs/m5.4-trusted-devices-audit.md](docs/m5.4-trusted-devices-audit.md) |
+| Ask AI operator (M5.3) | [docs/ask-architecture-audit.md](docs/ask-architecture-audit.md) · [docs/m5.3-ai-executor-plan.md](docs/m5.3-ai-executor-plan.md) |
+| Device identity (M5, forward spec) | [docs/m5-auth-design.md](docs/m5-auth-design.md) |
 | Changelog | [CHANGELOG.md](CHANGELOG.md) |
 
 ## Contributing
