@@ -260,6 +260,12 @@ impl Envelope {
     pub fn heartbeat(room_id: &str) -> Self {
         Self::desktop("heartbeat", room_id, serde_json::json!({}))
     }
+    /// A `ping` elicits a `pong` from the hub — used by the presence channel
+    /// as an application-level liveness probe (a heartbeat alone gets no
+    /// reply, so a half-open socket after sleep/wake is undetectable).
+    pub fn ping(room_id: &str) -> Self {
+        Self::desktop("ping", room_id, serde_json::json!({}))
+    }
     /// Desktop → mobile: current capture resolution and mode, so the phone
     /// can map touches onto the letterboxed video content rect rather than
     /// the whole view (`docs/audit/m3/input-touch.md` Finding 1) and show

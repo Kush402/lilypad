@@ -49,16 +49,44 @@ impl SandboxPolicy {
 /// prepending the (injected) home directory.
 fn sensitive_deny_subpaths(home: &Path) -> Vec<PathBuf> {
     [
+        // ── shells / SSH / GPG / package registries ──
         ".ssh",
-        ".aws",
-        ".config/gcloud",
-        ".config/gh",
-        "Library/Keychains",
-        "Library/Cookies",
-        "Library/Application Support/Lilypad", // our own agent-settings + key refs
         ".gnupg",
         ".netrc",
         ".npmrc",
+        ".pypirc",
+        // ── cloud / container / infra credentials ──
+        ".aws",
+        ".azure",
+        ".config/gcloud",
+        ".config/gh",
+        ".config/git", // may hold credential helpers / tokens
+        ".docker",     // config.json holds registry auth
+        ".kube",       // cluster credentials
+        ".terraform.d",
+        // ── macOS secret stores ──
+        "Library/Keychains",
+        "Library/Cookies",
+        "Library/Application Support/Lilypad", // our own agent-settings + key refs
+        // ── browsers (saved logins, cookies, session tokens) ──
+        "Library/Application Support/Google/Chrome",
+        "Library/Application Support/Chromium",
+        "Library/Application Support/BraveSoftware",
+        "Library/Application Support/Microsoft Edge",
+        "Library/Application Support/Firefox",
+        "Library/Safari",
+        "Library/Containers/com.apple.Safari",
+        // ── messaging / notes app databases ──
+        "Library/Messages",
+        "Library/Application Support/Signal",
+        // ── crypto wallets ──
+        ".electrum",
+        ".bitcoin",
+        "Library/Application Support/Exodus",
+        // ── the whole ~/.config is a common catch-all for tool tokens ──
+        // (denied broadly; the specific entries above are belt-and-suspenders
+        // in case a tool stores creds outside ~/.config too).
+        ".config",
     ]
     .iter()
     .map(|s| home.join(s))
@@ -85,8 +113,16 @@ pub fn build_profile(policy: &SandboxPolicy, home: &Path) -> String {
     p.push_str("(allow process-fork)\n");
     p.push_str("(allow process-exec)\n");
     p.push_str("(allow sysctl-read)\n");
-    p.push_str("(allow mach-lookup)\n");
     p.push_str("(allow signal (target self))\n");
+    // mach-lookup is needed broadly for an interpreter to bootstrap (dyld,
+    // libSystem services), but a blanket allow also reaches the pasteboard
+    // server — a script could read whatever the user last copied (passwords,
+    // 2FA codes). Deny the pasteboard service specifically while keeping the
+    // broad lookup the runtime needs. Explicit deny wins over the allow.
+    // See the 2026-07-19 security audit.
+    p.push_str("(deny mach-lookup (global-name \"com.apple.pasteboard.1\"))\n");
+    p.push_str("(deny mach-lookup (global-name \"com.apple.pboard\"))\n");
+    p.push_str("(allow mach-lookup)\n");
 
     // ── reads ────────────────────────────────────────────────────────────
     // Secret denies FIRST — an explicit deny outranks the broad allow below.
@@ -183,12 +219,34 @@ mod tests {
             "/Users/kush/.aws",
             "/Users/kush/Library/Application Support/Lilypad",
             "/Library/Keychains",
+            // 2026-07-19 audit additions: browsers, cloud/container, ~/.config,
+            // wallets, messaging.
+            "/Users/kush/Library/Application Support/Google/Chrome",
+            "/Users/kush/Library/Safari",
+            "/Users/kush/.docker",
+            "/Users/kush/.kube",
+            "/Users/kush/.config",
+            "/Users/kush/Library/Messages",
         ] {
             let deny = format!("(deny file-read* (subpath \"{sensitive}\"))");
             assert!(prof.contains(&deny), "missing deny for {sensitive}");
             // Explicit deny must precede the broad allow so it stays authoritative.
             assert!(prof.find(&deny).unwrap() < allow_at, "{sensitive} denied too late");
         }
+    }
+
+    #[test]
+    fn pasteboard_mach_service_is_denied_before_the_broad_mach_allow() {
+        let prof = profile(&SandboxPolicy::read_only("/tmp/r".into()));
+        let allow_at = prof
+            .find("(allow mach-lookup)")
+            .expect("broad mach-lookup allow present");
+        let deny = "(deny mach-lookup (global-name \"com.apple.pasteboard.1\"))";
+        assert!(prof.contains(deny), "pasteboard mach service not denied");
+        assert!(
+            prof.find(deny).unwrap() < allow_at,
+            "pasteboard denied after the broad allow — deny would not take effect"
+        );
     }
 
     #[test]

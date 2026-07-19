@@ -114,7 +114,40 @@ export function Control() {
       ) : null}
 
       <TrustedDevices />
+      <StartupToggle />
     </div>
+  );
+}
+
+/**
+ * "Launch at login" toggle (M5.4). Keeps the presence channel ready so a
+ * trusted phone can connect whenever the Mac is on and logged in. Enabled by
+ * default on first run; the user owns it from here.
+ */
+function StartupToggle() {
+  const [enabled, setEnabled] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    api.getLoginItemEnabled().then(setEnabled).catch(() => setEnabled(null));
+  }, []);
+
+  const toggle = (next: boolean) => {
+    setEnabled(next); // optimistic
+    api.setLoginItemEnabled(next).catch(() => {
+      void api.getLoginItemEnabled().then(setEnabled); // reconcile on failure
+    });
+  };
+
+  if (enabled === null) return null;
+  return (
+    <section className="control__startup">
+      <label className="row trust-row">
+        <input type="checkbox" checked={enabled} onChange={(e) => toggle(e.target.checked)} />
+        <span>
+          Launch at login <span className="muted">— stay ready for trusted devices</span>
+        </span>
+      </label>
+    </section>
   );
 }
 

@@ -22,8 +22,17 @@ use crate::signaling::{connect, messages::ConnectRequestPayload, Envelope};
 use crate::state::SharedState;
 
 /// Mirrors `@lilypad/protocol`'s `APP_HEARTBEAT_INTERVAL_MS` (4s), like the
-/// session runner does — the hub reaps a presence seat silent for 25s.
+/// session runner does — the hub reaps a presence seat silent for 25s. Each
+/// tick sends a `ping` (not a bare heartbeat) so the hub's `pong` gives us a
+/// liveness signal.
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(4);
+/// If the hub hasn't sent ANY frame (pong or connect-request) in this long,
+/// the socket is presumed dead and we reconnect. This is the load-bearing
+/// fix for sleep/wake: a suspended-then-resumed Mac leaves the TCP connection
+/// half-open — writes appear to succeed (they queue into a dead socket's
+/// buffer) so nothing else notices, and trusted rings silently never arrive
+/// until the app is restarted. 16s = 4 missed pings.
+const PRESENCE_STALE_AFTER: Duration = Duration::from_secs(16);
 /// Mirrors `RECONNECT_BACKOFF_MS`, then holds at a steady retry cadence —
 /// unlike a session, presence never runs out of attempts.
 const BACKOFF_MS: [u64; 4] = [500, 1000, 2000, 4000];
@@ -76,15 +85,31 @@ async fn run(app: AppHandle) {
                     log::info!(target: "lilypad::presence", "presence online ({room})");
                     attempt = 0;
                     let mut hb = tokio::time::interval(HEARTBEAT_INTERVAL);
+                    // Any inbound frame (the register ack path, a pong, a
+                    // connect-request) proves the socket is alive; the register
+                    // just went out, so seed liveness at "now".
+                    let mut last_inbound = tokio::time::Instant::now();
                     loop {
                         tokio::select! {
                             _ = hb.tick() => {
-                                if handle.send(Envelope::heartbeat(&room)).is_err() {
+                                // A dead writer task surfaces as a send error;
+                                // a half-open socket (post-wake) does not, so
+                                // the staleness check below is the real guard.
+                                if handle.send(Envelope::ping(&room)).is_err() {
+                                    break;
+                                }
+                                if last_inbound.elapsed() >= PRESENCE_STALE_AFTER {
+                                    log::warn!(
+                                        target: "lilypad::presence",
+                                        "presence stale ({}s with no hub response) — reconnecting",
+                                        PRESENCE_STALE_AFTER.as_secs()
+                                    );
                                     break;
                                 }
                             }
                             env = inbound.recv() => {
                                 let Some(env) = env else { break };
+                                last_inbound = tokio::time::Instant::now();
                                 handle_inbound(&app, &url, env);
                             }
                         }

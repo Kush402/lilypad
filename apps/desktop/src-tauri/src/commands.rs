@@ -749,6 +749,22 @@ pub async fn set_pair_auto_approve(
     Ok(())
 }
 
+/// Whether Lilypad relaunches at login (macOS LaunchAgent).
+#[tauri::command]
+pub fn get_login_item_enabled() -> bool {
+    crate::autostart::is_enabled()
+}
+
+/// Turn the login item on/off from the dashboard.
+#[tauri::command]
+pub fn set_login_item_enabled(enabled: bool) -> Result<(), String> {
+    if enabled {
+        crate::autostart::enable()
+    } else {
+        crate::autostart::disable()
+    }
+}
+
 /// Revoke a pair — the phone can no longer connect without a fresh QR pairing.
 #[tauri::command]
 pub async fn revoke_pair(state: State<'_, SharedState>, pair_id: String) -> Result<(), String> {

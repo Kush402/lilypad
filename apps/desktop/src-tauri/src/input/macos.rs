@@ -113,9 +113,19 @@ impl MacInputBackend {
 
     /// Main display size in points, used to map normalized 0..1 coordinates
     /// to the absolute screen space CGEvent expects.
+    ///
+    /// Coordinates arrive as raw `f64` from the phone (JSON), so a modified or
+    /// buggy client could send out-of-range or non-finite values. Clamp to the
+    /// normalized [0, 1] range and treat any non-finite value as 0 — an
+    /// injected event must always land on the actual screen, never at a
+    /// degenerate (NaN) or off-screen point. See the 2026-07-19 security audit.
     fn screen_point(&self, x: f64, y: f64) -> CGPoint {
         let bounds = CGDisplay::main().bounds();
-        CGPoint::new(bounds.size.width * x, bounds.size.height * y)
+        let clamp01 = |v: f64| if v.is_finite() { v.clamp(0.0, 1.0) } else { 0.0 };
+        CGPoint::new(
+            bounds.size.width * clamp01(x),
+            bounds.size.height * clamp01(y),
+        )
     }
 
     fn require_permission(&self) -> anyhow::Result<()> {
@@ -309,14 +319,27 @@ impl InputBackend for MacInputBackend {
 
     fn inject_scroll(&mut self, action: ScrollAction) -> Result<()> {
         self.require_permission()?;
+        // Deltas are raw f64 from the phone: a non-finite value casts to a
+        // saturated i32 (Inf → i32::MAX) — a single frame that scrolls the
+        // content by billions of pixels. Zero non-finite deltas and bound the
+        // per-event magnitude to a large-but-sane pixel range. See the
+        // 2026-07-19 security audit.
+        const MAX_SCROLL_PX: f64 = 10_000.0;
+        let bound = |v: f64| {
+            if v.is_finite() {
+                v.clamp(-MAX_SCROLL_PX, MAX_SCROLL_PX)
+            } else {
+                0.0
+            }
+        };
         // dy in the protocol: positive scrolls content down ⇒ wheel delta is
         // negative (natural direction matches AppKit's "scroll" semantics).
         let event = CGEvent::new_scroll_event(
             self.source()?,
             ScrollEventUnit::PIXEL,
             2,
-            -(action.dy.round() as i32),
-            -(action.dx.round() as i32),
+            -(bound(action.dy).round() as i32),
+            -(bound(action.dx).round() as i32),
             0,
         )
         .map_err(|_| anyhow::anyhow!("CGEventCreateScrollWheelEvent failed"))?;

@@ -8,6 +8,7 @@
 #![allow(dead_code)]
 
 mod agent;
+mod autostart;
 mod commands;
 mod health;
 mod presence;
@@ -202,6 +203,14 @@ pub fn run() {
             // harmless when the backend is down or pre-M5.4.
             presence::spawn(app.handle().clone());
 
+            // Launch at login (once, on first run) so a trusted phone can
+            // reach this Mac whenever it's on and logged in — the "ever
+            // ready" behavior. Best-effort; never blocks startup. See
+            // `autostart.rs` for the security posture.
+            if let Ok(dir) = app.path().app_config_dir() {
+                autostart::ensure_first_run_enabled(&dir);
+            }
+
             // First-run (or any-run, if a grant was later revoked) guidance:
             // a passive TCC check with no active request/remediation path
             // left a user to struggle through System Settings unaided. See
@@ -240,6 +249,8 @@ pub fn run() {
             commands::list_trusted_devices,
             commands::set_pair_auto_approve,
             commands::revoke_pair,
+            commands::get_login_item_enabled,
+            commands::set_login_item_enabled,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Lilypad desktop");

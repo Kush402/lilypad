@@ -52,6 +52,9 @@ export const api = {
   setPairAutoApprove: (pairId: string, autoApprove: boolean) =>
     invoke<void>('set_pair_auto_approve', { pairId, autoApprove }),
   revokePair: (pairId: string) => invoke<void>('revoke_pair', { pairId }),
+  getLoginItemEnabled: () => invoke<boolean>('get_login_item_enabled'),
+  setLoginItemEnabled: (enabled: boolean) =>
+    invoke<void>('set_login_item_enabled', { enabled }),
 };
 
 /** One trusted phone, as the dashboard lists it. */
