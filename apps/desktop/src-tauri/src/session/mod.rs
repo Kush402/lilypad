@@ -48,7 +48,9 @@ const CLIPBOARD_POLL_INTERVAL: Duration = Duration::from_millis(750);
 #[derive(Debug, Clone)]
 pub enum Control {
     /// The user tapped Approve on the desktop, granting these scopes.
-    Approve(Vec<String>),
+    /// `trust`: they also checked "Trust this device" (M5.4) — the backend
+    /// records a persistent pair enabling the no-QR reconnect.
+    Approve { scopes: Vec<String>, trust: bool },
     Deny,
     Disconnect,
 }
@@ -714,7 +716,7 @@ pub async fn run_session(
 
             ctrl = control_rx.recv() => {
                 match ctrl {
-                    Some(Control::Approve(scopes)) => {
+                    Some(Control::Approve { scopes, trust }) => {
                         // Idempotent approval: a second Approve (a double-tap /
                         // re-render in the desktop UI, or a re-prompt from a
                         // retried pair-request) must NOT issue a second
@@ -736,7 +738,7 @@ pub async fn run_session(
                             log::info!(target: "lilypad::session", "user approved session");
                             // A dead signaling writer must end the session with a
                             // clear reason, never bubble an Err with no Ended event.
-                            if let Err(e) = sig.send(Envelope::pair_approved(&room_id, &scopes)) {
+                            if let Err(e) = sig.send(Envelope::pair_approved(&room_id, &scopes, trust)) {
                                 runner.end(format!("signaling send failed: {e}"));
                                 break;
                             }

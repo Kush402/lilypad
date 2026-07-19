@@ -10,6 +10,7 @@
 mod agent;
 mod commands;
 mod health;
+mod presence;
 // Public so a headless example / integration test can drive a real session
 // without the Tauri GUI.
 pub mod input;
@@ -153,7 +154,9 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                 let _ = commands::show_qr_overlay(app);
             }
             "approve" => {
-                let _ = commands::approve_session(app.clone(), app.state());
+                // Tray approve never asserts trust — that's a deliberate,
+                // visible checkbox decision in the Control window only.
+                let _ = commands::approve_session(app.clone(), app.state(), None);
             }
             "deny" => {
                 let _ = commands::deny_session(app.clone(), app.state());
@@ -193,6 +196,11 @@ pub fn run() {
             app.manage(Mutex::new(AppState::new(device_id, backend)));
 
             build_tray(app)?;
+
+            // M5.4: standing presence connection so trusted phones can ring
+            // this desktop without a QR. Reconnects forever on its own;
+            // harmless when the backend is down or pre-M5.4.
+            presence::spawn(app.handle().clone());
 
             // First-run (or any-run, if a grant was later revoked) guidance:
             // a passive TCC check with no active request/remediation path

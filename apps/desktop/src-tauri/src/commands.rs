@@ -167,7 +167,9 @@ pub async fn create_pairing(
 
 /// Spawn the async session runner + a task that forwards its events to the UI
 /// (updating coarse session state and emitting `lilypad://session`).
-fn spawn_session_runner(
+/// `pub(crate)`: also the presence channel's entry point for accepted
+/// connect-requests (M5.4) — a rung session and a QR session run identically.
+pub(crate) fn spawn_session_runner(
     app: &AppHandle,
     room_id: String,
     signaling_url: String,
@@ -213,14 +215,35 @@ fn apply_session_event(app: &AppHandle, ev: &SessionEvent) {
             device_name,
             requested_scopes,
         } => {
-            s.session = SessionStatus::AwaitingApproval;
-            // Previously discarded via a `{ .. }` wildcard — this is the
-            // exact information the approve/deny UI needs to show WHO is
-            // asking and for WHAT. See `docs/audit/m3/desktop-ux.md` Finding 2.
-            s.pending_request = Some(PendingRequest::new(
-                device_name.clone(),
-                requested_scopes.clone(),
-            ));
+            // M5.4 "Always allow": a trusted pair rang this exact room with
+            // auto-approve — skip the ring and fire the approval through the
+            // normal control path (the runner's idempotence and audit logging
+            // apply unchanged). Trust is NOT re-asserted on an auto-approval.
+            let auto = s.auto_approve_room.is_some()
+                && s.auto_approve_room.as_deref() == s.current_room_id.as_deref();
+            if auto {
+                if let Some(tx) = s.control_tx.clone() {
+                    let scopes = s.offered_scopes.clone();
+                    log::info!(
+                        target: "lilypad::audit",
+                        "session auto-approved — trusted device (Always allow)"
+                    );
+                    let _ = tx.send(Control::Approve {
+                        scopes,
+                        trust: false,
+                    });
+                }
+                s.pending_request = None;
+            } else {
+                s.session = SessionStatus::AwaitingApproval;
+                // Previously discarded via a `{ .. }` wildcard — this is the
+                // exact information the approve/deny UI needs to show WHO is
+                // asking and for WHAT. See `docs/audit/m3/desktop-ux.md` Finding 2.
+                s.pending_request = Some(PendingRequest::new(
+                    device_name.clone(),
+                    requested_scopes.clone(),
+                ));
+            }
         }
         SessionEvent::SessionStarting { .. } => {
             // Approval already happened (this fires after Approve triggers a
@@ -245,12 +268,15 @@ fn apply_session_event(app: &AppHandle, ev: &SessionEvent) {
             s.control_tx = None;
             s.current_room_id = None;
             s.pending_request = None;
+            s.auto_approve_room = None;
         }
         _ => {}
     }
+    // Ring only when a human decision is actually pending (auto-approved
+    // rings never show the window).
+    let ring = matches!(ev, SessionEvent::PairRequested { .. }) && s.pending_request.is_some();
     drop(s);
-    // Bring the control window forward when approval is needed.
-    if matches!(ev, SessionEvent::PairRequested { .. }) {
+    if ring {
         let _ = show_control(app);
     }
     crate::sync_tray_menu(app);
@@ -306,7 +332,11 @@ pub fn show_qr_window(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn approve_session(app: AppHandle, state: State<'_, SharedState>) -> Result<(), String> {
+pub fn approve_session(
+    app: AppHandle,
+    state: State<'_, SharedState>,
+    trust: Option<bool>,
+) -> Result<(), String> {
     let (tx, scopes) = {
         let s = lock_state(&state);
         (s.control_tx.clone(), s.offered_scopes.clone())
@@ -317,7 +347,12 @@ pub fn approve_session(app: AppHandle, state: State<'_, SharedState>) -> Result<
     // one branch where the approval is actually honored — an audit trail
     // must record sessions that started, not buttons that were pressed.
     let result = match tx {
-        Some(tx) => tx.send(Control::Approve(scopes)).map_err(|e| e.to_string()),
+        Some(tx) => tx
+            .send(Control::Approve {
+                scopes,
+                trust: trust.unwrap_or(false),
+            })
+            .map_err(|e| e.to_string()),
         // No active runner (offline dev) — reflect Active locally.
         None => {
             lock_state(&state).session = SessionStatus::Active;

@@ -67,6 +67,11 @@ pub struct AppState {
     /// Set while `session == AwaitingApproval`; cleared once approved, denied,
     /// or the session ends. See `PendingRequest`'s doc comment.
     pub pending_request: Option<PendingRequest>,
+    /// M5.4 no-QR reconnect: set by the presence channel when a trusted
+    /// pair's "Always allow" rang this room — `apply_session_event` skips the
+    /// ring and auto-approves the instant the pair-request arrives. Cleared
+    /// when the session ends.
+    pub auto_approve_room: Option<String>,
 }
 
 impl AppState {
@@ -79,6 +84,7 @@ impl AppState {
             offered_scopes: vec!["view".to_owned(), "control".to_owned()],
             control_tx: None,
             pending_request: None,
+            auto_approve_room: None,
         }
     }
 }

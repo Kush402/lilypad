@@ -48,6 +48,10 @@ export function Control() {
   const now = useNow(5_000);
   const session = state?.session ?? 'idle';
   const pending = state?.pending_request ?? null;
+  // "Trust this device" (M5.4): default ON — the pairing ceremony (scan +
+  // explicit approve) IS the trust decision; unchecking covers one-off
+  // sessions on devices you don't own.
+  const [trust, setTrust] = useState(true);
 
   return (
     <div className="page control">
@@ -74,8 +78,18 @@ export function Control() {
           {pending ? (
             <p className="muted">requesting since {timeSince(pending.requested_at, now)}</p>
           ) : null}
+          <label className="row trust-row">
+            <input
+              type="checkbox"
+              checked={trust}
+              onChange={(e) => setTrust(e.target.checked)}
+            />
+            <span>
+              Trust this device <span className="muted">— reconnects without a QR scan</span>
+            </span>
+          </label>
           <div className="row">
-            <button className="btn btn--primary" onClick={() => void api.approve()}>
+            <button className="btn btn--primary" onClick={() => void api.approve(trust)}>
               Approve
             </button>
             <button className="btn btn--danger" onClick={() => void api.deny()}>

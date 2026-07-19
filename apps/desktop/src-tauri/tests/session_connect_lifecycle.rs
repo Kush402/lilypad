@@ -205,7 +205,10 @@ async fn connect_and_stream() -> ConnectedSession {
     .await;
 
     control_tx
-        .send(Control::Approve(vec!["view".into(), "control".into()]))
+        .send(Control::Approve {
+            scopes: vec!["view".into(), "control".into()],
+            trust: false,
+        })
         .expect("send approve");
     expect_outbound(&mut from_desktop, "pair-approved").await;
 

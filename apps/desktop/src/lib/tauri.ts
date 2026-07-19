@@ -41,7 +41,7 @@ export const api = {
   /** DEV-only (M1): stand in for a phone redeeming the token. Refuses in
    * release builds server-side too (see `commands::simulate_pair_request`). */
   simulatePairRequest: () => invoke<void>('simulate_pair_request'),
-  approve: () => invoke<void>('approve_session'),
+  approve: (trust = false) => invoke<void>('approve_session', { trust }),
   deny: () => invoke<void>('deny_session'),
   disconnect: () => invoke<void>('disconnect'),
   panic: () => invoke<void>('panic_disconnect'),

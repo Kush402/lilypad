@@ -211,11 +211,13 @@ impl Envelope {
             serde_json::json!({ "role": ROLE_DESKTOP, "deviceId": device_id }),
         )
     }
-    pub fn pair_approved(room_id: &str, granted_scopes: &[String]) -> Self {
+    /// `trust`: the user also checked "Trust this device" — the backend
+    /// records a persistent pair enabling the no-QR reconnect (M5.4).
+    pub fn pair_approved(room_id: &str, granted_scopes: &[String], trust: bool) -> Self {
         Self::desktop(
             "pair-approved",
             room_id,
-            serde_json::json!({ "grantedScopes": granted_scopes }),
+            serde_json::json!({ "grantedScopes": granted_scopes, "trust": trust }),
         )
     }
     pub fn pair_denied(room_id: &str, reason: Option<&str>) -> Self {
@@ -373,6 +375,28 @@ pub struct SetCaptureModePayload {
     pub mode: CaptureMode,
 }
 
+/// Server → desktop (presence room, M5.4): a trusted phone asked to connect
+/// without a QR. `session_room_id` is the fresh, room-auth-bound room the
+/// desktop's session runner should join; `auto_approve` reflects the pair's
+/// desktop-side "Always allow" setting. Mirrors `signaling.ts`'s
+/// `connect-request` with the same defense-in-depth bounds.
+#[derive(Deserialize, Debug, Clone)]
+pub struct ConnectRequestPayload {
+    #[serde(rename = "sessionRoomId", deserialize_with = "deserialize_room_id")]
+    pub session_room_id: String,
+    #[serde(rename = "mobileDeviceId", deserialize_with = "deserialize_device_id")]
+    pub mobile_device_id: String,
+    #[serde(rename = "mobileDeviceName")]
+    pub mobile_device_name: Option<String>,
+    #[serde(
+        rename = "requestedScopes",
+        deserialize_with = "deserialize_requested_scopes"
+    )]
+    pub requested_scopes: Vec<SessionScope>,
+    #[serde(rename = "autoApprove")]
+    pub auto_approve: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -467,6 +491,44 @@ mod tests {
         assert_eq!(p.ice_servers[0].url_list(), vec!["stun:localhost:3478"]);
         assert_eq!(p.ice_servers[1].url_list(), vec!["turn:localhost:3478"]);
         assert_eq!(p.ice_servers[1].username.as_deref(), Some("1700:sess"));
+    }
+
+    #[test]
+    fn pair_approved_carries_the_trust_flag() {
+        let v = serde_json::to_value(Envelope::pair_approved(
+            "r",
+            &["view".to_owned(), "control".to_owned()],
+            true,
+        ))
+        .unwrap();
+        assert_eq!(v["type"], "pair-approved");
+        assert_eq!(v["payload"]["grantedScopes"][1], "control");
+        assert_eq!(v["payload"]["trust"], true);
+    }
+
+    #[test]
+    fn parses_connect_request_and_bounds_its_fields() {
+        let json = serde_json::json!({
+            "sessionRoomId": "room-fresh",
+            "mobileDeviceId": "mobile-01x",
+            "mobileDeviceName": "Kush's iPhone",
+            "requestedScopes": ["view", "control"],
+            "autoApprove": true,
+        });
+        let p: ConnectRequestPayload = serde_json::from_value(json).unwrap();
+        assert_eq!(p.session_room_id, "room-fresh");
+        assert_eq!(p.mobile_device_id, "mobile-01x");
+        assert!(p.auto_approve);
+
+        // Same defense-in-depth bounds as every other inbound payload.
+        let bad = serde_json::json!({
+            "sessionRoomId": "r",
+            "mobileDeviceId": "short",
+            "mobileDeviceName": null,
+            "requestedScopes": [],
+            "autoApprove": false,
+        });
+        assert!(serde_json::from_value::<ConnectRequestPayload>(bad).is_err());
     }
 
     #[test]

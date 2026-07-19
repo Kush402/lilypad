@@ -140,7 +140,10 @@ async fn approve_sends_pair_approved_with_granted_scopes() {
         .expect("send pair-request");
 
     control_tx
-        .send(Control::Approve(vec!["view".into(), "control".into()]))
+        .send(Control::Approve {
+            scopes: vec!["view".into(), "control".into()],
+            trust: false,
+        })
         .expect("send approve");
 
     let approved = expect_outbound(&mut from_desktop, "pair-approved").await;
