@@ -273,6 +273,9 @@ where
             let decision = match decision {
                 Ok(d) => d,
                 Err(err) => {
+                    // Also land the reason in the desktop log — the step feed
+                    // alone dies with the phone connection.
+                    log::warn!(target: "lilypad::agent", "run {run_id}: reasoning failed: {err}");
                     let sid = self.next_step_id(run_id);
                     self.emit(
                         run_id,

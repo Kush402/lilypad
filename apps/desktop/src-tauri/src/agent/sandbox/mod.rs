@@ -264,8 +264,10 @@ mod tests {
         }
         let dir = scratch("timeout");
         let policy = SandboxPolicy::read_only(dir.clone());
-        let mut limits = SandboxLimits::default();
-        limits.wall_timeout = Duration::from_millis(600);
+        let limits = SandboxLimits {
+            wall_timeout: Duration::from_millis(600),
+            ..Default::default()
+        };
         let start = std::time::Instant::now();
         let outcome = run(
             &policy,

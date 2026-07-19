@@ -61,6 +61,11 @@ pub enum Block {
         id: String,
         name: String,
         input: serde_json::Value,
+        /// Opaque provider-specific payload that arrived WITH this tool call
+        /// (e.g. a reasoning signature) and must be echoed back verbatim when
+        /// the turn is replayed — some endpoints reject the thread without it.
+        /// Never inspected here; only the owning adapter reads/writes it.
+        extra: Option<serde_json::Value>,
     },
     ToolResult {
         tool_use_id: String,
@@ -102,6 +107,8 @@ pub struct ToolCall {
     pub id: String,
     pub name: String,
     pub input: serde_json::Value,
+    /// Opaque provider round-trip payload (see [`Block::ToolUse::extra`]).
+    pub extra: Option<serde_json::Value>,
 }
 
 /// A model turn: optional prose plus (usually) one tool call.
@@ -558,6 +565,7 @@ impl<P: LlmProvider + Send> Brain for LlmBrain<P> {
                 id: call.id.clone(),
                 name: call.name.clone(),
                 input: call.input.clone(),
+                extra: call.extra.clone(),
             });
         }
         self.messages.push(ChatMessage {
@@ -597,6 +605,7 @@ mod tests {
             id: "1".into(),
             name: "open_app".into(),
             input: json!({ "name": "Safari" }),
+            extra: None,
         })
         .unwrap();
         match d {
@@ -627,6 +636,7 @@ mod tests {
             id: "1".into(),
             name: "take_screenshot".into(),
             input: json!({}),
+            extra: None,
         })
         .unwrap();
         assert!(matches!(
@@ -646,6 +656,7 @@ mod tests {
                 "writable_paths": ["~/Downloads"],
                 "needs_network": true,
             }),
+            extra: None,
         })
         .unwrap();
         match d {
@@ -665,6 +676,7 @@ mod tests {
             id: "1".into(),
             name: "run_script".into(),
             input: json!({ "language": "ruby", "script": "puts 1" }),
+            extra: None,
         })
         .is_err());
     }
@@ -676,6 +688,7 @@ mod tests {
                 id: "1".into(),
                 name: "finish".into(),
                 input: json!({ "summary": "done" }),
+            extra: None,
             })
             .unwrap(),
             Decision::Finish { .. }
@@ -684,12 +697,14 @@ mod tests {
             id: "1".into(),
             name: "frobnicate".into(),
             input: json!({}),
+            extra: None,
         })
         .is_err());
         assert!(decision_from_tool_call(&ToolCall {
             id: "1".into(),
             name: "open_app".into(),
             input: json!({}), // missing `name`
+            extra: None,
         })
         .is_err());
     }
@@ -754,6 +769,7 @@ mod tests {
                 id: id.into(),
                 name: name.into(),
                 input,
+                extra: None,
             }),
         }
     }

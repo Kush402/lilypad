@@ -105,11 +105,25 @@ fn message_to_json(msg: &ChatMessage) -> Vec<Value> {
             for block in &msg.blocks {
                 match block {
                     Block::Text(t) => text_parts.push(t.clone()),
-                    Block::ToolUse { id, name, input } => tool_calls.push(json!({
-                        "id": id,
-                        "type": "function",
-                        "function": { "name": name, "arguments": input.to_string() },
-                    })),
+                    Block::ToolUse {
+                        id,
+                        name,
+                        input,
+                        extra,
+                    } => {
+                        let mut call = json!({
+                            "id": id,
+                            "type": "function",
+                            "function": { "name": name, "arguments": input.to_string() },
+                        });
+                        // Echo back any opaque payload the endpoint attached to
+                        // this call (e.g. a reasoning signature) — some
+                        // endpoints hard-reject a replayed thread without it.
+                        if let Some(e) = extra {
+                            call["extra_content"] = e.clone();
+                        }
+                        tool_calls.push(call);
+                    }
                     Block::ToolResult { .. } => {} // never authored by the assistant
                 }
             }
@@ -250,6 +264,10 @@ pub fn parse_reply(body: &Value) -> Result<AssistantReply> {
                 id: id.to_string(),
                 name: name.to_string(),
                 input,
+                // Preserve any provider-specific payload riding on the call
+                // (e.g. `extra_content` carrying a reasoning signature) so
+                // message_to_json can echo it back on the next turn.
+                extra: call.get("extra_content").cloned(),
             })
         }
         None => None,
@@ -354,6 +372,7 @@ mod tests {
                     id: "c1".into(),
                     name: "open_app".into(),
                     input: json!({ "name": "Safari" }),
+                    extra: None,
                 },
             ],
         };
@@ -368,6 +387,47 @@ mod tests {
         let args: Value =
             serde_json::from_str(call["function"]["arguments"].as_str().unwrap()).unwrap();
         assert_eq!(args["name"], "Safari");
+    }
+
+    #[test]
+    fn provider_extra_payload_round_trips_on_tool_calls() {
+        // Parse: an opaque `extra_content` riding on the tool call is captured…
+        let resp = json!({
+            "choices": [{ "message": { "role": "assistant", "tool_calls": [{
+                "id": "c1", "type": "function",
+                "extra_content": { "signature": "abc123" },
+                "function": { "name": "open_app", "arguments": "{\"name\":\"Safari\"}" },
+            }]}}]
+        });
+        let call = parse_reply(&resp).unwrap().tool_call.unwrap();
+        assert_eq!(call.extra, Some(json!({ "signature": "abc123" })));
+
+        // …and build: it is echoed back verbatim when the turn is replayed
+        // (some endpoints reject the thread without it).
+        let msg = ChatMessage {
+            role: Role::Assistant,
+            blocks: vec![Block::ToolUse {
+                id: call.id,
+                name: call.name,
+                input: call.input,
+                extra: call.extra,
+            }],
+        };
+        let body = build_body("s", &[msg], &[], "m", 10);
+        let replayed = &body["messages"][1]["tool_calls"][0];
+        assert_eq!(replayed["extra_content"], json!({ "signature": "abc123" }));
+        // A call with no extra payload must not grow the key.
+        let bare = ChatMessage {
+            role: Role::Assistant,
+            blocks: vec![Block::ToolUse {
+                id: "c2".into(),
+                name: "finish".into(),
+                input: json!({}),
+                extra: None,
+            }],
+        };
+        let body = build_body("s", &[bare], &[], "m", 10);
+        assert!(body["messages"][1]["tool_calls"][0].get("extra_content").is_none());
     }
 
     #[test]

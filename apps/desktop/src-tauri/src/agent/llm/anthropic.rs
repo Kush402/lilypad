@@ -89,7 +89,11 @@ fn role_str(role: Role) -> &'static str {
 fn block_to_json(block: &Block) -> Value {
     match block {
         Block::Text(text) => json!({ "type": "text", "text": text }),
-        Block::ToolUse { id, name, input } => {
+        Block::ToolUse {
+            id, name, input, ..
+        } => {
+            // `extra` is another dialect's round-trip payload — not part of
+            // this wire format.
             json!({ "type": "tool_use", "id": id, "name": name, "input": input })
         }
         Block::ToolResult {
@@ -194,6 +198,7 @@ pub fn parse_reply(body: &Value) -> Result<AssistantReply> {
                     id: id.to_string(),
                     name: name.to_string(),
                     input,
+                    extra: None,
                 });
             }
             _ => {}
