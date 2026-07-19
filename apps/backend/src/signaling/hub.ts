@@ -3,6 +3,8 @@ import {
   SignalingMessageSchema,
   BACKEND_HEARTBEAT_TIMEOUT_MS,
   BACKEND_REREGISTER_GRACE_MS,
+  presenceRoomDeviceId,
+  presenceRoomId,
   type SignalingMessage,
   type DeviceKind,
   type IceServer,
@@ -43,6 +45,13 @@ export interface SignalingHubDeps {
    * `RoomAuthStore` record, which must not outlive the room it guards —
    * see `docs/m5.4-trusted-devices-audit.md` BUG-1). */
   onRoomClosed?: (roomId: string) => void;
+  /** Fired when an approval carried `trust: true` (M5.4) — the desktop user
+   * checked "Trust this device." The route layer records the persistent
+   * pair (`trusted_devices`); fire-and-forget like every other hook. */
+  onTrustEstablished?: (info: {
+    desktopDeviceId: string;
+    mobileDeviceId: string;
+  }) => void;
   /** Fired when the desktop explicitly denies a pending pair request. The
    * room ends right here, before a session ever gets minted, so
    * `onSessionEnd` (only fired when `room.sessionId` is set — see
@@ -260,6 +269,24 @@ export class SignalingHub {
     return this.registry.size;
   }
 
+  /** Is this desktop's presence seat currently online? */
+  isDesktopPresent(desktopDeviceId: string): boolean {
+    return this.registry.get(presenceRoomId(desktopDeviceId))?.hasSeat('desktop') ?? false;
+  }
+
+  /** Deliver a `connect-request` to a desktop's presence seat (M5.4 no-QR
+   * reconnect). Returns false when the desktop is offline — the caller
+   * turns that into an honest "desktop is offline" for the phone. */
+  notifyConnectRequest(
+    desktopDeviceId: string,
+    payload: Extract<SignalingMessage, { type: 'connect-request' }>['payload'],
+  ): boolean {
+    const room = this.registry.get(presenceRoomId(desktopDeviceId));
+    if (!room || !room.hasSeat('desktop')) return false;
+    this.send(room, 'desktop', { type: 'connect-request', payload });
+    return true;
+  }
+
   /** One-time boot-time resurrection: load every non-terminal room record a
    * prior process persisted and re-seed the in-memory registry with it,
    * BEFORE the server starts accepting connections (call this from the
@@ -344,9 +371,15 @@ export class SignalingHub {
   /** Best-effort write-behind persistence — never awaited, never throws into
    * the caller. A Redis outage degrades resurrection capability only; it
    * must never block or fail live signaling relay, which doesn't touch
-   * Redis at all. */
+   * Redis at all.
+   *
+   * Presence rooms are never persisted: they mirror a live socket, not a
+   * session — after a restart the desktop's own reconnect loop re-registers
+   * and recreates its room, and resurrecting a stale one would only assert
+   * presence nobody holds. */
   private persistRoom(room: Room): void {
     if (!this.deps.roomStore) return;
+    if (presenceRoomDeviceId(room.id) !== null) return;
     this.deps.roomStore
       .save(room.toRecord())
       .catch((err) => log.signaling.warn({ err, roomId: room.id }, 'room persistence failed'));
@@ -365,7 +398,7 @@ export class SignalingHub {
           this.send(room, action.to, { type: action.type, payload: action.payload });
           break;
         case 'approve':
-          this.approve(room, action.grantedScopes);
+          this.approve(room, action.grantedScopes, action.trust);
           break;
         case 'end':
           this.endRoom(room, action.reason);
@@ -388,12 +421,23 @@ export class SignalingHub {
     }
   }
 
-  private approve(room: Room, grantedScopes: SessionScope[]): void {
+  private approve(room: Room, grantedScopes: SessionScope[], trust: boolean): void {
     room.tryFsm('connecting');
     const sessionId = randomUUID();
     room.sessionId = sessionId;
     room.scopes = grantedScopes;
     this.counters.sessionsStarted++;
+
+    // "Trust this device" rode on the approval (M5.4): record the persistent
+    // pair. Both ids are present — the router only approves with both seats
+    // occupied — but stay defensive since the hook writes durable state.
+    if (trust) {
+      const desktopDeviceId = room.deviceIdFor('desktop');
+      const mobileDeviceId = room.deviceIdFor('mobile');
+      if (desktopDeviceId && mobileDeviceId) {
+        this.deps.onTrustEstablished?.({ desktopDeviceId, mobileDeviceId });
+      }
+    }
 
     this.deps.onSessionStart?.({
       sessionId,

@@ -80,6 +80,10 @@ const pairApproved = z.object({
   ...envelope,
   payload: z.object({
     grantedScopes: z.array(SessionScopeSchema),
+    /** M5.4: the user also checked "Trust this device" — the backend records
+     * a persistent desktop↔mobile pair (`trusted_devices`) enabling the
+     * no-QR reconnect flow. Optional so pre-M5.4 desktops stay valid. */
+    trust: z.boolean().optional(),
   }),
 });
 
@@ -231,7 +235,30 @@ const clipboardUpdate = z.object({
   payload: z.object({ text: z.string().max(MAX_CLIPBOARD_LEN) }),
 });
 
+/**
+ * Server → desktop (presence room): a trusted phone asked to connect without
+ * a QR (`POST /connect/request`). The desktop spawns its normal session
+ * runner on `sessionRoomId`; everything downstream (pair-request, ring UI or
+ * auto-approve, session-start, offer/answer) is the existing pairing flow.
+ * Never accepted FROM a client (MessageRouter rejects it).
+ */
+const connectRequest = z.object({
+  type: z.literal('connect-request'),
+  ...envelope,
+  payload: z.object({
+    /** The fresh, room-auth-bound session room both devices will join. */
+    sessionRoomId: z.string().min(1).max(MAX_ID_LEN),
+    mobileDeviceId: z.string().min(8).max(MAX_ID_LEN),
+    mobileDeviceName: z.string().max(MAX_NAME_LEN).nullable(),
+    requestedScopes: z.array(SessionScopeSchema).max(8),
+    /** The pair's desktop-side "Always allow" setting — the desktop skips the
+     * ring and approves immediately (session indicator + audit still apply). */
+    autoApprove: z.boolean(),
+  }),
+});
+
 export const SignalingMessageSchema = z.discriminatedUnion('type', [
+  connectRequest,
   register,
   pairRequest,
   pairApproved,
@@ -255,6 +282,26 @@ export const SignalingMessageSchema = z.discriminatedUnion('type', [
 ]);
 export type SignalingMessage = z.infer<typeof SignalingMessageSchema>;
 export type SignalingType = SignalingMessage['type'];
+
+/**
+ * Reserved room namespace for desktop presence (M5.4). A desktop registers
+ * into `presence:<its deviceId>` at launch so trusted phones can reach it
+ * without a QR; the register gate authorizes the claim by suffix match (a
+ * key signature once M5's device identity lands). Session rooms are always
+ * UUIDs, so the namespace can never collide with a pairing room.
+ */
+export const PRESENCE_ROOM_PREFIX = 'presence:' as const;
+
+export function presenceRoomId(deviceId: string): string {
+  return `${PRESENCE_ROOM_PREFIX}${deviceId}`;
+}
+
+/** The owning deviceId if `roomId` is a presence room, else null. */
+export function presenceRoomDeviceId(roomId: string): string | null {
+  return roomId.startsWith(PRESENCE_ROOM_PREFIX)
+    ? roomId.slice(PRESENCE_ROOM_PREFIX.length)
+    : null;
+}
 
 export function encodeSignal(msg: SignalingMessage): string {
   return JSON.stringify(SignalingMessageSchema.parse(msg));

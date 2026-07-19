@@ -83,6 +83,128 @@ function connectedRoom() {
   return { hub, desktop, mobile };
 }
 
+describe('SignalingHub — presence rooms (M5.4)', () => {
+  const PRESENCE = 'presence:desktop-01';
+  const presenceReg = {
+    type: 'register',
+    roomId: PRESENCE,
+    from: 'desktop',
+    ts: 0,
+    payload: { role: 'desktop', deviceId: 'desktop-01' },
+  };
+
+  it('delivers a connect-request to an online presence seat', () => {
+    const hub = makeHub();
+    const desktop = new FakePeer();
+    hub.handleMessage(desktop, presenceReg);
+    expect(hub.isDesktopPresent('desktop-01')).toBe(true);
+
+    const delivered = hub.notifyConnectRequest('desktop-01', {
+      sessionRoomId: 'room-fresh',
+      mobileDeviceId: 'mobile-01',
+      mobileDeviceName: 'phone',
+      requestedScopes: ['view', 'control'],
+      autoApprove: false,
+    });
+    expect(delivered).toBe(true);
+    const req = desktop.find('connect-request');
+    expect(req?.payload.sessionRoomId).toBe('room-fresh');
+    expect(req?.payload.autoApprove).toBe(false);
+  });
+
+  it('reports offline (false) when the desktop has no presence seat', () => {
+    const hub = makeHub();
+    expect(hub.isDesktopPresent('desktop-01')).toBe(false);
+    expect(
+      hub.notifyConnectRequest('desktop-01', {
+        sessionRoomId: 'room-fresh',
+        mobileDeviceId: 'mobile-01',
+        mobileDeviceName: null,
+        requestedScopes: ['view'],
+        autoApprove: false,
+      }),
+    ).toBe(false);
+
+    // …and after the desktop disconnects, presence reads offline again.
+    const desktop = new FakePeer();
+    hub.handleMessage(desktop, presenceReg);
+    expect(hub.isDesktopPresent('desktop-01')).toBe(true);
+    hub.handleClose(desktop);
+    expect(hub.isDesktopPresent('desktop-01')).toBe(false);
+  });
+
+  it('never persists presence rooms (a restarting desktop recreates its own)', async () => {
+    const redis = new FakeRedis();
+    const hub = new SignalingHub({
+      buildIceServers: () => ICE,
+      now: () => 0,
+      roomStore: new RoomStore(redis),
+    });
+    hub.handleMessage(new FakePeer(), presenceReg);
+    // persistence is fire-and-forget; give the microtask queue a tick
+    await Promise.resolve();
+    expect(await redis.keys('lilypad:room:*')).toEqual([]);
+  });
+
+  it('a client can never SEND connect-request — server-originated only', () => {
+    const { hub, mobile } = connectedRoom();
+    hub.handleMessage(
+      mobile,
+      frame('connect-request', 'mobile', {
+        sessionRoomId: 'room-x',
+        mobileDeviceId: 'mobile-01',
+        mobileDeviceName: null,
+        requestedScopes: ['view'],
+        autoApprove: true,
+      }),
+    );
+    const err = mobile.find('error');
+    expect(err?.payload.code).toBe('unexpected_type');
+  });
+});
+
+describe('SignalingHub — trust-on-approve (M5.4)', () => {
+  function approvedRoom(trust: boolean | undefined) {
+    const trusted: Array<{ desktopDeviceId: string; mobileDeviceId: string }> = [];
+    const hub = new SignalingHub({
+      buildIceServers: () => ICE,
+      now: () => 0,
+      onTrustEstablished: (info) => trusted.push(info),
+    });
+    const desktop = new FakePeer();
+    const mobile = new FakePeer();
+    hub.handleMessage(desktop, reg('desktop', 'desktop-01'));
+    hub.handleMessage(mobile, reg('mobile', 'mobile-01'));
+    hub.handleMessage(
+      mobile,
+      frame('pair-request', 'mobile', {
+        deviceId: 'mobile-01',
+        deviceName: 'phone',
+        requestedScopes: ['view', 'control'],
+      }),
+    );
+    hub.handleMessage(
+      desktop,
+      frame('pair-approved', 'desktop', {
+        grantedScopes: ['view', 'control'],
+        ...(trust === undefined ? {} : { trust }),
+      }),
+    );
+    return { trusted, desktop, mobile };
+  }
+
+  it('approve with trust:true records the pair (and still starts the session)', () => {
+    const { trusted, desktop } = approvedRoom(true);
+    expect(trusted).toEqual([{ desktopDeviceId: 'desktop-01', mobileDeviceId: 'mobile-01' }]);
+    expect(desktop.find('session-start')).toBeTruthy();
+  });
+
+  it('approve without trust (absent or false) records nothing', () => {
+    expect(approvedRoom(undefined).trusted).toEqual([]);
+    expect(approvedRoom(false).trusted).toEqual([]);
+  });
+});
+
 describe('SignalingHub — onRoomClosed hook', () => {
   it('fires exactly once per torn-down room, session or not', () => {
     const closed: string[] = [];

@@ -101,7 +101,7 @@ describe('MessageRouter — pair-approved', () => {
       'desktop',
       msg('pair-approved', 'desktop', { grantedScopes: ['view'] }),
     );
-    expect(actions).toEqual([{ kind: 'approve', grantedScopes: ['view'] }]);
+    expect(actions).toEqual([{ kind: 'approve', grantedScopes: ['view'], trust: false }]);
   });
 
   it('rejects peer_missing when the mobile seat is empty', () => {

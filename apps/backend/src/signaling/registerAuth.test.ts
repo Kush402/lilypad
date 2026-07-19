@@ -154,3 +154,46 @@ describe('decideRegisterGate', () => {
     expect(verify).not.toHaveBeenCalled();
   });
 });
+
+describe('decideRegisterGate — presence rooms (M5.4)', () => {
+  const presenceReg = (role: string, deviceId: string, roomId: string) =>
+    registerMsg(role, deviceId, roomId);
+
+  it('lets a desktop claim ITS OWN presence room without touching room-auth', async () => {
+    const verify = vi.fn();
+    const decision = await decideRegisterGate(
+      presenceReg('desktop', 'desktop-01', 'presence:desktop-01'),
+      false,
+      verify,
+    );
+    expect(decision).toEqual({ action: 'proceed' });
+    expect(verify).not.toHaveBeenCalled(); // presence never consults pairing records
+  });
+
+  it("rejects a desktop claiming ANOTHER device's presence room", async () => {
+    const decision = await decideRegisterGate(
+      presenceReg('desktop', 'intruder-99', 'presence:desktop-01'),
+      false,
+      vi.fn(),
+    );
+    expect(decision.action).toBe('reject_unauthorized');
+  });
+
+  it('rejects a mobile registering into any presence room, even its own id', async () => {
+    const decision = await decideRegisterGate(
+      presenceReg('mobile', 'mobile-01', 'presence:mobile-01'),
+      false,
+      vi.fn(),
+    );
+    expect(decision.action).toBe('reject_unauthorized');
+  });
+
+  it('rejects a degenerate presence room with a too-short owner suffix', async () => {
+    const decision = await decideRegisterGate(
+      presenceReg('desktop', 'short', 'presence:short'),
+      false,
+      vi.fn(),
+    );
+    expect(decision.action).toBe('reject_unauthorized');
+  });
+});

@@ -12,7 +12,7 @@ import type { Room } from './room.js';
 export type RouteAction =
   | { kind: 'relay'; to: DeviceKind; msg: SignalingMessage }
   | { kind: 'respond'; to: DeviceKind; type: SignalingMessage['type']; payload: unknown }
-  | { kind: 'approve'; grantedScopes: SessionScope[] }
+  | { kind: 'approve'; grantedScopes: SessionScope[]; trust: boolean }
   | { kind: 'end'; reason: string }
   | { kind: 'reject'; to: DeviceKind; code: string; message: string };
 
@@ -76,7 +76,13 @@ export class MessageRouter {
             },
           ];
         }
-        return [{ kind: 'approve', grantedScopes: msg.payload.grantedScopes }];
+        return [
+          {
+            kind: 'approve',
+            grantedScopes: msg.payload.grantedScopes,
+            trust: msg.payload.trust ?? false,
+          },
+        ];
       }
 
       case 'pair-denied': {

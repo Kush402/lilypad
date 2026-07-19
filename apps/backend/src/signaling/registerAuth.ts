@@ -1,4 +1,4 @@
-import type { DeviceKind } from '@lilypad/protocol';
+import { presenceRoomDeviceId, type DeviceKind } from '@lilypad/protocol';
 
 /**
  * A `register` message's `roomId`/`role`/`deviceId`, loosely extracted from
@@ -59,6 +59,20 @@ export async function decideRegisterGate(
 ): Promise<GateDecision> {
   const attempt = isRegistered ? null : extractRegisterAttempt(json);
   if (!attempt) return { action: 'proceed' };
+
+  // Presence rooms (`presence:<deviceId>`, M5.4) are authorized by the claim
+  // itself — only a desktop, and only into ITS OWN device's room — with no
+  // pairing-flow record involved (none exists; presence outlives any one
+  // pairing). Same trust level as the rest of the pre-key system: the
+  // deviceId is self-asserted, upgraded to a key signature by the M5 device
+  // identity. The suffix must look like a real deviceId (the schema's own
+  // min length) so `presence:` alone can never become a claimable room.
+  const presenceOwner = presenceRoomDeviceId(attempt.roomId);
+  if (presenceOwner !== null) {
+    const ok =
+      attempt.role === 'desktop' && presenceOwner.length >= 8 && attempt.deviceId === presenceOwner;
+    return ok ? { action: 'proceed' } : { action: 'reject_unauthorized', attempt };
+  }
 
   let authorized: boolean;
   try {
