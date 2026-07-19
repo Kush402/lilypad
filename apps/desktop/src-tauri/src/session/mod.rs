@@ -114,8 +114,17 @@ const MAX_ICE_RESTARTS: u32 = 2;
 /// uplink pauses every ~11s on a flappy carrier — a 5s window let those
 /// blips trigger ICE restarts that broke a stream which resumed on its own
 /// seconds later). Stability outranks fast failure detection here: a truly
-/// dead path stays silent past 12s and the restart machinery still owns it.
-const TRAFFIC_LIVENESS_WINDOW: Duration = Duration::from_secs(12);
+/// dead path stays silent past this window and the restart machinery still
+/// owns it.
+///
+/// Widened 12s → 22s (2026-07-19): under send-side congestion the phone's
+/// RTCP feedback is delayed/dropped for longer than 12s while the video is
+/// still visibly playing, so a 12s window let a *false* ICE `failed` verdict
+/// trigger a restart on a ~18s cycle — the constant "connecting → connected"
+/// churn the user saw. The pipeline's congestion cap now prevents most of
+/// that starvation; this widening is the belt-and-suspenders so a brief RTCP
+/// gap never restarts a stream that's actually flowing.
+const TRAFFIC_LIVENESS_WINDOW: Duration = Duration::from_secs(22);
 
 fn recovery_timeout_for_attempt(attempt: u32) -> Duration {
     if attempt <= 1 {

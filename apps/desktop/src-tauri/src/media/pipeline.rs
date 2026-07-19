@@ -179,11 +179,58 @@ impl MediaPipeline {
                 let mut last_capture_failure: Option<Instant> = None;
                 const CAPTURE_HEALTH_RESET: Duration = Duration::from_secs(60);
 
+                // Pipeline-side congestion control. A full sample queue is the
+                // ONLY reliable "the network can't keep up" signal on a
+                // constrained path: when the send side backs up, the phone's
+                // RTCP (REMB/loss) is delayed or dropped too, so the ABR — which
+                // reacts to RTCP — goes blind exactly when it's needed. Observed
+                // live (2026-07-19, cellular): the ABR probed to ~4.4 Mbps, the
+                // queue overflowed, RTCP starved for >12s, ICE falsely reported
+                // `failed`, and a restart fired — on a ~18s cycle that reads as
+                // constant "connecting → connected" churn. So the pipeline
+                // caps its OWN bitrate immediately on overflow (independent of
+                // the ABR), then relaxes the cap gradually once the queue stays
+                // healthy — a fast AIMD on the one signal that survives
+                // congestion. `None` = no cap; the ABR target applies as-is.
+                let mut congestion_cap: Option<u32> = None;
+                let mut last_congestion_cut: Option<Instant> = None;
+                let mut last_congestion_relax: Option<Instant> = None;
+                const CONGESTION_FLOOR_KBPS: u32 = 800;
+                const CONGESTION_CUT: f64 = 0.75; // ×0.75 per overflow burst
+                const CONGESTION_CUT_INTERVAL: Duration = Duration::from_millis(700);
+                const CONGESTION_RELAX_STEP: f64 = 1.20; // ×1.20 per healthy tick
+                const CONGESTION_RELAX_INTERVAL: Duration = Duration::from_secs(3);
+
                 while !s.load(Ordering::Relaxed) {
+                    // Gradually lift the congestion cap after a healthy spell so
+                    // quality recovers once the path improves; clear it entirely
+                    // once it catches up to what the ABR wants.
+                    if let Some(cap) = congestion_cap {
+                        let want = c.target_bitrate_kbps.load(Ordering::Relaxed);
+                        let healthy = last_congestion_cut
+                            .is_none_or(|t| t.elapsed() >= CONGESTION_RELAX_INTERVAL);
+                        let relax_due = last_congestion_relax
+                            .is_none_or(|t| t.elapsed() >= CONGESTION_RELAX_INTERVAL);
+                        if healthy && relax_due {
+                            let raised = ((cap as f64 * CONGESTION_RELAX_STEP) as u32).max(cap + 1);
+                            if raised >= want {
+                                congestion_cap = None; // caught up — hand control back to the ABR
+                            } else {
+                                congestion_cap = Some(raised);
+                            }
+                            last_congestion_relax = Some(Instant::now());
+                        }
+                    }
+
                     // Apply live control changes between frames, debounced so a
                     // burst of ABR updates collapses to at most one retarget per
                     // window instead of one per report.
-                    let want_bitrate = c.target_bitrate_kbps.load(Ordering::Relaxed);
+                    // Effective target = ABR's wish, clamped by any active
+                    // congestion cap (the pipeline's fast defense).
+                    let want_bitrate = c
+                        .target_bitrate_kbps
+                        .load(Ordering::Relaxed)
+                        .min(congestion_cap.unwrap_or(u32::MAX));
                     if want_bitrate != current_bitrate
                         && bitrate_retarget_due(last_bitrate_retarget, Instant::now())
                     {
@@ -290,6 +337,24 @@ impl MediaPipeline {
                                     recover_with_keyframe = true;
                                     m.frames_dropped.fetch_add(1, Ordering::Relaxed);
                                     log::warn!(target: "lilypad::media", "sample queue full — dropping frame {frame_no}");
+                                    // Immediate congestion backoff (rate-limited
+                                    // so a burst of drops is one cut, not many).
+                                    // This is the fast defense the ABR can't
+                                    // provide when RTCP is starved.
+                                    if last_congestion_cut
+                                        .is_none_or(|t| t.elapsed() >= CONGESTION_CUT_INTERVAL)
+                                    {
+                                        let base = congestion_cap.unwrap_or(current_bitrate);
+                                        let cut = ((base as f64 * CONGESTION_CUT) as u32)
+                                            .max(CONGESTION_FLOOR_KBPS);
+                                        congestion_cap = Some(cut);
+                                        last_congestion_cut = Some(Instant::now());
+                                        last_congestion_relax = Some(Instant::now());
+                                        log::info!(
+                                            target: "lilypad::media",
+                                            "queue overflow — congestion cap → {cut} kbps"
+                                        );
+                                    }
                                 }
                                 Err(TrySendError::Closed(_)) => break, // consumer gone
                             }
