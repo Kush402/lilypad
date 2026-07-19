@@ -55,7 +55,28 @@ export const api = {
   getLoginItemEnabled: () => invoke<boolean>('get_login_item_enabled'),
   setLoginItemEnabled: (enabled: boolean) =>
     invoke<void>('set_login_item_enabled', { enabled }),
+  // Dashboard system panel — read-only status + an editor affordance.
+  getPermissionStatus: () => invoke<PermissionStatusDto>('get_permission_status'),
+  getAgentConfig: () => invoke<AgentConfigDto>('get_agent_config'),
+  showSetup: () => invoke<void>('show_setup_window'),
 };
+
+/** Mirrors the Rust PermissionStatusDto. */
+export interface PermissionStatusDto {
+  screen_capture: boolean;
+  accessibility: boolean;
+}
+
+/** Mirrors the Rust AgentConfigDto (Ask AI provider). */
+export interface AgentConfigDto {
+  providerKind: string | null;
+  model: string | null;
+  baseUrl: string | null;
+  vision: boolean;
+  hasKey: boolean;
+  /** "env" | "settings" | "none" — which config source is active. */
+  source: string;
+}
 
 /** One trusted phone, as the dashboard lists it. */
 export interface TrustedPairDto {

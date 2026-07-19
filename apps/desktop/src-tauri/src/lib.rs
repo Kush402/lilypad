@@ -251,6 +251,7 @@ pub fn run() {
             commands::revoke_pair,
             commands::get_login_item_enabled,
             commands::set_login_item_enabled,
+            commands::show_setup_window,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Lilypad desktop");

@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, type TrustedPairDto } from '../lib/tauri';
 import { useAppState } from '../lib/useAppState';
+import { useLiveResource } from '../lib/useLiveResource';
 import { STATUS_LABEL } from '../lib/status';
 
 const SCOPE_LABEL: Record<string, string> = {
@@ -16,9 +17,8 @@ function timeSince(epochMs: number, nowMs: number): string {
   return `${minutes}m ago`;
 }
 
-/** Ticks every 5s so "requesting since Xs ago" stays current — a purely
- * client-side re-render, not a network poll (Finding 8 is about not polling
- * the BACKEND on a timer; this never calls into Rust at all). */
+/** Ticks every 5s so relative timestamps stay current — a purely client-side
+ * re-render, never a network poll. */
 function useNow(intervalMs: number): number {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -28,20 +28,21 @@ function useNow(intervalMs: number): number {
   return now;
 }
 
+function hostOf(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return url;
+  }
+}
+
 /**
- * The approve/deny + live-session control window.
- *
- * Previously rendered the approve prompt as one fixed sentence
- * ("A phone is requesting to view and control this laptop") regardless of
- * which device asked or what it actually requested, and always rendered a
- * "Plugin health" debug dump underneath — the single largest trust decision
- * in the product ("should I let this control my laptop right now") shown
- * with less information than a Bluetooth pairing dialog, right next to
- * developer diagnostics. `AppState.pending_request` (populated from
- * `SessionEvent::PairRequested`, previously discarded via a `{ .. }`
- * wildcard) now drives this screen; the diagnostics view moved to its own
- * window (`Diagnostics.tsx`, tray ▸ "Diagnostics…"). See
- * `docs/audit/m3/desktop-ux.md` Finding 2.
+ * The Lilypad dashboard — the single control surface for the whole app:
+ * live session status + approve/deny, trusted-device management, and a
+ * system panel (this Mac's reachability, OS permissions, the Ask AI provider,
+ * and launch-at-login). Every data surface refreshes race-safely through
+ * `useLiveResource`, so concurrent refreshes (events, polls, reconciles after
+ * a mutation) can never flicker stale data.
  */
 export function Control() {
   const state = useAppState();
@@ -54,14 +55,16 @@ export function Control() {
   const [trust, setTrust] = useState(true);
 
   return (
-    <div className="page control">
+    <div className="page control dashboard">
       <header className="control__header">
-        <h1>Lilypad session</h1>
+        <h1>Lilypad</h1>
         <span className={`badge badge--${session}`}>{STATUS_LABEL[session]}</span>
       </header>
 
+      <p className="dashboard__subtitle muted">{sessionSummary(session)}</p>
+
       {session === 'awaiting_approval' ? (
-        <section className="control__approve">
+        <section className="control__approve card">
           <p className="control__approve-title">
             <strong>{pending?.device_name ?? 'An unknown device'}</strong> wants to view and
             control this Mac
@@ -79,11 +82,7 @@ export function Control() {
             <p className="muted">requesting since {timeSince(pending.requested_at, now)}</p>
           ) : null}
           <label className="row trust-row">
-            <input
-              type="checkbox"
-              checked={trust}
-              onChange={(e) => setTrust(e.target.checked)}
-            />
+            <input type="checkbox" checked={trust} onChange={(e) => setTrust(e.target.checked)} />
             <span>
               Trust this device <span className="muted">— reconnects without a QR scan</span>
             </span>
@@ -100,8 +99,8 @@ export function Control() {
       ) : null}
 
       {session === 'active' ? (
-        <section className="control__active">
-          <p className="muted">Streaming + input arrive in M2–M4. You are in control.</p>
+        <section className="control__active card">
+          <p className="muted">A device is controlling this Mac right now.</p>
           <div className="row">
             <button className="btn" onClick={() => void api.disconnect()}>
               Disconnect
@@ -114,41 +113,22 @@ export function Control() {
       ) : null}
 
       <TrustedDevices />
-      <StartupToggle />
+      <SystemPanel backendUrl={state?.backend_base_url ?? null} />
     </div>
   );
 }
 
-/**
- * "Launch at login" toggle (M5.4). Keeps the presence channel ready so a
- * trusted phone can connect whenever the Mac is on and logged in. Enabled by
- * default on first run; the user owns it from here.
- */
-function StartupToggle() {
-  const [enabled, setEnabled] = useState<boolean | null>(null);
-
-  useEffect(() => {
-    api.getLoginItemEnabled().then(setEnabled).catch(() => setEnabled(null));
-  }, []);
-
-  const toggle = (next: boolean) => {
-    setEnabled(next); // optimistic
-    api.setLoginItemEnabled(next).catch(() => {
-      void api.getLoginItemEnabled().then(setEnabled); // reconcile on failure
-    });
-  };
-
-  if (enabled === null) return null;
-  return (
-    <section className="control__startup">
-      <label className="row trust-row">
-        <input type="checkbox" checked={enabled} onChange={(e) => toggle(e.target.checked)} />
-        <span>
-          Launch at login <span className="muted">— stay ready for trusted devices</span>
-        </span>
-      </label>
-    </section>
-  );
+function sessionSummary(session: string): string {
+  switch (session) {
+    case 'active':
+      return 'A device is connected and in control.';
+    case 'awaiting_approval':
+      return 'A device is asking to connect.';
+    case 'pairing':
+      return 'Waiting for a phone to scan the QR code.';
+    default:
+      return 'Ready. Trusted devices can connect anytime.';
+  }
 }
 
 function lastConnectedLabel(iso: string | null): string {
@@ -162,23 +142,14 @@ function lastConnectedLabel(iso: string | null): string {
 }
 
 /**
- * Trusted devices dashboard (M5.4) — every phone paired with this Mac, with
- * the per-pair "connect without approval" toggle and Revoke. This window is
- * the single control point for Lilypad's trust relationships.
+ * Trusted devices — every phone paired with this Mac, with the per-pair
+ * "connect without approval" toggle and Revoke. The list refreshes
+ * race-safely (poll + reconcile-after-mutation can't clobber each other).
  */
 function TrustedDevices() {
-  const [pairs, setPairs] = useState<TrustedPairDto[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  const refresh = useCallback(() => {
-    api
-      .listTrustedDevices()
-      .then((p) => {
-        setPairs(p.filter((pair) => !pair.revoked));
-        setError(null);
-      })
-      .catch(() => setError('Could not load trusted devices (backend offline?)'));
-  }, []);
+  const { value: pairs, error, refresh } = useLiveResource(() =>
+    api.listTrustedDevices().then((p) => p.filter((pair) => !pair.revoked)),
+  );
 
   useEffect(() => {
     refresh();
@@ -187,26 +158,18 @@ function TrustedDevices() {
   }, [refresh]);
 
   const toggle = (pair: TrustedPairDto) => {
-    void api
-      .setPairAutoApprove(pair.pairId, !pair.autoApprove)
-      .then(refresh)
-      .catch(() => setError('Update failed — is the backend running?'));
+    void api.setPairAutoApprove(pair.pairId, !pair.autoApprove).then(refresh).catch(refresh);
   };
 
   const revoke = (pair: TrustedPairDto) => {
-    if (!window.confirm('Revoke this phone? It will need a fresh QR pairing to reconnect.')) {
-      return;
-    }
-    void api
-      .revokePair(pair.pairId)
-      .then(refresh)
-      .catch(() => setError('Revoke failed — is the backend running?'));
+    if (!window.confirm('Revoke this phone? It will need a fresh QR pairing to reconnect.')) return;
+    void api.revokePair(pair.pairId).then(refresh).catch(refresh);
   };
 
   return (
-    <section className="control__devices">
+    <section className="control__devices card">
       <h2 className="section-title">Trusted devices</h2>
-      {error ? <p className="muted">{error}</p> : null}
+      {error ? <p className="muted">Couldn’t load trusted devices — is the backend running?</p> : null}
       {pairs !== null && pairs.length === 0 ? (
         <p className="muted">
           No trusted phones yet. Pair once with the QR and leave “Trust this device” checked.
@@ -216,16 +179,10 @@ function TrustedDevices() {
         <div key={pair.pairId} className="device-row">
           <div className="device-row__info">
             <span className="device-row__name">{pair.displayName ?? 'Phone'}</span>
-            <span className="muted device-row__meta">
-              {lastConnectedLabel(pair.lastConnectedAt)}
-            </span>
+            <span className="muted device-row__meta">{lastConnectedLabel(pair.lastConnectedAt)}</span>
           </div>
           <label className="device-row__toggle" title="Connect without approval">
-            <input
-              type="checkbox"
-              checked={pair.autoApprove}
-              onChange={() => toggle(pair)}
-            />
+            <input type="checkbox" checked={pair.autoApprove} onChange={() => toggle(pair)} />
             <span>Auto-connect</span>
           </label>
           <button className="btn btn--danger btn--small" onClick={() => revoke(pair)}>
@@ -234,5 +191,105 @@ function TrustedDevices() {
         </div>
       ))}
     </section>
+  );
+}
+
+/**
+ * System panel — everything about THIS Mac in one place: backend
+ * reachability, the two OS permissions Lilypad needs, the Ask AI provider,
+ * and launch-at-login. Read-only status with an "Open Setup" affordance for
+ * editing; refreshes on mount and whenever the window regains focus (so an
+ * externally-granted permission shows up without a manual reload).
+ */
+function SystemPanel({ backendUrl }: { backendUrl: string | null }) {
+  const perms = useLiveResource(api.getPermissionStatus);
+  const agent = useLiveResource(api.getAgentConfig);
+  const login = useLiveResource(api.getLoginItemEnabled);
+
+  const refreshAll = useCallback(() => {
+    perms.refresh();
+    agent.refresh();
+    login.refresh();
+  }, [perms, agent, login]);
+
+  useEffect(() => {
+    refreshAll();
+    window.addEventListener('focus', refreshAll);
+    return () => window.removeEventListener('focus', refreshAll);
+  }, [refreshAll]);
+
+  // Optimistic login-item toggle, reconciled race-safely by `login.refresh()`.
+  const [loginOverride, setLoginOverride] = useState<boolean | null>(null);
+  const overrideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const loginEnabled = loginOverride ?? login.value ?? false;
+  const setLogin = (next: boolean) => {
+    setLoginOverride(next);
+    if (overrideTimer.current) clearTimeout(overrideTimer.current);
+    void api
+      .setLoginItemEnabled(next)
+      .catch(() => {})
+      .finally(() => {
+        login.refresh();
+        // Clear the optimistic override shortly after so server truth wins.
+        overrideTimer.current = setTimeout(() => setLoginOverride(null), 400);
+      });
+  };
+  useEffect(() => () => void (overrideTimer.current && clearTimeout(overrideTimer.current)), []);
+
+  const agentSummary = () => {
+    const a = agent.value;
+    if (!a || a.source === 'none') return 'Not configured';
+    const model = a.model ?? 'default model';
+    const src = a.source === 'env' ? ' (env override)' : '';
+    return `${model}${a.vision ? ' · vision' : ''}${src}`;
+  };
+
+  return (
+    <section className="control__system card">
+      <div className="section-title-row">
+        <h2 className="section-title">This Mac</h2>
+        <button className="btn btn--small" onClick={() => void api.showSetup()}>
+          Open Setup
+        </button>
+      </div>
+
+      <StatusRow
+        label="Backend"
+        ok={backendUrl != null}
+        value={backendUrl ? hostOf(backendUrl) : 'unknown'}
+      />
+      <StatusRow
+        label="Screen Recording"
+        ok={perms.value?.screen_capture ?? false}
+        value={perms.value?.screen_capture ? 'Granted' : 'Needed'}
+      />
+      <StatusRow
+        label="Accessibility"
+        ok={perms.value?.accessibility ?? false}
+        value={perms.value?.accessibility ? 'Granted' : 'Needed'}
+      />
+      <StatusRow
+        label="Ask AI"
+        ok={(agent.value?.source ?? 'none') !== 'none'}
+        value={agentSummary()}
+      />
+
+      <label className="row trust-row system-toggle">
+        <input type="checkbox" checked={loginEnabled} onChange={(e) => setLogin(e.target.checked)} />
+        <span>
+          Launch at login <span className="muted">— stay ready for trusted devices</span>
+        </span>
+      </label>
+    </section>
+  );
+}
+
+function StatusRow({ label, ok, value }: { label: string; ok: boolean; value: string }) {
+  return (
+    <div className="status-row">
+      <span className={`status-dot status-dot--${ok ? 'ok' : 'warn'}`} aria-hidden />
+      <span className="status-row__label">{label}</span>
+      <span className="status-row__value muted">{value}</span>
+    </div>
   );
 }

@@ -438,6 +438,14 @@ pub fn get_permission_status() -> PermissionStatusDto {
     permission_snapshot()
 }
 
+/// Open (or focus) the Setup window from the dashboard — the editor surface
+/// for permissions + the AI provider. The dashboard shows these read-only;
+/// this is its "Fix" / "Configure" affordance.
+#[tauri::command]
+pub fn show_setup_window(app: AppHandle) -> Result<(), String> {
+    show_setup(&app)
+}
+
 /// The prompting variant — triggers the native OS dialog if the user hasn't
 /// decided yet. Returns the freshly-queried status right after.
 #[tauri::command]
