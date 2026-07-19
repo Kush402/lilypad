@@ -205,6 +205,66 @@ describe('SignalingHub — trust-on-approve (M5.4)', () => {
   });
 });
 
+describe('SignalingHub — session-start replay for a rejoining seat (M5.4)', () => {
+  function approvedNotEstablished() {
+    const hub = makeHub();
+    const desktop = new FakePeer();
+    const mobile = new FakePeer();
+    hub.handleMessage(desktop, reg('desktop', 'desktop-01'));
+    hub.handleMessage(mobile, reg('mobile', 'mobile-01'));
+    hub.handleMessage(
+      mobile,
+      frame('pair-request', 'mobile', {
+        deviceId: 'mobile-01',
+        deviceName: 'phone',
+        requestedScopes: ['view', 'control'],
+      }),
+    );
+    hub.handleMessage(desktop, frame('pair-approved', 'desktop', { grantedScopes: ['view'] }));
+    return { hub, desktop, mobile };
+  }
+
+  it('a mobile whose socket silently flaps and re-registers gets session-start again', () => {
+    const { hub, mobile } = approvedNotEstablished();
+    const first = mobile.find('session-start');
+    expect(first).toBeTruthy();
+
+    // The live failure mode: the old socket never delivers a close event (a
+    // radio flap), so the phone re-registers over a ZOMBIE seat — the
+    // same-device eviction path. (A clean pre-establishment close ends the
+    // room outright by design — that path can't need a replay.)
+    const mobile2 = new FakePeer();
+    hub.handleMessage(mobile2, reg('mobile', 'mobile-01'));
+
+    expect(mobile.closed?.code).toBe(4408); // zombie evicted
+    const replay = mobile2.find('session-start');
+    expect(replay).toBeTruthy();
+    expect(replay?.payload.sessionId).toBe(first?.payload.sessionId); // same session
+    expect(replay?.payload.iceServers.length).toBeGreaterThan(0); // fresh creds
+  });
+
+  it('no replay once the session is established (a live pc must not be rebuilt)', () => {
+    const { hub, desktop, mobile } = approvedNotEstablished();
+    // Establish: offer → answer.
+    hub.handleMessage(desktop, frame('offer', 'desktop', { type: 'offer', sdp: 'v=0' }));
+    hub.handleMessage(mobile, frame('answer', 'mobile', { type: 'answer', sdp: 'v=0' }));
+
+    hub.handleClose(mobile);
+    const mobile2 = new FakePeer();
+    hub.handleMessage(mobile2, reg('mobile', 'mobile-01'));
+
+    expect(mobile2.find('session-start')).toBeUndefined();
+  });
+
+  it('a rejoining DESKTOP never gets a replay (it authored the approval)', () => {
+    const { hub } = approvedNotEstablished();
+    // Same zombie-eviction path as the mobile case — replay must still not fire.
+    const desktop2 = new FakePeer();
+    hub.handleMessage(desktop2, reg('desktop', 'desktop-01'));
+    expect(desktop2.find('session-start')).toBeUndefined();
+  });
+});
+
 describe('SignalingHub — onRoomClosed hook', () => {
   it('fires exactly once per torn-down room, session or not', () => {
     const closed: string[] = [];

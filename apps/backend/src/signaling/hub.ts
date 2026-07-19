@@ -363,6 +363,30 @@ export class SignalingHub {
     this.ctx.set(peer, { roomId: msg.roomId, role, deviceId: msg.payload.deviceId });
     log.signaling.info({ roomId: msg.roomId, role }, 'peer registered');
 
+    // A mobile (re)claiming its seat AFTER approval but BEFORE the session
+    // established missed its `session-start` — its socket flapped across the
+    // exact delivery window, and nothing else ever re-sends it. Observed
+    // live (M5.4 bring-up): phone stuck on "Waiting for approval…" while
+    // the desktop's offer sat unanswered until the recovery deadline killed
+    // the room. Re-issue to THIS seat only, with fresh ICE credentials.
+    // Mobile-only: the desktop authored the approval (it can't miss it),
+    // and its client treats session-start as a fresh negotiation — safe
+    // here for the phone precisely because no answer exists yet.
+    if (room.sessionId && !room.isEstablished() && role === 'mobile') {
+      this.send(room, role, {
+        type: 'session-start',
+        payload: {
+          sessionId: room.sessionId,
+          grantedScopes: room.scopes,
+          iceServers: this.deps.buildIceServers(`${room.sessionId}:${role}:rejoin`),
+        },
+      });
+      log.signaling.info(
+        { roomId: room.id, role },
+        're-issued session-start to a rejoining pre-established seat',
+      );
+    }
+
     // Desktop present → move out of idle so a pairing can proceed.
     if (role === 'desktop') room.tryFsm('pairing');
     this.persistRoom(room);

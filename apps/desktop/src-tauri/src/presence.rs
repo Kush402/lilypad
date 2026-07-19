@@ -127,29 +127,33 @@ fn handle_inbound(app: &AppHandle, signaling_url: &str, env: Envelope) {
 }
 
 /// A trusted phone rang: spawn the normal session runner on the fresh room
-/// the backend minted. Busy desktops decline by ignoring — the phone's own
-/// pairing timeout surfaces it; a busy-signal frame is a follow-up nicety.
+/// the backend minted. A trusted connect ALWAYS supersedes whatever session
+/// state exists — a leftover QR-pairing runner (the Pair window left open),
+/// a negotiation that never completed, even a live session (the phone's own
+/// zombie, or a deliberate takeover). Silently ignoring the ring left the
+/// phone hanging on "Waiting for approval…" forever (observed live); a
+/// takeover is visible (session indicator, audit log) and the superseded
+/// runner ends cleanly through its normal Disconnect path.
 fn on_connect_request(app: &AppHandle, signaling_url: &str, payload: ConnectRequestPayload) {
-    let (busy, device_id, offered_scopes) = {
+    let (old_tx, device_id, offered_scopes) = {
         let state = app.state::<SharedState>();
         let mut s = state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let busy = s.session != SessionStatus::Idle;
-        if !busy && payload.auto_approve {
+        if payload.auto_approve {
             // Consumed by `apply_session_event`'s PairRequested arm: the ring
             // is skipped and the approval fires through the normal control
             // path the instant the phone's pair-request arrives.
             s.auto_approve_room = Some(payload.session_room_id.clone());
         }
-        (busy, s.device_id.clone(), s.offered_scopes.clone())
+        (s.control_tx.take(), s.device_id.clone(), s.offered_scopes.clone())
     };
-    if busy {
+    if let Some(tx) = old_tx {
         log::info!(
-            target: "lilypad::presence",
-            "ignoring connect-request — a session is already in progress"
+            target: "lilypad::audit",
+            "superseding existing session — trusted device takeover"
         );
-        return;
+        let _ = tx.send(crate::session::Control::Disconnect);
     }
     log::info!(
         target: "lilypad::audit",

@@ -189,10 +189,27 @@ pub(crate) fn spawn_session_runner(
         s.pending_request = None;
     }
 
-    // Forward runner events to the UI + update coarse session state.
+    // Forward runner events to the UI + update coarse session state. Each
+    // forwarder is bound to ITS runner's room: once another runner has
+    // superseded this one (M5.4 trusted takeover), the old runner's dying
+    // events (its Ended, its ConnectionState flaps) must neither clobber the
+    // new session's state nor reach the UI.
     let app_ev = app.clone();
+    let runner_room = room_id.clone();
     tauri::async_runtime::spawn(async move {
         while let Some(ev) = event_rx.recv().await {
+            let current = {
+                let state = app_ev.state::<SharedState>();
+                let s = lock_state(&state);
+                s.current_room_id.clone()
+            };
+            if current.as_deref() != Some(runner_room.as_str()) {
+                log::debug!(
+                    target: "lilypad::session",
+                    "dropping event from superseded runner (room {runner_room})"
+                );
+                continue;
+            }
             apply_session_event(&app_ev, &ev);
             let _ = app_ev.emit("lilypad://session", ev);
         }
