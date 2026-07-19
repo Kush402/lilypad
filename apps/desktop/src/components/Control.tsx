@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { api } from '../lib/tauri';
+import { useCallback, useEffect, useState } from 'react';
+import { api, type TrustedPairDto } from '../lib/tauri';
 import { useAppState } from '../lib/useAppState';
 import { STATUS_LABEL } from '../lib/status';
 
@@ -112,6 +112,94 @@ export function Control() {
           </div>
         </section>
       ) : null}
+
+      <TrustedDevices />
     </div>
+  );
+}
+
+function lastConnectedLabel(iso: string | null): string {
+  if (!iso) return 'never connected';
+  const mins = Math.round((Date.now() - Date.parse(iso)) / 60_000);
+  if (mins < 1) return 'connected just now';
+  if (mins < 60) return `last connected ${mins}m ago`;
+  const hours = Math.round(mins / 60);
+  if (hours < 48) return `last connected ${hours}h ago`;
+  return `last connected ${Math.round(hours / 24)}d ago`;
+}
+
+/**
+ * Trusted devices dashboard (M5.4) — every phone paired with this Mac, with
+ * the per-pair "connect without approval" toggle and Revoke. This window is
+ * the single control point for Lilypad's trust relationships.
+ */
+function TrustedDevices() {
+  const [pairs, setPairs] = useState<TrustedPairDto[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const refresh = useCallback(() => {
+    api
+      .listTrustedDevices()
+      .then((p) => {
+        setPairs(p.filter((pair) => !pair.revoked));
+        setError(null);
+      })
+      .catch(() => setError('Could not load trusted devices (backend offline?)'));
+  }, []);
+
+  useEffect(() => {
+    refresh();
+    const id = setInterval(refresh, 15_000);
+    return () => clearInterval(id);
+  }, [refresh]);
+
+  const toggle = (pair: TrustedPairDto) => {
+    void api
+      .setPairAutoApprove(pair.pairId, !pair.autoApprove)
+      .then(refresh)
+      .catch(() => setError('Update failed — is the backend running?'));
+  };
+
+  const revoke = (pair: TrustedPairDto) => {
+    if (!window.confirm('Revoke this phone? It will need a fresh QR pairing to reconnect.')) {
+      return;
+    }
+    void api
+      .revokePair(pair.pairId)
+      .then(refresh)
+      .catch(() => setError('Revoke failed — is the backend running?'));
+  };
+
+  return (
+    <section className="control__devices">
+      <h2 className="section-title">Trusted devices</h2>
+      {error ? <p className="muted">{error}</p> : null}
+      {pairs !== null && pairs.length === 0 ? (
+        <p className="muted">
+          No trusted phones yet. Pair once with the QR and leave “Trust this device” checked.
+        </p>
+      ) : null}
+      {(pairs ?? []).map((pair) => (
+        <div key={pair.pairId} className="device-row">
+          <div className="device-row__info">
+            <span className="device-row__name">{pair.displayName ?? 'Phone'}</span>
+            <span className="muted device-row__meta">
+              {lastConnectedLabel(pair.lastConnectedAt)}
+            </span>
+          </div>
+          <label className="device-row__toggle" title="Connect without approval">
+            <input
+              type="checkbox"
+              checked={pair.autoApprove}
+              onChange={() => toggle(pair)}
+            />
+            <span>Auto-connect</span>
+          </label>
+          <button className="btn btn--danger btn--small" onClick={() => revoke(pair)}>
+            Revoke
+          </button>
+        </div>
+      ))}
+    </section>
   );
 }

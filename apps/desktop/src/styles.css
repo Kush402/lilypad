@@ -322,3 +322,14 @@ body {
 .down {
   color: var(--muted);
 }
+
+/* ── Trusted devices dashboard (M5.4) ─────────────────────────────────── */
+.control__devices { margin-top: 20px; border-top: 1px solid var(--line, #333); padding-top: 14px; }
+.section-title { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; opacity: 0.7; margin: 0 0 10px; }
+.device-row { display: flex; align-items: center; gap: 12px; padding: 8px 0; }
+.device-row__info { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+.device-row__name { font-weight: 600; }
+.device-row__meta { font-size: 12px; }
+.device-row__toggle { display: flex; align-items: center; gap: 6px; font-size: 13px; white-space: nowrap; }
+.btn--small { padding: 4px 10px; font-size: 12px; }
+.trust-row { gap: 8px; align-items: center; font-size: 14px; }

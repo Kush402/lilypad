@@ -678,3 +678,73 @@ pub fn set_agent_config(args: SetAgentConfigArgs) -> Result<AgentConfigDto, Stri
     log::info!(target: "lilypad::audit", "agent_provider_configured — settings saved");
     Ok(get_agent_config())
 }
+
+// ── Trusted devices dashboard (M5.4) ────────────────────────────────────────
+// Thin HTTP glue to the backend's /devices/pairs management endpoints —
+// proxied through Rust (reqwest) rather than fetched from the webview so no
+// CORS surface needs opening on the backend. Payloads pass through as JSON;
+// the UI owns the shape (mirrors @lilypad/protocol's TrustedPairListing).
+
+/// Every phone this desktop trusts, for the dashboard list.
+#[tauri::command]
+pub async fn list_trusted_devices(
+    state: State<'_, SharedState>,
+) -> Result<serde_json::Value, String> {
+    let (device_id, base_url) = {
+        let s = lock_state(&state);
+        (s.device_id.clone(), s.backend_base_url.clone())
+    };
+    let url = format!(
+        "{}/devices/pairs?desktopDeviceId={}",
+        base_url.trim_end_matches('/'),
+        device_id
+    );
+    let resp = reqwest::Client::new()
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("could not reach backend: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("backend returned HTTP {}", resp.status()));
+    }
+    resp.json().await.map_err(|e| format!("bad response: {e}"))
+}
+
+/// Flip a pair's "connect without approval" (Always allow) setting.
+#[tauri::command]
+pub async fn set_pair_auto_approve(
+    state: State<'_, SharedState>,
+    pair_id: String,
+    auto_approve: bool,
+) -> Result<(), String> {
+    let base_url = lock_state(&state).backend_base_url.clone();
+    let url = format!("{}/devices/pairs/{pair_id}", base_url.trim_end_matches('/'));
+    let resp = reqwest::Client::new()
+        .patch(&url)
+        .json(&serde_json::json!({ "autoApprove": auto_approve }))
+        .send()
+        .await
+        .map_err(|e| format!("could not reach backend: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("backend returned HTTP {}", resp.status()));
+    }
+    log::info!(target: "lilypad::audit", "pair_auto_approve set to {auto_approve}");
+    Ok(())
+}
+
+/// Revoke a pair — the phone can no longer connect without a fresh QR pairing.
+#[tauri::command]
+pub async fn revoke_pair(state: State<'_, SharedState>, pair_id: String) -> Result<(), String> {
+    let base_url = lock_state(&state).backend_base_url.clone();
+    let url = format!("{}/devices/pairs/{pair_id}", base_url.trim_end_matches('/'));
+    let resp = reqwest::Client::new()
+        .delete(&url)
+        .send()
+        .await
+        .map_err(|e| format!("could not reach backend: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("backend returned HTTP {}", resp.status()));
+    }
+    log::info!(target: "lilypad::audit", "device_revoked — pair {pair_id}");
+    Ok(())
+}

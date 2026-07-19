@@ -15,6 +15,10 @@ vi.mock('../lib/tauri', () => ({
     deny: vi.fn(),
     disconnect: vi.fn(),
     panic: vi.fn(),
+    // Trusted devices dashboard (M5.4)
+    listTrustedDevices: vi.fn().mockResolvedValue([]),
+    setPairAutoApprove: vi.fn(),
+    revokePair: vi.fn(),
   },
 }));
 

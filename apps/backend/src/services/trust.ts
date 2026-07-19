@@ -27,6 +27,18 @@ export interface TrustedPair {
   displayName: string | null;
 }
 
+/** A pair as the desktop's Trusted Devices dashboard sees it — joined with
+ * the mobile device row so the UI can show WHICH phone. */
+export interface PairListing {
+  pairId: string;
+  mobileFingerprint: string;
+  displayName: string | null;
+  autoApprove: boolean;
+  revoked: boolean;
+  lastConnectedAt: string | null; // ISO, for the wire
+  createdAt: string;
+}
+
 /** Minimal DB surface — satisfied by the real Drizzle adapter below and by
  * an in-memory fake in tests (the `AuditLogStore`/`KvStore` pattern). */
 export interface TrustStore {
@@ -34,7 +46,9 @@ export interface TrustStore {
   upsertDevice(kind: DeviceKind, fingerprint: string): Promise<string>;
   /** The pair row for two device UUIDs, if one exists. */
   getPairByDeviceIds(desktopId: string, mobileId: string): Promise<TrustedPair | null>;
-  insertPair(desktopId: string, mobileId: string): Promise<TrustedPair>;
+  insertPair(desktopId: string, mobileId: string, autoApprove: boolean): Promise<TrustedPair>;
+  /** Every pair for one desktop, joined with each mobile device row. */
+  listPairsForDesktop(desktopId: string): Promise<PairListing[]>;
   /** Patch mutable pair fields. Absent fields are left untouched. */
   updatePair(
     pairId: string,
@@ -52,18 +66,39 @@ export class TrustService {
    * Re-trusting a previously revoked pair un-revokes it — the user just
    * re-ran the full QR + approve ceremony, which is exactly the bar that
    * established trust the first time. Idempotent for an active pair.
+   *
+   * New pairs default to `autoApprove: true`: the explicit trust ceremony IS
+   * the consent moment — a trusted phone reconnecting like a Bluetooth
+   * device is the whole product promise, and requiring a desktop-side tap on
+   * every reconnect would make "trusted" meaningless. The visible session
+   * indicator, audit log, panic disconnect, and the per-pair dashboard
+   * toggle (require approval / revoke) keep this inside the threat model's
+   * "no silent access" line. An EXISTING pair's setting is never overridden
+   * here — the user may have deliberately turned approval back on.
    */
   async establishTrust(desktopFingerprint: string, mobileFingerprint: string): Promise<void> {
     const desktopId = await this.store.upsertDevice('desktop', desktopFingerprint);
     const mobileId = await this.store.upsertDevice('mobile', mobileFingerprint);
     const existing = await this.store.getPairByDeviceIds(desktopId, mobileId);
     if (!existing) {
-      await this.store.insertPair(desktopId, mobileId);
+      await this.store.insertPair(desktopId, mobileId, true);
       return;
     }
     if (existing.revoked) {
       await this.store.updatePair(existing.pairId, { revoked: false });
     }
+  }
+
+  /** Every pair for a desktop (by wire id) — the Trusted Devices dashboard. */
+  async listForDesktop(desktopFingerprint: string): Promise<PairListing[]> {
+    const desktop = await this.store.getDeviceByFingerprint('desktop', desktopFingerprint);
+    if (!desktop) return [];
+    return this.store.listPairsForDesktop(desktop.id);
+  }
+
+  /** Flip a pair's "connect without approval" setting. */
+  async setAutoApprove(pairId: string, enabled: boolean): Promise<void> {
+    await this.store.updatePair(pairId, { autoApprove: enabled });
   }
 
   /** The ACTIVE (non-revoked) pair for two wire ids, or null. `null` covers
@@ -131,14 +166,38 @@ export function createDrizzleTrustStore(database: typeof defaultDb = defaultDb):
         .limit(1);
       return rows[0] ? toPair(rows[0]) : null;
     },
-    async insertPair(desktopId, mobileId) {
+    async insertPair(desktopId, mobileId, autoApprove) {
       const inserted = await database
         .insert(trustedDevices)
-        .values({ desktopDeviceId: desktopId, mobileDeviceId: mobileId })
+        .values({ desktopDeviceId: desktopId, mobileDeviceId: mobileId, autoApprove })
         .returning();
       const row = inserted[0];
       if (!row) throw new Error('trusted_devices insert returned no row');
       return toPair(row);
+    },
+    async listPairsForDesktop(desktopId) {
+      const rows = await database
+        .select({
+          pairId: trustedDevices.id,
+          mobileFingerprint: devices.fingerprint,
+          displayName: trustedDevices.displayName,
+          autoApprove: trustedDevices.autoApprove,
+          revokedAt: trustedDevices.revokedAt,
+          lastConnectedAt: trustedDevices.lastConnectedAt,
+          createdAt: trustedDevices.createdAt,
+        })
+        .from(trustedDevices)
+        .innerJoin(devices, eq(trustedDevices.mobileDeviceId, devices.id))
+        .where(eq(trustedDevices.desktopDeviceId, desktopId));
+      return rows.map((r) => ({
+        pairId: r.pairId,
+        mobileFingerprint: r.mobileFingerprint,
+        displayName: r.displayName,
+        autoApprove: r.autoApprove,
+        revoked: r.revokedAt !== null,
+        lastConnectedAt: r.lastConnectedAt ? r.lastConnectedAt.toISOString() : null,
+        createdAt: r.createdAt.toISOString(),
+      }));
     },
     async updatePair(pairId, patch) {
       const set: Partial<typeof trustedDevices.$inferInsert> = {};

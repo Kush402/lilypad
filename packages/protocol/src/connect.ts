@@ -31,3 +31,29 @@ export type ConnectResponse = z.infer<typeof ConnectResponseSchema>;
 
 /** Machine-readable failure codes the connect endpoint returns. */
 export type ConnectErrorCode = 'not_trusted' | 'revoked' | 'desktop_offline';
+
+// ── Trusted-pair management (desktop dashboard) ──────────────────────────────
+
+/** One pair as GET /devices/pairs returns it. */
+export const TrustedPairListingSchema = z.object({
+  pairId: z.string().uuid(),
+  mobileFingerprint: z.string(),
+  displayName: z.string().nullable(),
+  autoApprove: z.boolean(),
+  revoked: z.boolean(),
+  lastConnectedAt: z.string().nullable(),
+  createdAt: z.string(),
+});
+export type TrustedPairListing = z.infer<typeof TrustedPairListingSchema>;
+
+export const DevicePairsQuerySchema = z.object({
+  desktopDeviceId: z.string().min(8).max(128),
+});
+
+export const PairIdParamsSchema = z.object({
+  pairId: z.string().uuid(),
+});
+
+export const PairAutoApprovePatchSchema = z.object({
+  autoApprove: z.boolean(),
+});

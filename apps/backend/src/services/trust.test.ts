@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { TrustService, type TrustStore, type TrustedPair } from './trust.js';
+import { TrustService, type PairListing, type TrustStore, type TrustedPair } from './trust.js';
 import type { DeviceKind } from '@lilypad/protocol';
 
 /** In-memory TrustStore, mirroring the FakeRedis pattern of sibling tests. */
@@ -28,18 +28,37 @@ class FakeTrustStore implements TrustStore {
     return null;
   }
 
-  async insertPair(desktopId: string, mobileId: string): Promise<TrustedPair> {
+  async insertPair(
+    desktopId: string,
+    mobileId: string,
+    autoApprove: boolean,
+  ): Promise<TrustedPair> {
     const pair = {
       pairId: `pair-${this.nextId++}`,
       desktopDeviceId: desktopId,
       mobileDeviceId: mobileId,
-      autoApprove: false,
+      autoApprove,
       revoked: false,
       displayName: null,
       lastConnectedAt: null,
     };
     this.pairs.set(pair.pairId, pair);
     return pair;
+  }
+
+  async listPairsForDesktop(desktopId: string): Promise<PairListing[]> {
+    const byId = new Map([...this.devices.values()].map((d) => [d.id, d]));
+    return [...this.pairs.values()]
+      .filter((p) => p.desktopDeviceId === desktopId)
+      .map((p) => ({
+        pairId: p.pairId,
+        mobileFingerprint: byId.get(p.mobileDeviceId)?.fingerprint ?? '?',
+        displayName: p.displayName,
+        autoApprove: p.autoApprove,
+        revoked: p.revoked,
+        lastConnectedAt: p.lastConnectedAt ? p.lastConnectedAt.toISOString() : null,
+        createdAt: new Date(0).toISOString(),
+      }));
   }
 
   async updatePair(
@@ -72,7 +91,36 @@ describe('TrustService', () => {
     const pair = await trust.findPair('desktop-01', 'mobile-01');
     expect(pair).not.toBeNull();
     expect(pair!.revoked).toBe(false);
-    expect(pair!.autoApprove).toBe(false); // never defaults on
+    // The trust ceremony IS the consent moment — trusted phones reconnect
+    // without a per-session desktop tap (visible indicator + audit + the
+    // dashboard toggle keep "no silent access" honest).
+    expect(pair!.autoApprove).toBe(true);
+  });
+
+  it('the dashboard toggle flips autoApprove and re-trusting never overrides it', async () => {
+    const store = new FakeTrustStore();
+    const trust = new TrustService(store);
+    await trust.establishTrust('desktop-01', 'mobile-01');
+    const pair = (await trust.findPair('desktop-01', 'mobile-01'))!;
+
+    await trust.setAutoApprove(pair.pairId, false); // user wants approval again
+    expect((await trust.findPair('desktop-01', 'mobile-01'))!.autoApprove).toBe(false);
+
+    await trust.establishTrust('desktop-01', 'mobile-01'); // re-scan later
+    expect((await trust.findPair('desktop-01', 'mobile-01'))!.autoApprove).toBe(false);
+  });
+
+  it('listForDesktop returns each phone with its settings; empty for unknown', async () => {
+    const store = new FakeTrustStore();
+    const trust = new TrustService(store);
+    await trust.establishTrust('desktop-01', 'mobile-01');
+    await trust.establishTrust('desktop-01', 'mobile-02');
+
+    const listing = await trust.listForDesktop('desktop-01');
+    expect(listing.map((p) => p.mobileFingerprint).sort()).toEqual(['mobile-01', 'mobile-02']);
+    expect(listing.every((p) => p.autoApprove)).toBe(true);
+
+    expect(await trust.listForDesktop('desktop-unknown')).toEqual([]);
   });
 
   it('findPair returns null for unknown devices or an untrusted combination', async () => {
