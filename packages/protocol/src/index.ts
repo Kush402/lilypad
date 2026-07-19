@@ -6,6 +6,7 @@
 export * from './constants.js';
 export * from './qr.js';
 export * from './pairing.js';
+export * from './connect.js';
 export * from './signaling.js';
 export * from './input.js';
 export * from './agent.js';

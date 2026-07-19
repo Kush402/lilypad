@@ -1,9 +1,12 @@
+import { randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import {
   SIGNALING_PATH,
   BACKEND_REAP_INTERVAL_MS,
   BACKEND_HEARTBEAT_TIMEOUT_MS,
+  ConnectRequestSchema,
   encodeSignal,
+  type ConnectResponse,
 } from '@lilypad/protocol';
 import { SignalingHub, type Peer } from '../signaling/hub.js';
 import {
@@ -17,6 +20,8 @@ import { RoomStore } from '../session/roomStore.js';
 import { buildIceServers } from '../turn/credentials.js';
 import { AuditLogService, createDrizzleAuditLogStore } from '../services/auditLog.js';
 import { RoomAuthStore } from '../services/roomAuth.js';
+import { TrustService, createDrizzleTrustStore } from '../services/trust.js';
+import { advertisedUrls } from '../services/advertisedUrls.js';
 import { redis } from '../redis.js';
 import { log } from '../logging.js';
 import { config } from '../config.js';
@@ -40,6 +45,7 @@ export async function signalingRoutes(app: FastifyInstance): Promise<void> {
   const roomStore = new RoomStore(redis);
   const auditLog = new AuditLogService(createDrizzleAuditLogStore());
   const roomAuth = new RoomAuthStore(redis);
+  const trust = new TrustService(createDrizzleTrustStore());
 
   const hub = new SignalingHub({
     buildIceServers: (label) => buildIceServers({ label }).iceServers,
@@ -86,6 +92,19 @@ export async function signalingRoutes(app: FastifyInstance): Promise<void> {
       void roomAuth
         .delete(roomId)
         .catch((err) => log.signaling.warn({ err, roomId }, 'room-auth record delete failed'));
+    },
+    onTrustEstablished: (info) => {
+      // "Trust this device" rode on the approval — record the persistent
+      // pair. Fire-and-forget: a Postgres blip must never fail the approval
+      // itself (the user can re-trust on the next pairing).
+      void trust
+        .establishTrust(info.desktopDeviceId, info.mobileDeviceId)
+        .then(() =>
+          auditLog.devicePaired({
+            metadata: { ...info, trusted: true },
+          }),
+        )
+        .catch((err) => log.signaling.error({ err, ...info }, 'failed to record device trust'));
     },
     onPairDenied: (info) => {
       void auditLog
@@ -142,6 +161,75 @@ export async function signalingRoutes(app: FastifyInstance): Promise<void> {
     }
     return hub.metricsSnapshot();
   });
+
+  // M5.4 no-QR reconnect: a trusted phone asks the backend to ring its
+  // desktop. Lives in this route module because it needs the live hub (same
+  // reason /metrics does). Rate-limited like /pairing/create — it is fully
+  // unauthenticated pre-M5-keys and mints Redis state on success.
+  app.post(
+    '/connect/request',
+    { config: { rateLimit: { max: 30, timeWindow: '1 minute' } } },
+    async (req, reply) => {
+      const parsed = ConnectRequestSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return reply.code(400).send({ error: 'invalid_request', issues: parsed.error.issues });
+      }
+      const { desktopDeviceId, mobileDeviceId, mobileDeviceName } = parsed.data;
+
+      const pair = await trust.findPair(desktopDeviceId, mobileDeviceId);
+      if (!pair) {
+        return reply
+          .code(404)
+          .send({ error: 'not_trusted', message: 'no trust relationship — pair with a QR first' });
+      }
+      if (pair.revoked) {
+        return reply
+          .code(403)
+          .send({ error: 'revoked', message: 'this pairing was revoked — pair again with a QR' });
+      }
+      if (!hub.isDesktopPresent(desktopDeviceId)) {
+        return reply
+          .code(503)
+          .send({ error: 'desktop_offline', message: 'the desktop is not reachable right now' });
+      }
+
+      // Mint the session room exactly as a redeem would: room-auth bound to
+      // BOTH devices (session TTL) BEFORE either device can try to register.
+      const roomId = randomUUID();
+      await roomAuth.recordDesktop(roomId, desktopDeviceId);
+      await roomAuth.recordMobile(roomId, desktopDeviceId, mobileDeviceId);
+
+      const scopes = ['view', 'control'] as const;
+      const delivered = hub.notifyConnectRequest(desktopDeviceId, {
+        sessionRoomId: roomId,
+        mobileDeviceId,
+        mobileDeviceName: mobileDeviceName ?? null,
+        requestedScopes: [...scopes],
+        autoApprove: pair.autoApprove,
+      });
+      if (!delivered) {
+        // Presence dropped between the check and the send — same honest answer.
+        void roomAuth.delete(roomId).catch(() => {});
+        return reply
+          .code(503)
+          .send({ error: 'desktop_offline', message: 'the desktop is not reachable right now' });
+      }
+
+      void trust
+        .touchConnected(pair.pairId)
+        .catch((err) => log.signaling.warn({ err }, 'lastConnectedAt update failed'));
+
+      // Mirrors PairingRedeemResponse so the phone's downstream session flow
+      // is byte-for-byte the pairing flow.
+      const response: ConnectResponse = {
+        roomId,
+        signalingUrl: advertisedUrls().signalingUrl,
+        scopes: [...scopes],
+        desktopDeviceName: pair.displayName,
+      };
+      return reply.code(200).send(response);
+    },
+  );
 
   // Shared across all sockets: bound concurrent connections per source IP.
   const ipLimiter = new IpConnectionLimiter(MAX_CONNECTIONS_PER_IP);
