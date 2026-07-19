@@ -5,7 +5,9 @@ export type RootStackParamList = {
   Devices: undefined;
   Scanner: undefined;
   Viewer: {
-    payload: QrPayload;
+    /** Present for QR-scanned sessions; absent for trusted no-QR reconnects
+     * (the Viewer itself only reads the fields below). */
+    payload?: QrPayload;
     roomId: string;
     signalingUrl: string;
     scopes: SessionScope[];

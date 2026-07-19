@@ -1,7 +1,7 @@
 import { Platform } from 'react-native';
-import type { PairingRedeemResponse } from '@lilypad/protocol';
+import type { ConnectResponse, PairingRedeemResponse } from '@lilypad/protocol';
 import { initDeviceIdentity } from './device';
-import { RedeemError, classifyHttpStatus, classifyFetchError } from './errors';
+import { RedeemError, appError, classifyHttpStatus, classifyFetchError } from './errors';
 
 /** Bounded so a slow/dead network surfaces as a classified, actionable error
  * instead of a spinner that never resolves. See
@@ -68,4 +68,56 @@ export async function redeemToken(
     clearTimeout(timer);
     if (externalSignal) externalSignal.removeEventListener('abort', onExternalAbort);
   }
+}
+
+/**
+ * Ring a trusted desktop without a QR (M5.4, `POST /connect/request`). On
+ * success the response mirrors a redeem, so the caller navigates into the
+ * Viewer exactly like the scanner flow. Failures classify into the specific
+ * trust codes (`not_trusted`/`trust_revoked`/`desktop_offline`) so the UI
+ * can say the honest thing.
+ */
+export async function requestConnect(
+  apiBaseUrl: string,
+  desktopDeviceId: string,
+): Promise<ConnectResponse> {
+  const controller = new AbortController();
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, REDEEM_TIMEOUT_MS);
+
+  try {
+    const mobileDeviceId = await initDeviceIdentity();
+    const res = await fetch(`${apiBaseUrl.replace(/\/$/, '')}/connect/request`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        desktopDeviceId,
+        mobileDeviceId,
+        mobileDeviceName: `${Platform.OS} phone`,
+      }),
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      throw new RedeemError(classifyConnectStatus(res.status, body));
+    }
+    return (await res.json()) as ConnectResponse;
+  } catch (err) {
+    if (err instanceof RedeemError) throw err;
+    throw new RedeemError(classifyFetchError(timedOut));
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Map /connect/request failures onto the error taxonomy. The endpoint's
+ * machine codes are authoritative where present; status is the fallback. */
+function classifyConnectStatus(status: number, body: string) {
+  if (status === 404 && body.includes('not_trusted')) return appError('not_trusted');
+  if (status === 403 && body.includes('revoked')) return appError('trust_revoked');
+  if (status === 503 && body.includes('desktop_offline')) return appError('desktop_offline');
+  return classifyHttpStatus(status, body);
 }

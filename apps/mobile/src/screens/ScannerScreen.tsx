@@ -11,6 +11,7 @@ import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { decodeQrPayload, type QrPayload } from '@lilypad/protocol';
 import type { RootStackParamList } from '../types';
 import { redeemToken } from '../lib/api';
+import { upsertPair } from '../lib/pairs';
 import { appError, toAppError, type AppError } from '../lib/errors';
 import { theme } from '../theme';
 
@@ -90,6 +91,16 @@ export function ScannerScreen({ navigation }: Props) {
     try {
       const res = await redeemToken(scanned.apiBaseUrl, scanned.token, controller.signal);
       if (myRequest !== requestSeq.current) return; // superseded by Rescan/a later attempt
+      // M5.4: remember this desktop so My Devices can ring it without a QR.
+      // Fire-and-forget; an old backend without desktopDeviceId just isn't
+      // rememberable (the session itself is unaffected either way).
+      if (res.desktopDeviceId) {
+        void upsertPair({
+          desktopDeviceId: res.desktopDeviceId,
+          name: res.desktopDeviceName ?? scanned.deviceName ?? null,
+          apiBaseUrl: scanned.apiBaseUrl,
+        }).catch(() => {});
+      }
       navigation.replace('Viewer', {
         payload: scanned,
         roomId: res.roomId,

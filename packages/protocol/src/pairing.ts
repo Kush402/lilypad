@@ -54,5 +54,10 @@ export const PairingRedeemResponseSchema = z.object({
   /** Scopes the desktop offered; the phone joins signaling to request approval. */
   scopes: z.array(SessionScopeSchema),
   desktopDeviceName: z.string().nullable(),
+  /** The desktop's wire deviceId (M5.4) — what the phone stores to ring this
+   * desktop later via POST /connect/request. Optional so old backends stay
+   * valid; a phone simply can't offer no-QR reconnect for pairs made
+   * against one. */
+  desktopDeviceId: z.string().optional(),
 });
 export type PairingRedeemResponse = z.infer<typeof PairingRedeemResponseSchema>;

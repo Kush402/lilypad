@@ -111,5 +111,7 @@ export async function redeemPairing(
     signalingUrl: advertisedUrls().signalingUrl,
     scopes: record.scopes,
     desktopDeviceName: record.desktopDeviceName,
+    // M5.4: the phone stores this to ring the desktop later without a QR.
+    desktopDeviceId: record.desktopDeviceId,
   };
 }

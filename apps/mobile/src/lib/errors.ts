@@ -16,6 +16,10 @@ export type AppErrorCode =
   | 'signaling_lost'
   | 'peer_denied'
   | 'ice_failed'
+  // M5.4 no-QR reconnect (`POST /connect/request`) failures:
+  | 'not_trusted'
+  | 'trust_revoked'
+  | 'desktop_offline'
   | 'unknown';
 
 export interface AppError {
@@ -33,6 +37,9 @@ const COPY: Record<AppErrorCode, string> = {
   signaling_lost: 'Lost the connection to the laptop.',
   peer_denied: 'The laptop denied this request.',
   ice_failed: 'Could not establish a connection to the laptop.',
+  not_trusted: "This laptop hasn't trusted this phone yet. Scan its QR code once to pair.",
+  trust_revoked: 'This pairing was revoked on the laptop. Scan its QR code to pair again.',
+  desktop_offline: 'The laptop is offline. Make sure Lilypad is running on it.',
   unknown: 'Something went wrong.',
 };
 
@@ -45,6 +52,9 @@ const RETRYABLE: Record<AppErrorCode, boolean> = {
   signaling_lost: true,
   peer_denied: false,
   ice_failed: true,
+  not_trusted: false,
+  trust_revoked: false,
+  desktop_offline: true,
   unknown: true,
 };
 
