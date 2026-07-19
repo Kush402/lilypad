@@ -294,30 +294,47 @@ impl LlmProvider for OpenAiCompatProvider {
             "{}/chat/completions",
             self.config.base_url.trim_end_matches('/')
         );
-        let resp = self
-            .client
-            .post(url)
-            .header("authorization", format!("Bearer {}", self.config.api_key))
-            .header("content-type", "application/json")
-            .json(&body)
-            .send()
-            .await
-            .context("chat-completions request failed")?;
+        // Rate limits (429) and server errors (5xx) are transient — free-tier
+        // rate windows clear within a minute, and failing the user's whole run
+        // on the first one is far worse than a short wait. Retry with backoff;
+        // request errors (other 4xx) fail immediately.
+        let mut attempt: u32 = 0;
+        loop {
+            let resp = self
+                .client
+                .post(&url)
+                .header("authorization", format!("Bearer {}", self.config.api_key))
+                .header("content-type", "application/json")
+                .json(&body)
+                .send()
+                .await
+                .context("chat-completions request failed")?;
 
-        let status = resp.status();
-        let json: Value = resp
-            .json()
-            .await
-            .context("chat-completions response was not JSON")?;
-        if !status.is_success() {
-            let msg = json
-                .get("error")
-                .and_then(|e| e.get("message"))
-                .and_then(|m| m.as_str())
-                .unwrap_or("unknown error");
-            return Err(anyhow!("provider API error ({status}): {msg}"));
+            let status = resp.status();
+            let retry_after = resp
+                .headers()
+                .get("retry-after")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.trim().parse::<u64>().ok());
+            let json: Value = resp
+                .json()
+                .await
+                .context("chat-completions response was not JSON")?;
+            if !status.is_success() {
+                if super::is_retryable_status(status.as_u16()) && attempt < super::MAX_RETRIES {
+                    let delay = super::retry_delay(attempt, retry_after);
+                    attempt += 1;
+                    log::warn!(target: "lilypad::agent",
+                        "provider returned {status}; retrying in {delay:?} (attempt {attempt}/{})",
+                        super::MAX_RETRIES);
+                    tokio::time::sleep(delay).await;
+                    continue;
+                }
+                let msg = super::provider_error_message(&json);
+                return Err(anyhow!("provider API error ({status}): {msg}"));
+            }
+            return parse_reply(&json);
         }
-        parse_reply(&json)
     }
 
     fn caps(&self) -> ProviderCaps {

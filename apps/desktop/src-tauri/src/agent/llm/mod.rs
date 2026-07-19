@@ -199,6 +199,47 @@ impl ProviderChoice {
     }
 }
 
+/// Transient provider statuses worth retrying: rate limits (429) and server
+/// errors (5xx). 4xx request errors are OUR bug or the user's config — never
+/// retried. Shared by every adapter's HTTP shell.
+pub(crate) fn is_retryable_status(status: u16) -> bool {
+    status == 429 || (500..=599).contains(&status)
+}
+
+/// How many times an adapter re-sends a retryable request before giving up.
+pub(crate) const MAX_RETRIES: u32 = 3;
+
+/// Backoff before retry `attempt` (0-based): honor the server's `Retry-After`
+/// seconds when present (capped so a hostile/buggy header can't park the run),
+/// else 2s/5s/10s — free-tier rate windows are per-minute, so short waits
+/// genuinely clear them.
+pub(crate) fn retry_delay(attempt: u32, retry_after_secs: Option<u64>) -> std::time::Duration {
+    let secs = match retry_after_secs {
+        Some(s) => s.min(30),
+        None => [2, 5, 10][attempt.min(2) as usize],
+    };
+    std::time::Duration::from_secs(secs)
+}
+
+/// Best-effort human-readable message from an error body. Handles the common
+/// `{"error":{"message":…}}` shape AND the array-wrapped `[{"error":…}]`
+/// variant some endpoints return; falls back to a truncated body snippet so
+/// the log never says just "unknown error".
+pub(crate) fn provider_error_message(body: &serde_json::Value) -> String {
+    let obj = body
+        .get("error")
+        .or_else(|| body.get(0).and_then(|v| v.get("error")));
+    if let Some(msg) = obj.and_then(|e| e.get("message")).and_then(|m| m.as_str()) {
+        return msg.to_string();
+    }
+    let raw = body.to_string();
+    let mut snippet: String = raw.chars().take(200).collect();
+    if snippet.len() < raw.len() {
+        snippet.push('…');
+    }
+    snippet
+}
+
 /// User-facing guidance when no provider is configured. Lives here (provider
 /// land) so the engine never has to name a vendor.
 pub const NOT_CONFIGURED_MESSAGE: &str = "No AI provider is configured on the desktop — \
@@ -598,6 +639,37 @@ mod tests {
     use super::*;
     use std::collections::VecDeque;
     use std::sync::Mutex;
+
+    #[test]
+    fn retry_policy_covers_rate_limits_and_server_errors_only() {
+        assert!(is_retryable_status(429));
+        assert!(is_retryable_status(500));
+        assert!(is_retryable_status(529)); // vendor overload
+        assert!(!is_retryable_status(400));
+        assert!(!is_retryable_status(401));
+        assert!(!is_retryable_status(404));
+
+        // Backoff ladder without a server hint; Retry-After wins but is capped.
+        assert_eq!(retry_delay(0, None).as_secs(), 2);
+        assert_eq!(retry_delay(1, None).as_secs(), 5);
+        assert_eq!(retry_delay(2, None).as_secs(), 10);
+        assert_eq!(retry_delay(9, None).as_secs(), 10); // ladder saturates
+        assert_eq!(retry_delay(0, Some(7)).as_secs(), 7);
+        assert_eq!(retry_delay(0, Some(9999)).as_secs(), 30); // capped
+    }
+
+    #[test]
+    fn provider_error_message_handles_object_array_and_fallback_shapes() {
+        // Plain object shape.
+        let obj = json!({ "error": { "message": "rate limited" } });
+        assert_eq!(provider_error_message(&obj), "rate limited");
+        // Array-wrapped shape some endpoints return.
+        let arr = json!([{ "error": { "message": "quota exceeded", "code": 429 } }]);
+        assert_eq!(provider_error_message(&arr), "quota exceeded");
+        // Unknown shape → truncated body snippet, never "unknown error".
+        let odd = json!({ "detail": "boom" });
+        assert!(provider_error_message(&odd).contains("boom"));
+    }
 
     #[test]
     fn maps_skill_tool_calls_to_actions() {

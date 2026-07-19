@@ -228,31 +228,47 @@ impl LlmProvider for AnthropicProvider {
             self.config.max_tokens,
         );
         let url = format!("{}/v1/messages", self.config.base_url.trim_end_matches('/'));
-        let resp = self
-            .client
-            .post(url)
-            .header("x-api-key", &self.config.api_key)
-            .header("anthropic-version", ANTHROPIC_VERSION)
-            .header("content-type", "application/json")
-            .json(&body)
-            .send()
-            .await
-            .context("Anthropic request failed")?;
+        // Same transient-error policy as the chat-completions adapter: retry
+        // rate limits (429) and server errors (5xx, incl. 529 overloaded)
+        // with backoff instead of failing the user's run on the first one.
+        let mut attempt: u32 = 0;
+        loop {
+            let resp = self
+                .client
+                .post(&url)
+                .header("x-api-key", &self.config.api_key)
+                .header("anthropic-version", ANTHROPIC_VERSION)
+                .header("content-type", "application/json")
+                .json(&body)
+                .send()
+                .await
+                .context("Anthropic request failed")?;
 
-        let status = resp.status();
-        let json: Value = resp
-            .json()
-            .await
-            .context("Anthropic response was not JSON")?;
-        if !status.is_success() {
-            let msg = json
-                .get("error")
-                .and_then(|e| e.get("message"))
-                .and_then(|m| m.as_str())
-                .unwrap_or("unknown error");
-            return Err(anyhow!("Anthropic API error ({status}): {msg}"));
+            let status = resp.status();
+            let retry_after = resp
+                .headers()
+                .get("retry-after")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.trim().parse::<u64>().ok());
+            let json: Value = resp
+                .json()
+                .await
+                .context("Anthropic response was not JSON")?;
+            if !status.is_success() {
+                if super::is_retryable_status(status.as_u16()) && attempt < super::MAX_RETRIES {
+                    let delay = super::retry_delay(attempt, retry_after);
+                    attempt += 1;
+                    log::warn!(target: "lilypad::agent",
+                        "provider returned {status}; retrying in {delay:?} (attempt {attempt}/{})",
+                        super::MAX_RETRIES);
+                    tokio::time::sleep(delay).await;
+                    continue;
+                }
+                let msg = super::provider_error_message(&json);
+                return Err(anyhow!("Anthropic API error ({status}): {msg}"));
+            }
+            return parse_reply(&json);
         }
-        parse_reply(&json)
     }
 
     fn caps(&self) -> ProviderCaps {
