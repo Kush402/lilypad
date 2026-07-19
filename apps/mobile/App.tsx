@@ -1,5 +1,5 @@
 import 'react-native-gesture-handler';
-import React from 'react';
+import React, { useEffect } from 'react';
 import { StatusBar } from 'react-native';
 import { NavigationContainer, DarkTheme } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
@@ -10,6 +10,7 @@ import { theme } from './src/theme';
 import { DeviceListScreen } from './src/screens/DeviceListScreen';
 import { ScannerScreen } from './src/screens/ScannerScreen';
 import { ViewerScreen } from './src/screens/ViewerScreen';
+import { initDeviceIdentity } from './src/lib/device';
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
@@ -26,6 +27,12 @@ const navTheme = {
 };
 
 export default function App() {
+  // Warm the keychain-backed device identity before any pairing/redeem can
+  // need it (redeemToken also awaits it — this just hides the latency).
+  // Fire-and-forget: failures degrade to the old per-launch id, never crash.
+  useEffect(() => {
+    void initDeviceIdentity();
+  }, []);
   return (
     <SafeAreaProvider>
       <StatusBar barStyle="light-content" backgroundColor={theme.bg} />

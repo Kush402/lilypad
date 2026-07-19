@@ -1,6 +1,6 @@
 import { Platform } from 'react-native';
 import type { PairingRedeemResponse } from '@lilypad/protocol';
-import { getDeviceId } from './device';
+import { initDeviceIdentity } from './device';
 import { RedeemError, classifyHttpStatus, classifyFetchError } from './errors';
 
 /** Bounded so a slow/dead network surfaces as a classified, actionable error
@@ -34,12 +34,23 @@ export async function redeemToken(
   }, REDEEM_TIMEOUT_MS);
 
   try {
+    // The redeem is this identity's FIRST use in any session — awaiting the
+    // keychain-backed init here (memoized; instant after app-start warmup)
+    // guarantees every later sync getDeviceId() sees the persistent id.
+    const deviceId = await initDeviceIdentity();
+    // A cancel (Rescan tap, timeout) that landed during that await must not
+    // fire the network request at all — and a fetch mock/polyfill handed an
+    // already-aborted signal may never settle, so don't rely on fetch to
+    // notice.
+    if (controller.signal.aborted) {
+      throw new RedeemError(classifyFetchError(timedOut));
+    }
     const res = await fetch(`${apiBaseUrl.replace(/\/$/, '')}/pairing/redeem`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         token,
-        deviceId: getDeviceId(),
+        deviceId,
         deviceName: `${Platform.OS} phone`,
         platform: Platform.OS === 'ios' ? 'ios' : 'android',
       }),
