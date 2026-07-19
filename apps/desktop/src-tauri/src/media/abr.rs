@@ -38,6 +38,12 @@ pub struct AbrConfig {
     /// the higher rate, REMB rises, the next probe climbs further; loss (or a
     /// REMB that stops growing) still ends the climb at true capacity.
     pub probe_margin: f64,
+    /// How long upward probing stays suspended after sender-side congestion
+    /// (the sample queue overflowed — see [`BitrateController::on_send_congestion`]).
+    /// Without a hold, the prober re-rams the exact ceiling that just
+    /// overflowed on a ~15s cycle, which the viewer experiences as periodic
+    /// stutter (observed live on a relayed cellular path).
+    pub congestion_probe_hold: Duration,
 }
 
 impl Default for AbrConfig {
@@ -65,6 +71,7 @@ impl Default for AbrConfig {
             increase_interval: Duration::from_secs(1),
             remb_headroom: 0.95,
             probe_margin: 1.25,
+            congestion_probe_hold: Duration::from_secs(20),
         }
     }
 }
@@ -74,6 +81,9 @@ pub struct BitrateController {
     current_kbps: u32,
     remb_cap_kbps: Option<u32>,
     last_increase: Option<Instant>,
+    /// Upward probing is suspended until this instant (sender-side
+    /// congestion cooldown). `None` = no hold.
+    probe_hold_until: Option<Instant>,
 }
 
 impl BitrateController {
@@ -83,6 +93,7 @@ impl BitrateController {
             current_kbps: initial_kbps.clamp(cfg.min_kbps, cfg.max_kbps),
             remb_cap_kbps: None,
             last_increase: None,
+            probe_hold_until: None,
         }
     }
 
@@ -118,7 +129,13 @@ impl BitrateController {
         if fraction_lost > self.cfg.increase_loss {
             return None; // at capacity — hold
         }
-        // Clean link: probe upward, rate-limited.
+        // Clean link: probe upward, rate-limited — and never during a
+        // sender-congestion hold (RTCP loss can read 0% while OUR OWN send
+        // queue is the thing overflowing; the receiver can't report frames
+        // that never left this machine).
+        if self.probe_hold_until.is_some_and(|t| now < t) {
+            return None;
+        }
         let due = match self.last_increase {
             Some(t) => now.duration_since(t) >= self.cfg.increase_interval,
             None => true,
@@ -142,6 +159,24 @@ impl BitrateController {
             return self.retarget(target);
         }
         None
+    }
+
+    /// Sender-side congestion: the sample queue overflowed — the send path
+    /// is slower than capture, and RTCP is blind to it (the receiver cannot
+    /// report loss on frames that never left this machine). Back off
+    /// multiplicatively, bounded by the receiver's own estimate (never the
+    /// probe-margin ceiling — that's what just overflowed), and suspend
+    /// upward probing for the cooldown so the ladder doesn't immediately
+    /// re-ram the same ceiling (~15s stutter cycle observed live).
+    pub fn on_send_congestion(&mut self, now: Instant) -> Option<u32> {
+        self.probe_hold_until = Some(now + self.cfg.congestion_probe_hold);
+        self.last_increase = Some(now);
+        let backed_off = (self.current_kbps as f64 * self.cfg.decrease_factor) as u32;
+        let bounded = match self.remb_cap_kbps {
+            Some(cap) => backed_off.min(cap),
+            None => backed_off,
+        };
+        self.retarget(bounded)
     }
 }
 
@@ -218,6 +253,32 @@ mod tests {
         assert_eq!(c.on_remb(1_250_000), None); // current below new ceiling
         t += Duration::from_secs(3);
         assert_eq!(c.on_loss_report(0.0, t), Some(1350)); // 1250 * 1.08
+    }
+
+    #[test]
+    fn send_congestion_backs_off_below_the_remb_estimate_and_holds_probing() {
+        let mut c = ctl();
+        let t0 = Instant::now();
+        c.on_remb(2_400_000); // cap 2280; ceiling 2850 — current 2500 stands
+        assert_eq!(c.current_kbps(), 2500);
+
+        // Queue overflowed: back off ×0.7 (1750), bounded by the estimate —
+        // NOT the probe-margin ceiling that just overflowed.
+        assert_eq!(c.on_send_congestion(t0), Some(1750));
+
+        // Clean loss reports during the hold must not probe upward…
+        assert_eq!(c.on_loss_report(0.0, t0 + Duration::from_secs(5)), None);
+        assert_eq!(c.on_loss_report(0.0, t0 + Duration::from_secs(15)), None);
+        // …and probing resumes after the hold expires.
+        assert!(c
+            .on_loss_report(0.0, t0 + Duration::from_secs(25))
+            .is_some());
+    }
+
+    #[test]
+    fn send_congestion_without_remb_still_backs_off() {
+        let mut c = ctl();
+        assert_eq!(c.on_send_congestion(Instant::now()), Some(1750));
     }
 
     #[test]

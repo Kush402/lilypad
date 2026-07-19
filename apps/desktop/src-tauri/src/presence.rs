@@ -19,7 +19,7 @@ use std::time::Duration;
 use tauri::{AppHandle, Manager};
 
 use crate::signaling::{connect, messages::ConnectRequestPayload, Envelope};
-use crate::state::{SessionStatus, SharedState};
+use crate::state::SharedState;
 
 /// Mirrors `@lilypad/protocol`'s `APP_HEARTBEAT_INTERVAL_MS` (4s), like the
 /// session runner does — the hub reaps a presence seat silent for 25s.

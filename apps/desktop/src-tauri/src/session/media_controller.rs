@@ -150,6 +150,11 @@ pub struct MediaController {
     /// sleeping display makes the OS stop the capture stream, killing the
     /// session. RAII, so stopping the pipeline always releases it.
     sleep_guard: Option<crate::power::DisplaySleepGuard>,
+    /// High-water mark of the pipeline's dropped-frame counter, so each REMB
+    /// tick can detect NEW send-queue overflow (sender-side congestion RTCP
+    /// is blind to) and feed it to the ABR — see `BitrateController::
+    /// on_send_congestion`.
+    seen_dropped_frames: u64,
 }
 
 impl MediaController {
@@ -164,6 +169,7 @@ impl MediaController {
             media_fail_rx,
             paused: Arc::new(AtomicBool::new(false)),
             sleep_guard: None,
+            seen_dropped_frames: 0,
         }
     }
 
@@ -322,6 +328,21 @@ impl MediaController {
 
     pub fn on_remb(&mut self, bitrate_bps: u64) {
         if let (Some(pl), Some(ctl)) = (&self.pipeline, &mut self.abr) {
+            // Piggyback on REMB's cadence (several/sec while receiving) to
+            // notice NEW sample-queue drops — sender-side congestion the
+            // receiver's RTCP can never report. Clamp + hold the prober so
+            // the overflow doesn't repeat on a cycle.
+            let dropped = pl.metrics().snapshot().frames_dropped;
+            if dropped > self.seen_dropped_frames {
+                self.seen_dropped_frames = dropped;
+                if let Some(kbps) = ctl.on_send_congestion(Instant::now()) {
+                    log::info!(
+                        target: "lilypad::media",
+                        "send-queue congestion — bitrate backed off to {kbps} kbps, probing held"
+                    );
+                    pl.control().set_target_bitrate(kbps);
+                }
+            }
             if let Some(kbps) = ctl.on_remb(bitrate_bps) {
                 pl.control().set_target_bitrate(kbps);
             }

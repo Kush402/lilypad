@@ -168,6 +168,16 @@ impl MediaPipeline {
                 // still fails fast instead of freeze-looping.
                 let mut capture_restarts: u32 = 0;
                 const MAX_CAPTURE_RESTARTS: u32 = 3;
+                // The budget guards against a freeze-LOOP, not against a long
+                // session: macOS legitimately stops the stream on display
+                // reconfiguration (fullscreen video, resolution change) every
+                // so often, and without a reset a multi-hour session slowly
+                // consumes its 3 restarts and then dies on an event it had
+                // recovered from many times before (observed live: 2/3 spent
+                // in the first minutes of a session). A sustained healthy
+                // period proves the source is fine — re-arm the full budget.
+                let mut last_capture_failure: Option<Instant> = None;
+                const CAPTURE_HEALTH_RESET: Duration = Duration::from_secs(60);
 
                 while !s.load(Ordering::Relaxed) {
                     // Apply live control changes between frames, debounced so a
@@ -194,9 +204,24 @@ impl MediaPipeline {
 
                     let t0 = Instant::now();
                     let raw = match capture.next_frame() {
-                        Ok(f) => f,
+                        Ok(f) => {
+                            if capture_restarts > 0
+                                && last_capture_failure
+                                    .is_some_and(|t| t.elapsed() >= CAPTURE_HEALTH_RESET)
+                            {
+                                log::info!(
+                                    target: "lilypad::media",
+                                    "capture healthy for {}s — restart budget re-armed",
+                                    CAPTURE_HEALTH_RESET.as_secs()
+                                );
+                                capture_restarts = 0;
+                                last_capture_failure = None;
+                            }
+                            f
+                        }
                         Err(e) => {
                             log::error!(target: "lilypad::media", "capture failed: {e}");
+                            last_capture_failure = Some(Instant::now());
                             if capture_restarts >= MAX_CAPTURE_RESTARTS {
                                 break;
                             }

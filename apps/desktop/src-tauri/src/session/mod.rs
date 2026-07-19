@@ -44,6 +44,14 @@ use signaling_client::{SignalingClient, SignalingClientEvent};
 /// Finding 6.
 const CLIPBOARD_POLL_INTERVAL: Duration = Duration::from_millis(750);
 
+/// The initial offer awaiting its answer — see `SessionRunner::pending_offer`.
+#[derive(Debug, Clone)]
+struct PendingOffer {
+    sdp: String,
+    sent_at: Instant,
+    resends: u32,
+}
+
 /// Control commands from the UI into a running session.
 #[derive(Debug, Clone)]
 pub enum Control {
@@ -159,6 +167,13 @@ struct SessionRunner {
     last_peer_traffic: Option<Instant>,
     ice_restarts: u32,
     recovery_deadline: Option<Instant>,
+    /// The initial offer, retained until the answer arrives so it can be
+    /// re-sent if the phone missed it — a 5G socket flap in the seconds
+    /// after approval loses the offer in transit, and nothing else ever
+    /// re-delivers it (observed live: "offer sent, awaiting answer" then
+    /// silence until the recovery deadline killed the room, forcing the
+    /// user to retry the connect by hand).
+    pending_offer: Option<PendingOffer>,
     events: UnboundedSender<SessionEvent>,
     /// The AI executor for this session; agent frames on the input channel are
     /// routed here. Inert until an `agent_command` arrives.
@@ -181,9 +196,40 @@ impl SessionRunner {
             last_peer_traffic: None,
             ice_restarts: 0,
             recovery_deadline: None,
+            pending_offer: None,
             events,
             agent: AgentController::new(),
             granted_control: false,
+        }
+    }
+
+    /// Re-send the initial offer if the phone hasn't answered within the
+    /// resend interval — bounded, and disarmed the moment an answer arrives.
+    /// Driven from the orchestrator's heartbeat tick (4s), so resends fire
+    /// at ~8s and ~16s; the phone applies a duplicate offer idempotently
+    /// (it is the answerer — no glare is possible).
+    fn maybe_resend_offer(&mut self, sig: &SignalingClient) {
+        const OFFER_RESEND_AFTER: Duration = Duration::from_secs(8);
+        const MAX_OFFER_RESENDS: u32 = 2;
+        let Some(pending) = self.pending_offer.as_mut() else {
+            return;
+        };
+        if pending.sent_at.elapsed() < OFFER_RESEND_AFTER {
+            return;
+        }
+        if pending.resends >= MAX_OFFER_RESENDS {
+            return; // the recovery deadline owns the give-up decision
+        }
+        pending.resends += 1;
+        pending.sent_at = Instant::now();
+        log::warn!(
+            target: "lilypad::session",
+            "no answer yet — re-sending offer (resend {}/{MAX_OFFER_RESENDS})",
+            pending.resends
+        );
+        let sdp = pending.sdp.clone();
+        if let Err(e) = sig.send(Envelope::offer(&self.room_id, &sdp)) {
+            log::warn!(target: "lilypad::session", "offer re-send failed: {e}");
         }
     }
 
@@ -302,6 +348,11 @@ impl SessionRunner {
                 let new_peer = Arc::new(WebRtcPeer::new(ice_servers, peer_ev_tx.clone()).await?);
                 let sdp = new_peer.create_offer().await?;
                 sig.send(Envelope::offer(&self.room_id, &sdp))?;
+                self.pending_offer = Some(PendingOffer {
+                    sdp,
+                    sent_at: Instant::now(),
+                    resends: 0,
+                });
                 self.peer = Some(new_peer);
                 self.fsm.transition(SessionState::Negotiating);
                 self.emit(SessionEvent::SessionStarting {
@@ -310,6 +361,7 @@ impl SessionRunner {
                 log::info!(target: "lilypad::session", "offer sent, awaiting answer");
             }
             "answer" => {
+                self.pending_offer = None; // negotiation is moving — stop resending
                 if let Some(p) = self.peer.as_ref() {
                     let payload: messages::SdpPayload =
                         serde_json::from_value(env.payload.clone())?;
@@ -331,7 +383,22 @@ impl SessionRunner {
                 // connection-state 'failed' handler uses (`attempt_ice_restart`)
                 // so a mobile-initiated and desktop-initiated restart can't
                 // combine to exceed the intended cap.
-                if self.attempt_ice_restart(sig).await? {
+                //
+                // But a restart is a visible glitch (fresh offer, candidate
+                // re-trickle, IDR), and a flapping phone radio asks for one
+                // every few seconds while the media path is demonstrably
+                // WORKING — its own REMB/loss reports keep arriving, which is
+                // proof the phone is receiving our video (observed live:
+                // restarts every 10–20s through an entire session). Traffic
+                // outvotes the request exactly like it outvotes the 'failed'
+                // verdict: decline while fresh, honor the retry the moment
+                // traffic actually stops (the 12s liveness window).
+                if self.peer_traffic_fresh() && self.media.is_started() {
+                    log::info!(
+                        target: "lilypad::session",
+                        "declining renegotiate — peer traffic is live"
+                    );
+                } else if self.attempt_ice_restart(sig).await? {
                     return Ok(true);
                 }
             }
@@ -767,6 +834,10 @@ pub async fn run_session(
 
             _ = heartbeat.tick() => {
                 let _ = sig.send(Envelope::heartbeat(&room_id));
+                // Pre-answer watchdog: a phone that missed the offer (socket
+                // flap right after approval) gets it again instead of both
+                // sides waiting each other out.
+                runner.maybe_resend_offer(&sig);
                 if let Some(deadline) = runner.recovery_deadline {
                     if runner.peer_traffic_fresh() {
                         // De-facto recovered: traffic is flowing even if the
