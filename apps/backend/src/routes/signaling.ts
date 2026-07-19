@@ -94,17 +94,23 @@ export async function signalingRoutes(app: FastifyInstance): Promise<void> {
         .catch((err) => log.signaling.warn({ err, roomId }, 'room-auth record delete failed'));
     },
     onTrustEstablished: (info) => {
-      // "Trust this device" rode on the approval — record the persistent
-      // pair. Fire-and-forget: a Postgres blip must never fail the approval
-      // itself (the user can re-trust on the next pairing).
+      // "Trust this device" rode on the approval — record the persistent pair
+      // and hand the phone its per-pair connect secret over the (authenticated,
+      // wss-in-prod) mobile seat. Fire-and-forget: a Postgres blip must never
+      // fail the approval itself (the user can re-trust on the next pairing).
       void trust
         .establishTrust(info.desktopDeviceId, info.mobileDeviceId)
-        .then(() =>
-          auditLog.devicePaired({
-            metadata: { ...info, trusted: true },
-          }),
-        )
-        .catch((err) => log.signaling.error({ err, ...info }, 'failed to record device trust'));
+        .then(({ pairSecret }) => {
+          hub.deliverPairSecret(info.roomId, pairSecret);
+          return auditLog.devicePaired({
+            metadata: {
+              desktopDeviceId: info.desktopDeviceId,
+              mobileDeviceId: info.mobileDeviceId,
+              trusted: true,
+            },
+          });
+        })
+        .catch((err) => log.signaling.error({ err }, 'failed to record device trust'));
     },
     onPairDenied: (info) => {
       void auditLog
@@ -174,19 +180,33 @@ export async function signalingRoutes(app: FastifyInstance): Promise<void> {
       if (!parsed.success) {
         return reply.code(400).send({ error: 'invalid_request', issues: parsed.error.issues });
       }
-      const { desktopDeviceId, mobileDeviceId, mobileDeviceName } = parsed.data;
+      const { desktopDeviceId, mobileDeviceId, mobileDeviceName, pairSecret } = parsed.data;
 
-      const pair = await trust.findPair(desktopDeviceId, mobileDeviceId);
-      if (!pair) {
-        return reply
-          .code(404)
-          .send({ error: 'not_trusted', message: 'no trust relationship — pair with a QR first' });
+      // Authorize: trusted, not revoked, and the per-pair connect secret must
+      // match (unless this is a legacy pre-secret pair). Fails closed.
+      const authz = await trust.authorizeConnect(desktopDeviceId, mobileDeviceId, pairSecret);
+      if (!authz.ok) {
+        if (authz.reason === 'not_trusted') {
+          return reply.code(404).send({
+            error: 'not_trusted',
+            message: 'no trust relationship — pair with a QR first',
+          });
+        }
+        if (authz.reason === 'revoked') {
+          return reply.code(403).send({
+            error: 'revoked',
+            message: 'this pairing was revoked — pair again with a QR',
+          });
+        }
+        // bad_secret — deliberately reported as not_trusted so a caller
+        // guessing device ids can't distinguish "wrong secret" (pair exists)
+        // from "no such pair"; the honest remedy is the same: re-pair.
+        return reply.code(404).send({
+          error: 'not_trusted',
+          message: 'this device needs to pair again — scan the QR once',
+        });
       }
-      if (pair.revoked) {
-        return reply
-          .code(403)
-          .send({ error: 'revoked', message: 'this pairing was revoked — pair again with a QR' });
-      }
+      const pair = authz.pair;
       if (!hub.isDesktopPresent(desktopDeviceId)) {
         return reply
           .code(503)

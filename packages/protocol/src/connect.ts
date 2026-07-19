@@ -18,6 +18,10 @@ export const ConnectRequestSchema = z.object({
   /** This phone's stable wire deviceId. */
   mobileDeviceId: z.string().min(8).max(128),
   mobileDeviceName: z.string().min(1).max(120).nullish(),
+  /** The per-pair connect secret issued at trust time (M5.4 security).
+   * Optional so pairs made before secrets existed still work (their stored
+   * hash is null → the server allows them); every new pair requires it. */
+  pairSecret: z.string().min(16).max(128).optional(),
 });
 export type ConnectRequest = z.infer<typeof ConnectRequestSchema>;
 

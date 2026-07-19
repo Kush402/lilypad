@@ -65,6 +65,10 @@ export interface ViewerCallbacks {
   onAgentStep?: (step: AgentStep) => void;
   /** The AI agent run ended (completed/stopped/denied/failed). */
   onAgentRunEnd?: (end: AgentRunEnd) => void;
+  /** The backend delivered this pair's connect secret (M5.4 security), right
+   * after a trusted approval. The viewer persists it against the desktop so
+   * future no-QR reconnects can present it. */
+  onPairSecret?: (secret: string) => void;
 }
 
 /**
@@ -288,6 +292,9 @@ export class ViewerConnection {
         // The desktop's OS clipboard changed — mirror it onto the phone's.
         // See docs/audit/m3/prior-art.md Finding 6.
         this.cb.onClipboardUpdate(m.payload.text);
+        break;
+      case 'pair-secret':
+        this.cb.onPairSecret?.(m.payload.secret);
         break;
       case 'pair-denied':
         // Split out from the generic 'ended' bucket: a denial is a decision,

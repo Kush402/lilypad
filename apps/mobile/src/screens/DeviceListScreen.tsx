@@ -46,13 +46,14 @@ export function DeviceListScreen({ navigation }: Props) {
     async (pair: PairedDesktop) => {
       setConnecting(pair.desktopDeviceId);
       try {
-        const res = await requestConnect(pair.apiBaseUrl, pair.desktopDeviceId);
+        const res = await requestConnect(pair.apiBaseUrl, pair.desktopDeviceId, pair.connectSecret);
         void touchPair(pair.desktopDeviceId).catch(() => {});
         navigation.navigate('Viewer', {
           roomId: res.roomId,
           signalingUrl: res.signalingUrl,
           scopes: res.scopes,
           desktopDeviceName: res.desktopDeviceName ?? pair.name,
+          desktopDeviceId: pair.desktopDeviceId,
         });
       } catch (e) {
         const err = toAppError(e);

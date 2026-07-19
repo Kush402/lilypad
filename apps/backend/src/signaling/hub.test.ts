@@ -165,7 +165,7 @@ describe('SignalingHub — presence rooms (M5.4)', () => {
 
 describe('SignalingHub — trust-on-approve (M5.4)', () => {
   function approvedRoom(trust: boolean | undefined) {
-    const trusted: Array<{ desktopDeviceId: string; mobileDeviceId: string }> = [];
+    const trusted: Array<{ roomId: string; desktopDeviceId: string; mobileDeviceId: string }> = [];
     const hub = new SignalingHub({
       buildIceServers: () => ICE,
       now: () => 0,
@@ -190,18 +190,29 @@ describe('SignalingHub — trust-on-approve (M5.4)', () => {
         ...(trust === undefined ? {} : { trust }),
       }),
     );
-    return { trusted, desktop, mobile };
+    return { hub, trusted, desktop, mobile };
   }
 
   it('approve with trust:true records the pair (and still starts the session)', () => {
     const { trusted, desktop } = approvedRoom(true);
-    expect(trusted).toEqual([{ desktopDeviceId: 'desktop-01', mobileDeviceId: 'mobile-01' }]);
+    expect(trusted).toEqual([
+      { roomId: ROOM, desktopDeviceId: 'desktop-01', mobileDeviceId: 'mobile-01' },
+    ]);
     expect(desktop.find('session-start')).toBeTruthy();
   });
 
   it('approve without trust (absent or false) records nothing', () => {
     expect(approvedRoom(undefined).trusted).toEqual([]);
     expect(approvedRoom(false).trusted).toEqual([]);
+  });
+
+  it('deliverPairSecret sends the secret to the mobile seat only', () => {
+    const { hub, desktop, mobile } = approvedRoom(true);
+    hub.deliverPairSecret(ROOM, 'sekret-abcdef');
+    const msg = mobile.find('pair-secret');
+    expect(msg?.payload.secret).toBe('sekret-abcdef');
+    // The desktop must never receive the phone's secret.
+    expect(desktop.find('pair-secret')).toBeUndefined();
   });
 });
 

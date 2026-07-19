@@ -89,6 +89,12 @@ export const trustedDevices = pgTable(
     /** Set by Forget (phone) / Revoke (desktop). A revoked pair fails the
      * connect gate closed; rows are kept (not deleted) for the audit trail. */
     revokedAt: timestamp('revoked_at', { withTimezone: true }),
+    /** SHA-256 of the per-pair connect secret (M5.4 security). The plaintext
+     * is issued to the phone over the mobile seat at trust time and never
+     * stored server-side. `/connect/request` must present a secret hashing to
+     * this value. NULL = a pair created before secrets existed — allowed for
+     * back-compat until it re-pairs (which sets one). */
+    connectSecretHash: text('connect_secret_hash'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [uniqueIndex('trusted_devices_pair_idx').on(t.desktopDeviceId, t.mobileDeviceId)],

@@ -107,6 +107,7 @@ export function ScannerScreen({ navigation }: Props) {
         signalingUrl: res.signalingUrl,
         scopes: res.scopes,
         desktopDeviceName: res.desktopDeviceName,
+        desktopDeviceId: res.desktopDeviceId,
       });
     } catch (e) {
       if (myRequest !== requestSeq.current) return;

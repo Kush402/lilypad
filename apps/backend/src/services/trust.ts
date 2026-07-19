@@ -1,7 +1,34 @@
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { and, eq } from 'drizzle-orm';
 import { db as defaultDb } from '../db/client.js';
 import { devices, trustedDevices } from '../db/schema.js';
 import type { DeviceKind } from '@lilypad/protocol';
+
+/** A high-entropy per-pair connect secret (url-safe, ~32 chars) and its
+ * SHA-256 hash. Only the hash is stored; the plaintext is handed to the phone
+ * once, over the authenticated mobile seat. SHA-256 (not a slow KDF) is
+ * correct here — the input is already 192 bits of CSPRNG output, so there is
+ * nothing to brute-force. */
+export function newConnectSecret(): { secret: string; hash: string } {
+  const secret = randomBytes(24).toString('base64url');
+  return { secret, hash: hashSecret(secret) };
+}
+
+function hashSecret(secret: string): string {
+  return createHash('sha256').update(secret).digest('hex');
+}
+
+/** Show only a short suffix of a device fingerprint in listings. */
+function maskFingerprint(fp: string): string {
+  return fp.length <= 6 ? fp : `…${fp.slice(-6)}`;
+}
+
+/** Constant-time hash comparison. */
+function hashesMatch(a: string, b: string): boolean {
+  const ba = Buffer.from(a);
+  const bb = Buffer.from(b);
+  return ba.length === bb.length && timingSafeEqual(ba, bb);
+}
 
 /**
  * Persistent desktop↔mobile pair trust (M5.4) — the durable record behind
@@ -25,7 +52,14 @@ export interface TrustedPair {
   autoApprove: boolean;
   revoked: boolean;
   displayName: string | null;
+  /** SHA-256 of the connect secret, or null for a legacy pre-secret pair. */
+  connectSecretHash: string | null;
 }
+
+/** The verdict of authorizing a no-QR connect. */
+export type ConnectAuthz =
+  | { ok: true; pair: TrustedPair }
+  | { ok: false; reason: 'not_trusted' | 'revoked' | 'bad_secret' };
 
 /** A pair as the desktop's Trusted Devices dashboard sees it — joined with
  * the mobile device row so the UI can show WHICH phone. */
@@ -46,13 +80,23 @@ export interface TrustStore {
   upsertDevice(kind: DeviceKind, fingerprint: string): Promise<string>;
   /** The pair row for two device UUIDs, if one exists. */
   getPairByDeviceIds(desktopId: string, mobileId: string): Promise<TrustedPair | null>;
-  insertPair(desktopId: string, mobileId: string, autoApprove: boolean): Promise<TrustedPair>;
+  insertPair(
+    desktopId: string,
+    mobileId: string,
+    autoApprove: boolean,
+    connectSecretHash: string,
+  ): Promise<TrustedPair>;
   /** Every pair for one desktop, joined with each mobile device row. */
   listPairsForDesktop(desktopId: string): Promise<PairListing[]>;
   /** Patch mutable pair fields. Absent fields are left untouched. */
   updatePair(
     pairId: string,
-    patch: { revoked?: boolean; autoApprove?: boolean; lastConnectedAt?: Date },
+    patch: {
+      revoked?: boolean;
+      autoApprove?: boolean;
+      lastConnectedAt?: Date;
+      connectSecretHash?: string;
+    },
   ): Promise<void>;
   /** Device row (uuid + fingerprint) by fingerprint, if registered. */
   getDeviceByFingerprint(kind: DeviceKind, fingerprint: string): Promise<{ id: string } | null>;
@@ -76,17 +120,51 @@ export class TrustService {
    * "no silent access" line. An EXISTING pair's setting is never overridden
    * here — the user may have deliberately turned approval back on.
    */
-  async establishTrust(desktopFingerprint: string, mobileFingerprint: string): Promise<void> {
+  async establishTrust(
+    desktopFingerprint: string,
+    mobileFingerprint: string,
+  ): Promise<{ pairSecret: string }> {
     const desktopId = await this.store.upsertDevice('desktop', desktopFingerprint);
     const mobileId = await this.store.upsertDevice('mobile', mobileFingerprint);
+    // A fresh secret every time trust is (re)established — a re-pair or an
+    // un-revoke re-issues, and the phone stores whatever it's handed. Only the
+    // hash is persisted; the plaintext is returned for one-time delivery.
+    const { secret, hash } = newConnectSecret();
     const existing = await this.store.getPairByDeviceIds(desktopId, mobileId);
     if (!existing) {
-      await this.store.insertPair(desktopId, mobileId, true);
-      return;
+      await this.store.insertPair(desktopId, mobileId, true, hash);
+    } else {
+      await this.store.updatePair(existing.pairId, {
+        connectSecretHash: hash,
+        ...(existing.revoked ? { revoked: false } : {}),
+      });
     }
-    if (existing.revoked) {
-      await this.store.updatePair(existing.pairId, { revoked: false });
+    return { pairSecret: secret };
+  }
+
+  /**
+   * Authorize a no-QR connect. Fails closed on: unknown/untrusted devices,
+   * a revoked pair, or a missing/wrong secret. A pair whose stored hash is
+   * null is a pre-secret legacy pair — allowed WITHOUT a secret for
+   * back-compat (it gets one the next time it re-pairs). The presented secret
+   * is compared in constant time.
+   */
+  async authorizeConnect(
+    desktopFingerprint: string,
+    mobileFingerprint: string,
+    presentedSecret: string | undefined,
+  ): Promise<ConnectAuthz> {
+    const pair = await this.findPair(desktopFingerprint, mobileFingerprint);
+    if (!pair) return { ok: false, reason: 'not_trusted' };
+    if (pair.revoked) return { ok: false, reason: 'revoked' };
+    if (pair.connectSecretHash !== null) {
+      if (!presentedSecret) return { ok: false, reason: 'bad_secret' };
+      const presentedHash = hashSecret(presentedSecret);
+      if (!hashesMatch(presentedHash, pair.connectSecretHash)) {
+        return { ok: false, reason: 'bad_secret' };
+      }
     }
+    return { ok: true, pair };
   }
 
   /** Every pair for a desktop (by wire id) — the Trusted Devices dashboard. */
@@ -136,6 +214,7 @@ export function createDrizzleTrustStore(database: typeof defaultDb = defaultDb):
     autoApprove: row.autoApprove,
     revoked: row.revokedAt !== null,
     displayName: row.displayName,
+    connectSecretHash: row.connectSecretHash,
   });
   return {
     async upsertDevice(kind, fingerprint) {
@@ -166,10 +245,10 @@ export function createDrizzleTrustStore(database: typeof defaultDb = defaultDb):
         .limit(1);
       return rows[0] ? toPair(rows[0]) : null;
     },
-    async insertPair(desktopId, mobileId, autoApprove) {
+    async insertPair(desktopId, mobileId, autoApprove, connectSecretHash) {
       const inserted = await database
         .insert(trustedDevices)
-        .values({ desktopDeviceId: desktopId, mobileDeviceId: mobileId, autoApprove })
+        .values({ desktopDeviceId: desktopId, mobileDeviceId: mobileId, autoApprove, connectSecretHash })
         .returning();
       const row = inserted[0];
       if (!row) throw new Error('trusted_devices insert returned no row');
@@ -191,7 +270,10 @@ export function createDrizzleTrustStore(database: typeof defaultDb = defaultDb):
         .where(eq(trustedDevices.desktopDeviceId, desktopId));
       return rows.map((r) => ({
         pairId: r.pairId,
-        mobileFingerprint: r.mobileFingerprint,
+        // Mask the raw fingerprint — the dashboard shows displayName; leaking
+        // the full self-asserted id to any caller that knows a desktop id is
+        // needless (2026-07-19 audit). Keep a short suffix to disambiguate.
+        mobileFingerprint: maskFingerprint(r.mobileFingerprint),
         displayName: r.displayName,
         autoApprove: r.autoApprove,
         revoked: r.revokedAt !== null,
@@ -204,6 +286,7 @@ export function createDrizzleTrustStore(database: typeof defaultDb = defaultDb):
       if (patch.revoked !== undefined) set.revokedAt = patch.revoked ? new Date() : null;
       if (patch.autoApprove !== undefined) set.autoApprove = patch.autoApprove;
       if (patch.lastConnectedAt !== undefined) set.lastConnectedAt = patch.lastConnectedAt;
+      if (patch.connectSecretHash !== undefined) set.connectSecretHash = patch.connectSecretHash;
       await database.update(trustedDevices).set(set).where(eq(trustedDevices.id, pairId));
     },
     async getDeviceByFingerprint(kind, fingerprint) {

@@ -20,6 +20,11 @@ export interface PairedDesktop {
   name: string | null;
   /** Where to reach the backend for this desktop (from the QR payload). */
   apiBaseUrl: string;
+  /** Per-pair connect secret (M5.4 security), delivered by the backend over
+   * signaling after a trusted approval. Presented on every no-QR reconnect.
+   * Absent for a pair made before secrets existed (still works via the
+   * backend's legacy allowance until it re-pairs). */
+  connectSecret?: string;
   addedAt: number;
   lastConnectedAt: number | null;
 }
@@ -72,6 +77,21 @@ export async function upsertPair(
     pairs.push({ ...pair, addedAt: Date.now(), lastConnectedAt: null });
   }
   await persist([...pairs]);
+}
+
+/** Store the connect secret the backend delivered for a desktop pair. Creates
+ * a minimal pair entry if somehow missing (defensive — the pair is normally
+ * saved at redeem time just before the secret arrives). */
+export async function setPairSecret(
+  desktopDeviceId: string,
+  connectSecret: string,
+): Promise<void> {
+  const pairs = await loadPairs();
+  const pair = pairs.find((p) => p.desktopDeviceId === desktopDeviceId);
+  if (pair) {
+    pair.connectSecret = connectSecret;
+    await persist([...pairs]);
+  }
 }
 
 export async function touchPair(desktopDeviceId: string): Promise<void> {

@@ -47,8 +47,10 @@ export interface SignalingHubDeps {
   onRoomClosed?: (roomId: string) => void;
   /** Fired when an approval carried `trust: true` (M5.4) — the desktop user
    * checked "Trust this device." The route layer records the persistent
-   * pair (`trusted_devices`); fire-and-forget like every other hook. */
+   * pair (`trusted_devices`) and delivers the connect secret back to the
+   * mobile seat via `deliverPairSecret`; fire-and-forget. */
   onTrustEstablished?: (info: {
+    roomId: string;
     desktopDeviceId: string;
     mobileDeviceId: string;
   }) => void;
@@ -274,6 +276,17 @@ export class SignalingHub {
     return this.registry.get(presenceRoomId(desktopDeviceId))?.hasSeat('desktop') ?? false;
   }
 
+  /** Deliver the per-pair connect secret to a room's mobile seat (M5.4
+   * security). Called after the async trust write; the mobile is in the room
+   * (it just received session-start), so the seat exists. Best-effort — if
+   * the phone's socket flapped and missed it, a later connect fails the
+   * secret check and the phone re-pairs. */
+  deliverPairSecret(roomId: string, secret: string): void {
+    const room = this.registry.get(roomId);
+    if (!room) return;
+    this.send(room, 'mobile', { type: 'pair-secret', payload: { secret } });
+  }
+
   /** Deliver a `connect-request` to a desktop's presence seat (M5.4 no-QR
    * reconnect). Returns false when the desktop is offline — the caller
    * turns that into an honest "desktop is offline" for the phone. */
@@ -459,7 +472,7 @@ export class SignalingHub {
       const desktopDeviceId = room.deviceIdFor('desktop');
       const mobileDeviceId = room.deviceIdFor('mobile');
       if (desktopDeviceId && mobileDeviceId) {
-        this.deps.onTrustEstablished?.({ desktopDeviceId, mobileDeviceId });
+        this.deps.onTrustEstablished?.({ roomId: room.id, desktopDeviceId, mobileDeviceId });
       }
     }
 

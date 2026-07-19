@@ -1,0 +1,1 @@
+ALTER TABLE "trusted_devices" ADD COLUMN "connect_secret_hash" text;

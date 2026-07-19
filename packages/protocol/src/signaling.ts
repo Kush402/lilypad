@@ -236,6 +236,19 @@ const clipboardUpdate = z.object({
 });
 
 /**
+ * Server → mobile: the per-pair connect secret, delivered over the mobile
+ * seat right after a trusted approval (M5.4 security). The phone stores it
+ * (keychain) and presents it on future `POST /connect/request` calls, so a
+ * no-QR reconnect requires a real bearer credential — not just knowledge of
+ * two self-asserted device-id strings. Only ever sent to the mobile seat.
+ */
+const pairSecret = z.object({
+  type: z.literal('pair-secret'),
+  ...envelope,
+  payload: z.object({ secret: z.string().min(16).max(128) }),
+});
+
+/**
  * Server → desktop (presence room): a trusted phone asked to connect without
  * a QR (`POST /connect/request`). The desktop spawns its normal session
  * runner on `sessionRoomId`; everything downstream (pair-request, ring UI or
@@ -259,6 +272,7 @@ const connectRequest = z.object({
 
 export const SignalingMessageSchema = z.discriminatedUnion('type', [
   connectRequest,
+  pairSecret,
   register,
   pairRequest,
   pairApproved,

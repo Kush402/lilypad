@@ -80,6 +80,7 @@ export async function redeemToken(
 export async function requestConnect(
   apiBaseUrl: string,
   desktopDeviceId: string,
+  pairSecret?: string,
 ): Promise<ConnectResponse> {
   const controller = new AbortController();
   let timedOut = false;
@@ -97,6 +98,7 @@ export async function requestConnect(
         desktopDeviceId,
         mobileDeviceId,
         mobileDeviceName: `${Platform.OS} phone`,
+        ...(pairSecret ? { pairSecret } : {}),
       }),
       signal: controller.signal,
     });

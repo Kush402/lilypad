@@ -12,5 +12,8 @@ export type RootStackParamList = {
     signalingUrl: string;
     scopes: SessionScope[];
     desktopDeviceName: string | null;
+    /** The desktop's wire deviceId — so the Viewer can persist the connect
+     * secret the backend delivers against the right saved pair (M5.4). */
+    desktopDeviceId?: string;
   };
 };
