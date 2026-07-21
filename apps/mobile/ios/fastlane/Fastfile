@@ -1,0 +1,122 @@
+# iOS Fastfile — Lilypad mobile (bare React Native 0.76.5)
+#
+# `beta` lane: install pods, archive Release, export a signed App Store IPA and
+# upload it to TestFlight. Auth is via an App Store Connect API key (.p8) so no
+# Apple ID / 2FA session is needed in CI.
+#
+# Everything sensitive (key ids, team id, provisioning) is read from env. Signing
+# defaults to Xcode-managed automatic signing (matches the checked-in project),
+# but can be switched to `match` by setting MATCH_GIT_URL.
+
+default_platform(:ios)
+
+# --- helpers ---------------------------------------------------------------
+
+def asc_api_key
+  # Prefer a decoded .p8 file path (CI writes one from the base64 secret);
+  # fall back to inline base64 content in ASC_KEY_P8 if no file is provided.
+  key_filepath = ENV["ASC_KEY_P8_PATH"]
+  key_content  = ENV["ASC_KEY_P8"]
+
+  common = {
+    key_id: ENV.fetch("ASC_KEY_ID"),
+    issuer_id: ENV.fetch("ASC_ISSUER_ID"),
+    duration: 1200,
+    in_house: false
+  }
+
+  if key_filepath && !key_filepath.empty? && File.exist?(key_filepath)
+    app_store_connect_api_key(common.merge(key_filepath: key_filepath))
+  elsif key_content && !key_content.empty?
+    app_store_connect_api_key(
+      common.merge(key_content: key_content, is_key_content_base64: true)
+    )
+  else
+    UI.user_error!(
+      "No App Store Connect API key found. Set ASC_KEY_P8_PATH (a .p8 file) " \
+      "or ASC_KEY_P8 (base64-encoded .p8 content)."
+    )
+  end
+end
+
+platform :ios do
+  desc "Build a signed IPA and upload it to TestFlight"
+  lane :beta do
+    workspace  = ENV["IOS_WORKSPACE"] || "LilypadMobile.xcworkspace"
+    scheme     = ENV["IOS_SCHEME"] || "LilypadMobile"
+    app_id     = ENV["IOS_APP_IDENTIFIER"] || "com.kushsharma.lilypad"
+    team_id    = ENV["APPLE_TEAM_ID"] || ENV["FASTLANE_TEAM_ID"] || "7TYFS43RR3"
+    build_dir  = "build"
+    output_ipa = "#{scheme}.ipa"
+
+    api_key = asc_api_key
+
+    # Keep the lane self-sufficient — CocoaPods is idempotent, so this is safe
+    # even though CI also runs `pod install` before invoking the lane.
+    cocoapods(
+      podfile: "Podfile",
+      try_repo_update_on_error: true
+    )
+
+    # Bump the build number to something unique per CI run so TestFlight never
+    # rejects a duplicate. Overridable; defaults to the CI run number or epoch.
+    build_number = ENV["IOS_BUILD_NUMBER"] ||
+                   ENV["GITHUB_RUN_NUMBER"] ||
+                   Time.now.to_i.to_s
+    increment_build_number(
+      xcodeproj: "LilypadMobile.xcodeproj",
+      build_number: build_number
+    )
+
+    if ENV["MATCH_GIT_URL"] && !ENV["MATCH_GIT_URL"].empty?
+      # --- manual signing via match --------------------------------------
+      match(
+        type: "appstore",
+        app_identifier: app_id,
+        git_url: ENV["MATCH_GIT_URL"],
+        team_id: team_id,
+        api_key: api_key,
+        readonly: true
+      )
+
+      build_app(
+        workspace: workspace,
+        scheme: scheme,
+        configuration: "Release",
+        export_method: "app-store",
+        output_directory: build_dir,
+        output_name: output_ipa,
+        clean: true,
+        export_options: {
+          signingStyle: "manual",
+          teamID: team_id
+        }
+      )
+    else
+      # --- Xcode-managed automatic signing (default) ---------------------
+      # -allowProvisioningUpdates lets Xcode create/download the App Store
+      # profile using the ASC API key, so no profiles need to be pre-installed.
+      build_app(
+        workspace: workspace,
+        scheme: scheme,
+        configuration: "Release",
+        export_method: "app-store",
+        output_directory: build_dir,
+        output_name: output_ipa,
+        clean: true,
+        xcargs: "-allowProvisioningUpdates",
+        export_options: {
+          signingStyle: "automatic",
+          teamID: team_id
+        }
+      )
+    end
+
+    upload_to_testflight(
+      api_key: api_key,
+      ipa: "#{build_dir}/#{output_ipa}",
+      skip_waiting_for_build_processing: true,
+      skip_submission: true
+    )
+  end
+end

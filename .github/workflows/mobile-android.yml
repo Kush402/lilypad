@@ -1,0 +1,122 @@
+name: Mobile — Android (Play internal + APK)
+
+# Decoupled from the desktop `v*` release tags: mobile ships on its own
+# `mobile-v*` tags plus manual dispatch.
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'mobile-v*'
+
+concurrency:
+  group: mobile-android-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  android:
+    name: Build signed AAB/APK & upload to Play internal
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/mobile
+    steps:
+      # ---------------------------------------------------------------------
+      # Preflight: decide whether the required signing secrets are present.
+      # `secrets.*` cannot be used in a job-level `if:`, so read them into env
+      # here and gate later steps on the boolean output. Missing secrets ⇒ the
+      # job ends GREEN with a clear "skipped" line.
+      # ---------------------------------------------------------------------
+      - name: Preflight — are Android release secrets configured?
+        id: preflight
+        working-directory: ${{ github.workspace }}
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -n "$ANDROID_KEYSTORE_BASE64" ] && [ -n "$ANDROID_KEYSTORE_PASSWORD" ] \
+             && [ -n "$ANDROID_KEY_ALIAS" ] && [ -n "$ANDROID_KEY_PASSWORD" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+            echo "Android signing secrets detected — proceeding with build."
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "skipped: mobile Android secrets not configured (ANDROID_KEYSTORE_BASE64 / ANDROID_KEYSTORE_PASSWORD / ANDROID_KEY_ALIAS / ANDROID_KEY_PASSWORD). Ending green."
+          fi
+
+      - name: Checkout
+        if: steps.preflight.outputs.configured == 'true'
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        if: steps.preflight.outputs.configured == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Enable corepack (pins pnpm via package.json#packageManager)
+        if: steps.preflight.outputs.configured == 'true'
+        run: corepack enable
+        working-directory: ${{ github.workspace }}
+
+      - name: Install JS dependencies
+        if: steps.preflight.outputs.configured == 'true'
+        run: pnpm install --frozen-lockfile
+        working-directory: ${{ github.workspace }}
+
+      - name: Setup Java (Temurin 17)
+        if: steps.preflight.outputs.configured == 'true'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Setup Ruby + Bundler
+        if: steps.preflight.outputs.configured == 'true'
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+          bundler-cache: true
+          working-directory: apps/mobile
+
+      - name: Decode signing secrets to files
+        if: steps.preflight.outputs.configured == 'true'
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+        run: |
+          mkdir -p android/fastlane
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > android/release.keystore
+          echo "ANDROID_KEYSTORE_PATH=$(pwd)/android/release.keystore" >> "$GITHUB_ENV"
+          if [ -n "$PLAY_SERVICE_ACCOUNT_JSON" ]; then
+            printf '%s' "$PLAY_SERVICE_ACCOUNT_JSON" > android/fastlane/play-service-account.json
+            echo "PLAY_SERVICE_ACCOUNT_JSON_PATH=$(pwd)/android/fastlane/play-service-account.json" >> "$GITHUB_ENV"
+          else
+            echo "PLAY_SERVICE_ACCOUNT_JSON not set — will build the AAB/APK but skip the Play upload."
+          fi
+
+      - name: Fastlane beta (Gradle bundle+assemble → Play internal)
+        if: steps.preflight.outputs.configured == 'true'
+        working-directory: apps/mobile/android
+        env:
+          # ANDROID_KEYSTORE_PATH / PLAY_SERVICE_ACCOUNT_JSON_PATH are exported
+          # into $GITHUB_ENV by the decode step above.
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_PACKAGE_NAME: ${{ secrets.ANDROID_PACKAGE_NAME }}
+        run: bundle exec fastlane android beta
+
+      - name: Upload APK artifact (sideload)
+        if: steps.preflight.outputs.configured == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: lilypad-android-apk
+          path: apps/mobile/android/app/build/outputs/apk/release/*.apk
+          if-no-files-found: warn
+
+      - name: Skipped notice
+        if: steps.preflight.outputs.configured != 'true'
+        working-directory: ${{ github.workspace }}
+        run: |
+          echo "skipped: mobile Android secrets not configured — nothing to build. This is expected until signing secrets are added."
