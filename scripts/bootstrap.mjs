@@ -7,7 +7,7 @@
  * anything software can detect and repair.
  */
 import { spawnSync } from 'node:child_process';
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, copyFileSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -81,6 +81,22 @@ const CARGO = cargo.path;
 log('Installing workspace dependencies (pnpm install)');
 run('pnpm', ['install']);
 ok('dependencies installed');
+
+// ── 3b. Local env file ──
+// A fresh clone has no `.env` (it's git-ignored); the backend and infra need
+// one. Seed it from the tracked `.env.example` (all placeholder values) so a
+// re-cloned repo boots without manual copying. Never overwrite an existing one.
+log('Ensuring a local .env exists');
+const envPath = join(ROOT, '.env');
+const envExample = join(ROOT, '.env.example');
+if (existsSync(envPath)) {
+  ok('.env already present — left untouched');
+} else if (existsSync(envExample)) {
+  copyFileSync(envExample, envPath);
+  ok('created .env from .env.example (placeholder values — edit for real infra)');
+} else {
+  warn('.env.example not found — skipping .env seed');
+}
 
 // ── 4. Docker + infra ──
 log('Starting infra (Postgres, Redis, coturn)');
