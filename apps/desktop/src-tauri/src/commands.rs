@@ -5,6 +5,7 @@
 //! label.
 
 use std::sync::MutexGuard;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder, WindowEvent};
@@ -12,6 +13,12 @@ use tokio::sync::mpsc::unbounded_channel;
 
 use crate::session::{run_session, Control, SessionEvent};
 use crate::state::{AppState, AppStateDto, PendingRequest, SessionStatus, SharedState};
+
+/// Max time a new session waits for the previous runner to finish tearing
+/// down (its `media.stop()` joins the ScreenCaptureKit capture thread)
+/// before starting anyway — bounds a stuck old teardown so a takeover can't
+/// hang indefinitely.
+const SESSION_TEARDOWN_WAIT: Duration = Duration::from_secs(3);
 
 /// Lock the shared state, recovering from poisoning instead of panicking.
 /// A panic while holding this lock must NOT brick every subsequent command
@@ -179,7 +186,7 @@ pub(crate) fn spawn_session_runner(
     let (control_tx, control_rx) = unbounded_channel::<Control>();
     let (event_tx, mut event_rx) = unbounded_channel::<SessionEvent>();
 
-    {
+    let old_task = {
         let state = app.state::<SharedState>();
         let mut s = lock_state(&state);
         s.control_tx = Some(control_tx);
@@ -187,7 +194,8 @@ pub(crate) fn spawn_session_runner(
         s.offered_scopes = offered_scopes;
         s.session = SessionStatus::Pairing;
         s.pending_request = None;
-    }
+        s.session_task.take()
+    };
 
     // Forward runner events to the UI + update coarse session state. Each
     // forwarder is bound to ITS runner's room: once another runner has
@@ -216,11 +224,24 @@ pub(crate) fn spawn_session_runner(
     });
 
     // Drive the session.
-    tauri::async_runtime::spawn(async move {
+    let handle = tauri::async_runtime::spawn(async move {
+        // Wait for the PREVIOUS session to fully tear down (its media.stop()
+        // joins the capture thread) before this one starts, so screen capture
+        // is never double-opened during a trusted takeover. Bounded so a stuck
+        // old teardown can't hang the takeover — after the timeout we proceed
+        // and accept the pre-existing brief-overlap behavior as the fallback.
+        if let Some(old) = old_task {
+            let _ = tokio::time::timeout(SESSION_TEARDOWN_WAIT, old).await;
+        }
         if let Err(e) = run_session(signaling_url, room_id, device_id, control_rx, event_tx).await {
             log::error!(target: "lilypad::session", "session runner error: {e}");
         }
     });
+    {
+        let state = app.state::<SharedState>();
+        let mut s = lock_state(&state);
+        s.session_task = Some(handle);
+    }
 }
 
 /// Map a runner event onto the coarse `SessionStatus` the polling UI reads.
@@ -264,8 +285,13 @@ fn apply_session_event(app: &AppHandle, ev: &SessionEvent) {
         }
         SessionEvent::SessionStarting { .. } => {
             // Approval already happened (this fires after Approve triggers a
-            // fresh offer) — nothing is "pending" anymore.
+            // fresh offer) — nothing is "pending" anymore. WebRTC negotiation
+            // is starting but hasn't reached `connected` yet, so the UI moves
+            // to Connecting rather than sitting on the (now stale) approve
+            // card — auto-approved trusted sessions also emit this and get
+            // the same honest "Connecting…" feedback.
             s.pending_request = None;
+            s.session = SessionStatus::Connecting;
         }
         // `failed`/`disconnected`/`closed` are NOT terminal from the UI's
         // point of view: the runner treats them as recoverable (ICE restart,
@@ -534,6 +560,19 @@ pub fn show_control(app: &AppHandle) -> Result<(), String> {
     open_window(app, "control", "Lilypad — Session", 400.0, 560.0)
 }
 
+/// Open (create-if-absent, else focus) the dashboard. Unlike the ring path in
+/// `apply_session_event` (which only opens Control for a pending HUMAN
+/// decision), this is the unconditionally-reachable entry point — the fix for
+/// a real bug: a trusted phone's silent auto-reconnect never rings, so
+/// without this there was no way to open the dashboard at all once the
+/// window hadn't already been created this run (tray's Show-QR/Approve/Deny
+/// are correctly disabled mid-session; the bubble's old `focusWindow` helper
+/// only focused an ALREADY-OPEN window, never created one).
+#[tauri::command]
+pub fn show_control_window(app: AppHandle) -> Result<(), String> {
+    show_control(&app)
+}
+
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 /// Prefer routing lifecycle commands to the active runner (which tears the
@@ -690,7 +729,12 @@ pub fn set_agent_config(args: SetAgentConfigArgs) -> Result<AgentConfigDto, Stri
     if !matches!(args.provider_kind.as_str(), "anthropic" | "openai_compat") {
         return Err(format!("unknown provider kind `{}`", args.provider_kind));
     }
-    if let Some(key) = args.api_key.as_deref().map(str::trim).filter(|k| !k.is_empty()) {
+    if let Some(key) = args
+        .api_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|k| !k.is_empty())
+    {
         store::keychain_set(&args.provider_kind, key).map_err(|e| e.to_string())?;
     }
     let settings = store::AgentSettings {

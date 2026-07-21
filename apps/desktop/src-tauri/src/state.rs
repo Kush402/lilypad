@@ -18,6 +18,10 @@ pub enum SessionStatus {
     Pairing,
     /// Phone redeemed; desktop must Approve/Deny.
     AwaitingApproval,
+    /// Approved (or auto-approved) — WebRTC is negotiating/connecting but the
+    /// peer hasn't reported `connected` yet. Distinct from Active so the UI
+    /// shows honest "Connecting…" feedback instead of a frozen approve card.
+    Connecting,
     /// Approved — a control session is live.
     Active,
 }
@@ -72,6 +76,12 @@ pub struct AppState {
     /// ring and auto-approves the instant the pair-request arrives. Cleared
     /// when the session ends.
     pub auto_approve_room: Option<String>,
+    /// The currently-running session runner's task handle. Holding this lets
+    /// a NEW session (trusted takeover or QR-approve) await the OLD one's
+    /// full teardown — including `media.stop()` joining the ScreenCaptureKit
+    /// capture thread — before it starts, so screen capture is never
+    /// double-opened while the previous session is still closing.
+    pub session_task: Option<tauri::async_runtime::JoinHandle<()>>,
 }
 
 impl AppState {
@@ -85,6 +95,7 @@ impl AppState {
             control_tx: None,
             pending_request: None,
             auto_approve_room: None,
+            session_task: None,
         }
     }
 }

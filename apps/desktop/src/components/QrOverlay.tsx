@@ -30,27 +30,16 @@ export function QrOverlay() {
   // same in prod — each extra call minted a room whose session runner
   // instantly overwrote the previous one's control channel.
   const inFlightRef = useRef(false);
+  // Set when a "New code" click would be disruptive (a phone already has an
+  // approval pending or a live session) — surfaces an inline confirm instead
+  // of gating on `window.confirm`, which returns falsy in Tauri's wry
+  // webview and would silently swallow every regenerate. See
+  // `docs/audit/m3/desktop-ux.md` Finding 9.
+  const [pendingDisruptiveRegen, setPendingDisruptiveRegen] = useState(false);
 
-  const generate = useCallback(async () => {
+  const doGenerate = useCallback(async () => {
     if (inFlightRef.current) return;
-    // Regenerating is only a "New code" replacing an unscanned/expired one
-    // when nothing else is at stake. If a phone has already redeemed the
-    // token (an approval is pending or a session is live), regenerating
-    // silently ends it — `create_pairing` always spawns a fresh session
-    // runner, overwriting the control channel the current one depends on.
-    // Confirm before doing that; never confirm the FIRST code a window
-    // shows. See `docs/audit/m3/desktop-ux.md` Finding 9.
-    if (hasPayloadRef.current) {
-      const current = await api.getState().catch(() => null);
-      const disruptive = current?.session === 'awaiting_approval' || current?.session === 'active';
-      if (disruptive) {
-        const proceed = window.confirm(
-          'This will end the current pending request or session. Continue?',
-        );
-        if (!proceed) return;
-      }
-    }
-
+    setPendingDisruptiveRegen(false);
     setError('');
     setDataUrl('');
     inFlightRef.current = true;
@@ -74,6 +63,27 @@ export function QrOverlay() {
       inFlightRef.current = false;
     }
   }, []);
+
+  // Entry point for both the mount effect and the "New code"/"Regenerate"
+  // button. Regenerating is only harmless when nothing else is at stake —
+  // if a phone has already redeemed the token (an approval is pending or a
+  // session is live), regenerating silently ends it (`create_pairing`
+  // always spawns a fresh session runner, overwriting the control channel
+  // the current one depends on). In that case, surface the inline confirm
+  // instead of proceeding; never confirm the FIRST code a window shows. See
+  // `docs/audit/m3/desktop-ux.md` Finding 9.
+  const generate = useCallback(async () => {
+    if (inFlightRef.current) return;
+    if (hasPayloadRef.current) {
+      const current = await api.getState().catch(() => null);
+      const disruptive = current?.session === 'awaiting_approval' || current?.session === 'active';
+      if (disruptive) {
+        setPendingDisruptiveRegen(true);
+        return;
+      }
+    }
+    void doGenerate();
+  }, [doGenerate]);
 
   useEffect(() => {
     void generate();
@@ -116,6 +126,23 @@ export function QrOverlay() {
             <dd className="mono">{payload.roomId.slice(0, 8)}…</dd>
           </div>
         </dl>
+      ) : null}
+
+      {pendingDisruptiveRegen ? (
+        <div className="revoke-confirm">
+          <p className="muted">This will end the current pending request or session. Continue?</p>
+          <div className="row revoke-confirm__actions">
+            <button className="btn btn--danger btn--small" onClick={() => void doGenerate()}>
+              Confirm
+            </button>
+            <button
+              className="btn btn--ghost btn--small"
+              onClick={() => setPendingDisruptiveRegen(false)}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
       ) : null}
 
       <div className="row">

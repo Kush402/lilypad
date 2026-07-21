@@ -154,9 +154,25 @@ impl MediaPipeline {
                 let window_every = (fps as u64 * METRICS_WINDOW_SECS).max(1);
                 // Set when a sample was dropped on a full queue: the receiver
                 // is now missing a reference frame, so deltas would smear until
-                // the next periodic IDR (~1s). Force an immediate keyframe
-                // instead so the stream recovers on the very next frame.
+                // a fresh IDR resyncs it. We OWE the receiver that keyframe, but
+                // WHEN we spend it is the whole game on a constrained path — see
+                // `last_recovery_keyframe` below.
                 let mut recover_with_keyframe = false;
+                // Recovery-keyframe discipline. A keyframe is the LARGEST frame
+                // the encoder emits, so forcing one into a still-full send queue
+                // is the worst possible move: it can't fit, it's dropped, that
+                // re-arms `recover_with_keyframe`, and every following frame
+                // becomes another forced IDR — a keyframe storm that freezes the
+                // stream for the entire duration of any motion. This is the
+                // "any touch destabilizes the connection" failure on cellular.
+                // So we only actually FORCE the owed keyframe once the queue has
+                // drained enough to carry it, and no more than once per spacing
+                // window. While congested we keep shipping cheap delta frames (a
+                // brief smear) and let the congestion cap shrink them until they
+                // fit — then a single IDR resyncs cleanly. `None` = none forced
+                // yet this episode.
+                let mut last_recovery_keyframe: Option<Instant> = None;
+                const RECOVERY_KEYFRAME_MIN_SPACING: Duration = Duration::from_millis(500);
                 let mut current_bitrate = config.encoder.bitrate_kbps;
                 let mut last_bitrate_retarget: Option<Instant> = None;
                 let mut consecutive_encode_errors: u32 = 0;
@@ -309,7 +325,22 @@ impl MediaPipeline {
                     // its whole session every interval (~1/s) — force only the
                     // cases the encoder can't know about: first frame, drop
                     // recovery, and viewer PLI/FIR.
-                    let force_kf = frame_no == 0 || recover_with_keyframe || keyframe_requested;
+                    //
+                    // Drop-recovery is gated: only spend the owed IDR when the
+                    // send queue has room to carry it (`capacity() > 0`) and the
+                    // spacing window has elapsed — otherwise a big frame just
+                    // re-congests a full queue and spirals into a keyframe storm
+                    // (see `last_recovery_keyframe`). Viewer PLI/FIR and the
+                    // first frame are always honored: those aren't congestion,
+                    // they're the receiver explicitly asking, or session start.
+                    let queue_has_room = sample_tx.capacity() > 0;
+                    let recovery_due = last_recovery_keyframe
+                        .is_none_or(|t| t.elapsed() >= RECOVERY_KEYFRAME_MIN_SPACING);
+                    let force_recovery = recover_with_keyframe && queue_has_room && recovery_due;
+                    let force_kf = frame_no == 0 || force_recovery || keyframe_requested;
+                    if force_recovery {
+                        last_recovery_keyframe = Some(Instant::now());
+                    }
                     match encoder.encode(&raw, force_kf) {
                         Ok(Some(sample)) => {
                             consecutive_encode_errors = 0;
@@ -326,9 +357,19 @@ impl MediaPipeline {
                                 m.delta_bytes_total
                                     .fetch_add(sample.data.len() as u64, Ordering::Relaxed);
                             }
+                            let sent_keyframe = sample.is_keyframe;
                             match sample_tx.try_send(sample) {
                                 Ok(()) => {
-                                    recover_with_keyframe = false;
+                                    // Clear the owed-keyframe debt only when an
+                                    // actual IDR reached the wire — a delta that
+                                    // happens to fit does NOT give the receiver
+                                    // the fresh reference it's missing, so
+                                    // clearing on any send would leave it
+                                    // smearing on frames whose references never
+                                    // arrived.
+                                    if sent_keyframe {
+                                        recover_with_keyframe = false;
+                                    }
                                     m.record_latency(raw.captured_at.elapsed().as_micros() as u64);
                                 }
                                 Err(TrySendError::Full(_)) => {

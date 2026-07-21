@@ -4,6 +4,43 @@ All notable changes to Lilypad are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+Cellular-stability hardening on top of 1.0.0, driven by live-hardware findings
+(2026-07-19 → 2026-07-20).
+
+### Desktop
+
+- Single-instance guard (`flock`-based advisory lock): the launch-at-login
+  LaunchAgent and a manual/dev launch could previously both register the same
+  presence room and fight over it, producing a phone-visible ~1 Hz
+  "reconnecting" churn. The second instance now exits quietly at startup.
+- Tray gains an "Open Dashboard" entry; `show_qr` is now also disabled while
+  a session is `Connecting`, not just `Active`.
+- Traffic-liveness window widened 22s → 34s: a live cellular capture showed
+  the phone's RTCP/REMB return path go silent for ~30s while forward video
+  kept flowing — the old window tripped an unnecessary ICE restart on a
+  stream that never actually stopped.
+- ABR and session-runner resilience refinements from the same cellular
+  capture session.
+
+### Backend
+
+- Self-hosted TURN relay support (`infra/coturn-prod/`): coturn behind
+  `use-auth-secret`, sharing `TURN_SECRET` with the backend so
+  `PUBLIC_TURN_URL` can be advertised with HMAC-derived credentials instead
+  of only static ones — fixes the free-tier `metered.ca` relay collapsing
+  under a sustained 1–3 Mbps desktop stream. `FORCE_RELAY` forces
+  `iceTransportPolicy: relay` once the dedicated relay is deployed.
+- `quickTunnel` (dev `TUNNEL=1` cloudflared wrapper) now health-probes its
+  own HTTPS origin every 15s and force-restarts after 8 consecutive failures
+  (~2 min), catching a "zombie" tunnel (process alive, edge connection dead)
+  that previously required a manual restart. Also reaps a cloudflared
+  orphaned by a hard-killed (`kill -9`) backend before its first launch.
+- `SignalingHub` construction extracted into `createSignalingHubBundle`
+  (`signaling/hubBundle.ts`) so `signalingRoutes` and `deviceRoutes` share
+  one hub instance instead of risking a second, divergent one.
+
 ## [1.0.0] — 2026-07-18
 
 First feature-complete release. The full remote-control loop is verified

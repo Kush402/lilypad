@@ -70,6 +70,19 @@ const EnvSchema = z.object({
   PUBLIC_TURN_USERNAME: z.string().default(''),
   PUBLIC_TURN_CREDENTIAL: z.string().default(''),
 
+  // Server-controlled `iceTransportPolicy` handed to both peers via
+  // `session-start` (relay-only vs normal ICE). Default OFF ('all' / normal
+  // ICE): forcing relay onto the free/shared relay above would break
+  // sessions that today succeed via a direct srflx path. Flip to true only
+  // once a dedicated TURN relay is deployed for this — see
+  // infra/coturn-prod/README.md. `z.enum(['true','false'])` rather than
+  // `z.coerce.boolean()`: the latter treats the STRING "false" as truthy,
+  // which would silently force relay for anyone who set `FORCE_RELAY=false`.
+  FORCE_RELAY: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true'),
+
   // Comma-separated allowlist of origins permitted to make cross-origin
   // browser requests in production (e.g. a deployed `apps/admin` SPA).
   // Empty means "no cross-origin browser client is allowed yet" — a

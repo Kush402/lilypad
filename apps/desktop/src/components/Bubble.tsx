@@ -62,11 +62,16 @@ export function Bubble() {
         await focusWindow('qr-overlay');
         return;
       case 'awaiting_approval':
+      case 'connecting':
       case 'active':
-        // Both cases route to Control: it shows the approve/deny prompt
-        // while awaiting, and the Disconnect/Panic controls once active —
-        // never `createPairing()` again while already mid-flow.
-        await focusWindow('control');
+        // All three route to Control: it shows the approve/deny prompt while
+        // awaiting, an honest "Connecting…" state while negotiating, and the
+        // Disconnect/Panic controls once active — never `createPairing()`
+        // again while already mid-flow. Uses `api.showControl()`
+        // (create-if-absent, else focus) rather than `focusWindow`, since a
+        // trusted phone's silent auto-reconnect never creates the Control
+        // window in the first place.
+        await api.showControl();
         return;
     }
   };

@@ -12,6 +12,7 @@ import {
   ActivityIndicator,
   TextInput,
   useWindowDimensions,
+  Alert,
   type LayoutChangeEvent,
   type GestureResponderEvent,
   type NativeSyntheticEvent,
@@ -27,7 +28,7 @@ import type { RootStackParamList } from '../types';
 import { theme } from '../theme';
 import { ViewerConnection, type ViewerState, type RecoveryDetail } from '../lib/webrtc';
 import type { InputSender } from '../lib/input';
-import { toAppError, type AppError } from '../lib/errors';
+import { appError, toAppError, type AppError } from '../lib/errors';
 import { QUALITY_COLOR, type ConnectionQuality } from '../lib/quality';
 import { TouchInterpreter, type TouchIntent, type TouchSample } from '../lib/touch';
 import {
@@ -41,7 +42,7 @@ import {
 } from '../lib/viewport';
 import { PressRepeater } from '../lib/pressRepeat';
 import { agentFeedReducer, INITIAL_AGENT_FEED } from '../lib/agentFeed';
-import { setPairSecret } from '../lib/pairs';
+import { forgetPair, setPairSecret } from '../lib/pairs';
 import { AgentPanel } from './AgentPanel';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Viewer'>;
@@ -236,6 +237,21 @@ export function ViewerScreen({ route, navigation }: Props) {
         // desktop this is (always true for QR pairs via the redeem response).
         if (desktopDeviceId) void setPairSecret(desktopDeviceId, secret).catch(() => {});
       },
+      onRevoked: () => {
+        // The desktop revoked this phone's trust — the stale local pairing
+        // can never reconnect (the backend pair row is gone), so drop it
+        // now rather than leave a phantom entry in My Devices that just
+        // fails the next time it's tapped. Reuses the same removal
+        // mechanism as the user-initiated "Forget" in DeviceListScreen,
+        // just triggered by the backend instead of a tap.
+        if (desktopDeviceId) void forgetPair(desktopDeviceId).catch(() => {});
+        // Same explanation as the other revoke path (a rejected no-QR
+        // reconnect attempt, `classifyHttpStatus`'s 'trust_revoked') — the
+        // user should see identical copy either way.
+        Alert.alert('Access revoked', appError('trust_revoked').message, [
+          { text: 'OK', onPress: () => navigation.popToTop() },
+        ]);
+      },
     });
     connRef.current = conn;
     conn.start().catch((e) => setError(toAppError(e)));
@@ -396,7 +412,12 @@ export function ViewerScreen({ route, navigation }: Props) {
 
   const disconnect = useCallback(() => {
     connRef.current?.close();
-    navigation.replace('Devices');
+    // Return to the EXISTING "Your laptops" screen at the stack root, not a
+    // fresh copy. `replace('Devices')` swapped the Viewer for a *second*
+    // Devices screen ([Devices, Devices]), so its header back button popped to
+    // an identical page. Devices is always the root (initialRouteName), so
+    // popToTop returns to the single instance with no back button.
+    navigation.popToTop();
   }, [navigation]);
 
   // Two-tap confirm: the Disconnect button sits in the thumb-reach zone

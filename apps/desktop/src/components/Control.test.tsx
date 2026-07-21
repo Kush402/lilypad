@@ -1,9 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import { Control } from './Control';
 import { useAppState } from '../lib/useAppState';
 import { api } from '../lib/tauri';
-import type { AppStateDto } from '../lib/tauri';
+import type { AppStateDto, TrustedPairDto } from '../lib/tauri';
 
 vi.mock('../lib/useAppState', () => ({
   useAppState: vi.fn(),
@@ -15,6 +15,7 @@ vi.mock('../lib/tauri', () => ({
     deny: vi.fn(),
     disconnect: vi.fn(),
     panic: vi.fn(),
+    showQrWindow: vi.fn(),
     // Trusted devices dashboard (M5.4)
     listTrustedDevices: vi.fn().mockResolvedValue([]),
     setPairAutoApprove: vi.fn(),
@@ -24,7 +25,14 @@ vi.mock('../lib/tauri', () => ({
     getPermissionStatus: vi.fn().mockResolvedValue({ screen_capture: true, accessibility: true }),
     getAgentConfig: vi
       .fn()
-      .mockResolvedValue({ providerKind: null, model: null, baseUrl: null, vision: false, hasKey: false, source: 'none' }),
+      .mockResolvedValue({
+        providerKind: null,
+        model: null,
+        baseUrl: null,
+        vision: false,
+        hasKey: false,
+        source: 'none',
+      }),
     showSetup: vi.fn(),
   },
 }));
@@ -68,7 +76,11 @@ describe('Control', () => {
     vi.mocked(useAppState).mockReturnValue(
       dto({
         session: 'awaiting_approval',
-        pending_request: { device_name: null, requested_scopes: ['view'], requested_at: Date.now() },
+        pending_request: {
+          device_name: null,
+          requested_scopes: ['view'],
+          requested_at: Date.now(),
+        },
       }),
     );
     render(<Control />);
@@ -94,6 +106,30 @@ describe('Control', () => {
     expect(screen.queryByText('ScreenCapture')).not.toBeInTheDocument();
   });
 
+  // Regression test for the "frozen approve card" bug: previously there was
+  // no state between awaiting_approval and active, so after clicking Approve
+  // the UI kept showing the (now-cleared) approve card with no feedback
+  // until (or unless) the connection reached `connected`. `connecting` gives
+  // honest in-progress feedback instead.
+  it('connecting shows the "Connecting…" card, not the approve card', () => {
+    vi.mocked(useAppState).mockReturnValue(dto({ session: 'connecting' }));
+    render(<Control />);
+
+    expect(screen.getByText(/Establishing a secure connection/i)).toBeInTheDocument();
+    expect(screen.queryByText('Approve')).not.toBeInTheDocument();
+    expect(screen.queryByText('Deny')).not.toBeInTheDocument();
+  });
+
+  it('connecting still exposes Disconnect and Panic so a stuck connection can be cancelled', () => {
+    vi.mocked(useAppState).mockReturnValue(dto({ session: 'connecting' }));
+    render(<Control />);
+
+    screen.getByText('Disconnect').click();
+    screen.getByText('⛔ Panic').click();
+    expect(api.disconnect).toHaveBeenCalled();
+    expect(api.panic).toHaveBeenCalled();
+  });
+
   it('active session shows Disconnect and Panic', () => {
     vi.mocked(useAppState).mockReturnValue(dto({ session: 'active' }));
     render(<Control />);
@@ -108,7 +144,11 @@ describe('Control', () => {
     vi.mocked(useAppState).mockReturnValue(
       dto({
         session: 'awaiting_approval',
-        pending_request: { device_name: 'Phone', requested_scopes: ['view'], requested_at: Date.now() },
+        pending_request: {
+          device_name: 'Phone',
+          requested_scopes: ['view'],
+          requested_at: Date.now(),
+        },
       }),
     );
     render(<Control />);
@@ -117,5 +157,72 @@ describe('Control', () => {
     expect(api.approve).toHaveBeenCalled();
     screen.getByText('Deny').click();
     expect(api.deny).toHaveBeenCalled();
+  });
+
+  // Regression tests for the window.confirm bug: window.confirm returns
+  // falsy in Tauri's wry webview, so `if (!window.confirm(...)) return;`
+  // always bailed and api.revokePair was NEVER called. The fix replaces it
+  // with an inline two-step confirm rendered inside the expanded device row.
+  describe('trusted device revoke (inline confirm)', () => {
+    function pair(overrides: Partial<TrustedPairDto> = {}): TrustedPairDto {
+      return {
+        pairId: 'p1',
+        mobileFingerprint: 'ab:cd:ef',
+        displayName: "Kush's iPhone",
+        autoApprove: true,
+        revoked: false,
+        lastConnectedAt: null,
+        createdAt: new Date().toISOString(),
+        ...overrides,
+      };
+    }
+
+    beforeEach(() => {
+      vi.mocked(useAppState).mockReturnValue(dto({ session: 'idle' }));
+    });
+
+    it('clicking Revoke alone does not call api.revokePair (two-step guard)', async () => {
+      vi.mocked(api.listTrustedDevices).mockResolvedValue([pair()]);
+      render(<Control />);
+
+      await waitFor(() => expect(screen.getByText("Kush's iPhone")).toBeInTheDocument());
+      screen.getByText("Kush's iPhone").click(); // expand the row
+      await waitFor(() => expect(screen.getByText('Revoke')).toBeInTheDocument());
+
+      screen.getByText('Revoke').click(); // reveals the inline confirm
+      await waitFor(() => expect(screen.getByText('Confirm')).toBeInTheDocument());
+      expect(api.revokePair).not.toHaveBeenCalled();
+    });
+
+    it('expand -> Revoke -> Confirm calls api.revokePair with the pairId', async () => {
+      vi.mocked(api.listTrustedDevices).mockResolvedValue([pair({ pairId: 'p42' })]);
+      render(<Control />);
+
+      await waitFor(() => expect(screen.getByText("Kush's iPhone")).toBeInTheDocument());
+      screen.getByText("Kush's iPhone").click();
+      await waitFor(() => expect(screen.getByText('Revoke')).toBeInTheDocument());
+
+      screen.getByText('Revoke').click();
+      await waitFor(() => expect(screen.getByText('Confirm')).toBeInTheDocument());
+      screen.getByText('Confirm').click();
+
+      await waitFor(() => expect(api.revokePair).toHaveBeenCalledWith('p42'));
+    });
+
+    it('Cancel aborts without calling api.revokePair', async () => {
+      vi.mocked(api.listTrustedDevices).mockResolvedValue([pair()]);
+      render(<Control />);
+
+      await waitFor(() => expect(screen.getByText("Kush's iPhone")).toBeInTheDocument());
+      screen.getByText("Kush's iPhone").click();
+      await waitFor(() => expect(screen.getByText('Revoke')).toBeInTheDocument());
+
+      screen.getByText('Revoke').click();
+      await waitFor(() => expect(screen.getByText('Cancel')).toBeInTheDocument());
+      screen.getByText('Cancel').click();
+
+      await waitFor(() => expect(screen.getByText('Revoke')).toBeInTheDocument());
+      expect(api.revokePair).not.toHaveBeenCalled();
+    });
   });
 });

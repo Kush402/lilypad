@@ -39,8 +39,7 @@ describe('QrOverlay', () => {
     await waitFor(() => expect(api.createPairing).toHaveBeenCalledTimes(1));
   });
 
-  it('regenerating a code while nothing is pending does not confirm', async () => {
-    const confirmSpy = vi.spyOn(window, 'confirm');
+  it('regenerating a code while nothing is pending does not show an inline confirm', async () => {
     render(<QrOverlay />);
     await waitFor(() => expect(api.createPairing).toHaveBeenCalledTimes(1));
 
@@ -55,13 +54,17 @@ describe('QrOverlay', () => {
 
     screen.getByText('New code').click();
     await waitFor(() => expect(api.createPairing).toHaveBeenCalledTimes(2));
-    expect(confirmSpy).not.toHaveBeenCalled();
+    expect(screen.queryByText(/end the current pending request/)).not.toBeInTheDocument();
   });
 
   // Regression test for docs/audit/m3/desktop-ux.md Finding 9: regenerating
   // while an approval is pending or a session is active must not silently
-  // tear it down the same way the bubble click used to (Finding 3).
-  it('regenerating while awaiting_approval asks for confirmation, and honors "cancel"', async () => {
+  // tear it down the same way the bubble click used to (Finding 3). Also a
+  // regression test for the window.confirm bug: window.confirm returns
+  // falsy in the wry webview, so the confirm gate is now an inline two-step
+  // UI instead — this proves createPairing is NOT called until the user
+  // explicitly clicks the inline "Confirm".
+  it('regenerating while awaiting_approval shows an inline confirm, and honors "cancel"', async () => {
     render(<QrOverlay />);
     await waitFor(() => expect(api.createPairing).toHaveBeenCalledTimes(1));
 
@@ -73,14 +76,21 @@ describe('QrOverlay', () => {
       pending_request: null,
       plugin_health: {},
     });
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
 
     screen.getByText('New code').click();
-    await waitFor(() => expect(confirmSpy).toHaveBeenCalled());
+    await waitFor(() =>
+      expect(screen.getByText(/end the current pending request/)).toBeInTheDocument(),
+    );
+    expect(api.createPairing).toHaveBeenCalledTimes(1); // not called yet — awaiting confirm
+
+    screen.getByText('Cancel').click();
+    await waitFor(() =>
+      expect(screen.queryByText(/end the current pending request/)).not.toBeInTheDocument(),
+    );
     expect(api.createPairing).toHaveBeenCalledTimes(1); // cancelled — no second call
   });
 
-  it('regenerating while active proceeds only after confirming', async () => {
+  it('regenerating while active proceeds only after clicking the inline Confirm', async () => {
     render(<QrOverlay />);
     await waitFor(() => expect(api.createPairing).toHaveBeenCalledTimes(1));
 
@@ -92,9 +102,12 @@ describe('QrOverlay', () => {
       pending_request: null,
       plugin_health: {},
     });
-    vi.spyOn(window, 'confirm').mockReturnValue(true);
 
     screen.getByText('New code').click();
+    await waitFor(() => expect(screen.getByText('Confirm')).toBeInTheDocument());
+    expect(api.createPairing).toHaveBeenCalledTimes(1);
+
+    screen.getByText('Confirm').click();
     await waitFor(() => expect(api.createPairing).toHaveBeenCalledTimes(2));
   });
 

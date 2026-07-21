@@ -22,7 +22,7 @@ import {
 } from '@lilypad/protocol';
 import { MobileSignaling, type SignalingLifecycleEvent } from './signaling';
 import { AppLifecycleController } from './lifecycle';
-import { InputSender } from './input';
+import { InputSender, MAX_BUFFERED_AMOUNT_BYTES } from './input';
 import { getDeviceId } from './device';
 import { appError, type AppError } from './errors';
 import { classifyQuality, QUALITY_POLL_MS, type ConnectionQuality } from './quality';
@@ -69,6 +69,14 @@ export interface ViewerCallbacks {
    * after a trusted approval. The viewer persists it against the desktop so
    * future no-QR reconnects can present it. */
   onPairSecret?: (secret: string) => void;
+  /** The desktop revoked this phone's trust mid-session (the backend force-
+   * ended the room with `session-end` reason `'revoked'` — see
+   * `apps/backend/src/signaling/hub.ts`'s `endRoomsForDevicePair`). Fires
+   * BEFORE `onState('ended')` so the screen can show a specific "access
+   * revoked" message and clean up the stale local pairing, instead of the
+   * generic disconnect the ordinary `ended` state implies. Optional — a
+   * viewer that doesn't care just falls back to the generic ended state. */
+  onRevoked?: () => void;
 }
 
 /**
@@ -81,6 +89,62 @@ export interface ViewerCallbacks {
  * asking forever if its own local network keeps flapping.
  */
 const MAX_ICE_RESTART_REQUESTS: number = MAX_ICE_RESTARTS;
+
+/**
+ * Grace period before treating 'disconnected' as 'failed' — ICE disconnected
+ * is transient and self-recoverable, but webrtc-rs may report it when the
+ * network briefly falters (e.g., DataChannel buffer fills under congestion).
+ * A 5s window lets the connection self-recover without triggering the
+ * destructive ICE restart cycle. Matches the desktop's TRAFFIC_LIVENESS_WINDOW
+ * philosophy of 22s, but tighter for mobile's more reactive ICE stack.
+ */
+const DISCONNECTED_GRACE_MS = 5_000;
+
+/**
+ * Minimum interval between renegotiate requests triggered by network restoration.
+ * Cellular can flicker every ~11s; this debounce prevents an ICE restart storm.
+ */
+const NETWORK_RESTORE_DEBOUNCE_MS = 10_000;
+
+/**
+ * How recently inbound video must have advanced for the path to count as
+ * "demonstrably alive". This is the receiver's own ground truth, and it beats
+ * every ICE verdict: if decoded video bytes are still climbing, the forward
+ * path works — full stop — no matter what `iceConnectionState` claims.
+ *
+ * On a relayed cellular path the return direction (phone→desktop STUN consent
+ * checks + RTCP) flaps independently of the forward video, so ICE reports
+ * `disconnected` while the screen is still streaming perfectly. Requesting an
+ * ICE restart there is pure self-harm: a fresh offer, candidate re-trickle, and
+ * an IDR that glitches a stream that was never broken — the "connect →
+ * reconnecting → recovering" loop the user sees. So while video is live we
+ * DON'T renegotiate on a transient disconnect; we keep re-checking, and only
+ * recover if the video ITSELF stops (a real outage). This is the phone-side
+ * twin of the desktop's `peer_traffic_fresh` outvote (`session/mod.rs`), using
+ * the strongest possible liveness signal.
+ *
+ * On cellular the forward video itself can gap for several seconds during a
+ * relay hiccup while the phone is still fine — a too-tight window flips
+ * `isReceivingVideo()` false on a stall that was about to resume, pushing us
+ * into the escalation path for nothing. 15s tolerates those transient gaps
+ * without a false "video stopped" verdict, while still catching a genuinely
+ * dead stream reasonably promptly. `QUALITY_POLL_MS` is 2s, so 15s ≈ 7 missed
+ * polls — deliberately not wider than that, so a truly frozen stream doesn't
+ * sit on 'connected' too long.
+ */
+const VIDEO_LIVENESS_WINDOW_MS = 15_000;
+
+const BUFFERED_AMOUNT_LOW_THRESHOLD_BYTES = MAX_BUFFERED_AMOUNT_BYTES / 2;
+
+type DataChannelLike = {
+  label?: string;
+  bufferedAmount?: number | null;
+  bufferedAmountLowThreshold?: number;
+  onbufferedamountlow?: ((event: unknown) => void) | null;
+  send: (d: string) => void;
+  close: () => void;
+  addEventListener?: (type: string, cb: (event: any) => void) => void;
+};
 
 /**
  * The mobile answer-side of a session. Registers as the mobile seat, requests
@@ -100,17 +164,19 @@ export class ViewerConnection {
   private input: InputSender | null = null;
   /** Monotonic suffix for run ids minted by `sendAgentCommand`. */
   private agentRunCounter = 0;
-  private dataChannel: { send: (d: string) => void; close: () => void; label?: string } | null =
-    null;
+  private dataChannel: DataChannelLike | null = null;
   /** The unreliable move channel — separate from `dataChannel` above since
    * it has its own open/close lifecycle and may never open at all (older
    * peer, transient negotiation failure). `InputSender` falls back to the
    * critical channel when this is absent. See
    * `docs/audit/m3/input-touch.md` Finding 2. */
-  private moveDataChannel: { send: (d: string) => void; close: () => void; label?: string } | null =
-    null;
+  private moveDataChannel: DataChannelLike | null = null;
   private heartbeat: ReturnType<typeof setInterval> | null = null;
   private lifecycle: AppLifecycleController | null = null;
+  /** Guard against acting on callbacks after close() began — prevents
+   * race conditions where signaling lifecycle events arrive while we're
+   * tearing down. Checked at the top of every callback entry point. */
+  private isClosed = false;
 
   /** True once the peer connection has reached `connected` at least once and
    * hasn't since failed/closed — mirrors the desktop's `peer_connected`
@@ -125,6 +191,17 @@ export class ViewerConnection {
   private statsPoll: ReturnType<typeof setInterval> | null = null;
   private lastInboundBytes: number | null = null;
   private lastStatsAt: number | null = null;
+  /** Wall-clock of the last poll where inbound video bytes actually advanced —
+   * the receiver's proof the forward path is alive. Drives the video-liveness
+   * outvote of a false `disconnected` (see `VIDEO_LIVENESS_WINDOW_MS`). */
+  private lastVideoAdvanceAt: number | null = null;
+  /** Timer for debouncing a lingering 'disconnected' OR 'failed' state before
+   * escalating — both PC states are routed through the same video-aware
+   * recheck (`armDegradedRecheck`), since ICE's severity ranking between them
+   * doesn't matter once video-liveness is the ground truth. */
+  private degradedGraceTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Timestamp of last network restoration renegotiate to debounce flapping. */
+  private lastNetworkRestoreRenegotiate: number = Number.NEGATIVE_INFINITY;
 
   constructor(
     signalingUrl: string,
@@ -176,7 +253,16 @@ export class ViewerConnection {
       // keyframe storms, bitrate pinned to the floor. A working path keeps
       // working; the ICE-failure handler still owns the broken case.
       onNetworkRestored: () => {
-        if (this.pc && !this.peerConnected) this.sig.renegotiate();
+        // Only renegotiate if there's an unhealthy peer connection
+        if (!this.pc || this.peerConnected) return;
+        if (this.degradedGraceTimer) return;
+        // Debounce network restoration renegotiate to prevent ICE restart storm
+        const now = Date.now();
+        if (now - this.lastNetworkRestoreRenegotiate < NETWORK_RESTORE_DEBOUNCE_MS) {
+          return;
+        }
+        this.lastNetworkRestoreRenegotiate = now;
+        this.sig.renegotiate();
       },
     });
   }
@@ -189,6 +275,8 @@ export class ViewerConnection {
    * aren't valid agent-outbound messages (nothing else is sent on this channel
    * today, but be defensive) are silently ignored. */
   private handleAgentFrame(data: unknown): void {
+    // Guard against processing after close
+    if (this.isClosed) return;
     // The desktop sends agent frames as TEXT, but accept binary too — an
     // older desktop build sent them as ArrayBuffer, and dropping those left
     // the panel on "Thinking…" forever with no visible failure.
@@ -222,9 +310,14 @@ export class ViewerConnection {
     else this.cb.onAgentRunEnd?.(parsed.data);
   }
 
+  /** Ask the desktop to switch capture/encode mode. See
+   * `docs/audit/m3/prior-art.md` Finding 2. */
+  requestCaptureMode(mode: CaptureMode): void {
+    this.sig.setCaptureMode(mode);
+  }
+
   /** Dispatch a natural-language task to the desktop agent. Returns the runId
-   * so the caller can correlate the step feed and later stop/decision calls.
-   * A closed channel drops the send (the caller sees no feed and can retry). */
+   * so the caller can correlate the step feed and later stop/decision calls. */
   sendAgentCommand(text: string): string {
     const runId = `run-${Date.now()}-${(this.agentRunCounter += 1)}`;
     this.sendAgent({ kind: 'agent_command', runId, text, ts: Date.now() });
@@ -240,27 +333,25 @@ export class ViewerConnection {
   }
 
   private sendAgent(msg: Parameters<typeof encodeAgentMessage>[0]): void {
+    if (!this.dataChannel || this.isClosed) return;
     try {
-      this.dataChannel?.send(encodeAgentMessage(msg));
+      this.dataChannel.send(encodeAgentMessage(msg));
     } catch {
-      /* channel not open — drop */
+      // channel not open - drop
     }
   }
 
-  /** Ask the desktop to switch capture/encode mode. See
-   * `docs/audit/m3/prior-art.md` Finding 2. */
-  requestCaptureMode(mode: CaptureMode): void {
-    this.sig.setCaptureMode(mode);
-  }
-
   private onSignal(m: SignalingMessage): void {
+    // Guard against processing messages after close() began — prevents
+    // race conditions where signaling events arrive while we're tearing down
+    if (this.isClosed) return;
     switch (m.type) {
       case 'session-start':
         // Approval already happened and ICE servers are assigned — the peer
         // connection is about to be built and an offer is imminent. See
         // docs/audit/m3/mobile-ux.md Finding 1.
         this.cb.onState('negotiating');
-        this.setupPeer(m.payload.iceServers);
+        this.setupPeer(m.payload.iceServers, m.payload.iceTransportPolicy);
         break;
       case 'offer':
         // A rejected offer application must not vanish: mid-session this is
@@ -303,8 +394,23 @@ export class ViewerConnection {
         this.cb.onState('denied');
         this.close();
         break;
-      case 'disconnect':
       case 'session-end':
+        // A revoke is a distinct trigger from every other end-of-session
+        // reason (peer hangup, "peer connection closed", etc.) — the backend
+        // stamps this exact, stable string only when the desktop force-ended
+        // the room because it revoked this phone's trust. Checked before the
+        // generic handling below so the screen can show a specific message
+        // and drop the now-stale local pairing instead of the ordinary
+        // "ended" treatment. `disconnect` carries no such distinction (its
+        // `reason` is free-text UI copy, not a machine-checked signal), so
+        // it's handled separately rather than folded into this case.
+        if (m.payload.reason === 'revoked') {
+          this.cb.onRevoked?.();
+        }
+        this.cb.onState('ended');
+        this.close();
+        break;
+      case 'disconnect':
         this.cb.onState('ended');
         this.close();
         break;
@@ -317,10 +423,12 @@ export class ViewerConnection {
   }
 
   /** Handle a transport-lifecycle event from `MobileSignaling` — the decision
-   * of "is a dropped socket recoverable" lives here, not in the transport
+   * of "is a dropped signaling socket recoverable" lives here, not in the transport
    * itself (mirrors the desktop orchestrator's identical split of
    * responsibility). */
   private onSignalingLifecycle(event: SignalingLifecycleEvent): void {
+    // Guard against acting after close() began
+    if (this.isClosed) return;
     switch (event.kind) {
       case 'closed':
         if (this.peerConnected) {
@@ -356,7 +464,7 @@ export class ViewerConnection {
           this.cb.onState('reconnecting_signaling');
           this.lostRetryTimer = setTimeout(() => {
             this.lostRetryTimer = null;
-            if (this.pc) this.sig.beginReconnect(getDeviceId());
+            if (this.pc && !this.isClosed) this.sig.beginReconnect(getDeviceId());
           }, 4000);
         } else {
           this.cb.onError(appError('signaling_lost', event.error.message));
@@ -367,8 +475,51 @@ export class ViewerConnection {
     }
   }
 
-  private setupPeer(iceServers: IceServer[]): void {
-    const pc = new RTCPeerConnection({ iceServers: iceServers as any });
+  /** `iceTransportPolicy` is server-controlled (`session-start`'s optional
+   * field) and only meaningful once a real dedicated TURN relay is
+   * configured on the backend — see `FORCE_RELAY` in
+   * `packages/shared/src/env.ts`. Omitted/`'all'` (the default) is normal
+   * ICE, identical to today's behavior; `'relay'` forces both peers onto
+   * the relayed-only path. */
+  private setupPeer(iceServers: IceServer[], iceTransportPolicy?: 'all' | 'relay'): void {
+    // Guard against acting after close() began
+    if (this.isClosed) return;
+    // Clear any pending recovery deadline — a new session-start invalidates
+    // recovery state from any previous negotiation cycle.
+    this.clearRecoveryDeadline();
+    this.clearDegradedGraceTimer();
+    if (this.lostRetryTimer) {
+      clearTimeout(this.lostRetryTimer);
+      this.lostRetryTimer = null;
+    }
+    const oldPc = this.pc;
+    const oldDataChannel = this.dataChannel;
+    const oldMoveDataChannel = this.moveDataChannel;
+    this.pc = null;
+    this.input = null;
+    this.dataChannel = null;
+    this.moveDataChannel = null;
+    this.peerConnected = false;
+    try {
+      oldDataChannel?.close();
+    } catch {
+      /* ignore */
+    }
+    try {
+      oldMoveDataChannel?.close();
+    } catch {
+      /* ignore */
+    }
+    try {
+      oldPc?.close();
+    } catch {
+      /* ignore */
+    }
+
+    const pc = new RTCPeerConnection({
+      iceServers: iceServers as any,
+      iceTransportPolicy: iceTransportPolicy ?? 'all',
+    });
     this.pc = pc;
     this.iceRestartAttempts = 0;
     this.startStatsPolling();
@@ -378,11 +529,13 @@ export class ViewerConnection {
     };
 
     p.addEventListener('track', (e: any) => {
+      if (this.pc !== pc || this.isClosed) return;
       const stream: MediaStream =
         e.streams && e.streams[0] ? e.streams[0] : new MediaStream([e.track]);
       this.cb.onStream(stream);
     });
     p.addEventListener('icecandidate', (e: any) => {
+      if (this.pc !== pc || this.isClosed) return;
       if (e.candidate) {
         this.sig.iceCandidate(
           e.candidate.candidate,
@@ -392,33 +545,52 @@ export class ViewerConnection {
       }
     });
     p.addEventListener('connectionstatechange', () => {
+      // Guard against firing after close() — peer events may arrive mid-close.
+      // Check `pc` identity to ensure this is the CURRENT peer connection.
+      if (this.pc !== pc || this.isClosed) return;
       const s = p.connectionState;
       if (s === 'connected') {
         this.peerConnected = true;
         this.iceRestartAttempts = 0;
         this.clearRecoveryDeadline();
+        this.clearDegradedGraceTimer();
         this.cb.onState('connected');
       } else if (s === 'failed' || s === 'disconnected') {
-        // Treat 'disconnected' the same as 'failed': it's the ICE-level
-        // signal that the current path is unhealthy and may or may not
-        // self-recover — attempting a bounded restart is strictly better
-        // than either silently hoping (old behavior) or immediately ending
-        // the viewer on what is very often a transient blip.
-        this.peerConnected = false;
-        this.attemptIceRecovery();
+        // Both 'disconnected' and 'failed' are routed through the SAME
+        // video-aware recheck. Historically 'failed' triggered an ICE
+        // restart immediately (treating it as more severe than
+        // 'disconnected'), but on a relayed cellular path the return
+        // direction (phone→desktop STUN consent + RTCP) flaps independently
+        // of the forward video — ICE can report 'failed' while the screen is
+        // still decoding perfectly. Escalating unconditionally there was
+        // exactly the "connect → reconnect → recovering" full-teardown churn
+        // this redesign removes. Instead: wait out a grace window, and only
+        // escalate if video itself has genuinely stopped. See
+        // `armDegradedRecheck` for the video-liveness decision.
+        this.armDegradedRecheck(pc, p);
       } else if (s === 'closed') {
+        this.clearDegradedGraceTimer();
         // Only reached via an explicit local pc.close() — genuinely
-        // terminal, matches the desktop's identical rule.
-        this.peerConnected = false;
-        this.cb.onState('ended');
+        // terminal, matches the desktop's identical rule. But if we're
+        // already closed, this is just cleanup noise.
+        if (!this.isClosed) {
+          this.peerConnected = false;
+          this.cb.onState('ended');
+        }
+      } else {
+        this.clearDegradedGraceTimer();
       }
     });
     // The desktop (offerer) creates both input channels; arrival order
     // between the two is not guaranteed, so each branch wires the move
     // channel into `InputSender` if the other one has already shown up.
     p.addEventListener('datachannel', (e: any) => {
+      // Guard against firing after close()
+      if (this.pc !== pc || this.isClosed) return;
       if (e.channel?.label === INPUT_CHANNEL_LABEL) {
-        this.dataChannel = e.channel;
+        const channel = e.channel as DataChannelLike;
+        this.dataChannel = channel;
+        this.configureBackpressureFlush(channel);
         this.input = new InputSender((data) => {
           try {
             this.dataChannel?.send(data);
@@ -426,42 +598,158 @@ export class ViewerConnection {
             /* channel not open */
           }
         });
+        this.input.setCriticalChannelRef(channel);
         // The desktop sends the AI agent's step feed back on this same
         // reliable channel — listen for it (input, by contrast, is send-only
         // from the phone). Non-agent frames are ignored here.
-        if (typeof e.channel.addEventListener === 'function') {
-          e.channel.addEventListener('message', (ev: { data: unknown }) => {
+        if (typeof channel.addEventListener === 'function') {
+          channel.addEventListener('message', (ev: { data: unknown }) => {
             this.handleAgentFrame(ev.data);
           });
         }
         if (this.moveDataChannel) this.wireMoveChannel();
       } else if (e.channel?.label === INPUT_MOVE_CHANNEL_LABEL) {
-        this.moveDataChannel = e.channel;
+        const channel = e.channel as DataChannelLike;
+        this.moveDataChannel = channel;
+        this.configureBackpressureFlush(channel);
         if (this.input) this.wireMoveChannel();
       }
     });
   }
 
-  /** Wire the (already-arrived) move channel into `InputSender`'s send
-   * callback. Only called once both `this.input` and `this.moveDataChannel`
-   * are known to exist. */
+  private configureBackpressureFlush(channel: DataChannelLike): void {
+    try {
+      channel.bufferedAmountLowThreshold = BUFFERED_AMOUNT_LOW_THRESHOLD_BYTES;
+    } catch {
+      /* ignore */
+    }
+    const flush = (): void => {
+      if (
+        !this.isClosed &&
+        this.input &&
+        (channel === this.dataChannel || channel === this.moveDataChannel)
+      ) {
+        this.input.flush();
+      }
+    };
+    if (typeof channel.addEventListener === 'function') {
+      channel.addEventListener('bufferedamountlow', flush);
+    }
+    const prev = channel.onbufferedamountlow;
+    try {
+      channel.onbufferedamountlow = (event: unknown) => {
+        prev?.(event);
+        flush();
+      };
+    } catch {
+      /* ignore */
+    }
+  }
+
   private wireMoveChannel(): void {
-    this.input?.setMoveChannel((data) => {
+    if (!this.input || !this.moveDataChannel) return;
+    this.input.setMoveChannel((data) => {
       try {
         this.moveDataChannel?.send(data);
       } catch {
         /* channel not open */
       }
-    });
+    }, this.moveDataChannel);
+  }
+
+  /** The receiver's ground-truth liveness: has decoded video advanced within
+   * the window? When true, the forward path works regardless of ICE's verdict,
+   * so a `disconnected` is a false positive we must not act on. */
+  private isReceivingVideo(): boolean {
+    return (
+      this.lastVideoAdvanceAt !== null &&
+      Date.now() - this.lastVideoAdvanceAt < VIDEO_LIVENESS_WINDOW_MS
+    );
+  }
+
+  /** Arm (or re-arm) the grace timer that decides what to do about a
+   * lingering `disconnected` OR `failed` PC state — both funnel through here
+   * (see the `connectionstatechange` handler) because the fix is identical:
+   * on a relayed cellular path the return direction (phone→desktop STUN
+   * consent checks + RTCP) can flap independently of the forward video, so
+   * ICE's verdict — whichever of the two states it lands on — can be a false
+   * positive while the screen keeps decoding perfectly.
+   *
+   * On grace-timer fire:
+   *  - the PC self-recovered (state is no longer disconnected/failed) →
+   *    nothing to do.
+   *  - still degraded but `isReceivingVideo()` is true → the forward path is
+   *    demonstrably alive, so this can't be a real outage. The desktop now
+   *    DECLINES a renegotiate while its own traffic reads fresh (it would
+   *    only disrupt a working stream), so sending one here is pointless —
+   *    worse, it would leave the UI parked on 'recovering_ice' forever,
+   *    since our ICE state never returns to 'connected' without a restart
+   *    that never happens. Both sides must agree on the same ground truth:
+   *    video is the proof the session is fine, so report 'connected'
+   *    honestly, send nothing, and re-arm to keep re-checking in case video
+   *    later stops. This can continue indefinitely.
+   *  - still degraded and video has ACTUALLY stopped → a genuine outage.
+   *    Fall through to the bounded, escalating `attemptIceRecovery`.
+   */
+  private armDegradedRecheck(pc: RTCPeerConnection, p: { connectionState: string }): void {
+    this.clearDegradedGraceTimer();
+    this.degradedGraceTimer = setTimeout(() => {
+      this.degradedGraceTimer = null;
+      if (this.isClosed || this.pc !== pc) return;
+      // Self-recovered while we waited — nothing to do.
+      if (p.connectionState !== 'disconnected' && p.connectionState !== 'failed') return;
+      if (this.isReceivingVideo()) {
+        // Video is the ground truth and the desktop agrees: while it's
+        // flowing, this is a connected session, not a degraded one. No
+        // renegotiate — the desktop would just decline it.
+        this.cb.onState('connected');
+        this.armDegradedRecheck(pc, p);
+        return;
+      }
+      // Video has actually stopped — a genuine outage. Recover.
+      this.peerConnected = false;
+      this.attemptIceRecovery();
+    }, DISCONNECTED_GRACE_MS);
+  }
+
+  /** Clear the degraded ('disconnected'/'failed') recheck grace timer. */
+  private clearDegradedGraceTimer(): void {
+    if (this.degradedGraceTimer) {
+      clearTimeout(this.degradedGraceTimer);
+      this.degradedGraceTimer = null;
+    }
   }
 
   /** Ask the desktop for a bounded ICE restart, mirroring the desktop's own
    * `attempt_ice_restart` (`session/mod.rs`): bounded attempts, a recovery
    * deadline, and an intermediate state distinct from the terminal 'failed'
    * so the UI shows "Reconnecting…" instead of a dead end while it's in
-   * flight. */
+   * flight.
+   *
+   * Only reached from `armDegradedRecheck`'s no-video branch, i.e. video has
+   * already been confirmed stopped at the moment this is first called — but
+   * video can resume mid-recovery (another packet may land right after the
+   * grace-window check), so the budget-exhausted branch re-checks
+   * `isReceivingVideo()` before ever declaring 'failed': the master rule is
+   * "never fail while video flows," and that must hold everywhere failure is
+   * decided, not just at the call site. */
   private attemptIceRecovery(): void {
+    if (this.isClosed) return;
     if (this.iceRestartAttempts >= MAX_ICE_RESTART_REQUESTS) {
+      if (this.isReceivingVideo()) {
+        // The real restart budget is spent, but the stream never actually
+        // died. Report 'connected' — not another recovering nudge — and
+        // hand back to the video-aware degraded loop so this keeps being
+        // reconsidered (and can still recover for real later if video does
+        // stop). No renegotiate: the desktop declines these while its own
+        // traffic still reads fresh, so sending one would only strand the
+        // UI on 'recovering_ice' with no way back to 'connected'.
+        this.cb.onState('connected');
+        if (this.pc) {
+          this.armDegradedRecheck(this.pc, this.pc as unknown as { connectionState: string });
+        }
+        return;
+      }
       this.cb.onState('failed');
       this.cb.onError(appError('ice_failed'));
       return;
@@ -475,10 +763,24 @@ export class ViewerConnection {
     this.clearRecoveryDeadline();
     this.recoveryDeadline = setTimeout(() => {
       this.recoveryDeadline = null;
-      if (!this.peerConnected) {
-        this.cb.onState('failed');
-        this.cb.onError(appError('ice_failed'));
+      // Guard against firing after close
+      if (this.peerConnected || this.isClosed) return;
+      if (this.isReceivingVideo()) {
+        // The restart offer/answer round trip didn't complete within the
+        // deadline, but video is flowing again by now regardless — the
+        // forward path is proof enough. Don't declare a terminal failure;
+        // report 'connected' (video is the ground truth, and both sides
+        // agree the session is fine) and go back to the video-aware
+        // degraded loop instead of a bare return (a `disconnected`/`failed`
+        // state may still be lingering).
+        this.cb.onState('connected');
+        if (this.pc) {
+          this.armDegradedRecheck(this.pc, this.pc as unknown as { connectionState: string });
+        }
+        return;
       }
+      this.cb.onState('failed');
+      this.cb.onError(appError('ice_failed'));
     }, iceRecoveryTimeoutMs(this.iceRestartAttempts));
   }
 
@@ -496,6 +798,7 @@ export class ViewerConnection {
     this.stopStatsPolling();
     this.lastInboundBytes = null;
     this.lastStatsAt = null;
+    this.lastVideoAdvanceAt = null;
     this.statsPoll = setInterval(() => void this.pollStats(), QUALITY_POLL_MS);
   }
 
@@ -507,7 +810,7 @@ export class ViewerConnection {
   }
 
   private async pollStats(): Promise<void> {
-    if (!this.pc) return;
+    if (!this.pc || this.isClosed) return;
     let report: Map<string, any>;
     try {
       report = (await this.pc.getStats()) as unknown as Map<string, any>;
@@ -542,6 +845,11 @@ export class ViewerConnection {
             if (deltaSec > 0) {
               bitrateKbps = Math.max(0, Math.round((deltaBytes * 8) / deltaSec / 1000));
             }
+            // Forward path is provably alive whenever video bytes advance —
+            // the signal that outvotes a false `disconnected`.
+            if (deltaBytes > 0) {
+              this.lastVideoAdvanceAt = now;
+            }
           }
           this.lastInboundBytes = stat.bytesReceived;
           this.lastStatsAt = now;
@@ -559,6 +867,8 @@ export class ViewerConnection {
   }
 
   private async handleOffer(sdp: string): Promise<void> {
+    // Guard against acting after close() began
+    if (this.isClosed) return;
     if (!this.pc) return;
     // No `onState('negotiating')` here: the initial offer follows
     // 'session-start' (which already set it), and a later renegotiation
@@ -572,13 +882,17 @@ export class ViewerConnection {
   }
 
   close(): void {
-    this.lifecycle?.dispose();
-    this.lifecycle = null;
+    // Set the closed guard FIRST so any mid-close callbacks exit early.
+    this.isClosed = true;
+    // Clear pending timers BEFORE closing resources to prevent race fires.
     this.clearRecoveryDeadline();
+    this.clearDegradedGraceTimer();
     if (this.lostRetryTimer) {
       clearTimeout(this.lostRetryTimer);
       this.lostRetryTimer = null;
     }
+    this.lifecycle?.dispose();
+    this.lifecycle = null;
     this.stopStatsPolling();
     if (this.heartbeat) {
       clearInterval(this.heartbeat);
@@ -595,13 +909,28 @@ export class ViewerConnection {
     } catch {
       /* ignore */
     }
+    // Close PC before signaling so the 'closed' connectionstate change event
+    // doesn't race with signaling close.
     try {
       this.pc?.close();
     } catch {
       /* ignore */
     }
-    this.sig.disconnect('viewer closed');
+    // Send disconnect BEFORE closing signaling — use raw send to avoid
+    // readyState guard which would drop the message if socket is already
+    // closing. The disconnect is best-effort; ignore any failure.
+    try {
+      this.sig.disconnect('viewer closed');
+    } catch {
+      /* ignore */
+    }
     this.sig.close();
+    // Null out after signaling close so any late-arriving callbacks see
+    // consistent state (though isClosed guard should catch them first).
     this.pc = null;
+    this.input = null;
+    this.dataChannel = null;
+    this.moveDataChannel = null;
+    this.peerConnected = false;
   }
 }

@@ -1,4 +1,4 @@
-import { InputSender } from './input';
+import { InputSender, MAX_BUFFERED_AMOUNT_BYTES } from './input';
 
 describe('InputSender', () => {
   beforeEach(() => {
@@ -196,6 +196,45 @@ describe('InputSender', () => {
       expect(move).toHaveLength(1);
       const [batch] = decode(move);
       expect(batch.events).toHaveLength(2);
+    });
+
+    it('drops disposable moves when the move channel is backed up instead of spilling them onto critical', () => {
+      const critical: string[] = [];
+      const move: string[] = [];
+      const moveRef = { bufferedAmount: MAX_BUFFERED_AMOUNT_BYTES + 1 };
+      const criticalRef = { bufferedAmount: 0 };
+      const sender = new InputSender((data) => critical.push(data));
+      sender.setCriticalChannelRef(criticalRef);
+      sender.setMoveChannel((data) => move.push(data), moveRef);
+
+      sender.pointerMove(0.1, 0.1);
+      jest.advanceTimersByTime(20);
+
+      expect(move).toHaveLength(0);
+      expect(critical).toHaveLength(0);
+
+      moveRef.bufferedAmount = 0;
+      sender.pointerMove(0.2, 0.2);
+      jest.advanceTimersByTime(20);
+
+      expect(move).toHaveLength(1);
+      expect(decode(move)[0].events).toHaveLength(1);
+    });
+
+    it('queues critical input while the reliable channel is backed up and flushes it later', () => {
+      const critical: string[] = [];
+      const criticalRef = { bufferedAmount: MAX_BUFFERED_AMOUNT_BYTES + 1 };
+      const sender = new InputSender((data) => critical.push(data));
+      sender.setCriticalChannelRef(criticalRef);
+
+      sender.click(0.4, 0.4);
+      expect(critical).toHaveLength(0);
+
+      criticalRef.bufferedAmount = 0;
+      sender.flush();
+
+      expect(critical).toHaveLength(1);
+      expect(decode(critical)[0].events.map((e) => e.kind)).toEqual(['click']);
     });
   });
 });

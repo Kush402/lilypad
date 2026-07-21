@@ -596,6 +596,79 @@ describe('SignalingHub — mid-session reconnect grace', () => {
   });
 });
 
+describe('SignalingHub — peer-status nudge (desktop-only)', () => {
+  /** Drive a room to `connected` (pair → approve → offer → answer). */
+  function liveRoom(nowRef: { t: number }) {
+    const hub = new SignalingHub({
+      buildIceServers: () => ICE,
+      now: () => nowRef.t,
+      reregisterGraceMs: 15_000,
+    });
+    const desktop = new FakePeer();
+    const mobile = new FakePeer();
+    hub.handleMessage(desktop, reg('desktop', 'desktop-01'));
+    hub.handleMessage(mobile, reg('mobile', 'mobile-01'));
+    hub.handleMessage(
+      mobile,
+      frame('pair-request', 'mobile', {
+        deviceId: 'mobile-01',
+        deviceName: 'phone',
+        requestedScopes: ['view'],
+      }),
+    );
+    hub.handleMessage(desktop, frame('pair-approved', 'desktop', { grantedScopes: ['view'] }));
+    hub.handleMessage(desktop, frame('offer', 'desktop', { type: 'offer', sdp: 'v=0' }));
+    hub.handleMessage(mobile, frame('answer', 'mobile', { type: 'answer', sdp: 'v=0-ans' }));
+    return { hub, desktop, mobile };
+  }
+
+  it('nudges the desktop offline when the mobile transport drops mid-session, without ending the room', () => {
+    const nowRef = { t: 0 };
+    const { hub, desktop, mobile } = liveRoom(nowRef);
+
+    hub.handleClose(mobile); // phone app killed / network death
+
+    const status = desktop.find('peer-status');
+    expect(status?.payload.online).toBe(false);
+    expect(hub.roomCount()).toBe(1); // still held for the re-register grace
+    expect(desktop.closed).toBeNull();
+  });
+
+  it('nudges the desktop back online when the mobile re-registers within grace', () => {
+    const nowRef = { t: 0 };
+    const { hub, desktop, mobile } = liveRoom(nowRef);
+
+    hub.handleClose(mobile);
+    expect(desktop.find('peer-status')?.payload.online).toBe(false);
+
+    nowRef.t = 5_000; // well within the 15s grace
+    const mobile2 = new FakePeer();
+    hub.handleMessage(mobile2, reg('mobile', 'mobile-01'));
+
+    const statuses = desktop.sent.filter((m) => m.type === 'peer-status');
+    expect(statuses).toHaveLength(2);
+    expect(statuses[1]?.type === 'peer-status' && statuses[1].payload.online).toBe(true);
+  });
+
+  it('never sends peer-status to the mobile seat when the DESKTOP transport drops (scope guard)', () => {
+    const nowRef = { t: 0 };
+    const { hub, desktop, mobile } = liveRoom(nowRef);
+
+    hub.handleClose(desktop); // desktop drops, mobile remains
+
+    expect(mobile.find('peer-status')).toBeUndefined();
+    expect(hub.roomCount()).toBe(1); // still held for grace, unaffected
+
+    // ...and the desktop's own later re-register must not send it a
+    // peer-status either — the nudge is only ever a MOBILE-vacate signal.
+    nowRef.t = 5_000;
+    const desktop2 = new FakePeer();
+    hub.handleMessage(desktop2, reg('desktop', 'desktop-01'));
+    expect(desktop2.find('peer-status')).toBeUndefined();
+    expect(mobile.find('peer-status')).toBeUndefined();
+  });
+});
+
 describe('SignalingHub — abuse backstops', () => {
   it('reports registration state for the transport idle-close guard', () => {
     const hub = makeHub();
@@ -1068,5 +1141,54 @@ describe('SignalingHub — Redis-backed room resurrection', () => {
     // Let the fire-and-forget persist promise's rejection settle so it
     // doesn't surface as an unhandled rejection in the test run.
     await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+});
+
+describe('SignalingHub#endRoomsForDevicePair (revoke force-ends a live session)', () => {
+  it('ends the matching room: both seats get session-end with the given reason, and are closed', () => {
+    const { hub, desktop, mobile } = connectedRoom();
+
+    const ended = hub.endRoomsForDevicePair('desktop-01', 'mobile-01', 'revoked');
+
+    expect(ended).toBe(1);
+    expect(desktop.find('session-end')?.payload).toEqual({ reason: 'revoked' });
+    expect(mobile.find('session-end')?.payload).toEqual({ reason: 'revoked' });
+    expect(desktop.closed).not.toBeNull();
+    expect(mobile.closed).not.toBeNull();
+    expect(hub.roomCount()).toBe(0);
+  });
+
+  it('calling it again once the room is already gone returns 0 and does not throw', () => {
+    const { hub } = connectedRoom();
+    hub.endRoomsForDevicePair('desktop-01', 'mobile-01', 'revoked');
+
+    expect(() => hub.endRoomsForDevicePair('desktop-01', 'mobile-01', 'revoked')).not.toThrow();
+    expect(hub.endRoomsForDevicePair('desktop-01', 'mobile-01', 'revoked')).toBe(0);
+  });
+
+  it('a non-matching device-id pair returns 0 and leaves an unrelated live room untouched', () => {
+    const { hub, desktop, mobile } = connectedRoom();
+
+    const ended = hub.endRoomsForDevicePair('desktop-99', 'mobile-99', 'revoked');
+
+    expect(ended).toBe(0);
+    expect(hub.roomCount()).toBe(1);
+    expect(desktop.find('session-end')).toBeUndefined();
+    expect(mobile.find('session-end')).toBeUndefined();
+    expect(desktop.closed).toBeNull();
+    expect(mobile.closed).toBeNull();
+  });
+
+  it('a mobile-initiated unpair uses the neutral "unpaired" reason, not "revoked"', () => {
+    // POST /devices/unpair must NOT reuse 'revoked' — the mobile client
+    // treats that string specially (its own "access was revoked" alert),
+    // which would be wrong for a Forget the phone itself initiated.
+    const { hub, desktop, mobile } = connectedRoom();
+
+    const ended = hub.endRoomsForDevicePair('desktop-01', 'mobile-01', 'unpaired');
+
+    expect(ended).toBe(1);
+    expect(desktop.find('session-end')?.payload).toEqual({ reason: 'unpaired' });
+    expect(mobile.find('session-end')?.payload).toEqual({ reason: 'unpaired' });
   });
 });

@@ -101,4 +101,29 @@ describe('TURN credentials (coturn use-auth-secret)', () => {
       (env as { PUBLIC_TURN_CREDENTIAL: string }).PUBLIC_TURN_CREDENTIAL = orig.cred;
     }
   });
+
+  it('advertises the public TURN relay with the generated HMAC credential when static creds are absent (self-hosted coturn, shared TURN_SECRET)', async () => {
+    const { env } = await import('../config.js');
+    const orig = {
+      url: env.PUBLIC_TURN_URL,
+      user: env.PUBLIC_TURN_USERNAME,
+      cred: env.PUBLIC_TURN_CREDENTIAL,
+    };
+    try {
+      (env as { PUBLIC_TURN_URL: string }).PUBLIC_TURN_URL = 'turn:relay.example:3478';
+      (env as { PUBLIC_TURN_USERNAME: string }).PUBLIC_TURN_USERNAME = '';
+      (env as { PUBLIC_TURN_CREDENTIAL: string }).PUBLIC_TURN_CREDENTIAL = '';
+
+      const { iceServers, credential } = buildIceServers({ secret: SECRET, now: NOW });
+      const relay = iceServers.find((s) => s.urls === 'turn:relay.example:3478');
+      expect(relay).toMatchObject({
+        username: credential.username,
+        credential: credential.credential,
+      });
+    } finally {
+      (env as { PUBLIC_TURN_URL: string }).PUBLIC_TURN_URL = orig.url;
+      (env as { PUBLIC_TURN_USERNAME: string }).PUBLIC_TURN_USERNAME = orig.user;
+      (env as { PUBLIC_TURN_CREDENTIAL: string }).PUBLIC_TURN_CREDENTIAL = orig.cred;
+    }
+  });
 });

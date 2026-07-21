@@ -4,6 +4,8 @@ import {
   INPUT_CHANNEL_LABEL,
   INPUT_MOVE_CHANNEL_LABEL,
 } from '@lilypad/protocol';
+import { MAX_BUFFERED_AMOUNT_BYTES } from './input';
+import { QUALITY_POLL_MS } from './quality';
 import { ViewerConnection, type ViewerCallbacks } from './webrtc';
 
 // --- react-native-webrtc: a minimal fake peer connection, enough to drive
@@ -33,24 +35,27 @@ jest.mock('react-native-webrtc', () => {
     /** Test helper: simulate the desktop (offerer) opening a named
      * DataChannel. Returns the fake channel so a test can assert on its
      * `.send()` calls. */
-    dispatchDataChannel(label: string): {
-      label: string;
-      send: jest.Mock;
-      close: jest.Mock;
-      addEventListener: jest.Mock;
-      emitMessage: (data: unknown) => void;
-    } {
+    dispatchDataChannel(label: string): any {
       const msgListeners: ((e: { data: unknown }) => void)[] = [];
+      const bufferedAmountLowListeners: ((e: unknown) => void)[] = [];
       const channel = {
         label,
+        bufferedAmount: 0,
+        bufferedAmountLowThreshold: 0,
+        onbufferedamountlow: null as any,
         send: jest.fn(),
         close: jest.fn(),
         // Mirrors the real RTCDataChannel: the desktop sends the agent step
         // feed back on the reliable input channel, so the client listens here.
-        addEventListener: jest.fn((type: string, cb: (e: { data: unknown }) => void) => {
+        addEventListener: jest.fn((type: string, cb: (e: any) => void) => {
           if (type === 'message') msgListeners.push(cb);
+          if (type === 'bufferedamountlow') bufferedAmountLowListeners.push(cb);
         }),
         emitMessage: (data: unknown) => msgListeners.forEach((cb) => cb({ data })),
+        emitBufferedAmountLow: () => {
+          channel.onbufferedamountlow?.({});
+          bufferedAmountLowListeners.forEach((cb) => cb({}));
+        },
       };
       (this.listeners.datachannel ?? []).forEach((cb) => cb({ channel }));
       return channel;
@@ -219,6 +224,34 @@ describe('ViewerConnection', () => {
     expect(cb.onState).toHaveBeenCalledWith('connected');
   });
 
+  it('replaces a stale peer on a new session-start without letting the old peer end the session', async () => {
+    const cb = makeCallbacks();
+    const { conn, sig, peer: oldPeer } = await startConnected(cb);
+    const oldCritical = oldPeer.dispatchDataChannel(INPUT_CHANNEL_LABEL);
+    cb.onState.mockClear();
+
+    sig.onMessage({
+      type: 'session-start',
+      roomId: 'room1',
+      from: 'desktop',
+      ts: 1,
+      payload: { sessionId: 's2', grantedScopes: ['control'], iceServers: [] },
+    });
+    oldPeer.setState('closed');
+
+    expect(oldPeer.close).toHaveBeenCalled();
+    expect(oldCritical.close).toHaveBeenCalled();
+    expect(cb.onState).not.toHaveBeenCalledWith('ended');
+    expect(conn.inputSender).toBeNull();
+
+    const newPeer = lastPeer();
+    const newCritical = newPeer.dispatchDataChannel(INPUT_CHANNEL_LABEL);
+    conn.inputSender?.click(0.5, 0.5);
+
+    expect(oldCritical.send).not.toHaveBeenCalled();
+    expect(newCritical.send).toHaveBeenCalledTimes(1);
+  });
+
   it('forwards a frame-size signal to onFrameSize (for letterbox-aware touch mapping)', async () => {
     const cb = makeCallbacks();
     const conn = new ViewerConnection('wss://x', 'room1', ['control'], cb);
@@ -280,6 +313,88 @@ describe('ViewerConnection', () => {
 
     expect(cb.onState).toHaveBeenCalledWith('denied');
     expect(sig.close).toHaveBeenCalled();
+  });
+
+  describe('session-end reason (revoke bi-directional fix)', () => {
+    it('fires onRevoked (before onState("ended")) when reason is exactly "revoked"', async () => {
+      const cb = { ...makeCallbacks(), onRevoked: jest.fn() };
+      const conn = new ViewerConnection('wss://x', 'room1', ['view'], cb);
+      await conn.start();
+      const sig = lastSignaling();
+
+      sig.onMessage({
+        type: 'session-end',
+        roomId: 'room1',
+        from: 'desktop',
+        ts: 0,
+        payload: { reason: 'revoked' },
+      });
+
+      expect(cb.onRevoked).toHaveBeenCalledTimes(1);
+      expect(cb.onState).toHaveBeenCalledWith('ended');
+      // onRevoked must fire before the generic 'ended' state, so the screen
+      // can special-case its handling ahead of the generic treatment.
+      const revokedOrder = cb.onRevoked.mock.invocationCallOrder[0];
+      const endedOrder =
+        cb.onState.mock.invocationCallOrder[
+          cb.onState.mock.calls.findIndex((call) => call[0] === 'ended')
+        ];
+      expect(revokedOrder).toBeLessThan(endedOrder);
+    });
+
+    it('does NOT fire onRevoked for a different session-end reason', async () => {
+      const cb = { ...makeCallbacks(), onRevoked: jest.fn() };
+      const conn = new ViewerConnection('wss://x', 'room1', ['view'], cb);
+      await conn.start();
+      const sig = lastSignaling();
+
+      sig.onMessage({
+        type: 'session-end',
+        roomId: 'room1',
+        from: 'desktop',
+        ts: 0,
+        payload: { reason: 'peer connection closed' },
+      });
+
+      expect(cb.onRevoked).not.toHaveBeenCalled();
+      expect(cb.onState).toHaveBeenCalledWith('ended');
+    });
+
+    it('does NOT fire onRevoked for a null session-end reason', async () => {
+      const cb = { ...makeCallbacks(), onRevoked: jest.fn() };
+      const conn = new ViewerConnection('wss://x', 'room1', ['view'], cb);
+      await conn.start();
+      const sig = lastSignaling();
+
+      sig.onMessage({
+        type: 'session-end',
+        roomId: 'room1',
+        from: 'desktop',
+        ts: 0,
+        payload: { reason: null },
+      });
+
+      expect(cb.onRevoked).not.toHaveBeenCalled();
+      expect(cb.onState).toHaveBeenCalledWith('ended');
+    });
+
+    it('does NOT fire onRevoked for a plain "disconnect" message even with a revoked-looking reason', async () => {
+      const cb = { ...makeCallbacks(), onRevoked: jest.fn() };
+      const conn = new ViewerConnection('wss://x', 'room1', ['view'], cb);
+      await conn.start();
+      const sig = lastSignaling();
+
+      sig.onMessage({
+        type: 'disconnect',
+        roomId: 'room1',
+        from: 'desktop',
+        ts: 0,
+        payload: { reason: 'revoked' },
+      });
+
+      expect(cb.onRevoked).not.toHaveBeenCalled();
+      expect(cb.onState).toHaveBeenCalledWith('ended');
+    });
   });
 
   it('polls getStats once a peer connection exists and reports classified quality', async () => {
@@ -352,7 +467,10 @@ describe('ViewerConnection', () => {
       const cb = makeCallbacks();
       const { sig, peer } = await startConnected(cb);
 
-      peer.setState('failed'); // peerConnected -> false, state -> recovering_ice
+      peer.setState('failed'); // enters the video-aware degraded grace window
+      // No video stats were ever polled, so isReceivingVideo() is false —
+      // the grace timer firing escalates: peerConnected -> false, state -> recovering_ice.
+      jest.advanceTimersByTime(5_000);
       cb.onState.mockClear();
 
       sig.onLifecycle({ kind: 'reconnected' });
@@ -384,7 +502,10 @@ describe('ViewerConnection', () => {
       const cb = makeCallbacks();
       const { sig, peer } = await startConnected(cb);
 
-      peer.setState('failed'); // peerConnected -> false
+      peer.setState('failed');
+      // No video ever polled, so the degraded grace window escalates for
+      // real: peerConnected -> false.
+      jest.advanceTimersByTime(5_000);
       sig.onLifecycle({ kind: 'lost', error: new Error('gave up after 4 reconnect attempts') });
 
       expect(cb.onError).toHaveBeenCalledWith({
@@ -398,11 +519,16 @@ describe('ViewerConnection', () => {
   });
 
   describe('ICE restart recovery', () => {
-    it('requests a renegotiate and reports recovering_ice on a failed connection', async () => {
+    it('waits through a grace period before requesting ICE recovery on a failed connection', async () => {
+      // 'failed' is now routed through the same video-aware grace window as
+      // 'disconnected' (no immediate escalation) — see armDegradedRecheck.
       const cb = makeCallbacks();
       const { sig, peer } = await startConnected(cb);
 
       peer.setState('failed');
+      expect(sig.renegotiate).not.toHaveBeenCalled();
+
+      jest.advanceTimersByTime(5_000);
 
       expect(cb.onState).toHaveBeenCalledWith('recovering_ice', {
         attempt: 1,
@@ -411,13 +537,63 @@ describe('ViewerConnection', () => {
       expect(sig.renegotiate).toHaveBeenCalledTimes(1);
     });
 
-    it('gives up locally after exhausting its bounded restart-request budget', async () => {
+    it('waits through a disconnected grace period before requesting ICE recovery', async () => {
       const cb = makeCallbacks();
       const { sig, peer } = await startConnected(cb);
 
-      peer.setState('failed'); // attempt 1
-      peer.setState('failed'); // attempt 2
-      peer.setState('failed'); // budget exhausted -> terminal failure
+      peer.setState('disconnected');
+      jest.advanceTimersByTime(4_999);
+
+      expect(sig.renegotiate).not.toHaveBeenCalled();
+
+      jest.advanceTimersByTime(1);
+
+      expect(cb.onState).toHaveBeenCalledWith('recovering_ice', {
+        attempt: 1,
+        max: MAX_ICE_RESTARTS,
+      });
+      expect(sig.renegotiate).toHaveBeenCalledTimes(1);
+    });
+
+    it('cancels disconnected recovery if the peer reconnects during the grace period', async () => {
+      const cb = makeCallbacks();
+      const { sig, peer } = await startConnected(cb);
+
+      peer.setState('disconnected');
+      jest.advanceTimersByTime(2_000);
+      peer.setState('connected');
+      jest.advanceTimersByTime(5_000);
+
+      expect(sig.renegotiate).not.toHaveBeenCalled();
+      expect(cb.onState).not.toHaveBeenCalledWith('recovering_ice', expect.anything());
+    });
+
+    it('does not let network-restored bypass the disconnected grace period', async () => {
+      const cb = makeCallbacks();
+      const { sig, peer } = await startConnected(cb);
+
+      peer.setState('disconnected');
+      lastLifecycle().cb.onNetworkRestored();
+
+      expect(sig.renegotiate).not.toHaveBeenCalled();
+
+      jest.advanceTimersByTime(5_000);
+      expect(sig.renegotiate).toHaveBeenCalledTimes(1);
+    });
+
+    it('gives up locally after exhausting its bounded restart-request budget (no video ever flowing)', async () => {
+      const cb = makeCallbacks();
+      const { sig, peer } = await startConnected(cb);
+
+      // No video stats are ever polled in this test, so isReceivingVideo()
+      // is false throughout — every grace-window fire is a genuine
+      // escalation, exercising the ordinary (non-video-saved) budget path.
+      peer.setState('failed');
+      jest.advanceTimersByTime(5_000); // attempt 1
+      peer.setState('failed');
+      jest.advanceTimersByTime(5_000); // attempt 2
+      peer.setState('failed');
+      jest.advanceTimersByTime(5_000); // budget exhausted -> terminal failure
 
       expect(sig.renegotiate).toHaveBeenCalledTimes(2);
       expect(cb.onState).toHaveBeenLastCalledWith('failed');
@@ -429,6 +605,7 @@ describe('ViewerConnection', () => {
       const { sig, peer } = await startConnected(cb);
 
       peer.setState('failed');
+      jest.advanceTimersByTime(5_000);
       peer.setState('connected');
       cb.onState.mockClear();
       (sig.renegotiate as jest.Mock).mockClear();
@@ -436,6 +613,7 @@ describe('ViewerConnection', () => {
       // A fresh failure after recovering should get the full budget again,
       // not immediately terminal.
       peer.setState('failed');
+      jest.advanceTimersByTime(5_000);
       expect(cb.onState).toHaveBeenCalledWith('recovering_ice', {
         attempt: 1,
         max: MAX_ICE_RESTARTS,
@@ -448,6 +626,7 @@ describe('ViewerConnection', () => {
       const { peer } = await startConnected(cb);
 
       peer.setState('failed');
+      jest.advanceTimersByTime(5_000); // grace window -> attemptIceRecovery fires
       cb.onState.mockClear();
 
       jest.advanceTimersByTime(iceRecoveryTimeoutMs(1));
@@ -460,12 +639,124 @@ describe('ViewerConnection', () => {
       const { peer } = await startConnected(cb);
 
       peer.setState('failed');
-      peer.setState('connected'); // recovered well within the deadline
+      peer.setState('connected'); // recovered well within the grace window
       cb.onState.mockClear();
 
-      jest.advanceTimersByTime(iceRecoveryTimeoutMs(2)); // the longest possible deadline
+      jest.advanceTimersByTime(5_000 + iceRecoveryTimeoutMs(2)); // the longest possible total wait
 
       expect(cb.onState).not.toHaveBeenCalledWith('failed');
+    });
+
+    it('never escalates to "failed" while video is still flowing, even when the PC reports "failed"', async () => {
+      // The master rule: while isReceivingVideo() is true, the session must
+      // NEVER go to 'failed' — and, now that the desktop DECLINES a
+      // renegotiate while its own traffic reads fresh, the phone must not
+      // send one either (that would just be ignored, and worse, would leave
+      // the UI parked on 'recovering_ice' forever since ICE never returns to
+      // 'connected' without the restart that never happens). Simulate a live
+      // video path with bytesReceived that keeps climbing on EVERY poll (not
+      // just the first two), since this test runs the clock far enough that
+      // a one-time liveness blip would expire mid-test and mask the very bug
+      // being guarded against.
+      const cb = makeCallbacks();
+      const { sig, peer } = await startConnected(cb);
+
+      let bytes = 1000;
+      (peer.getStats as jest.Mock).mockImplementation(async () => {
+        bytes += 1000;
+        return new Map([['in1', { type: 'inbound-rtp', kind: 'video', bytesReceived: bytes }]]);
+      });
+      // Two poll ticks so `lastVideoAdvanceAt` actually advances (the first
+      // tick only seeds `lastInboundBytes`; the delta is computed on the
+      // second).
+      await jest.advanceTimersByTimeAsync(QUALITY_POLL_MS);
+      await jest.advanceTimersByTimeAsync(QUALITY_POLL_MS);
+
+      peer.setState('failed');
+      cb.onState.mockClear();
+      (sig.renegotiate as jest.Mock).mockClear();
+      // Run WAY past the grace window, the ICE-restart budget, and the
+      // recovery deadline — as long as `getStats` keeps reporting advancing
+      // video bytes on every poll, none of it may reach 'failed', and none
+      // of it may send a renegotiate the desktop would just decline.
+      await jest.advanceTimersByTimeAsync(60_000);
+
+      expect(cb.onState).not.toHaveBeenCalledWith('failed');
+      expect(cb.onState).not.toHaveBeenCalledWith('recovering_ice', expect.anything());
+      expect(cb.onError).not.toHaveBeenCalledWith(expect.objectContaining({ code: 'ice_failed' }));
+      // No renegotiate — the desktop declines these while video flows, so
+      // sending one is both pointless and would strand the UI. The phone
+      // instead just keeps honestly reporting 'connected'.
+      expect(sig.renegotiate).not.toHaveBeenCalled();
+      expect(cb.onState).toHaveBeenCalledWith('connected');
+    });
+
+    it('reports "connected" (never renegotiates) on repeated grace-window fires while video keeps flowing', async () => {
+      // Replaces the old throttled-renegotiate-nudge behavior: now that the
+      // desktop declines a renegotiate while video is live, the video-aware
+      // degraded loop must stay completely quiet on the wire and just keep
+      // reaffirming 'connected' on every re-check.
+      const cb = makeCallbacks();
+      const { sig, peer } = await startConnected(cb);
+
+      const liveVideoStats = (bytes: number) =>
+        new Map([['in1', { type: 'inbound-rtp', kind: 'video', bytesReceived: bytes }]]);
+      let bytes = 1000;
+      (peer.getStats as jest.Mock).mockImplementation(async () => {
+        bytes += 1000;
+        return liveVideoStats(bytes);
+      });
+
+      // Establish video liveness before degrading.
+      await jest.advanceTimersByTimeAsync(QUALITY_POLL_MS);
+      await jest.advanceTimersByTimeAsync(QUALITY_POLL_MS);
+
+      peer.setState('failed');
+      cb.onState.mockClear();
+      (sig.renegotiate as jest.Mock).mockClear();
+
+      // Three grace-window fires in a row (15s of degraded-but-live time),
+      // all with video still advancing every poll — no renegotiate on any
+      // of them, and the UI stays on 'connected' throughout.
+      await jest.advanceTimersByTimeAsync(5_000);
+      await jest.advanceTimersByTimeAsync(5_000);
+      await jest.advanceTimersByTimeAsync(5_000);
+
+      expect(sig.renegotiate).not.toHaveBeenCalled();
+      expect(cb.onState).toHaveBeenCalledWith('connected');
+      expect(cb.onState).not.toHaveBeenCalledWith('recovering_ice', expect.anything());
+    });
+
+    it('escalates for real once video stops after a degrade, even though it looked fine at first', async () => {
+      const cb = makeCallbacks();
+      const { peer } = await startConnected(cb);
+
+      (peer.getStats as jest.Mock).mockResolvedValue(
+        new Map([['in1', { type: 'inbound-rtp', kind: 'video', bytesReceived: 1000 }]]),
+      );
+      await jest.advanceTimersByTimeAsync(QUALITY_POLL_MS);
+      (peer.getStats as jest.Mock).mockResolvedValue(
+        new Map([['in1', { type: 'inbound-rtp', kind: 'video', bytesReceived: 2000 }]]),
+      );
+      await jest.advanceTimersByTimeAsync(QUALITY_POLL_MS);
+
+      peer.setState('failed');
+      // Video keeps advancing through one grace window — stays alive.
+      await jest.advanceTimersByTimeAsync(5_000);
+      expect(cb.onState).not.toHaveBeenCalledWith('failed');
+
+      // Now video genuinely stops: bytesReceived stalls, and enough time
+      // passes for both the video-liveness window (6s) and another grace
+      // window (5s) to elapse with no advance.
+      (peer.getStats as jest.Mock).mockResolvedValue(
+        new Map([['in1', { type: 'inbound-rtp', kind: 'video', bytesReceived: 2000 }]]),
+      );
+      await jest.advanceTimersByTimeAsync(15_000);
+
+      expect(cb.onState).toHaveBeenCalledWith('recovering_ice', {
+        attempt: 1,
+        max: MAX_ICE_RESTARTS,
+      });
     });
   });
 
@@ -511,6 +802,30 @@ describe('ViewerConnection', () => {
       });
       lastLifecycle().cb.onNetworkRestored();
       expect(sig.renegotiate).toHaveBeenCalledTimes(1);
+    });
+
+    it('debounces repeated network-restored renegotiates without dropping the first one', async () => {
+      jest.setSystemTime(0);
+      const cb = makeCallbacks();
+      const conn = new ViewerConnection('wss://x', 'room1', ['view'], cb);
+      await conn.start();
+      const sig = lastSignaling();
+
+      sig.onMessage({
+        type: 'session-start',
+        roomId: 'room1',
+        from: 'desktop',
+        ts: 0,
+        payload: { sessionId: 's1', grantedScopes: ['view'], iceServers: [] },
+      });
+
+      lastLifecycle().cb.onNetworkRestored();
+      jest.advanceTimersByTime(9_999);
+      lastLifecycle().cb.onNetworkRestored();
+      jest.advanceTimersByTime(1);
+      lastLifecycle().cb.onNetworkRestored();
+
+      expect(sig.renegotiate).toHaveBeenCalledTimes(2);
     });
   });
 
@@ -586,6 +901,38 @@ describe('ViewerConnection', () => {
       expect(critical.send).toHaveBeenCalledTimes(1);
       expect(move.send).not.toHaveBeenCalled();
     });
+
+    it('flushes queued critical input when the reliable channel buffer drains', async () => {
+      const cb = makeCallbacks();
+      const { conn, peer } = await startConnected(cb);
+
+      const critical = peer.dispatchDataChannel(INPUT_CHANNEL_LABEL);
+      critical.bufferedAmount = MAX_BUFFERED_AMOUNT_BYTES + 1;
+
+      conn.inputSender?.click(0.5, 0.5);
+      expect(critical.send).not.toHaveBeenCalled();
+
+      critical.bufferedAmount = 0;
+      critical.emitBufferedAmountLow();
+
+      expect(critical.bufferedAmountLowThreshold).toBe(MAX_BUFFERED_AMOUNT_BYTES / 2);
+      expect(critical.send).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not send backed-up move-channel traffic over the critical channel', async () => {
+      const cb = makeCallbacks();
+      const { conn, peer } = await startConnected(cb);
+
+      const critical = peer.dispatchDataChannel(INPUT_CHANNEL_LABEL);
+      const move = peer.dispatchDataChannel(INPUT_MOVE_CHANNEL_LABEL);
+      move.bufferedAmount = MAX_BUFFERED_AMOUNT_BYTES + 1;
+
+      conn.inputSender?.pointerMove(0.5, 0.5);
+      jest.advanceTimersByTime(20);
+
+      expect(move.send).not.toHaveBeenCalled();
+      expect(critical.send).not.toHaveBeenCalled();
+    });
   });
 
   // ── AI agent channel (docs/m5.3-ai-executor-plan.md §6) ──────────────────
@@ -602,6 +949,17 @@ describe('ViewerConnection', () => {
       expect(critical.send).toHaveBeenCalledTimes(1);
       const sent = JSON.parse(critical.send.mock.calls[0][0]);
       expect(sent).toMatchObject({ kind: 'agent_command', runId, text: 'open Safari' });
+    });
+
+    it('does not silently drop agent commands just because input backpressure is active', async () => {
+      const cb = makeCallbacks();
+      const { conn, peer } = await startConnected(cb);
+      const critical = peer.dispatchDataChannel(INPUT_CHANNEL_LABEL);
+      critical.bufferedAmount = MAX_BUFFERED_AMOUNT_BYTES + 1;
+
+      conn.sendAgentCommand('open Safari');
+
+      expect(critical.send).toHaveBeenCalledTimes(1);
     });
 
     it('sends stop and decision frames', async () => {

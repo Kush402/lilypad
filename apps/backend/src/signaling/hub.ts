@@ -25,6 +25,12 @@ export type { Peer } from './peer.js';
 export interface SignalingHubDeps {
   /** Build STUN+TURN servers for one peer (fresh, time-limited credential). */
   buildIceServers: (label: string) => IceServer[];
+  /** Server-controlled ICE transport policy handed to both peers on every
+   * `session-start` (initial and rejoin). Default `'all'` (normal ICE) —
+   * `'relay'` forces both peers onto the relayed-only path once a dedicated
+   * TURN relay backs it (see `FORCE_RELAY` in `packages/shared/src/env.ts`).
+   * Omitted defaults to `'all'`, same as the wire-level default. */
+  iceTransportPolicy?: 'all' | 'relay';
   /** Fire-and-forget persistence hooks (the hub never awaits them). */
   onSessionStart?: (info: {
     sessionId: string;
@@ -236,6 +242,14 @@ export class SignalingHub {
         this.endRoom(room, `${c.role} disconnected`);
         return;
       }
+      // Nudge the desktop only: it's the seat that can combine this with its
+      // own peer-to-peer media liveness to decide "counterpart genuinely
+      // gone" vs. "signaling blip while media still flows". The mobile app
+      // doesn't understand `peer-status`, so never send it there (the
+      // symmetric desktop-vanishes case is a deliberate future follow-up).
+      if (other === 'desktop' && room.hasSeat('desktop')) {
+        this.send(room, 'desktop', { type: 'peer-status', payload: { online: false } });
+      }
       log.signaling.info(
         { roomId: room.id, role: c.role },
         'mid-session transport drop — holding seat, session continues peer-to-peer',
@@ -274,6 +288,32 @@ export class SignalingHub {
   /** Is this desktop's presence seat currently online? */
   isDesktopPresent(desktopDeviceId: string): boolean {
     return this.registry.get(presenceRoomId(desktopDeviceId))?.hasSeat('desktop') ?? false;
+  }
+
+  /**
+   * Force-end every live room for this exact desktop↔mobile device pair,
+   * reusing the existing `endRoom` (sends `session-end` with `reason` to both
+   * seats, then closes both sockets) — the desktop's own session runner
+   * already tears down cleanly on an inbound `session-end` (generic existing
+   * behavior), and the mobile client can react to this specific `reason` to
+   * distinguish "your access was revoked" from an ordinary disconnect. Used by
+   * the desktop's "Revoke" action (`DELETE /devices/pairs/:pairId`) so a live
+   * session ends IMMEDIATELY instead of surviving until the phone happens to
+   * disconnect on its own. Returns the number of rooms ended (0 is normal —
+   * most revokes don't have a live session to interrupt).
+   */
+  endRoomsForDevicePair(desktopDeviceId: string, mobileDeviceId: string, reason: string): number {
+    let ended = 0;
+    for (const room of this.registry.all()) {
+      if (
+        room.deviceIdFor('desktop') === desktopDeviceId &&
+        room.deviceIdFor('mobile') === mobileDeviceId
+      ) {
+        this.endRoom(room, reason);
+        ended += 1;
+      }
+    }
+    return ended;
   }
 
   /** Deliver the per-pair connect secret to a room's mobile seat (M5.4
@@ -361,6 +401,11 @@ export class SignalingHub {
     }
     if (result.reclaimed) {
       log.signaling.info({ roomId: msg.roomId, role }, 'peer re-registered within grace');
+      // Mirror image of the offline nudge sent in `handleClose`: only a
+      // reclaiming MOBILE seat means the desktop was the one nudged offline.
+      if (role === 'mobile' && room.hasSeat('desktop')) {
+        this.send(room, 'desktop', { type: 'peer-status', payload: { online: true } });
+      }
     }
     if (result.evicted) {
       // Same-device reconnect over a zombie socket: drop our context for the
@@ -392,6 +437,7 @@ export class SignalingHub {
           sessionId: room.sessionId,
           grantedScopes: room.scopes,
           iceServers: this.deps.buildIceServers(`${room.sessionId}:${role}:rejoin`),
+          iceTransportPolicy: this.deps.iceTransportPolicy ?? 'all',
         },
       });
       log.signaling.info(
@@ -492,6 +538,7 @@ export class SignalingHub {
           sessionId,
           grantedScopes,
           iceServers: this.deps.buildIceServers(`${sessionId}:${role}`),
+          iceTransportPolicy: this.deps.iceTransportPolicy ?? 'all',
         },
       });
     }

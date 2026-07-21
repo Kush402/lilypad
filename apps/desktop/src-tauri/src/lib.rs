@@ -12,6 +12,7 @@ mod autostart;
 mod commands;
 mod health;
 mod presence;
+mod single_instance;
 // Public so a headless example / integration test can drive a real session
 // without the Tauri GUI.
 pub mod input;
@@ -78,7 +79,12 @@ impl TrayHandles {
         let idle = status == SessionStatus::Idle;
         let awaiting = status == SessionStatus::AwaitingApproval;
         let active = status == SessionStatus::Active;
-        let _ = self.show_qr.set_enabled(!active);
+        // Connecting is a session already in progress (approved, negotiating
+        // WebRTC) — same as Active for show_qr (no new pairing mid-session);
+        // disconnect/panic are already covered by `!idle` since Connecting
+        // isn't Idle. Approve/deny stay disabled: approval already happened.
+        let connecting = status == SessionStatus::Connecting;
+        let _ = self.show_qr.set_enabled(!(active || connecting));
         let _ = self.approve.set_enabled(awaiting);
         let _ = self.deny.set_enabled(awaiting);
         let _ = self.disconnect.set_enabled(!idle);
@@ -105,6 +111,9 @@ pub(crate) fn sync_tray_menu(app: &AppHandle) {
 }
 
 fn build_tray(app: &tauri::App) -> tauri::Result<()> {
+    let open_dashboard =
+        MenuItem::with_id(app, "open_dashboard", "Open Dashboard", true, None::<&str>)?;
+    let sep0 = PredefinedMenuItem::separator(app)?;
     let show_qr = MenuItem::with_id(app, "show_qr", "Show QR / Pair", true, None::<&str>)?;
     let approve = MenuItem::with_id(app, "approve", "Approve", false, None::<&str>)?;
     let deny = MenuItem::with_id(app, "deny", "Deny", false, None::<&str>)?;
@@ -119,6 +128,8 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     let menu = Menu::with_items(
         app,
         &[
+            &open_dashboard,
+            &sep0,
             &show_qr,
             &approve,
             &deny,
@@ -151,6 +162,9 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
 
     builder
         .on_menu_event(|app, event| match event.id.as_ref() {
+            "open_dashboard" => {
+                let _ = commands::show_control(app);
+            }
             "show_qr" => {
                 let _ = commands::show_qr_overlay(app);
             }
@@ -187,6 +201,27 @@ pub fn run() {
         env_logger::Env::default().default_filter_or("lilypad=info,lilypad_desktop=info"),
     )
     .try_init();
+
+    // Refuse to be the second instance. The launch-at-login LaunchAgent and a
+    // manual/dev launch would otherwise both register the same presence room
+    // and fight over it at ~1 Hz — the phone-visible "keeps reconnecting"
+    // churn. Whoever holds the lock owns the tray, bubble, and presence; a
+    // later instance exits here before wiring any of them up. The lock is
+    // leaked on purpose so it lives for the whole process (closing its fd
+    // would release it).
+    match single_instance::try_acquire() {
+        Some(lock) => {
+            Box::leak(Box::new(lock));
+        }
+        None => {
+            log::info!(
+                target: "lilypad::instance",
+                "another Lilypad desktop instance is already running — exiting"
+            );
+            return;
+        }
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .setup(|app| {
@@ -252,6 +287,7 @@ pub fn run() {
             commands::get_login_item_enabled,
             commands::set_login_item_enabled,
             commands::show_setup_window,
+            commands::show_control_window,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Lilypad desktop");

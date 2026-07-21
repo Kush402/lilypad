@@ -115,6 +115,36 @@ export async function requestConnect(
   }
 }
 
+/**
+ * Best-effort mobile-initiated unpair (`POST /devices/unpair`, the mirror of
+ * `requestConnect`). Called when the user "Forgets" a laptop: severs the trust
+ * pairing on the backend too, so the laptop's Trusted Devices list stops
+ * showing this phone — closing the asymmetry where a phone-side Forget left the
+ * pairing alive on the laptop. Deliberately NEVER throws: forgetting must always
+ * succeed locally even if the phone is offline or the stored backend address is
+ * stale (the laptop can still revoke from its own side later, and a re-pair
+ * un-revokes the row cleanly). Resolves to `true` if the backend acknowledged,
+ * `false` otherwise — the caller may ignore the result.
+ */
+export async function requestUnpair(apiBaseUrl: string, desktopDeviceId: string): Promise<boolean> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REDEEM_TIMEOUT_MS);
+  try {
+    const mobileDeviceId = await initDeviceIdentity();
+    const res = await fetch(`${apiBaseUrl.replace(/\/$/, '')}/devices/unpair`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ desktopDeviceId, mobileDeviceId }),
+      signal: controller.signal,
+    });
+    return res.ok;
+  } catch {
+    return false; // best-effort — offline / stale url / timeout all fine
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** Map /connect/request failures onto the error taxonomy. The endpoint's
  * machine codes are authoritative where present; status is the fallback. */
 function classifyConnectStatus(status: number, body: string) {

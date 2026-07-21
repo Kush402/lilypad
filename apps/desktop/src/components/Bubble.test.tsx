@@ -13,6 +13,7 @@ vi.mock('../lib/tauri', () => ({
   api: {
     createPairing: vi.fn().mockResolvedValue(undefined),
     showQrWindow: vi.fn().mockResolvedValue(undefined),
+    showControl: vi.fn().mockResolvedValue(undefined),
   },
 }));
 
@@ -54,7 +55,10 @@ describe('Bubble', () => {
 
   it('pairing: click reopens the qr-overlay window instead of starting a new pairing', async () => {
     mockState('pairing');
-    const win = { show: vi.fn().mockResolvedValue(undefined), setFocus: vi.fn().mockResolvedValue(undefined) };
+    const win = {
+      show: vi.fn().mockResolvedValue(undefined),
+      setFocus: vi.fn().mockResolvedValue(undefined),
+    };
     vi.mocked(WebviewWindow.getByLabel).mockResolvedValue(win as never);
     render(<Bubble />);
 
@@ -70,36 +74,48 @@ describe('Bubble', () => {
   // docs/audit/m3/desktop-ux.md Finding 3: clicking the bubble during an
   // ACTIVE session must never call createPairing() again (which would
   // silently disconnect the live session by overwriting AppState.control_tx).
-  it('active: click reopens the control window and NEVER calls createPairing again', async () => {
+  //
+  // Uses `api.showControl()` (create-if-absent, else focus) rather than the
+  // old `focusWindow('control')`, which only focused an ALREADY-OPEN window —
+  // a trusted phone's silent auto-reconnect never creates it, so that path
+  // left the dashboard completely unreachable.
+  it('active: click opens/focuses the control window via showControl and NEVER calls createPairing again', async () => {
     mockState('active');
-    const win = { show: vi.fn().mockResolvedValue(undefined), setFocus: vi.fn().mockResolvedValue(undefined) };
-    vi.mocked(WebviewWindow.getByLabel).mockResolvedValue(win as never);
     render(<Bubble />);
 
     fireEvent.click(screen.getByRole('button'));
 
-    await waitFor(() => expect(WebviewWindow.getByLabel).toHaveBeenCalledWith('control'));
-    expect(win.show).toHaveBeenCalled();
-    expect(win.setFocus).toHaveBeenCalled();
+    await waitFor(() => expect(api.showControl).toHaveBeenCalledTimes(1));
     expect(api.createPairing).not.toHaveBeenCalled();
   });
 
-  it('awaiting_approval: click reopens the control window, not a new pairing', async () => {
+  it('awaiting_approval: click opens/focuses the control window via showControl, not a new pairing', async () => {
     mockState('awaiting_approval');
-    const win = { show: vi.fn().mockResolvedValue(undefined), setFocus: vi.fn().mockResolvedValue(undefined) };
-    vi.mocked(WebviewWindow.getByLabel).mockResolvedValue(win as never);
     render(<Bubble />);
 
     fireEvent.click(screen.getByRole('button'));
 
-    await waitFor(() => expect(WebviewWindow.getByLabel).toHaveBeenCalledWith('control'));
+    await waitFor(() => expect(api.showControl).toHaveBeenCalledTimes(1));
+    expect(api.createPairing).not.toHaveBeenCalled();
+  });
+
+  it('connecting: click opens/focuses the control window via showControl, not a new pairing', async () => {
+    mockState('connecting');
+    render(<Bubble />);
+
+    fireEvent.click(screen.getByRole('button'));
+
+    await waitFor(() => expect(api.showControl).toHaveBeenCalledTimes(1));
     expect(api.createPairing).not.toHaveBeenCalled();
   });
 
   it('shows a status-appropriate tooltip so the click target is discoverable', () => {
     mockState('active');
     render(<Bubble />);
-    expect(screen.getByRole('button')).toHaveAttribute('title', expect.stringContaining('disconnect'));
+    expect(screen.getByRole('button')).toHaveAttribute(
+      'title',
+      expect.stringContaining('disconnect'),
+    );
   });
 
   // Color-only status encoding fails WCAG 1.4.1 and specifically misleads

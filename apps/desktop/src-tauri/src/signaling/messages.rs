@@ -374,6 +374,20 @@ pub struct IceCandidatePayload {
     pub sdp_mline_index: Option<u16>,
 }
 
+/// Server → desktop (mid-session): the phone's SIGNALING transport dropped
+/// (`online: false`) or came back (`online: true`). Sent the moment the
+/// phone's signaling socket drops mid-session, and again if it re-registers
+/// within the grace period. Distinct from peer-to-peer media liveness (RTCP/
+/// input, tracked independently via `last_peer_traffic`) — this is purely
+/// "does the backend still see the phone's signaling connection", which
+/// `session::mod`'s heartbeat tick combines with media liveness to
+/// distinguish a genuinely gone phone (app killed / network dead: neither
+/// signal present) from a cellular signaling blip with media still flowing.
+#[derive(Deserialize, Debug, Clone, Copy)]
+pub struct PeerStatusPayload {
+    pub online: bool,
+}
+
 /// Mobile → desktop: request a capture/encode mode switch. See
 /// `docs/audit/m3/prior-art.md` Finding 2.
 #[derive(Deserialize, Debug, Clone, Copy)]
@@ -548,6 +562,17 @@ mod tests {
         assert_eq!(p.device_id, "mobile-1");
         assert_eq!(p.device_name.as_deref(), Some("iPhone"));
         assert_eq!(p.requested_scopes.len(), 2);
+    }
+
+    #[test]
+    fn parses_peer_status() {
+        let online: PeerStatusPayload =
+            serde_json::from_value(serde_json::json!({ "online": true })).unwrap();
+        assert!(online.online);
+
+        let offline: PeerStatusPayload =
+            serde_json::from_value(serde_json::json!({ "online": false })).unwrap();
+        assert!(!offline.online);
     }
 
     #[test]

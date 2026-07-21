@@ -5,7 +5,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { RootStackParamList } from '../types';
 import { theme } from '../theme';
 import { loadPairs, forgetPair, touchPair, type PairedDesktop } from '../lib/pairs';
-import { requestConnect } from '../lib/api';
+import { requestConnect, requestUnpair } from '../lib/api';
 import { toAppError } from '../lib/errors';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Devices'>;
@@ -84,6 +84,10 @@ export function DeviceListScreen({ navigation }: Props) {
             text: 'Forget',
             style: 'destructive',
             onPress: () => {
+              // Best-effort: also sever the pairing on the backend so it leaves the
+              // laptop's Trusted Devices — fire-and-forget, never blocks the local
+              // removal (which must succeed even offline). See `requestUnpair`.
+              void requestUnpair(pair.apiBaseUrl, pair.desktopDeviceId);
               void forgetPair(pair.desktopDeviceId).then(refresh);
             },
           },

@@ -1,8 +1,10 @@
 import React from 'react';
 import { render, screen, fireEvent, act } from '@testing-library/react-native';
+import { Alert } from 'react-native';
 import { SafeAreaProvider, type Metrics } from 'react-native-safe-area-context';
 import Clipboard from '@react-native-clipboard/clipboard';
 import { ViewerScreen } from './ViewerScreen';
+import { forgetPair } from '../lib/pairs';
 
 // useSafeAreaInsets() (Finding 15) needs a SafeAreaProvider ancestor;
 // initialMetrics makes the value available synchronously on the very first
@@ -55,13 +57,22 @@ jest.mock('@react-native-clipboard/clipboard', () => ({
   default: { setString: jest.fn() },
 }));
 
+jest.mock('../lib/pairs', () => ({
+  setPairSecret: jest.fn().mockResolvedValue(undefined),
+  forgetPair: jest.fn().mockResolvedValue(undefined),
+}));
+
 const { __instances } = jest.requireMock('../lib/webrtc') as { __instances: any[] };
 function lastConn() {
   return __instances[__instances.length - 1];
 }
 
-function renderViewer(scopes: string[] = ['view', 'control'], metrics = TEST_SAFE_AREA_METRICS) {
-  const navigation = { replace: jest.fn() } as any;
+function renderViewer(
+  scopes: string[] = ['view', 'control'],
+  metrics = TEST_SAFE_AREA_METRICS,
+  desktopDeviceId?: string,
+) {
+  const navigation = { replace: jest.fn(), popToTop: jest.fn() } as any;
   const route = {
     key: 'viewer',
     name: 'Viewer' as const,
@@ -77,6 +88,7 @@ function renderViewer(scopes: string[] = ['view', 'control'], metrics = TEST_SAF
       signalingUrl: 'ws://x',
       scopes,
       desktopDeviceName: "Kush's MacBook Pro",
+      desktopDeviceId,
     },
   } as any;
   render(
@@ -90,6 +102,7 @@ function renderViewer(scopes: string[] = ['view', 'control'], metrics = TEST_SAF
 describe('ViewerScreen', () => {
   beforeEach(() => {
     __instances.length = 0;
+    (forgetPair as jest.Mock).mockClear();
   });
 
   it('shows a "look at your laptop" card while awaiting approval, and Cancel disconnects', async () => {
@@ -103,7 +116,9 @@ describe('ViewerScreen', () => {
 
     fireEvent.press(screen.getByText('Cancel'));
     expect(lastConn().close).toHaveBeenCalled();
-    expect(navigation.replace).toHaveBeenCalledWith('Devices');
+    // Returns to the existing root "Your laptops" screen — not a duplicate.
+    expect(navigation.popToTop).toHaveBeenCalled();
+    expect(navigation.replace).not.toHaveBeenCalled();
   });
 
   it('shows a distinct "denied" card (not the generic failure copy) on pair-denied', async () => {
@@ -220,7 +235,7 @@ describe('ViewerScreen', () => {
       fireEvent.press(screen.getByTestId('disconnect-button'));
 
       expect(conn.close).not.toHaveBeenCalled();
-      expect(navigation.replace).not.toHaveBeenCalled();
+      expect(navigation.popToTop).not.toHaveBeenCalled();
       expect(screen.getByText('Tap again to disconnect')).toBeTruthy();
     });
 
@@ -233,7 +248,7 @@ describe('ViewerScreen', () => {
       fireEvent.press(button);
 
       expect(conn.close).toHaveBeenCalled();
-      expect(navigation.replace).toHaveBeenCalledWith('Devices');
+      expect(navigation.popToTop).toHaveBeenCalled();
     });
 
     it('reverts to the normal label if the confirm window elapses with no second tap', () => {
@@ -390,6 +405,48 @@ describe('ViewerScreen', () => {
       } finally {
         jest.useRealTimers();
       }
+    });
+  });
+
+  describe('revoked mid-session (backend force-ends the room, reason "revoked")', () => {
+    it('forgets the stale local pairing and shows an "Access revoked" alert distinct from the generic ended copy', async () => {
+      const alertSpy = jest.spyOn(Alert, 'alert').mockImplementation(() => {});
+      const { navigation } = renderViewer(['view', 'control'], TEST_SAFE_AREA_METRICS, 'desktop-1');
+
+      await act(async () => {
+        lastConn().cb.onRevoked();
+        lastConn().cb.onState('ended');
+      });
+
+      expect(forgetPair).toHaveBeenCalledWith('desktop-1');
+      expect(alertSpy).toHaveBeenCalledWith(
+        'Access revoked',
+        expect.stringContaining('revoked'),
+        expect.arrayContaining([expect.objectContaining({ text: 'OK' })]),
+      );
+      // Not the same as a generic terminal state's copy — no double message.
+      expect(screen.queryByText('Connection failed')).toBeNull();
+
+      // Tapping the alert's OK button returns to the device list.
+      const [, , buttons] = alertSpy.mock.calls[0];
+      buttons?.[0]?.onPress?.();
+      expect(navigation.popToTop).toHaveBeenCalled();
+
+      alertSpy.mockRestore();
+    });
+
+    it('does not attempt to forget a pairing when desktopDeviceId is unavailable', async () => {
+      const alertSpy = jest.spyOn(Alert, 'alert').mockImplementation(() => {});
+      renderViewer(['view', 'control'], TEST_SAFE_AREA_METRICS, undefined);
+
+      await act(async () => {
+        lastConn().cb.onRevoked();
+      });
+
+      expect(forgetPair).not.toHaveBeenCalled();
+      expect(alertSpy).toHaveBeenCalled();
+
+      alertSpy.mockRestore();
     });
   });
 });

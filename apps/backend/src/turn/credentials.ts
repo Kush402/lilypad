@@ -81,8 +81,16 @@ export function buildIceServers(opts: TurnCredentialOptions = {}): {
   // cellular↔home-NAT work: the LAN coturn above is unreachable off-LAN, so
   // without this a direct STUN path is the only option and it can't survive a
   // cellular NAT rebind. Advertised in addition to (not instead of) the local
-  // coturn, which still wins on-LAN. Only emitted when all three are set.
-  if (env.PUBLIC_TURN_URL && env.PUBLIC_TURN_USERNAME && env.PUBLIC_TURN_CREDENTIAL) {
+  // coturn, which still wins on-LAN. Only emitted when PUBLIC_TURN_URL is set.
+  //
+  // Two auth modes, chosen by whether static creds are configured:
+  //   - Static (legacy, e.g. metered.ca): PUBLIC_TURN_USERNAME/CREDENTIAL are
+  //     both set → advertise with those long-lived values, unchanged.
+  //   - HMAC (self-hosted coturn, `use-auth-secret`): static creds absent →
+  //     the public relay shares TURN_SECRET with the local one, so the same
+  //     freshly-generated `cred` used for `env.TURN_URL` above is valid here
+  //     too — no separate credential needed.
+  if (env.PUBLIC_TURN_URL) {
     // Comma-separated so one env var can advertise every transport variant
     // the provider offers (e.g. UDP 80 + UDP 443 + TCP 443). Cellular
     // carriers commonly block or degrade UDP on port 80 — advertising a
@@ -92,10 +100,11 @@ export function buildIceServers(opts: TurnCredentialOptions = {}): {
     const urls = env.PUBLIC_TURN_URL.split(',')
       .map((u) => u.trim())
       .filter((u) => u.length > 0);
+    const useStatic = Boolean(env.PUBLIC_TURN_USERNAME && env.PUBLIC_TURN_CREDENTIAL);
     iceServers.push({
       urls: urls.length === 1 ? urls[0]! : urls,
-      username: env.PUBLIC_TURN_USERNAME,
-      credential: env.PUBLIC_TURN_CREDENTIAL,
+      username: useStatic ? env.PUBLIC_TURN_USERNAME : cred.username,
+      credential: useStatic ? env.PUBLIC_TURN_CREDENTIAL : cred.credential,
     });
   }
   return { iceServers, credential: cred };

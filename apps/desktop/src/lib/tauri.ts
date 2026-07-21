@@ -12,7 +12,7 @@ export interface QrPayloadDto {
   platform: string;
 }
 
-export type SessionStatus = 'idle' | 'pairing' | 'awaiting_approval' | 'active';
+export type SessionStatus = 'idle' | 'pairing' | 'awaiting_approval' | 'connecting' | 'active';
 
 /** Mirrors the Rust `PendingRequest` — populated while `session ===
  * 'awaiting_approval'`, so the approve screen can show who's asking and for
@@ -53,12 +53,12 @@ export const api = {
     invoke<void>('set_pair_auto_approve', { pairId, autoApprove }),
   revokePair: (pairId: string) => invoke<void>('revoke_pair', { pairId }),
   getLoginItemEnabled: () => invoke<boolean>('get_login_item_enabled'),
-  setLoginItemEnabled: (enabled: boolean) =>
-    invoke<void>('set_login_item_enabled', { enabled }),
+  setLoginItemEnabled: (enabled: boolean) => invoke<void>('set_login_item_enabled', { enabled }),
   // Dashboard system panel — read-only status + an editor affordance.
   getPermissionStatus: () => invoke<PermissionStatusDto>('get_permission_status'),
   getAgentConfig: () => invoke<AgentConfigDto>('get_agent_config'),
   showSetup: () => invoke<void>('show_setup_window'),
+  showControl: () => invoke<void>('show_control_window'),
 };
 
 /** Mirrors the Rust PermissionStatusDto. */

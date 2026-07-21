@@ -44,6 +44,20 @@ pub struct AbrConfig {
     /// overflowed on a ~15s cycle, which the viewer experiences as periodic
     /// stutter (observed live on a relayed cellular path).
     pub congestion_probe_hold: Duration,
+    /// Fraction of the last-known congestion point the prober is allowed to
+    /// climb back to. When the send queue overflows at rate R, R is (roughly)
+    /// where this path's capacity is — so after backing off, probing should
+    /// approach R and *hold just below it*, not ram straight back through it.
+    /// This is the "congestion window" a TCP-style controller keeps: remember
+    /// where the path broke and treat it as a soft ceiling. 0.90 = hover ~10%
+    /// under the cliff, the smooth steady state on a constrained (cellular)
+    /// path instead of the sawtooth of repeatedly overshooting and collapsing.
+    pub congestion_ceiling_margin: f64,
+    /// How long a remembered congestion point stays in force. The path can
+    /// genuinely improve (better cell, moved off relay) — after this long with
+    /// no fresh overflow, the soft ceiling is forgotten and full probing to the
+    /// REMB/`max_kbps` ceiling resumes.
+    pub congestion_memory: Duration,
 }
 
 impl Default for AbrConfig {
@@ -72,6 +86,8 @@ impl Default for AbrConfig {
             remb_headroom: 0.95,
             probe_margin: 1.25,
             congestion_probe_hold: Duration::from_secs(20),
+            congestion_ceiling_margin: 0.90,
+            congestion_memory: Duration::from_secs(45),
         }
     }
 }
@@ -84,6 +100,12 @@ pub struct BitrateController {
     /// Upward probing is suspended until this instant (sender-side
     /// congestion cooldown). `None` = no hold.
     probe_hold_until: Option<Instant>,
+    /// The rate at which the send queue last overflowed — the soft ceiling the
+    /// prober hovers below (× `congestion_ceiling_margin`) instead of ramming.
+    /// `None` = no congestion remembered (probe freely to the REMB/max ceiling).
+    congestion_kbps: Option<u32>,
+    /// When the remembered congestion point expires (path may have improved).
+    congestion_kbps_until: Option<Instant>,
 }
 
 impl BitrateController {
@@ -94,6 +116,8 @@ impl BitrateController {
             remb_cap_kbps: None,
             last_increase: None,
             probe_hold_until: None,
+            congestion_kbps: None,
+            congestion_kbps_until: None,
         }
     }
 
@@ -121,6 +145,13 @@ impl BitrateController {
     /// RTCP receiver report arrived: `fraction_lost` in [0, 1].
     /// Returns the new target when it changed.
     pub fn on_loss_report(&mut self, fraction_lost: f64, now: Instant) -> Option<u32> {
+        // Forget a stale congestion point so a genuinely improved path can
+        // climb again — otherwise a single early overflow would pin the session
+        // below that rate forever.
+        if self.congestion_kbps_until.is_some_and(|t| now >= t) {
+            self.congestion_kbps = None;
+            self.congestion_kbps_until = None;
+        }
         if fraction_lost > self.cfg.decrease_loss {
             self.last_increase = Some(now); // back off the probe timer too
             let next = (self.current_kbps as f64 * self.cfg.decrease_factor) as u32;
@@ -146,6 +177,14 @@ impl BitrateController {
         self.last_increase = Some(now);
         let next = ((self.current_kbps as f64 * self.cfg.increase_factor) as u32)
             .max(self.current_kbps + 1);
+        // Honor the congestion window: approach the rate that last overflowed
+        // and hold just below it, rather than climbing straight back through
+        // the cliff. Once `current` reaches the soft ceiling, `retarget` sees
+        // no change and returns None — a stable hover, not a sawtooth.
+        let next = match self.congestion_kbps {
+            Some(c) => next.min(((c as f64) * self.cfg.congestion_ceiling_margin) as u32),
+            None => next,
+        };
         self.retarget(next)
     }
 
@@ -169,6 +208,11 @@ impl BitrateController {
     /// upward probing for the cooldown so the ladder doesn't immediately
     /// re-ram the same ceiling (~15s stutter cycle observed live).
     pub fn on_send_congestion(&mut self, now: Instant) -> Option<u32> {
+        // Remember where the path broke: `current_kbps` is (roughly) this
+        // path's real capacity, so record it as the soft ceiling the prober
+        // will hover below once the hold expires — instead of ramming it again.
+        self.congestion_kbps = Some(self.current_kbps);
+        self.congestion_kbps_until = Some(now + self.cfg.congestion_memory);
         self.probe_hold_until = Some(now + self.cfg.congestion_probe_hold);
         self.last_increase = Some(now);
         let backed_off = (self.current_kbps as f64 * self.cfg.decrease_factor) as u32;
@@ -273,6 +317,46 @@ mod tests {
         assert!(c
             .on_loss_report(0.0, t0 + Duration::from_secs(25))
             .is_some());
+    }
+
+    #[test]
+    fn probing_hovers_below_the_last_congestion_point_instead_of_ramming_it() {
+        let mut c = ctl(); // starts at 2500
+        let t0 = Instant::now();
+        // Queue overflowed at 2500 → that's the soft ceiling now. Back off ×0.7.
+        assert_eq!(c.on_send_congestion(t0), Some(1750));
+        // After the 20s probe hold, climb on a clean link — but only up to
+        // 90% of the congestion point (2250), never back through 2500. Stay
+        // inside the 45s congestion-memory window so the cliff is still in force.
+        let mut t = t0 + Duration::from_secs(21);
+        for _ in 0..15 {
+            c.on_loss_report(0.0, t);
+            t += Duration::from_secs(1);
+        }
+        assert_eq!(
+            c.current_kbps(),
+            2250,
+            "must settle at 90% of the 2500 cliff, not climb back through it"
+        );
+    }
+
+    #[test]
+    fn a_stale_congestion_point_is_forgotten_so_an_improved_path_can_climb() {
+        let mut c = ctl();
+        let t0 = Instant::now();
+        c.on_send_congestion(t0); // remembers 2500 for congestion_memory (45s)
+                                  // Well past the memory window: the soft ceiling is gone, so a clean
+                                  // link probes all the way back to the full ceiling again.
+        let mut t = t0 + Duration::from_secs(60);
+        for _ in 0..200 {
+            c.on_loss_report(0.0, t);
+            t += Duration::from_secs(3);
+        }
+        assert_eq!(
+            c.current_kbps(),
+            10_000,
+            "once the congestion memory expires, full probing resumes"
+        );
     }
 
     #[test]

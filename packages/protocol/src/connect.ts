@@ -36,6 +36,17 @@ export type ConnectResponse = z.infer<typeof ConnectResponseSchema>;
 /** Machine-readable failure codes the connect endpoint returns. */
 export type ConnectErrorCode = 'not_trusted' | 'revoked' | 'desktop_offline';
 
+/** Mobile-initiated unpair (the symmetric counterpart to ConnectRequest):
+ * a phone "Forgets" a laptop, severing the trust pairing on the backend so it
+ * also disappears from the laptop's Trusted Devices. Keyed by the same two
+ * wire device ids as a connect; no secret needed (revoking is strictly less
+ * powerful than connecting, and self-directed). */
+export const UnpairRequestSchema = z.object({
+  desktopDeviceId: z.string().min(8).max(128),
+  mobileDeviceId: z.string().min(8).max(128),
+});
+export type UnpairRequest = z.infer<typeof UnpairRequestSchema>;
+
 // ── Trusted-pair management (desktop dashboard) ──────────────────────────────
 
 /** One pair as GET /devices/pairs returns it. */

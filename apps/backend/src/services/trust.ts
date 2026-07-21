@@ -1,5 +1,6 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { and, eq } from 'drizzle-orm';
+import { alias } from 'drizzle-orm/pg-core';
 import { db as defaultDb } from '../db/client.js';
 import { devices, trustedDevices } from '../db/schema.js';
 import type { DeviceKind } from '@lilypad/protocol';
@@ -58,8 +59,7 @@ export interface TrustedPair {
 
 /** The verdict of authorizing a no-QR connect. */
 export type ConnectAuthz =
-  | { ok: true; pair: TrustedPair }
-  | { ok: false; reason: 'not_trusted' | 'revoked' | 'bad_secret' };
+  { ok: true; pair: TrustedPair } | { ok: false; reason: 'not_trusted' | 'revoked' | 'bad_secret' };
 
 /** A pair as the desktop's Trusted Devices dashboard sees it — joined with
  * the mobile device row so the UI can show WHICH phone. */
@@ -100,6 +100,13 @@ export interface TrustStore {
   ): Promise<void>;
   /** Device row (uuid + fingerprint) by fingerprint, if registered. */
   getDeviceByFingerprint(kind: DeviceKind, fingerprint: string): Promise<{ id: string } | null>;
+  /** The wire fingerprints of both sides of a pair, by pair id — used to find
+   * the live signaling room(s) this pair maps to (rooms are keyed by wire
+   * fingerprint, not by these `devices.id` uuids). Null if the pair doesn't
+   * exist. */
+  getPairFingerprints(
+    pairId: string,
+  ): Promise<{ desktopFingerprint: string; mobileFingerprint: string } | null>;
 }
 
 export class TrustService {
@@ -199,9 +206,17 @@ export class TrustService {
   }
 
   /** Sever the pair (Forget on the phone / Revoke on the desktop). The row
-   * stays for the audit trail; the connect gate fails closed from now on. */
-  async revoke(pairId: string): Promise<void> {
+   * stays for the audit trail; the connect gate fails closed from now on.
+   * Returns the pair's wire fingerprints so the caller can force-end any
+   * live room for this exact pair — `null` if the pair doesn't exist
+   * (defensive; the route already validated it via a prior list call). */
+  async revoke(
+    pairId: string,
+  ): Promise<{ desktopFingerprint: string; mobileFingerprint: string } | null> {
+    const fingerprints = await this.store.getPairFingerprints(pairId);
+    if (!fingerprints) return null;
     await this.store.updatePair(pairId, { revoked: true });
+    return fingerprints;
   }
 }
 
@@ -248,7 +263,12 @@ export function createDrizzleTrustStore(database: typeof defaultDb = defaultDb):
     async insertPair(desktopId, mobileId, autoApprove, connectSecretHash) {
       const inserted = await database
         .insert(trustedDevices)
-        .values({ desktopDeviceId: desktopId, mobileDeviceId: mobileId, autoApprove, connectSecretHash })
+        .values({
+          desktopDeviceId: desktopId,
+          mobileDeviceId: mobileId,
+          autoApprove,
+          connectSecretHash,
+        })
         .returning();
       const row = inserted[0];
       if (!row) throw new Error('trusted_devices insert returned no row');
@@ -294,6 +314,23 @@ export function createDrizzleTrustStore(database: typeof defaultDb = defaultDb):
         .select({ id: devices.id })
         .from(devices)
         .where(and(eq(devices.kind, kind), eq(devices.fingerprint, fingerprint)))
+        .limit(1);
+      return rows[0] ?? null;
+    },
+    async getPairFingerprints(pairId) {
+      // Two joins to `devices` for the same pair row (desktop side, mobile
+      // side) — alias the table once per side so Drizzle can disambiguate.
+      const desktopDevices = alias(devices, 'desktop_devices');
+      const mobileDevices = alias(devices, 'mobile_devices');
+      const rows = await database
+        .select({
+          desktopFingerprint: desktopDevices.fingerprint,
+          mobileFingerprint: mobileDevices.fingerprint,
+        })
+        .from(trustedDevices)
+        .innerJoin(desktopDevices, eq(trustedDevices.desktopDeviceId, desktopDevices.id))
+        .innerJoin(mobileDevices, eq(trustedDevices.mobileDeviceId, mobileDevices.id))
+        .where(eq(trustedDevices.id, pairId))
         .limit(1);
       return rows[0] ?? null;
     },

@@ -58,7 +58,10 @@ pub enum Control {
     /// The user tapped Approve on the desktop, granting these scopes.
     /// `trust`: they also checked "Trust this device" (M5.4) — the backend
     /// records a persistent pair enabling the no-QR reconnect.
-    Approve { scopes: Vec<String>, trust: bool },
+    Approve {
+        scopes: Vec<String>,
+        trust: bool,
+    },
     Deny,
     Disconnect,
 }
@@ -124,7 +127,51 @@ const MAX_ICE_RESTARTS: u32 = 2;
 /// churn the user saw. The pipeline's congestion cap now prevents most of
 /// that starvation; this widening is the belt-and-suspenders so a brief RTCP
 /// gap never restarts a stream that's actually flowing.
-const TRAFFIC_LIVENESS_WINDOW: Duration = Duration::from_secs(22);
+///
+/// Widened 22s → 34s (2026-07-20): a live cellular capture showed the phone's
+/// RTCP/REMB return path go fully silent for ~30s at a stretch (no bitrate
+/// retargets landed for 30s) while the forward video kept flowing with zero
+/// drops — the relayed cellular return direction flaps independently of the
+/// forward path. A 22s window let that silence trip a restart every ~34s, the
+/// exact "connect → reconnecting → recovering" loop, on a stream that never
+/// actually stopped. 34s clears the observed gap with headroom; the phone now
+/// also keeps its own view alive across the gap via its video-liveness outvote
+/// (`webrtc.ts` `VIDEO_LIVENESS_WINDOW_MS`), so a truly dead path still gets
+/// recovered — just not a merely-silent one.
+const TRAFFIC_LIVENESS_WINDOW: Duration = Duration::from_secs(34);
+
+/// Once the backend reports the phone's SIGNALING is gone (`peer-status`
+/// online:false), we no longer need the long cellular-gap tolerance to decide
+/// it's truly gone — a killed app / dead network produces NEITHER signaling NOR
+/// peer-to-peer media. So while the counterpart is signaling-offline, require
+/// fresh P2P traffic within this window to keep the session; past it, with
+/// signaling also gone, the phone is genuinely gone — end promptly instead of
+/// sitting "active" indefinitely. If media is still flowing P2P (a signaling
+/// blip, not a gone phone), traffic stays fresh and the session survives until
+/// the phone re-registers.
+///
+/// MUST be comfortably longer than `TRAFFIC_LIVENESS_WINDOW` (34s), not
+/// shorter. Live cellular logs showed signaling and media blip TOGETHER for
+/// up to ~34s while the phone was still alive — with the old 10s value, a
+/// normal cellular gap tripped this check and false-ended a working session
+/// seconds after the desktop's own "ICE reports failed but peer traffic is
+/// live — ignoring" tolerance had just decided to ride it out. 45s clears
+/// `TRAFFIC_LIVENESS_WINDOW` with real margin, so this only fires when media
+/// has been absent well beyond the normal cellular-gap tolerance while
+/// signaling is ALSO gone — i.e. the phone is genuinely gone, not merely
+/// blipping.
+const COUNTERPART_GONE_MEDIA_WINDOW: Duration = Duration::from_secs(45);
+
+/// Minimum wall-clock spacing between ICE restarts, regardless of what
+/// triggers them (a desktop-side "failed" verdict or a phone-initiated
+/// `renegotiate`). A flapping cellular radio can ask the desktop to
+/// renegotiate every few seconds; without a floor on the spacing, honoring
+/// every one of those requests turns a brief radio hiccup into a restart
+/// storm (repeated offers/candidate re-trickle/IDR). This does not compete
+/// with `MAX_ICE_RESTARTS` — that's a budget over the whole unhealthy
+/// period; this is a minimum gap between any two restarts within it. A
+/// genuine request is still honored, just after the window elapses.
+const MIN_ICE_RESTART_SPACING: Duration = Duration::from_secs(8);
 
 fn recovery_timeout_for_attempt(attempt: u32) -> Duration {
     if attempt <= 1 {
@@ -153,6 +200,30 @@ fn pairing_timeout() -> Duration {
         .unwrap_or(PAIRING_TIMEOUT)
 }
 
+/// Pure decision extracted from the heartbeat tick, mirroring
+/// `bitrate_retarget_due`'s pattern (`media/pipeline.rs`) so the two-signal
+/// combination is directly unit-testable independent of the async
+/// orchestrator. `true` means "the counterpart is genuinely gone — end the
+/// session": the counterpart's SIGNALING is reported offline, the session
+/// had actually reached a real connection at some point (not still
+/// negotiating — that path is owned by `recovery_deadline` instead), AND no
+/// peer-to-peer media has arrived within `window`. Any one signal alone is
+/// not enough: signaling-offline alone is a common cellular blip; a stale
+/// `last_traffic` alone is exactly what the much longer
+/// `TRAFFIC_LIVENESS_WINDOW` already tolerates for a connected session with
+/// signaling still up.
+fn counterpart_gone(
+    signaling_offline: bool,
+    ever_connected: bool,
+    last_traffic: Option<Instant>,
+    now: Instant,
+    window: Duration,
+) -> bool {
+    signaling_offline
+        && ever_connected
+        && !last_traffic.is_some_and(|t| now.duration_since(t) < window)
+}
+
 /// Bundles the session-lifetime state that used to be five independent
 /// `run_session` locals (`peer`, `pipeline`/`abr` via `media`, `ice_restarts`,
 /// `recovery_deadline`, `peer_connected`) behind a handful of small,
@@ -166,6 +237,18 @@ struct SessionRunner {
     clipboard: ClipboardWatcher,
     peer: Option<Arc<WebRtcPeer>>,
     peer_connected: bool,
+    /// Set once, the first time `ConnectionState("connected")` is observed,
+    /// and never cleared — unlike `peer_connected`, which is reassigned on
+    /// EVERY `ConnectionState` event (`self.peer_connected = s ==
+    /// "connected"`) and so flips back to `false` the moment ICE reports
+    /// `disconnected`/`failed`, well before the counterpart is actually gone.
+    /// The counterpart-gone check below needs "did this session ever reach a
+    /// real connection" (vs. still negotiating), not "is ICE reporting
+    /// connected THIS INSTANT" — a killed phone's ICE degrades to
+    /// disconnected/failed quickly, which would otherwise make that check's
+    /// `peer_connected` guard false and mask the exact case it exists to
+    /// catch. See the heartbeat tick in `run_session`.
+    ever_connected: bool,
     /// Last moment any phone-originated traffic arrived (input frames, RTCP
     /// loss reports, REMB, keyframe requests). Ground truth that outranks the
     /// ICE state machine: observed live (2026-07-17, cellular relay path)
@@ -176,6 +259,11 @@ struct SessionRunner {
     last_peer_traffic: Option<Instant>,
     ice_restarts: u32,
     recovery_deadline: Option<Instant>,
+    /// When the last ICE restart was actually performed (successfully sent
+    /// as a fresh offer), regardless of who triggered it. Used to enforce
+    /// `MIN_ICE_RESTART_SPACING` on the phone's `renegotiate` requests — a
+    /// flapping radio's request is throttled by time, not declined outright.
+    last_ice_restart: Option<Instant>,
     /// The initial offer, retained until the answer arrives so it can be
     /// re-sent if the phone missed it — a 5G socket flap in the seconds
     /// after approval loses the offer in transit, and nothing else ever
@@ -183,6 +271,15 @@ struct SessionRunner {
     /// silence until the recovery deadline killed the room, forcing the
     /// user to retry the connect by hand).
     pending_offer: Option<PendingOffer>,
+    /// True from the moment the backend reports the phone's SIGNALING
+    /// transport dropped (`peer-status` `{online:false}`) until it reports
+    /// the phone back (`{online:true}`) or the peer itself (re)reaches
+    /// `connected`. On its own this proves nothing — cellular signaling
+    /// blips constantly while media keeps flowing P2P — so the heartbeat
+    /// tick only acts on it combined with `last_peer_traffic` staleness
+    /// (`COUNTERPART_GONE_MEDIA_WINDOW`): signaling gone AND no P2P media is
+    /// the phone genuinely gone (app killed / network dead), not a blip.
+    counterpart_signaling_offline: bool,
     events: UnboundedSender<SessionEvent>,
     /// The AI executor for this session; agent frames on the input channel are
     /// routed here. Inert until an `agent_command` arrives.
@@ -202,10 +299,13 @@ impl SessionRunner {
             clipboard: ClipboardWatcher::new(),
             peer: None,
             peer_connected: false,
+            ever_connected: false,
             last_peer_traffic: None,
             ice_restarts: 0,
             recovery_deadline: None,
+            last_ice_restart: None,
             pending_offer: None,
+            counterpart_signaling_offline: false,
             events,
             agent: AgentController::new(),
             granted_control: false,
@@ -386,26 +486,29 @@ impl SessionRunner {
                 }
             }
             "renegotiate" => {
-                // Mobile-initiated recovery request — its own local network
-                // path may have broken independent of the desktop's view of
-                // the connection. Shares the SAME bounded budget the
-                // connection-state 'failed' handler uses (`attempt_ice_restart`)
-                // so a mobile-initiated and desktop-initiated restart can't
-                // combine to exceed the intended cap.
+                // Mobile-initiated recovery request. The RECEIVER is authoritative here:
+                // only the phone knows whether it's actually decoding our video, and the
+                // mobile client now sends this ONLY when its own video-liveness says the
+                // stream has genuinely stopped (while video flows it stays 'connected' and
+                // sends nothing — apps/mobile/src/lib/webrtc.ts). So an inbound renegotiate
+                // means "I'm not receiving — please ICE-restart," and we HONOR it.
                 //
-                // But a restart is a visible glitch (fresh offer, candidate
-                // re-trickle, IDR), and a flapping phone radio asks for one
-                // every few seconds while the media path is demonstrably
-                // WORKING — its own REMB/loss reports keep arriving, which is
-                // proof the phone is receiving our video (observed live:
-                // restarts every 10–20s through an entire session). Traffic
-                // outvotes the request exactly like it outvotes the 'failed'
-                // verdict: decline while fresh, honor the retry the moment
-                // traffic actually stops (the 12s liveness window).
-                if self.peer_traffic_fresh() && self.media.is_started() {
+                // We deliberately do NOT gate this on `peer_traffic_fresh()`: when the
+                // forward path is dead the phone spams PLI/keyframe-requests and loss
+                // reports, which `peer_traffic_fresh()` counts as "traffic" — so gating on
+                // it MISREADS a phone that's getting 0 kbps as "video is flowing" and
+                // declines the exact restart it needs (observed live: sessions stranded at
+                // 0 kbps while the desktop logged "declining renegotiate — video is
+                // flowing"). Only the throttle guards us, so a flapping radio can't storm
+                // restarts while still letting a genuine recovery through.
+                if self
+                    .last_ice_restart
+                    .is_some_and(|t| t.elapsed() < MIN_ICE_RESTART_SPACING)
+                {
                     log::info!(
                         target: "lilypad::session",
-                        "declining renegotiate — peer traffic is live"
+                        "renegotiate throttled — ICE restarted {}s ago",
+                        self.last_ice_restart.unwrap().elapsed().as_secs()
                     );
                 } else if self.attempt_ice_restart(sig).await? {
                     return Ok(true);
@@ -424,6 +527,19 @@ impl SessionRunner {
                     serde_json::from_value::<messages::SetCaptureModePayload>(env.payload.clone())
                 {
                     self.handle_set_capture_mode(p.mode, sig).await;
+                }
+            }
+            "peer-status" => {
+                // Backend nudge: the phone's SIGNALING transport dropped
+                // (online:false) or came back (online:true). We don't end
+                // here — the heartbeat tick combines this with
+                // peer-to-peer media liveness (see
+                // COUNTERPART_GONE_MEDIA_WINDOW) so a signaling blip where
+                // media still flows doesn't kill a working session.
+                if let Ok(p) =
+                    serde_json::from_value::<messages::PeerStatusPayload>(env.payload.clone())
+                {
+                    self.counterpart_signaling_offline = !p.online;
                 }
             }
             "pair-denied" | "disconnect" | "session-end" => {
@@ -494,6 +610,12 @@ impl SessionRunner {
                 self.ice_restarts = 0;
                 self.recovery_deadline = None;
                 self.fsm.transition(SessionState::Connected);
+                // A fresh `connected` is demonstrable proof the counterpart
+                // is back, whether or not a `peer-status` online:true nudge
+                // ever arrived (a reconnect implies the phone re-registered)
+                // — belt-and-suspenders alongside the `peer-status` handler.
+                self.counterpart_signaling_offline = false;
+                self.ever_connected = true;
                 if !was_connected {
                     // Seed rather than push: whatever's already on the OS
                     // clipboard predates this session and shouldn't be
@@ -573,6 +695,21 @@ impl SessionRunner {
     /// live peer, or the restart itself failed).
     async fn attempt_ice_restart(&mut self, sig: &SignalingClient) -> Result<bool> {
         if self.ice_restarts >= MAX_ICE_RESTARTS {
+            // Budget exhausted. If media is still running, this is a count
+            // exhausted over the unhealthy period, not proof the session is
+            // actually dead — the `recovery_deadline` set by the last
+            // successful restart already ends a genuinely dead session on
+            // timeout, and it's lifted (with `ice_restarts` reset to 0) the
+            // moment traffic resumes. Tearing down here over a transient
+            // budget count would kill a de-facto-working stream; hold
+            // instead and let traffic/recovery-deadline own the outcome.
+            if self.media.is_started() {
+                log::warn!(
+                    target: "lilypad::session",
+                    "ICE restart budget reached — holding; traffic/recovery-deadline owns recovery"
+                );
+                return Ok(false);
+            }
             self.end("connection failed (ICE restarts exhausted)");
             return Ok(true);
         }
@@ -588,6 +725,7 @@ impl SessionRunner {
                 sig.send(Envelope::offer(&self.room_id, &sdp))?;
                 self.recovery_deadline =
                     Some(Instant::now() + recovery_timeout_for_attempt(self.ice_restarts));
+                self.last_ice_restart = Some(Instant::now());
                 Ok(false)
             }
             Err(e) => {
@@ -863,6 +1001,35 @@ pub async fn run_session(
                         break;
                     }
                 }
+                // Counterpart-gone fast path: combines the backend's
+                // `peer-status` signaling-liveness nudge with our own
+                // peer-to-peer media liveness. A killed app / dead network
+                // produces NEITHER signaling NOR P2P media, so this catches
+                // that case promptly instead of waiting out the much longer
+                // TRAFFIC_LIVENESS_WINDOW (34s, sized for cellular RTCP gaps
+                // while signaling stays up) — while still surviving a
+                // signaling-only blip as long as media keeps flowing P2P.
+                // `ever_connected` (not `peer_connected`) gates this: ICE
+                // reassigns `peer_connected` on every ConnectionState event
+                // and flips it false the moment ICE reports
+                // disconnected/failed — which is exactly what a dying phone
+                // does first, so gating on the live `peer_connected` would
+                // mask the case this exists to catch.
+                if counterpart_gone(
+                    runner.counterpart_signaling_offline,
+                    runner.ever_connected,
+                    runner.last_peer_traffic,
+                    Instant::now(),
+                    COUNTERPART_GONE_MEDIA_WINDOW,
+                ) {
+                    log::info!(
+                        target: "lilypad::session",
+                        "counterpart signaling offline and no peer-to-peer media for {}s — ending (phone gone)",
+                        COUNTERPART_GONE_MEDIA_WINDOW.as_secs()
+                    );
+                    runner.end("peer disconnected");
+                    break;
+                }
             }
 
             _ = clipboard_poll.tick(), if runner.peer_connected => {
@@ -886,4 +1053,82 @@ pub async fn run_session(
     }
     log::info!(target: "lilypad::session", "session runner exited for room {room_id}");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn counterpart_gone_false_when_media_still_flowing() {
+        // Signaling-offline blip, but P2P media is fresh — a cellular
+        // signaling hiccup with a working session must survive.
+        let now = Instant::now();
+        let last_traffic = Some(now - Duration::from_secs(2));
+        assert!(!counterpart_gone(
+            true,
+            true,
+            last_traffic,
+            now,
+            COUNTERPART_GONE_MEDIA_WINDOW
+        ));
+    }
+
+    #[test]
+    fn counterpart_gone_true_when_offline_and_connected_and_media_stale() {
+        // The exact "phone killed" case: signaling gone AND no P2P media
+        // for longer than the counterpart-gone window.
+        let now = Instant::now();
+        let last_traffic = Some(now - COUNTERPART_GONE_MEDIA_WINDOW - Duration::from_secs(1));
+        assert!(counterpart_gone(
+            true,
+            true,
+            last_traffic,
+            now,
+            COUNTERPART_GONE_MEDIA_WINDOW
+        ));
+    }
+
+    #[test]
+    fn counterpart_gone_false_when_signaling_is_not_reported_offline() {
+        // No peer-status nudge (or an online:true one) — never fast-end on
+        // media staleness alone; that's TRAFFIC_LIVENESS_WINDOW's job.
+        let now = Instant::now();
+        let last_traffic = Some(now - Duration::from_secs(60));
+        assert!(!counterpart_gone(
+            false,
+            true,
+            last_traffic,
+            now,
+            COUNTERPART_GONE_MEDIA_WINDOW
+        ));
+    }
+
+    #[test]
+    fn counterpart_gone_false_when_session_never_actually_connected() {
+        // Still negotiating (never reached a real `connected`) — that path
+        // is owned by `recovery_deadline`, not this fast path.
+        let now = Instant::now();
+        assert!(!counterpart_gone(
+            true,
+            false,
+            None,
+            now,
+            COUNTERPART_GONE_MEDIA_WINDOW
+        ));
+    }
+
+    #[test]
+    fn counterpart_gone_true_when_no_traffic_has_ever_arrived() {
+        // Offline signaling and never any P2P traffic at all (last_traffic
+        // is None) is exactly as stale as any traffic beyond the window.
+        let now = Instant::now();
+        assert!(counterpart_gone(
+            true,
+            true,
+            None,
+            now,
+            COUNTERPART_GONE_MEDIA_WINDOW
+        ));
+    }
 }

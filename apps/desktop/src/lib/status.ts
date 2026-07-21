@@ -11,6 +11,7 @@ export const STATUS_LABEL: Record<SessionStatus, string> = {
   idle: 'Idle',
   pairing: 'Waiting for scan',
   awaiting_approval: 'Approval requested',
+  connecting: 'Connecting…',
   active: 'Session active',
 };
 
@@ -22,6 +23,7 @@ export const STATUS_COLOR: Record<SessionStatus, string> = {
   idle: 'var(--accent)',
   pairing: 'var(--pending)',
   awaiting_approval: 'var(--pending)',
+  connecting: 'var(--pending)',
   active: 'var(--live)',
 };
 
@@ -35,5 +37,6 @@ export const STATUS_ARIA_LABEL: Record<SessionStatus, string> = {
   idle: 'Lilypad — click to show a pairing QR code',
   pairing: 'Lilypad — waiting for a phone to scan, click to reopen the QR code',
   awaiting_approval: 'Lilypad — a phone wants to connect, click to review',
+  connecting: 'Lilypad — connecting to device, click to review',
   active: 'Lilypad — session active, click to disconnect',
 };

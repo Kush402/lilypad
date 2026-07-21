@@ -9,6 +9,16 @@ import {
 type ShortcutAction = Extract<InputEvent, { kind: 'shortcut' }>['action'];
 
 /**
+ * Maximum DataChannel backlog before input backpressure kicks in. Disposable
+ * move/scroll batches are dropped above this point; critical input stays
+ * queued until the reliable channel drains.
+ */
+export const MAX_BUFFERED_AMOUNT_BYTES = 64 * 1024;
+
+export type InputSenderFn = (data: string) => void;
+export type DataChannelBackpressureRef = { bufferedAmount?: number | null };
+
+/**
  * Buffers input events and sends them over the DataChannel(s). Pointer moves
  * and scroll deltas are coalesced (batched, ~120Hz cap) and routed onto the
  * unreliable move channel (loss-tolerant — the next update always supersedes
@@ -28,7 +38,10 @@ export class InputSender {
    * DataChannel opens (`ViewerConnection`). `null` until then, or forever if
    * the peer never negotiated it — falls back to the critical channel, so
    * pointer moves/scroll still work, just without the loss tolerance. */
-  private moveSend: ((data: string) => void) | null = null;
+  private moveSend: InputSenderFn | null = null;
+  /** References used for DataChannel backpressure checks. */
+  private moveChannelRef: DataChannelBackpressureRef | null = null;
+  private criticalChannelRef: DataChannelBackpressureRef | null = null;
   /** Monotonic per-session ordering counter. The desktop dispatcher orders
    * and dedups on this, NOT on `ts` — `ts` (wall clock) can step backward
    * mid-session and permanently wedge the input stream. One `InputSender`
@@ -36,11 +49,24 @@ export class InputSender {
    * `docs/audit/m3/input-touch.md` Finding 8. */
   private seq = 0;
 
-  constructor(private readonly send: (data: string) => void) {}
+  constructor(private readonly sendCritical: InputSenderFn) {}
 
   /** Wire (or clear, on close) the unreliable move channel's send callback. */
-  setMoveChannel(send: ((data: string) => void) | null): void {
+  setMoveChannel(
+    send: InputSenderFn | null,
+    channelRef: DataChannelBackpressureRef | null = null,
+  ): void {
     this.moveSend = send;
+    this.moveChannelRef = channelRef;
+  }
+
+  setCriticalChannelRef(ref: DataChannelBackpressureRef | null): void {
+    this.criticalChannelRef = ref;
+  }
+
+  private isBackedUp(ref: DataChannelBackpressureRef | null): boolean {
+    const bufferedAmount = ref?.bufferedAmount;
+    return typeof bufferedAmount === 'number' && bufferedAmount > MAX_BUFFERED_AMOUNT_BYTES;
   }
 
   private stamp(): { ts: number; seq: number } {
@@ -67,11 +93,24 @@ export class InputSender {
       this.flushTimer = null;
     }
     if (this.moveQueue.length > 0) {
-      (this.moveSend ?? this.send)(encodeInputBatch(this.moveQueue));
-      this.moveQueue = [];
+      const batch = encodeInputBatch(this.moveQueue);
+      if (this.moveSend) {
+        if (!this.isBackedUp(this.moveChannelRef)) {
+          this.moveSend(batch);
+        }
+        this.moveQueue = [];
+      } else {
+        if (!this.isBackedUp(this.criticalChannelRef)) {
+          this.sendCritical(batch);
+        }
+        this.moveQueue = [];
+      }
     }
     if (this.criticalQueue.length > 0) {
-      this.send(encodeInputBatch(this.criticalQueue));
+      if (this.isBackedUp(this.criticalChannelRef)) {
+        return;
+      }
+      this.sendCritical(encodeInputBatch(this.criticalQueue));
       this.criticalQueue = [];
     }
   }

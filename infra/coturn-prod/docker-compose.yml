@@ -1,0 +1,31 @@
+# Lilypad production coturn — deploy on a public VPS you control.
+#
+#   cd infra/coturn-prod
+#   cp .env.example .env      # then edit the 3 values
+#   docker compose up -d
+#
+# network_mode: host is REQUIRED. TURN hands out relay candidates on real UDP
+# ports (min-port..max-port); behind Docker's NAT bridge those ports are not
+# directly reachable and relaying silently fails. Host networking is the
+# standard, supported way to run coturn — the whole point is a public box.
+name: lilypad-turn
+
+services:
+  coturn:
+    image: coturn/coturn:4.6
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./turnserver.conf:/etc/coturn/turnserver.conf:ro
+      # Let's Encrypt live certs for TURN_DOMAIN (see README step 4). coturn
+      # runs as a non-root user inside the image, so the fullchain/privkey must
+      # be world-readable (README handles this with a deploy hook).
+      - /etc/letsencrypt/live/${TURN_DOMAIN}:/etc/coturn/certs:ro
+      - /etc/letsencrypt/archive:/etc/letsencrypt/archive:ro
+    # Static settings live in turnserver.conf; the three deployment-specific
+    # values are injected here from .env so no secret is committed.
+    command: >
+      -c /etc/coturn/turnserver.conf
+      --external-ip=${TURN_PUBLIC_IP}
+      --realm=${TURN_DOMAIN}
+      --static-auth-secret=${TURN_SECRET}

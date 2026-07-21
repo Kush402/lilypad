@@ -117,4 +117,98 @@ describe('startQuickTunnel', () => {
     vi.advanceTimersByTime(1_000);
     expect(children).toHaveLength(1);
   });
+
+  describe('health monitor', () => {
+    // Helper: stand up a tunnel with a no-op reaper (so tests never shell
+    // out) and a controllable fake health checker.
+    const setup = (healthChecker: ReturnType<typeof vi.fn>) => {
+      const children: FakeChild[] = [];
+      const up = vi.fn();
+      const down = vi.fn();
+      const handle = startQuickTunnel({
+        port: 8080,
+        callbacks: { onUp: up, onDown: down },
+        spawner: () => {
+          const c = new FakeChild();
+          children.push(c);
+          return asChild(c);
+        },
+        restartBackoffMs: [100],
+        healthIntervalMs: 15_000,
+        healthChecker,
+        reapOrphans: () => {},
+      });
+      children[0]!.stderr.emit('data', 'https://one.trycloudflare.com ready');
+      return { children, up, down, handle };
+    };
+
+    // Must track HEALTH_FAILURES_BEFORE_RESTART in quickTunnel.ts (currently
+    // 8, i.e. ~120s at the 15s interval — patient enough to outlast
+    // cloudflared's own ~64s network-change reconnect backoff, per the
+    // rationale on that const). Not exported (kept module-private on
+    // purpose), so this is duplicated here — bump it if that const changes.
+    const FAILURES_BEFORE_RESTART = 8;
+
+    it('N-1 failures then a success does not restart and resets the counter', async () => {
+      const healthChecker = vi.fn().mockResolvedValue(false);
+      const { children } = setup(healthChecker);
+
+      // N-1 consecutive failures (threshold is FAILURES_BEFORE_RESTART) — no kill yet.
+      for (let i = 1; i < FAILURES_BEFORE_RESTART; i++) {
+        vi.advanceTimersByTime(15_000);
+        await vi.waitFor(() => expect(healthChecker).toHaveBeenCalledTimes(i));
+      }
+      expect(children[0]!.killed).toBe(false);
+
+      // A healthy probe resets consecutiveFailures back to 0.
+      healthChecker.mockResolvedValueOnce(true);
+      vi.advanceTimersByTime(15_000);
+      await vi.waitFor(() => expect(healthChecker).toHaveBeenCalledTimes(FAILURES_BEFORE_RESTART));
+      expect(children[0]!.killed).toBe(false);
+
+      // A couple more failures after the reset still isn't N in a row.
+      healthChecker.mockResolvedValue(false);
+      vi.advanceTimersByTime(15_000);
+      await vi.waitFor(() =>
+        expect(healthChecker).toHaveBeenCalledTimes(FAILURES_BEFORE_RESTART + 1),
+      );
+      vi.advanceTimersByTime(15_000);
+      await vi.waitFor(() =>
+        expect(healthChecker).toHaveBeenCalledTimes(FAILURES_BEFORE_RESTART + 2),
+      );
+      expect(children[0]!.killed).toBe(false);
+    });
+
+    it('N consecutive failures triggers exactly one child.kill()', async () => {
+      const healthChecker = vi.fn().mockResolvedValue(false);
+      const { children } = setup(healthChecker);
+
+      for (let i = 1; i < FAILURES_BEFORE_RESTART; i++) {
+        vi.advanceTimersByTime(15_000);
+        await vi.waitFor(() => expect(healthChecker).toHaveBeenCalledTimes(i));
+        expect(children[0]!.killed).toBe(false);
+      }
+
+      vi.advanceTimersByTime(15_000);
+      await vi.waitFor(() => expect(healthChecker).toHaveBeenCalledTimes(FAILURES_BEFORE_RESTART));
+      expect(children[0]!.killed).toBe(true);
+
+      // The interval is stopped the moment we kill, so further ticks (were
+      // the fake process to somehow linger) must not call the checker again.
+      vi.advanceTimersByTime(60_000);
+      expect(healthChecker).toHaveBeenCalledTimes(FAILURES_BEFORE_RESTART);
+    });
+
+    it('clears the health interval on stop() and does not probe afterward', async () => {
+      const healthChecker = vi.fn().mockResolvedValue(true);
+      const { handle } = setup(healthChecker);
+
+      vi.advanceTimersByTime(15_000);
+      await vi.waitFor(() => expect(healthChecker).toHaveBeenCalledTimes(1));
+
+      handle.stop();
+      vi.advanceTimersByTime(60_000);
+      expect(healthChecker).toHaveBeenCalledTimes(1);
+    });
+  });
 });

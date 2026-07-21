@@ -58,7 +58,26 @@ export function Control() {
     <div className="page control dashboard">
       <header className="control__header">
         <h1>Lilypad</h1>
-        <span className={`badge badge--${session}`}>{STATUS_LABEL[session]}</span>
+        <div className="control__header-actions">
+          <span className={`badge badge--${session}`}>{STATUS_LABEL[session]}</span>
+          {/* Mirrors the tray's `show_qr.set_enabled(!(active || connecting))`
+           * — enabled whenever a session isn't already in progress (idle,
+           * pairing, and awaiting_approval all still allow pairing a new
+           * device; connecting is a session already underway). */}
+          <button
+            className="btn btn--primary btn--icon"
+            disabled={session === 'active' || session === 'connecting'}
+            title={
+              session === 'active' || session === 'connecting'
+                ? 'Disconnect the current session to pair a new device'
+                : 'Pair a new device'
+            }
+            aria-label="Pair a new device"
+            onClick={() => void api.showQrWindow()}
+          >
+            +
+          </button>
+        </div>
       </header>
 
       <p className="dashboard__subtitle muted">{sessionSummary(session)}</p>
@@ -66,8 +85,8 @@ export function Control() {
       {session === 'awaiting_approval' ? (
         <section className="control__approve card">
           <p className="control__approve-title">
-            <strong>{pending?.device_name ?? 'An unknown device'}</strong> wants to view and
-            control this Mac
+            <strong>{pending?.device_name ?? 'An unknown device'}</strong> wants to view and control
+            this Mac
           </p>
           {pending && pending.requested_scopes.length > 0 ? (
             <div className="row scope-row">
@@ -93,6 +112,22 @@ export function Control() {
             </button>
             <button className="btn btn--danger" onClick={() => void api.deny()}>
               Deny
+            </button>
+          </div>
+        </section>
+      ) : null}
+
+      {session === 'connecting' ? (
+        <section className="control__connecting card">
+          <p className="muted">
+            <span className="spinner" aria-hidden /> Establishing a secure connection…
+          </p>
+          <div className="row">
+            <button className="btn" onClick={() => void api.disconnect()}>
+              Disconnect
+            </button>
+            <button className="btn btn--danger" onClick={() => void api.panic()}>
+              ⛔ Panic
             </button>
           </div>
         </section>
@@ -124,6 +159,8 @@ function sessionSummary(session: string): string {
       return 'A device is connected and in control.';
     case 'awaiting_approval':
       return 'A device is asking to connect.';
+    case 'connecting':
+      return 'Connecting to the device…';
     case 'pairing':
       return 'Waiting for a phone to scan the QR code.';
     default:
@@ -141,15 +178,44 @@ function lastConnectedLabel(iso: string | null): string {
   return `last connected ${Math.round(hours / 24)}d ago`;
 }
 
+/** Same relative-time shape as `lastConnectedLabel`, worded for the
+ * expanded panel's "paired" line instead of "last connected". */
+function pairedLabel(iso: string): string {
+  const mins = Math.round((Date.now() - Date.parse(iso)) / 60_000);
+  if (mins < 1) return 'paired just now';
+  if (mins < 60) return `paired ${mins}m ago`;
+  const hours = Math.round(mins / 60);
+  if (hours < 48) return `paired ${hours}h ago`;
+  return `paired ${Math.round(hours / 24)}d ago`;
+}
+
 /**
  * Trusted devices — every phone paired with this Mac, with the per-pair
  * "connect without approval" toggle and Revoke. The list refreshes
  * race-safely (poll + reconcile-after-mutation can't clobber each other).
+ *
+ * Each row is a click-to-expand accordion rather than always-inline: the
+ * collapsed row (name + last-connected) is the scannable list, and the
+ * fingerprint/paired-date/toggle/revoke only render for the one expanded
+ * row. Expansion state is keyed by `pair.pairId` (a stable string, not
+ * array index), so a 15s poll refresh — which hands back a brand-new
+ * `pairs` array reference every time — never collapses an open row.
  */
 function TrustedDevices() {
-  const { value: pairs, error, refresh } = useLiveResource(() =>
+  const {
+    value: pairs,
+    error,
+    refresh,
+  } = useLiveResource(() =>
     api.listTrustedDevices().then((p) => p.filter((pair) => !pair.revoked)),
   );
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  // Which pair's Revoke is in its "are you sure" second step. `window.confirm`
+  // used to gate this, but it returns falsy in Tauri's wry webview — the
+  // `if (!window.confirm(...)) return;` always bailed, so `revokePair` was
+  // NEVER called (proven: the backend's revoke audit log never fired). An
+  // inline two-step confirm works deterministically in any webview.
+  const [confirmingRevokeId, setConfirmingRevokeId] = useState<string | null>(null);
 
   useEffect(() => {
     refresh();
@@ -162,34 +228,108 @@ function TrustedDevices() {
   };
 
   const revoke = (pair: TrustedPairDto) => {
-    if (!window.confirm('Revoke this phone? It will need a fresh QR pairing to reconnect.')) return;
+    setConfirmingRevokeId(null);
     void api.revokePair(pair.pairId).then(refresh).catch(refresh);
   };
 
   return (
     <section className="control__devices card">
       <h2 className="section-title">Trusted devices</h2>
-      {error ? <p className="muted">Couldn’t load trusted devices — is the backend running?</p> : null}
+      {error ? (
+        <p className="muted">Couldn’t load trusted devices — is the backend running?</p>
+      ) : null}
       {pairs !== null && pairs.length === 0 ? (
         <p className="muted">
           No trusted phones yet. Pair once with the QR and leave “Trust this device” checked.
         </p>
       ) : null}
-      {(pairs ?? []).map((pair) => (
-        <div key={pair.pairId} className="device-row">
-          <div className="device-row__info">
-            <span className="device-row__name">{pair.displayName ?? 'Phone'}</span>
-            <span className="muted device-row__meta">{lastConnectedLabel(pair.lastConnectedAt)}</span>
+      {(pairs ?? []).map((pair) => {
+        const expanded = expandedId === pair.pairId;
+        return (
+          <div key={pair.pairId} className={`device-row${expanded ? ' device-row--expanded' : ''}`}>
+            <div
+              className="device-row__summary"
+              role="button"
+              tabIndex={0}
+              aria-expanded={expanded}
+              onClick={() => {
+                // Collapsing mid-confirm drops the pending confirm — the
+                // confirm UI only renders inside the expanded detail, so this
+                // just prevents a stale flag from lingering unseen.
+                if (expanded) setConfirmingRevokeId(null);
+                setExpandedId(expanded ? null : pair.pairId);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  if (expanded) setConfirmingRevokeId(null);
+                  setExpandedId(expanded ? null : pair.pairId);
+                }
+              }}
+            >
+              <div className="device-row__info">
+                <span className="device-row__name">{pair.displayName ?? 'Phone'}</span>
+                <span className="muted device-row__meta">
+                  {lastConnectedLabel(pair.lastConnectedAt)}
+                </span>
+              </div>
+              <span className="device-row__chevron" aria-hidden>
+                {expanded ? '▾' : '▸'}
+              </span>
+            </div>
+            {expanded ? (
+              <div className="device-row__detail">
+                <div className="device-row__fingerprint">
+                  <span className="muted device-row__meta">Fingerprint</span>
+                  <span className="mono">{pair.mobileFingerprint}</span>
+                </div>
+                <p className="muted device-row__meta">{pairedLabel(pair.createdAt)}</p>
+                <label className="device-row__toggle" title="Connect without approval">
+                  <input type="checkbox" checked={pair.autoApprove} onChange={() => toggle(pair)} />
+                  <span>Auto-connect</span>
+                </label>
+                {confirmingRevokeId === pair.pairId ? (
+                  <div className="revoke-confirm">
+                    <p className="muted device-row__meta">
+                      Revoke this phone? It will need a fresh QR pairing to reconnect.
+                    </p>
+                    <div className="row revoke-confirm__actions">
+                      <button
+                        className="btn btn--danger btn--small"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          revoke(pair);
+                        }}
+                      >
+                        Confirm
+                      </button>
+                      <button
+                        className="btn btn--ghost btn--small"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setConfirmingRevokeId(null);
+                        }}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <button
+                    className="btn btn--danger btn--small"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setConfirmingRevokeId(pair.pairId);
+                    }}
+                  >
+                    Revoke
+                  </button>
+                )}
+              </div>
+            ) : null}
           </div>
-          <label className="device-row__toggle" title="Connect without approval">
-            <input type="checkbox" checked={pair.autoApprove} onChange={() => toggle(pair)} />
-            <span>Auto-connect</span>
-          </label>
-          <button className="btn btn--danger btn--small" onClick={() => revoke(pair)}>
-            Revoke
-          </button>
-        </div>
-      ))}
+        );
+      })}
     </section>
   );
 }
@@ -275,7 +415,11 @@ function SystemPanel({ backendUrl }: { backendUrl: string | null }) {
       />
 
       <label className="row trust-row system-toggle">
-        <input type="checkbox" checked={loginEnabled} onChange={(e) => setLogin(e.target.checked)} />
+        <input
+          type="checkbox"
+          checked={loginEnabled}
+          onChange={(e) => setLogin(e.target.checked)}
+        />
         <span>
           Launch at login <span className="muted">— stay ready for trusted devices</span>
         </span>

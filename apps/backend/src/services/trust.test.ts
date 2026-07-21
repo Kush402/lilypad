@@ -84,6 +84,16 @@ class FakeTrustStore implements TrustStore {
     const found = this.devices.get(this.key(kind, fingerprint));
     return found ? { id: found.id } : null;
   }
+
+  async getPairFingerprints(pairId: string) {
+    const pair = this.pairs.get(pairId);
+    if (!pair) return null;
+    const byId = new Map([...this.devices.values()].map((d) => [d.id, d]));
+    const desktop = byId.get(pair.desktopDeviceId);
+    const mobile = byId.get(pair.mobileDeviceId);
+    if (!desktop || !mobile) return null;
+    return { desktopFingerprint: desktop.fingerprint, mobileFingerprint: mobile.fingerprint };
+  }
 }
 
 describe('TrustService', () => {
@@ -233,6 +243,55 @@ describe('TrustService', () => {
 
       const legacy = await trust.authorizeConnect('desktop-01', 'mobile-01', undefined);
       expect(legacy.ok).toBe(true);
+    });
+  });
+
+  it("revoke returns the pair's wire fingerprints; null for a nonexistent pairId", async () => {
+    const store = new FakeTrustStore();
+    const trust = new TrustService(store);
+    await trust.establishTrust('desktop-01', 'mobile-01');
+    const pair = (await trust.findPair('desktop-01', 'mobile-01'))!;
+
+    const fingerprints = await trust.revoke(pair.pairId);
+    expect(fingerprints).toEqual({
+      desktopFingerprint: 'desktop-01',
+      mobileFingerprint: 'mobile-01',
+    });
+
+    expect(await trust.revoke('nonexistent-pair-id')).toBeNull();
+  });
+
+  describe('mobile-initiated unpair (POST /devices/unpair)', () => {
+    // The route itself is a thin wrapper over findPair + revoke (mirroring
+    // the desktop's DELETE /devices/pairs/:pairId), so these exercise that
+    // same sequence directly against the service.
+    it('an active pair found by (desktopId, mobileId) becomes revoked', async () => {
+      const store = new FakeTrustStore();
+      const trust = new TrustService(store);
+      await trust.establishTrust('desktop-01', 'mobile-01');
+
+      const pair = await trust.findPair('desktop-01', 'mobile-01');
+      expect(pair).not.toBeNull();
+      expect(pair!.revoked).toBe(false);
+      await trust.revoke(pair!.pairId);
+
+      expect((await trust.findPair('desktop-01', 'mobile-01'))!.revoked).toBe(true);
+      expect(store.pairs.size).toBe(1); // audit trail retained, same as desktop revoke
+    });
+
+    it('is idempotent: an unknown pair and an already-revoked pair are both no-ops (route still answers ok)', async () => {
+      const store = new FakeTrustStore();
+      const trust = new TrustService(store);
+
+      // Unknown pair — never trusted.
+      expect(await trust.findPair('desktop-99', 'mobile-99')).toBeNull();
+
+      // Already-revoked pair — a second unpair must not throw or double-act.
+      await trust.establishTrust('desktop-01', 'mobile-01');
+      const pair = (await trust.findPair('desktop-01', 'mobile-01'))!;
+      await trust.revoke(pair.pairId);
+      const second = await trust.findPair('desktop-01', 'mobile-01');
+      expect(second!.revoked).toBe(true); // route sees revoked:true and skips re-revoking
     });
   });
 

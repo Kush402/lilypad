@@ -120,6 +120,13 @@ const sessionStart = z.object({
     sessionId: z.string(),
     grantedScopes: z.array(SessionScopeSchema),
     iceServers: z.array(IceServerSchema),
+    /** Server-controlled ICE transport policy for both peers'
+     * `RTCPeerConnection`. `'relay'` forces relay-only ICE — both peers use
+     * the deterministic single relayed path over the dedicated TURN server,
+     * instead of risking a fragile direct `srflx↔srflx` pair that a CGNAT
+     * rebind can break. Omitted/`'all'` = normal ICE (host/srflx/relay
+     * candidates all considered), the default. */
+    iceTransportPolicy: z.enum(['all', 'relay']).optional(),
   }),
 });
 
@@ -270,6 +277,17 @@ const connectRequest = z.object({
   }),
 });
 
+// Server → the REMAINING peer: its counterpart's signaling transport went
+// offline (dropped, being held for the re-register grace) or came back online
+// (re-registered within grace). Lets the remaining peer combine this with its
+// own peer-to-peer media liveness to tell "counterpart genuinely gone" from
+// "signaling blip while media still flows", instead of guessing from ICE alone.
+const peerStatus = z.object({
+  type: z.literal('peer-status'),
+  ...envelope,
+  payload: z.object({ online: z.boolean() }),
+});
+
 export const SignalingMessageSchema = z.discriminatedUnion('type', [
   connectRequest,
   pairSecret,
@@ -293,6 +311,7 @@ export const SignalingMessageSchema = z.discriminatedUnion('type', [
   frameSize,
   clipboardUpdate,
   setCaptureMode,
+  peerStatus,
 ]);
 export type SignalingMessage = z.infer<typeof SignalingMessageSchema>;
 export type SignalingType = SignalingMessage['type'];
@@ -312,9 +331,7 @@ export function presenceRoomId(deviceId: string): string {
 
 /** The owning deviceId if `roomId` is a presence room, else null. */
 export function presenceRoomDeviceId(roomId: string): string | null {
-  return roomId.startsWith(PRESENCE_ROOM_PREFIX)
-    ? roomId.slice(PRESENCE_ROOM_PREFIX.length)
-    : null;
+  return roomId.startsWith(PRESENCE_ROOM_PREFIX) ? roomId.slice(PRESENCE_ROOM_PREFIX.length) : null;
 }
 
 export function encodeSignal(msg: SignalingMessage): string {
