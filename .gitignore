@@ -17,6 +17,8 @@ apps/desktop/src-tauri/gen/
 # React Native
 apps/mobile/ios/Pods/
 apps/mobile/ios/build/
+apps/mobile/ios/build-device/
+apps/mobile/ios/build-release/
 apps/mobile/android/.gradle/
 apps/mobile/android/app/build/
 apps/mobile/android/build/
