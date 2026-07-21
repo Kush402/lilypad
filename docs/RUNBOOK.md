@@ -112,17 +112,17 @@ possible future addition, out of scope today.
 
 **Desktop (needed now):**
 
-| Secret | Purpose |
-| --- | --- |
-| `TAURI_SIGNING_PRIVATE_KEY` | Updater signing private key (pairs with the embedded public key) |
-| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | Password for that key (empty string if none) |
-| `APPLE_CERTIFICATE` | Base64 of the Developer ID Application `.p12` |
-| `APPLE_CERTIFICATE_PASSWORD` | Password for the `.p12` |
-| `APPLE_SIGNING_IDENTITY` | e.g. `Developer ID Application: Name (TEAMID)` |
-| `APPLE_TEAM_ID` | Apple Developer Team ID |
-| `APPLE_API_KEY_P8` | Base64 of the App Store Connect API key `.p8` (notarization) |
-| `APPLE_API_ISSUER` | App Store Connect issuer ID |
-| `APPLE_API_KEY` | App Store Connect key ID |
+| Secret                               | Purpose                                                          |
+| ------------------------------------ | ---------------------------------------------------------------- |
+| `TAURI_SIGNING_PRIVATE_KEY`          | Updater signing private key (pairs with the embedded public key) |
+| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | Password for that key (empty string if none)                     |
+| `APPLE_CERTIFICATE`                  | Base64 of the Developer ID Application `.p12`                    |
+| `APPLE_CERTIFICATE_PASSWORD`         | Password for the `.p12`                                          |
+| `APPLE_SIGNING_IDENTITY`             | e.g. `Developer ID Application: Name (TEAMID)`                   |
+| `APPLE_TEAM_ID`                      | Apple Developer Team ID                                          |
+| `APPLE_API_KEY_P8`                   | Base64 of the App Store Connect API key `.p8` (notarization)     |
+| `APPLE_API_ISSUER`                   | App Store Connect issuer ID                                      |
+| `APPLE_API_KEY`                      | App Store Connect key ID                                         |
 
 **Mobile (needed later):** see
 [apps/mobile/docs/RELEASE.md](../apps/mobile/docs/RELEASE.md).

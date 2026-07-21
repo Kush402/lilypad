@@ -3,10 +3,10 @@
 Lilypad mobile is a **bare React Native 0.76.5** app. Releases are driven by
 [fastlane](https://fastlane.tools) through two GitHub Actions workflows:
 
-| Platform | Workflow                          | Lane                       | Destination                          |
-| -------- | --------------------------------- | -------------------------- | ------------------------------------ |
-| iOS      | `.github/workflows/mobile-ios.yml`     | `fastlane ios beta`     | TestFlight                           |
-| Android  | `.github/workflows/mobile-android.yml` | `fastlane android beta` | Play internal track + APK artifact   |
+| Platform | Workflow                               | Lane                    | Destination                        |
+| -------- | -------------------------------------- | ----------------------- | ---------------------------------- |
+| iOS      | `.github/workflows/mobile-ios.yml`     | `fastlane ios beta`     | TestFlight                         |
+| Android  | `.github/workflows/mobile-android.yml` | `fastlane android beta` | Play internal track + APK artifact |
 
 Confirmed identifiers (derived from the project files, not guessed):
 
@@ -48,16 +48,16 @@ step + step-level `if:` pattern.)
 Auth to App Store Connect uses an **App Store Connect API key** (`.p8`) — no
 Apple ID password or 2FA session required in CI.
 
-| Secret                | Required | What it is                                                            |
-| --------------------- | -------- | --------------------------------------------------------------------- |
-| `ASC_KEY_ID`          | ✅       | The API key's Key ID (10 chars).                                      |
-| `ASC_ISSUER_ID`       | ✅       | The Issuer ID (UUID) of your App Store Connect team.                  |
-| `ASC_KEY_P8`          | ✅       | **base64** of the downloaded `AuthKey_XXXX.p8` file.                  |
-| `APPLE_TEAM_ID`       | optional | Overrides the default team id `7TYFS43RR3`.                           |
-| `IOS_APP_IDENTIFIER`  | optional | Overrides the default bundle id `com.kushsharma.lilypad`.             |
-| `FASTLANE_APPLE_ID`   | optional | Apple ID email, only for username-based flows (not needed for beta).  |
-| `MATCH_GIT_URL`       | optional | Git repo URL for [`match`](https://docs.fastlane.tools/actions/match/) certs/profiles. Set this to switch from Xcode-managed automatic signing to `match`. |
-| `MATCH_PASSWORD`      | optional | Passphrase for the `match` encrypted repo (required if `MATCH_GIT_URL` is set). |
+| Secret               | Required | What it is                                                                                                                                                 |
+| -------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ASC_KEY_ID`         | ✅       | The API key's Key ID (10 chars).                                                                                                                           |
+| `ASC_ISSUER_ID`      | ✅       | The Issuer ID (UUID) of your App Store Connect team.                                                                                                       |
+| `ASC_KEY_P8`         | ✅       | **base64** of the downloaded `AuthKey_XXXX.p8` file.                                                                                                       |
+| `APPLE_TEAM_ID`      | optional | Overrides the default team id `7TYFS43RR3`.                                                                                                                |
+| `IOS_APP_IDENTIFIER` | optional | Overrides the default bundle id `com.kushsharma.lilypad`.                                                                                                  |
+| `FASTLANE_APPLE_ID`  | optional | Apple ID email, only for username-based flows (not needed for beta).                                                                                       |
+| `MATCH_GIT_URL`      | optional | Git repo URL for [`match`](https://docs.fastlane.tools/actions/match/) certs/profiles. Set this to switch from Xcode-managed automatic signing to `match`. |
+| `MATCH_PASSWORD`     | optional | Passphrase for the `match` encrypted repo (required if `MATCH_GIT_URL` is set).                                                                            |
 
 The three **required** secrets are what the preflight gate checks. Signing
 defaults to **Xcode-managed automatic signing** (`-allowProvisioningUpdates`,
@@ -83,14 +83,14 @@ matching the checked-in project). Set `MATCH_GIT_URL`/`MATCH_PASSWORD` to use
 
 ## Android secrets
 
-| Secret                        | Required | What it is                                                          |
-| ----------------------------- | -------- | ------------------------------------------------------------------- |
-| `ANDROID_KEYSTORE_BASE64`     | ✅       | **base64** of your release keystore (`.jks`/`.keystore`).           |
-| `ANDROID_KEYSTORE_PASSWORD`   | ✅       | Keystore (store) password.                                          |
-| `ANDROID_KEY_ALIAS`           | ✅       | Key alias inside the keystore.                                      |
-| `ANDROID_KEY_PASSWORD`        | ✅       | Password for that key alias.                                        |
-| `PLAY_SERVICE_ACCOUNT_JSON`   | ✅*      | Full JSON of a Google Play service account (raw JSON, not base64).  |
-| `ANDROID_PACKAGE_NAME`        | optional | Overrides the default applicationId `com.lilypad.mobile`.           |
+| Secret                      | Required | What it is                                                         |
+| --------------------------- | -------- | ------------------------------------------------------------------ |
+| `ANDROID_KEYSTORE_BASE64`   | ✅       | **base64** of your release keystore (`.jks`/`.keystore`).          |
+| `ANDROID_KEYSTORE_PASSWORD` | ✅       | Keystore (store) password.                                         |
+| `ANDROID_KEY_ALIAS`         | ✅       | Key alias inside the keystore.                                     |
+| `ANDROID_KEY_PASSWORD`      | ✅       | Password for that key alias.                                       |
+| `PLAY_SERVICE_ACCOUNT_JSON` | ✅*      | Full JSON of a Google Play service account (raw JSON, not base64). |
+| `ANDROID_PACKAGE_NAME`      | optional | Overrides the default applicationId `com.lilypad.mobile`.          |
 
 The four keystore secrets are what the preflight gate checks. `PLAY_SERVICE_ACCOUNT_JSON`
 is required to actually **upload** — without it (*) the lane still builds a
