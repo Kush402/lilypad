@@ -373,15 +373,49 @@ body {
 }
 
 /* ── Trusted devices dashboard (M5.4) ─────────────────────────────────── */
-.control__devices { margin-top: 20px; border-top: 1px solid var(--line, #333); padding-top: 14px; }
-.section-title { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; opacity: 0.7; margin: 0 0 10px; }
-.device-row { cursor: pointer; padding: 4px 0; }
-.device-row--expanded { background: var(--accent-wash); border-radius: 8px; }
-.device-row__summary { display: flex; align-items: center; gap: 12px; padding: 4px 4px; }
-.device-row__info { display: flex; flex-direction: column; flex: 1; min-width: 0; }
-.device-row__name { font-weight: 600; }
-.device-row__meta { font-size: 12px; }
-.device-row__chevron { color: var(--muted); font-size: 12px; transition: transform 0.15s ease; }
+.control__devices {
+  margin-top: 20px;
+  border-top: 1px solid var(--line, #333);
+  padding-top: 14px;
+}
+.section-title {
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  opacity: 0.7;
+  margin: 0 0 10px;
+}
+.device-row {
+  cursor: pointer;
+  padding: 4px 0;
+}
+.device-row--expanded {
+  background: var(--accent-wash);
+  border-radius: 8px;
+}
+.device-row__summary {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 4px 4px;
+}
+.device-row__info {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+.device-row__name {
+  font-weight: 600;
+}
+.device-row__meta {
+  font-size: 12px;
+}
+.device-row__chevron {
+  color: var(--muted);
+  font-size: 12px;
+  transition: transform 0.15s ease;
+}
 .device-row__detail {
   display: flex;
   flex-direction: column;
@@ -391,32 +425,140 @@ body {
   margin-left: 4px;
   border-left: 2px solid var(--line);
 }
-.device-row__fingerprint { display: flex; flex-direction: column; gap: 2px; }
-.device-row__fingerprint .mono { overflow-wrap: anywhere; }
-.device-row__toggle { display: flex; align-items: center; gap: 6px; font-size: 13px; white-space: nowrap; }
-.btn--small { padding: 4px 10px; font-size: 12px; }
+.device-row__fingerprint {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.device-row__fingerprint .mono {
+  overflow-wrap: anywhere;
+}
+.device-row__toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  white-space: nowrap;
+}
+.btn--small {
+  padding: 4px 10px;
+  font-size: 12px;
+}
 /* Inline two-step revoke confirm — replaces window.confirm (unreliable in
  * the wry webview; see the note on `confirmingRevokeId` in Control.tsx). */
-.revoke-confirm { display: flex; flex-direction: column; gap: 6px; padding-top: 4px; border-top: 1px solid var(--line); width: 100%; }
-.revoke-confirm__actions { justify-content: flex-start; }
-.trust-row { gap: 8px; align-items: center; font-size: 14px; }
+.revoke-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 4px;
+  border-top: 1px solid var(--line);
+  width: 100%;
+}
+.revoke-confirm__actions {
+  justify-content: flex-start;
+}
+.trust-row {
+  gap: 8px;
+  align-items: center;
+  font-size: 14px;
+}
 
 /* ── Dashboard (Control window) ────────────────────────────────────────── */
-.dashboard { gap: 4px; }
-.dashboard__subtitle { margin: 2px 0 12px; }
+.dashboard {
+  gap: 4px;
+}
+.dashboard__subtitle {
+  margin: 2px 0 12px;
+}
 .card {
-  background: var(--panel, rgba(255,255,255,0.03));
-  border: 1px solid var(--line, rgba(255,255,255,0.08));
+  background: var(--panel, rgba(255, 255, 255, 0.03));
+  border: 1px solid var(--line, rgba(255, 255, 255, 0.08));
   border-radius: 12px;
   padding: 14px 16px;
   margin-bottom: 12px;
 }
-.section-title-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
-.section-title-row .section-title { margin: 0; }
-.status-row { display: flex; align-items: center; gap: 10px; padding: 5px 0; font-size: 14px; }
-.status-row__label { min-width: 130px; }
-.status-row__value { margin-left: auto; text-align: right; }
-.status-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
-.status-dot--ok { background: #34c759; box-shadow: 0 0 0 3px rgba(52,199,89,0.15); }
-.status-dot--warn { background: #ff9f0a; box-shadow: 0 0 0 3px rgba(255,159,10,0.15); }
-.system-toggle { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line, rgba(255,255,255,0.08)); }
+.section-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.section-title-row .section-title {
+  margin: 0;
+}
+.status-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 0;
+  font-size: 14px;
+}
+.status-row__label {
+  min-width: 130px;
+}
+.status-row__value {
+  margin-left: auto;
+  text-align: right;
+}
+.status-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex: none;
+}
+.status-dot--ok {
+  background: #34c759;
+  box-shadow: 0 0 0 3px rgba(52, 199, 89, 0.15);
+}
+.status-dot--warn {
+  background: #ff9f0a;
+  box-shadow: 0 0 0 3px rgba(255, 159, 10, 0.15);
+}
+.system-toggle {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line, rgba(255, 255, 255, 0.08));
+}
+
+/* Software update (M6). The banner is the launch-time non-intrusive prompt;
+ * the panel lives in Diagnostics. Both reuse the .card / .btn primitives. */
+.update-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  border-color: var(--accent);
+  background: var(--accent-wash);
+}
+.update-banner__body {
+  flex: 1;
+}
+.update-banner__dismiss {
+  background: none;
+  border: none;
+  color: inherit;
+  opacity: 0.6;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  padding: 2px 4px;
+}
+.update-banner__dismiss:hover {
+  opacity: 1;
+}
+.update__msg {
+  margin: 0 0 8px;
+  font-size: 14px;
+}
+.update__actions {
+  margin-top: 4px;
+}
+.update__actions:empty {
+  margin: 0;
+}
+.update__notes {
+  white-space: pre-wrap;
+  font-size: 12px;
+  margin: 4px 0 8px;
+  max-height: 120px;
+  overflow: auto;
+}

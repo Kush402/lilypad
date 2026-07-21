@@ -3,6 +3,7 @@ import { api, type TrustedPairDto } from '../lib/tauri';
 import { useAppState } from '../lib/useAppState';
 import { useLiveResource } from '../lib/useLiveResource';
 import { STATUS_LABEL } from '../lib/status';
+import { SoftwareUpdate } from './SoftwareUpdate';
 
 const SCOPE_LABEL: Record<string, string> = {
   view: 'View',
@@ -81,6 +82,9 @@ export function Control() {
       </header>
 
       <p className="dashboard__subtitle muted">{sessionSummary(session)}</p>
+
+      {/* Silent launch-time update check; renders only when an update exists. */}
+      <SoftwareUpdate variant="banner" />
 
       {session === 'awaiting_approval' ? (
         <section className="control__approve card">

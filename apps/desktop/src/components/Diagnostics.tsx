@@ -1,4 +1,5 @@
 import { useAppState } from '../lib/useAppState';
+import { SoftwareUpdate } from './SoftwareUpdate';
 
 /** Consumer-facing labels for what were internal plugin names before the M3
  * architecture pass deleted the plugin-host layer entirely — the three
@@ -27,6 +28,8 @@ export function Diagnostics() {
     <div className="page diagnostics">
       <h1>Diagnostics</h1>
       <p className="muted">Support/developer information — not shown during normal use.</p>
+
+      <SoftwareUpdate variant="panel" />
 
       <section className="debug">
         <h2>Health</h2>

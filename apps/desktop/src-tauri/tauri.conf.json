@@ -34,9 +34,19 @@
       "csp": null
     }
   },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDU1RTVBMDBDNTA5MTFBNwpSV1NuRVFuRkFGcGVCY2doSkFvTEhJNEpGWWhHWDE2NmxqbFpTYjZIYjlJVE5HbUlXV2lObGV5cAo=",
+      "endpoints": ["https://github.com/Kush402/lilypad/releases/latest/download/latest.json"]
+    }
+  },
   "bundle": {
     "active": true,
     "targets": "all",
-    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.png"]
+    "createUpdaterArtifacts": true,
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.png"],
+    "macOS": {
+      "minimumSystemVersion": "12.3"
+    }
   }
 }
