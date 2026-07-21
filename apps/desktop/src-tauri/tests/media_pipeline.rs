@@ -138,8 +138,12 @@ async fn dropped_frame_recovers_with_immediate_keyframe() {
     let (tx, mut rx) = tokio::sync::mpsc::channel::<EncodedSample>(1);
     let mut pipeline = MediaPipeline::start(cfg, tx).expect("pipeline starts");
 
-    // Let drops accumulate.
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    // Let drops accumulate. Generous margin (30fps means 500ms is already
+    // ~15 frames of headroom past the capacity-1 queue) to absorb capture/
+    // encode thread startup latency on a slow or freshly-provisioned CI
+    // runner, which can eat several hundred ms before the first frame is
+    // even produced.
+    tokio::time::sleep(Duration::from_millis(1500)).await;
 
     let first = tokio::time::timeout(Duration::from_secs(5), rx.recv())
         .await

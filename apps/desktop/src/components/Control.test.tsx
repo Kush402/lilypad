@@ -19,7 +19,7 @@ vi.mock('../lib/tauri', () => ({
     // Trusted devices dashboard (M5.4)
     listTrustedDevices: vi.fn().mockResolvedValue([]),
     setPairAutoApprove: vi.fn(),
-    revokePair: vi.fn(),
+    revokePair: vi.fn().mockResolvedValue(undefined),
     getLoginItemEnabled: vi.fn().mockResolvedValue(true),
     setLoginItemEnabled: vi.fn(),
     getPermissionStatus: vi.fn().mockResolvedValue({ screen_capture: true, accessibility: true }),
