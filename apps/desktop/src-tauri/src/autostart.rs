@@ -111,6 +111,9 @@ mod tests {
 
     #[test]
     fn xml_escape_neutralizes_markup() {
-        assert_eq!(xml_escape(r#"/a&b<c>"d'"#), "/a&amp;b&lt;c&gt;&quot;d&apos;");
+        assert_eq!(
+            xml_escape(r#"/a&b<c>"d'"#),
+            "/a&amp;b&lt;c&gt;&quot;d&apos;"
+        );
     }
 }

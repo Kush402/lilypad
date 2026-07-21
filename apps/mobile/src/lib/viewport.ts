@@ -64,10 +64,7 @@ export function zoomAt(
   ratio: number,
   container: Size,
 ): Viewport {
-  const nextScale = Math.min(
-    VIEWPORT_MAX_SCALE,
-    Math.max(VIEWPORT_MIN_SCALE, vp.scale * ratio),
-  );
+  const nextScale = Math.min(VIEWPORT_MAX_SCALE, Math.max(VIEWPORT_MIN_SCALE, vp.scale * ratio));
   // Content point currently under the focal screen point…
   const cx = (focal.x - vp.tx) / vp.scale;
   const cy = (focal.y - vp.ty) / vp.scale;

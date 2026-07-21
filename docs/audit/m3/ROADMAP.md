@@ -717,7 +717,7 @@ Found while building this phase's inventory — verified against current source,
    `deserialize_with` bounds in `input/protocol.rs` (the actual enforcement boundary, since input events
    never pass through the backend) — both sides tested.
 4. **Finding 10** (`/pairing/create` no per-identity limit) — route-level `{ config: { rateLimit: {
-   max: 5, timeWindow: '1 minute' } } }` override (`routes/pairing.ts`), tighter than the generic
+max: 5, timeWindow: '1 minute' } } }` override (`routes/pairing.ts`), tighter than the generic
    120/min global limiter.
 5. **Finding 11** (secret validation only catches the literal dev default) — `productionSafetyProblems`
    now also rejects any `TURN_SECRET` under 32 characters, not just the exact known default (`env.ts`).
@@ -859,8 +859,7 @@ clean.
 ### What's left in Phase 8 — not yet attempted, organized by tractability
 
 **66 findings total (per the original count); this pass resolved backend-security.md in full (8
-findings), 4 correctness bugs, and 8 more across input-touch/desktop-ux/mobile-ux — roughly 20 of the
-66.** What remains, by document:
+findings), 4 correctness bugs, and 8 more across input-touch/desktop-ux/mobile-ux — roughly 20 of the 66.** What remains, by document:
 
 - **`streaming-media.md`** (11 of 17 open: 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13) — the largest remaining
   bucket. Findings 3/4 (double frame-copy) and 5/6/11/12/13 (dirty-region detection, TWCC/RTT-based ABR,

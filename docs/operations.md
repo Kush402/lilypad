@@ -6,12 +6,12 @@ server-side footprint.)
 
 ## Footprint
 
-| Service | Image / runtime | Purpose | State |
-| --- | --- | --- | --- |
-| backend | Node 20+ (Fastify) | REST pairing + WS signaling + TURN credential minting | stateless* |
-| Postgres | `postgres:16-alpine` | users/devices/sessions/audit logs | persistent |
-| Redis | `redis:7-alpine` | pairing tokens (60s TTL), room records | ephemeral-ok |
-| coturn | `coturn/coturn:4.6` | STUN/TURN relay for NAT traversal | stateless |
+| Service  | Image / runtime      | Purpose                                               | State        |
+| -------- | -------------------- | ----------------------------------------------------- | ------------ |
+| backend  | Node 20+ (Fastify)   | REST pairing + WS signaling + TURN credential minting | stateless*   |
+| Postgres | `postgres:16-alpine` | users/devices/sessions/audit logs                     | persistent   |
+| Redis    | `redis:7-alpine`     | pairing tokens (60s TTL), room records                | ephemeral-ok |
+| coturn   | `coturn/coturn:4.6`  | STUN/TURN relay for NAT traversal                     | stateless    |
 
 \* Live rooms are held in memory but persisted to Redis; on restart the
 backend resurrects non-terminal rooms (`hub.resurrect`), so a deploy does
@@ -41,7 +41,7 @@ survive network changes. **Always pin them explicitly in production.**
   this to your load-balancer health check.
 - `GET /metrics` — JSON counters (rooms, sessions started/ended, peers
   reaped, signaling errors). Requires `Authorization: Bearer
-  $METRICS_BEARER_TOKEN`. Scrape into your metrics system of choice.
+$METRICS_BEARER_TOKEN`. Scrape into your metrics system of choice.
 - Backend logs are structured JSON (pino) on stdout — ship them with any
   log collector. Session lifecycle, pairing, reaping, and origin rejections
   all log with stable event shapes.
@@ -78,10 +78,10 @@ deployment:
 
 ## Incident quick reference
 
-| Symptom | First checks |
-| --- | --- |
-| Pairing fails everywhere | `/health` — Redis down? 429s in logs (rate limit)? |
-| Phones connect but no video over internet | coturn reachability, `TURN_EXTERNAL_IP`, relay port range open, TURN secret matches |
-| WS connects then drops ~30s | client heartbeats missing (`heartbeat timeout — reaping peer` in logs) |
-| `WS upgrade carried a browser Origin header — rejecting` | proxy rewrote `Host` — forward the original Host header |
-| Backend refuses to boot in production | read the printed `productionSafetyProblems` list — it names each unsafe setting |
+| Symptom                                                  | First checks                                                                        |
+| -------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| Pairing fails everywhere                                 | `/health` — Redis down? 429s in logs (rate limit)?                                  |
+| Phones connect but no video over internet                | coturn reachability, `TURN_EXTERNAL_IP`, relay port range open, TURN secret matches |
+| WS connects then drops ~30s                              | client heartbeats missing (`heartbeat timeout — reaping peer` in logs)              |
+| `WS upgrade carried a browser Origin header — rejecting` | proxy rewrote `Host` — forward the original Host header                             |
+| Backend refuses to boot in production                    | read the printed `productionSafetyProblems` list — it names each unsafe setting     |

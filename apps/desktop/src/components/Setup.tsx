@@ -136,7 +136,11 @@ export function Setup() {
             permission.
           </p>
           <div className="row">
-            <button className="btn btn--primary" disabled={restarting} onClick={() => void restart()}>
+            <button
+              className="btn btn--primary"
+              disabled={restarting}
+              onClick={() => void restart()}
+            >
               {restarting ? 'Restarting…' : 'Restart Lilypad'}
             </button>
           </div>

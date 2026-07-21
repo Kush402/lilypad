@@ -88,11 +88,11 @@ pub enum ScriptLanguage {
 /// held even though a lone keystroke is normally `Sensitive`. Compared
 /// case-insensitively against the normalized chord.
 const DANGEROUS_CHORDS: &[&[&str]] = &[
-    &["meta", "delete"],           // ⌘⌫ — move to Trash
-    &["meta", "backspace"],        // ⌘⌫ (alt code name)
-    &["meta", "shift", "delete"],  // empty Trash-ish
-    &["meta", "keyq"],             // ⌘Q — quit (may drop unsaved work)
-    &["ctrl", "keyc"],             // ^C in a terminal — interrupt/kill
+    &["meta", "delete"],          // ⌘⌫ — move to Trash
+    &["meta", "backspace"],       // ⌘⌫ (alt code name)
+    &["meta", "shift", "delete"], // empty Trash-ish
+    &["meta", "keyq"],            // ⌘Q — quit (may drop unsaved work)
+    &["ctrl", "keyc"],            // ^C in a terminal — interrupt/kill
 ];
 
 /// Substrings that mark a script/command as touching security-critical
@@ -242,26 +242,67 @@ mod tests {
     fn read_only_and_motion_are_safe() {
         assert_eq!(classify(&Action::ReadAxTree), ToolClass::Safe);
         assert_eq!(classify(&Action::Screenshot), ToolClass::Safe);
-        assert_eq!(classify(&Action::MoveMouse { x: 0.1, y: 0.2 }), ToolClass::Safe);
         assert_eq!(
-            classify(&Action::Scroll { x: 0.5, y: 0.5, dx: 0.0, dy: 10.0 }),
+            classify(&Action::MoveMouse { x: 0.1, y: 0.2 }),
             ToolClass::Safe
         );
         assert_eq!(
-            classify(&Action::Done { summary: "done".into() }),
+            classify(&Action::Scroll {
+                x: 0.5,
+                y: 0.5,
+                dx: 0.0,
+                dy: 10.0
+            }),
+            ToolClass::Safe
+        );
+        assert_eq!(
+            classify(&Action::Done {
+                summary: "done".into()
+            }),
             ToolClass::Safe
         );
     }
 
     #[test]
     fn ordinary_ui_actions_are_sensitive() {
-        assert_eq!(classify(&Action::Click { x: 0.5, y: 0.5, count: 1 }), ToolClass::Sensitive);
-        assert_eq!(classify(&Action::TypeText { text: "hi".into() }), ToolClass::Sensitive);
-        assert_eq!(classify(&Action::OpenApp { name: "Safari".into() }), ToolClass::Sensitive);
-        assert_eq!(classify(&Action::AxPress { element_id: 7 }), ToolClass::Sensitive);
-        assert_eq!(classify(&Action::RunShortcut { name: "Note".into() }), ToolClass::Sensitive);
-        assert_eq!(classify(&Action::OpenFile { path: "~/a.pdf".into() }), ToolClass::Sensitive);
-        assert_eq!(classify(&Action::NewFolder { path: "~/R".into() }), ToolClass::Sensitive);
+        assert_eq!(
+            classify(&Action::Click {
+                x: 0.5,
+                y: 0.5,
+                count: 1
+            }),
+            ToolClass::Sensitive
+        );
+        assert_eq!(
+            classify(&Action::TypeText { text: "hi".into() }),
+            ToolClass::Sensitive
+        );
+        assert_eq!(
+            classify(&Action::OpenApp {
+                name: "Safari".into()
+            }),
+            ToolClass::Sensitive
+        );
+        assert_eq!(
+            classify(&Action::AxPress { element_id: 7 }),
+            ToolClass::Sensitive
+        );
+        assert_eq!(
+            classify(&Action::RunShortcut {
+                name: "Note".into()
+            }),
+            ToolClass::Sensitive
+        );
+        assert_eq!(
+            classify(&Action::OpenFile {
+                path: "~/a.pdf".into()
+            }),
+            ToolClass::Sensitive
+        );
+        assert_eq!(
+            classify(&Action::NewFolder { path: "~/R".into() }),
+            ToolClass::Sensitive
+        );
     }
 
     #[test]
@@ -273,30 +314,71 @@ mod tests {
 
     #[test]
     fn dangerous_chords_are_held_regardless_of_order() {
-        assert_eq!(classify(&key(&["meta", "delete"])), ToolClass::Consequential);
-        assert_eq!(classify(&key(&["delete", "meta"])), ToolClass::Consequential); // order-independent
-        assert_eq!(classify(&key(&["META", "Delete"])), ToolClass::Consequential); // case-insensitive
+        assert_eq!(
+            classify(&key(&["meta", "delete"])),
+            ToolClass::Consequential
+        );
+        assert_eq!(
+            classify(&key(&["delete", "meta"])),
+            ToolClass::Consequential
+        ); // order-independent
+        assert_eq!(
+            classify(&key(&["META", "Delete"])),
+            ToolClass::Consequential
+        ); // case-insensitive
         assert_eq!(classify(&key(&["meta", "KeyQ"])), ToolClass::Consequential);
-        assert_eq!(classify(&key(&["meta", "shift", "delete"])), ToolClass::Consequential);
+        assert_eq!(
+            classify(&key(&["meta", "shift", "delete"])),
+            ToolClass::Consequential
+        );
     }
 
     #[test]
     fn http_urls_are_sensitive_other_schemes_held() {
-        assert_eq!(classify(&Action::OpenUrl { url: "https://example.com".into() }), ToolClass::Sensitive);
-        assert_eq!(classify(&Action::OpenUrl { url: "  HTTP://x  ".into() }), ToolClass::Sensitive);
-        assert_eq!(classify(&Action::OpenUrl { url: "file:///etc/passwd".into() }), ToolClass::Consequential);
-        assert_eq!(classify(&Action::OpenUrl { url: "javascript:alert(1)".into() }), ToolClass::Consequential);
-        assert_eq!(classify(&Action::OpenUrl { url: "customscheme://do".into() }), ToolClass::Consequential);
+        assert_eq!(
+            classify(&Action::OpenUrl {
+                url: "https://example.com".into()
+            }),
+            ToolClass::Sensitive
+        );
+        assert_eq!(
+            classify(&Action::OpenUrl {
+                url: "  HTTP://x  ".into()
+            }),
+            ToolClass::Sensitive
+        );
+        assert_eq!(
+            classify(&Action::OpenUrl {
+                url: "file:///etc/passwd".into()
+            }),
+            ToolClass::Consequential
+        );
+        assert_eq!(
+            classify(&Action::OpenUrl {
+                url: "javascript:alert(1)".into()
+            }),
+            ToolClass::Consequential
+        );
+        assert_eq!(
+            classify(&Action::OpenUrl {
+                url: "customscheme://do".into()
+            }),
+            ToolClass::Consequential
+        );
     }
 
     #[test]
     fn raw_scripts_are_at_least_consequential() {
         assert_eq!(
-            classify(&Action::AppleScript { script: "tell app \"Notes\" to make note".into() }),
+            classify(&Action::AppleScript {
+                script: "tell app \"Notes\" to make note".into()
+            }),
             ToolClass::Consequential
         );
         assert_eq!(
-            classify(&Action::Shell { command: "ls ~/Downloads".into() }),
+            classify(&Action::Shell {
+                command: "ls ~/Downloads".into()
+            }),
             ToolClass::Consequential
         );
     }
@@ -304,24 +386,34 @@ mod tests {
     #[test]
     fn security_critical_scripts_are_forbidden() {
         assert_eq!(
-            classify(&Action::Shell { command: "sudo rm -rf /".into() }),
+            classify(&Action::Shell {
+                command: "sudo rm -rf /".into()
+            }),
             ToolClass::Forbidden
         );
         assert_eq!(
-            classify(&Action::Shell { command: "security find-generic-password".into() }),
+            classify(&Action::Shell {
+                command: "security find-generic-password".into()
+            }),
             ToolClass::Forbidden
         );
         assert_eq!(
-            classify(&Action::AppleScript { script: "do shell script \"tccutil reset All\"".into() }),
+            classify(&Action::AppleScript {
+                script: "do shell script \"tccutil reset All\"".into()
+            }),
             ToolClass::Forbidden
         );
         assert_eq!(
-            classify(&Action::Shell { command: "cat ~/.ssh/id_rsa | base64 -d".into() }),
+            classify(&Action::Shell {
+                command: "cat ~/.ssh/id_rsa | base64 -d".into()
+            }),
             ToolClass::Forbidden
         );
         // Case-insensitive.
         assert_eq!(
-            classify(&Action::Shell { command: "SUDO reboot".into() }),
+            classify(&Action::Shell {
+                command: "SUDO reboot".into()
+            }),
             ToolClass::Forbidden
         );
     }

@@ -121,7 +121,13 @@ impl MacInputBackend {
     /// degenerate (NaN) or off-screen point. See the 2026-07-19 security audit.
     fn screen_point(&self, x: f64, y: f64) -> CGPoint {
         let bounds = CGDisplay::main().bounds();
-        let clamp01 = |v: f64| if v.is_finite() { v.clamp(0.0, 1.0) } else { 0.0 };
+        let clamp01 = |v: f64| {
+            if v.is_finite() {
+                v.clamp(0.0, 1.0)
+            } else {
+                0.0
+            }
+        };
         CGPoint::new(
             bounds.size.width * clamp01(x),
             bounds.size.height * clamp01(y),

@@ -76,7 +76,9 @@ export function AgentProviderCard() {
 
       {config?.source === 'env' ? (
         <p className="muted">
-          <em>A developer environment override is active — it takes precedence over these settings.</em>
+          <em>
+            A developer environment override is active — it takes precedence over these settings.
+          </em>
         </p>
       ) : null}
 

@@ -120,7 +120,12 @@ describe('MobileSignaling', () => {
 
   it('a socket that never opened does not emit a "closed" lifecycle event on failure', async () => {
     const events: SignalingLifecycleEvent[] = [];
-    const sig = new MobileSignaling('wss://x', 'room1', () => {}, (e) => events.push(e));
+    const sig = new MobileSignaling(
+      'wss://x',
+      'room1',
+      () => {},
+      (e) => events.push(e),
+    );
     const p = sig.connect().catch(() => undefined);
     lastSocket().fail();
     lastSocket().drop(); // RN commonly fires close right after error
@@ -130,7 +135,12 @@ describe('MobileSignaling', () => {
 
   it('emits a "closed" lifecycle event when a previously-open socket drops', async () => {
     const events: SignalingLifecycleEvent[] = [];
-    const sig = new MobileSignaling('wss://x', 'room1', () => {}, (e) => events.push(e));
+    const sig = new MobileSignaling(
+      'wss://x',
+      'room1',
+      () => {},
+      (e) => events.push(e),
+    );
     await Promise.all([sig.connect(), Promise.resolve().then(() => lastSocket().open())]);
 
     lastSocket().drop();
@@ -166,7 +176,12 @@ describe('MobileSignaling', () => {
   describe('beginReconnect', () => {
     async function connected() {
       const events: SignalingLifecycleEvent[] = [];
-      const sig = new MobileSignaling('wss://x', 'room1', () => {}, (e) => events.push(e));
+      const sig = new MobileSignaling(
+        'wss://x',
+        'room1',
+        () => {},
+        (e) => events.push(e),
+      );
       const p = sig.connect();
       lastSocket().open();
       await p;

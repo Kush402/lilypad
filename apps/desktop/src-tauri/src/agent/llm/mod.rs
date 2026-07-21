@@ -407,7 +407,8 @@ fn base_tools() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "finish",
-            description: "Call when the task is complete. Provide a one-line summary of what was done.",
+            description:
+                "Call when the task is complete. Provide a one-line summary of what was done.",
             input_schema: json!({
                 "type": "object",
                 "properties": { "summary": { "type": "string" } },
@@ -626,9 +627,7 @@ impl<P: LlmProvider + Send> Brain for LlmBrain<P> {
             // A model that answers with prose instead of a tool call is treated
             // as finished — better than looping forever.
             None => Ok(Decision::Finish {
-                summary: reply
-                    .text
-                    .unwrap_or_else(|| "Task complete".to_string()),
+                summary: reply.text.unwrap_or_else(|| "Task complete".to_string()),
             }),
         }
     }
@@ -692,7 +691,10 @@ mod tests {
 
     #[test]
     fn vision_tool_is_gated_on_capability() {
-        let with_vision = agent_tools(ProviderCaps { vision: true, ..Default::default() });
+        let with_vision = agent_tools(ProviderCaps {
+            vision: true,
+            ..Default::default()
+        });
         assert!(with_vision.iter().any(|t| t.name == "take_screenshot"));
         // AX/skill tools are always present, vision-independent.
         assert!(with_vision.iter().any(|t| t.name == "read_ax_tree"));
@@ -713,7 +715,11 @@ mod tests {
         .unwrap();
         assert!(matches!(
             d,
-            Decision::Act { action: Action::Screenshot, tier: AgentTier::Vision, .. }
+            Decision::Act {
+                action: Action::Screenshot,
+                tier: AgentTier::Vision,
+                ..
+            }
         ));
     }
 
@@ -733,7 +739,13 @@ mod tests {
         .unwrap();
         match d {
             Decision::Act {
-                action: Action::RunScript { language, writable_paths, needs_network, .. },
+                action:
+                    Action::RunScript {
+                        language,
+                        writable_paths,
+                        needs_network,
+                        ..
+                    },
                 tier: AgentTier::Sandbox,
                 ..
             } => {
@@ -760,7 +772,7 @@ mod tests {
                 id: "1".into(),
                 name: "finish".into(),
                 input: json!({ "summary": "done" }),
-            extra: None,
+                extra: None,
             })
             .unwrap(),
             Decision::Finish { .. }
@@ -819,12 +831,7 @@ mod tests {
                 })
                 .unwrap_or_default();
             self.seen_last_blocks.lock().unwrap().push(last);
-            Ok(self
-                .replies
-                .lock()
-                .unwrap()
-                .pop_front()
-                .unwrap_or_default())
+            Ok(self.replies.lock().unwrap().pop_front().unwrap_or_default())
         }
         fn caps(&self) -> ProviderCaps {
             ProviderCaps {

@@ -32,7 +32,11 @@ impl Executor for AxExecutor {
                 // async worker.
                 let snapshot = match tokio::task::spawn_blocking(ax::read_focused_tree).await {
                     Ok(Ok(s)) => s,
-                    Ok(Err(e)) => return Ok(Observation::fail(format!("could not read the accessibility tree: {e}"))),
+                    Ok(Err(e)) => {
+                        return Ok(Observation::fail(format!(
+                            "could not read the accessibility tree: {e}"
+                        )))
+                    }
                     Err(e) => return Ok(Observation::fail(format!("ax read task failed: {e}"))),
                 };
                 let text = tree::serialize(&snapshot.nodes);
@@ -69,7 +73,9 @@ impl AxExecutor {
         #[cfg(target_os = "macos")]
         {
             let Some(handle) = snapshot.handle(element_id) else {
-                return Ok(Observation::fail(format!("element [{element_id}] handle missing")));
+                return Ok(Observation::fail(format!(
+                    "element [{element_id}] handle missing"
+                )));
             };
             match ax::macos::press(handle) {
                 Ok(()) => Ok(Observation::ok(format!("pressed element [{element_id}]"))),
@@ -79,7 +85,9 @@ impl AxExecutor {
         #[cfg(not(target_os = "macos"))]
         {
             let _ = snapshot;
-            Ok(Observation::fail("the accessibility tier is only available on macOS"))
+            Ok(Observation::fail(
+                "the accessibility tier is only available on macOS",
+            ))
         }
     }
 }

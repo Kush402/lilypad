@@ -145,12 +145,18 @@ mod tests {
         let out = serialize(&nodes);
         assert!(out.contains("10 more elements omitted"));
         // The capped body has MAX_NODES element lines + the omission note.
-        assert_eq!(out.lines().filter(|l| l.contains("AXCell")).count(), MAX_NODES);
+        assert_eq!(
+            out.lines().filter(|l| l.contains("AXCell")).count(),
+            MAX_NODES
+        );
     }
 
     #[test]
     fn pressable_lookup() {
-        let nodes = vec![node(0, 0, "AXButton", None, true), node(1, 0, "AXStaticText", None, false)];
+        let nodes = vec![
+            node(0, 0, "AXButton", None, true),
+            node(1, 0, "AXStaticText", None, false),
+        ];
         assert_eq!(pressable_by_id(&nodes, 0), Some(true));
         assert_eq!(pressable_by_id(&nodes, 1), Some(false));
         assert_eq!(pressable_by_id(&nodes, 99), None);

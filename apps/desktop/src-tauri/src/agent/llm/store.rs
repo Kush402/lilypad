@@ -75,7 +75,9 @@ fn security_interactive(command: &str) -> Result<String> {
         .ok_or_else(|| anyhow!("no stdin"))?
         .write_all(command.as_bytes())
         .context("writing to security(1)")?;
-    let out = child.wait_with_output().context("waiting for security(1)")?;
+    let out = child
+        .wait_with_output()
+        .context("waiting for security(1)")?;
     if !out.status.success() {
         return Err(anyhow!(
             "security(1) failed: {}",
@@ -109,7 +111,14 @@ pub fn keychain_set(kind: &str, api_key: &str) -> Result<()> {
 pub fn keychain_get(kind: &str) -> Option<String> {
     // `find-generic-password -w` prints the secret alone on stdout.
     let out = Command::new("/usr/bin/security")
-        .args(["find-generic-password", "-s", KEYCHAIN_SERVICE, "-a", kind, "-w"])
+        .args([
+            "find-generic-password",
+            "-s",
+            KEYCHAIN_SERVICE,
+            "-a",
+            kind,
+            "-w",
+        ])
         .output()
         .ok()?;
     if !out.status.success() {

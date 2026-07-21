@@ -14,7 +14,7 @@ See the [README](README.md) for per-app run commands and
 
 - **Every change ships with its tests.** Backend logic is unit-tested with
   vitest; mobile gesture/screen logic with jest; desktop Rust with `cargo
-  test` (pure logic is kept in dependency-free modules precisely so it can
+test` (pure logic is kept in dependency-free modules precisely so it can
   be). If you fixed a bug, add the test that would have caught it.
 - **The protocol package is the single source of truth** for anything that
   crosses a process boundary. Change `packages/protocol` first; the Rust

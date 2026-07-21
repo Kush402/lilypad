@@ -12,14 +12,14 @@
 
 ### Transport & session (STABLE — do not touch, reuse as-is)
 
-| Subsystem | Where | State |
-|---|---|---|
-| WebRTC peer (offerer) | `apps/desktop/src-tauri/src/rtc/mod.rs` | H.264 track + 2 DataChannels (`lilypad-input` reliable, `lilypad-input-move` lossy). Battle-tested tonight over cellular relay. |
-| Session FSM + runner | `apps/desktop/src-tauri/src/session/mod.rs` | Approval, ICE restart budget, traffic-liveness (`last_peer_traffic` outvotes false ICE verdicts), 12s blip absorption. |
-| Signaling | `apps/backend/src/signaling/` | Room/seat model, same-device zombie eviction, seat-hold grace. Survives flappy cellular. |
-| Media/ABR | `apps/desktop/src-tauri/src/media/` | SCK capture → VideoToolbox → AIMD + REMB probe-ladder. |
-| Input pipeline | `apps/desktop/src-tauri/src/input/` | `InputDispatcher` with `Scope` (view/control) enforced at the injection boundary; gate requires peer-connected + channel-open + scope. |
-| Permissions | `apps/desktop/src-tauri/src/permission.rs` | ScreenCapture + Accessibility status/request/settings-deeplink. **Both permissions Ask needs are already held.** |
+| Subsystem             | Where                                       | State                                                                                                                                  |
+| --------------------- | ------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| WebRTC peer (offerer) | `apps/desktop/src-tauri/src/rtc/mod.rs`     | H.264 track + 2 DataChannels (`lilypad-input` reliable, `lilypad-input-move` lossy). Battle-tested tonight over cellular relay.        |
+| Session FSM + runner  | `apps/desktop/src-tauri/src/session/mod.rs` | Approval, ICE restart budget, traffic-liveness (`last_peer_traffic` outvotes false ICE verdicts), 12s blip absorption.                 |
+| Signaling             | `apps/backend/src/signaling/`               | Room/seat model, same-device zombie eviction, seat-hold grace. Survives flappy cellular.                                               |
+| Media/ABR             | `apps/desktop/src-tauri/src/media/`         | SCK capture → VideoToolbox → AIMD + REMB probe-ladder.                                                                                 |
+| Input pipeline        | `apps/desktop/src-tauri/src/input/`         | `InputDispatcher` with `Scope` (view/control) enforced at the injection boundary; gate requires peer-connected + channel-open + scope. |
+| Permissions           | `apps/desktop/src-tauri/src/permission.rs`  | ScreenCapture + Accessibility status/request/settings-deeplink. **Both permissions Ask needs are already held.**                       |
 
 Note: the M1 "plugin system" from the original plan does **not** exist as a
 trait-based plugin host — the codebase evolved into direct modules
@@ -29,18 +29,19 @@ abstraction for Ask; module boundaries are working well.
 
 ### The existing Ask implementation (M5.3 vertical slice — built, live-tested)
 
-| Component | Where | Assessment |
-|---|---|---|
-| Wire protocol | `packages/protocol/src/agent.ts` + `agent/protocol.rs` | zod + serde mirrors; bounded fields; fail-closed `parse_inbound`. Rides the existing reliable input channel (desktop→phone frames are TEXT — binary was silently dropped by RN, fixed `6bf2709`). **Good; extend, don't replace.** |
-| Security gate | `agent/security.rs` | Pure `classify(Action) → Safe/Sensitive/Consequential/Forbidden`. Structural (runner calls it on every action — unbypassable by construction). Dangerous chords → Consequential; forbidden substrings (sudo/keychain/tccutil/…) → hard refuse. **Matches the spec's security philosophy already.** |
-| Runner loop | `agent/runner.rs` | observe→decide→act, `Gate::Run/Hold/Refuse`, race-safe cancel, stale-decision filtering, step feed. This IS a single-level ReAct loop — no planner/validator yet. |
-| LLM layer | `agent/llm/mod.rs` (`LlmProvider` trait) + `llm/anthropic.rs` | Trait is provider-agnostic (`complete()`, `supports_vision()`); Anthropic adapter is pure build/parse + reqwest; config via env (`LILYPAD_ANTHROPIC_API_KEY`), inert when unset. **Right shape, but see gaps.** |
-| Executor tier 1 | `agent/executor/skills.rs` | `plan_command → CommandSpec{program,args}` — argv only, **no shell**, URL scheme validation, control-char rejection. Skills: open_app / open_url / reveal_in_finder / run_shortcut. |
-| Session wiring | `agent/controller.rs` + session demux | `agent_command` requires control scope + configured provider; human input = instant takeover (desktop-authoritative); teardown cancels runs. |
-| Mobile UI | `AgentPanel.tsx` + `agentFeed.ts` reducer | Command entry, live step feed, hold-card approve/deny, optimistic Stop. Pure reducer, tested. |
+| Component       | Where                                                         | Assessment                                                                                                                                                                                                                                                                                         |
+| --------------- | ------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Wire protocol   | `packages/protocol/src/agent.ts` + `agent/protocol.rs`        | zod + serde mirrors; bounded fields; fail-closed `parse_inbound`. Rides the existing reliable input channel (desktop→phone frames are TEXT — binary was silently dropped by RN, fixed `6bf2709`). **Good; extend, don't replace.**                                                                 |
+| Security gate   | `agent/security.rs`                                           | Pure `classify(Action) → Safe/Sensitive/Consequential/Forbidden`. Structural (runner calls it on every action — unbypassable by construction). Dangerous chords → Consequential; forbidden substrings (sudo/keychain/tccutil/…) → hard refuse. **Matches the spec's security philosophy already.** |
+| Runner loop     | `agent/runner.rs`                                             | observe→decide→act, `Gate::Run/Hold/Refuse`, race-safe cancel, stale-decision filtering, step feed. This IS a single-level ReAct loop — no planner/validator yet.                                                                                                                                  |
+| LLM layer       | `agent/llm/mod.rs` (`LlmProvider` trait) + `llm/anthropic.rs` | Trait is provider-agnostic (`complete()`, `supports_vision()`); Anthropic adapter is pure build/parse + reqwest; config via env (`LILYPAD_ANTHROPIC_API_KEY`), inert when unset. **Right shape, but see gaps.**                                                                                    |
+| Executor tier 1 | `agent/executor/skills.rs`                                    | `plan_command → CommandSpec{program,args}` — argv only, **no shell**, URL scheme validation, control-char rejection. Skills: open_app / open_url / reveal_in_finder / run_shortcut.                                                                                                                |
+| Session wiring  | `agent/controller.rs` + session demux                         | `agent_command` requires control scope + configured provider; human input = instant takeover (desktop-authoritative); teardown cancels runs.                                                                                                                                                       |
+| Mobile UI       | `AgentPanel.tsx` + `agentFeed.ts` reducer                     | Command entry, live step feed, hold-card approve/deny, optimistic Stop. Pure reducer, tested.                                                                                                                                                                                                      |
 
 Test coverage: 39 agent-specific Rust tests, protocol tests on backend, reducer
-+ panel tests on mobile. All green at `efb1f0d`.
+
+- panel tests on mobile. All green at `efb1f0d`.
 
 ### Field-test findings already folded in (2026-07-17/18)
 
@@ -70,7 +71,7 @@ Ask touches, in order of blast radius:
 
 ## 3. Proposed Ask architecture (fits what exists; no redesign)
 
-The spec's pipeline maps onto the current code as an *evolution of the runner*,
+The spec's pipeline maps onto the current code as an _evolution of the runner_,
 not a new system:
 
 ```
@@ -114,14 +115,14 @@ Gaps to close (ordered by severity):
 2. **Prompt injection surface grows with P3/P4** — AX-tree text and screenshots
    are attacker-influenceable content entering the prompt. Mitigations: mark
    observed content as untrusted in the prompt frame; never let observed text
-   authorize a class-downgrade (classification happens on the *action*, not
+   authorize a class-downgrade (classification happens on the _action_, not
    the model's claim); keep Consequential holds regardless of model rationale.
 3. **API key handling** — env-var interim; keys belong in the OS keychain
    (macOS Security.framework) behind a settings command. Never in the repo,
    never in the QR, never on the wire to the phone.
 4. **Audit trail persistence** — agent runs log to the app log only. Move to
    the existing audit-log pattern with: run id, intent text,每 action + class
-   + decision + outcome. Local file is sufficient for M5.
+   - decision + outcome. Local file is sufficient for M5.
 5. **Destructive-op confirmation** — exists (Consequential → hold card). Keep
    the phone as the only approver; never auto-approve from desktop state.
 6. **Clipboard** — agent actions must not read the clipboard into prompts
@@ -133,13 +134,13 @@ Gaps to close (ordered by severity):
 
 ## 5. Execution hierarchy (concrete, per spec priorities)
 
-| Spec priority | Lilypad tier | Mechanism | Status |
-|---|---|---|---|
-| P1 direct OS | tier 1 skills | argv `CommandSpec`: `open -a`, `open <url>`, `open -R`, `shortcuts run`; extend with: open-file, mkdir/new-folder (path-validated, user-dir-jailed), app-quit, front-window AppleScript verbs generated from a **static allowlisted template set** (no free-form script from the model) | shipped (4 skills) + extension |
-| P2 sandboxed code | tier 1.5 (new) | model-generated scripts run under the sandbox (§7); languages: shell (restricted), AppleScript, Python-if-present | missing — blocked on sandbox |
-| P3 AX/DOM | tier 2 | `AXUIElement` read (~50ms) + `AXPress`/`CGEventPostToPid`; serialized AX tree as text observation (10× cheaper than screenshots) | planned (M5.3 step 4) |
-| P4 vision | tier 3 | provider `supports_vision` + screenshot observation, 1280-wide downscale, coordinate scale-back | planned (M5.3 step 5) |
-| P5 raw input | last resort | existing `InputDispatcher` path with synthetic events; only reachable when P3/P4 grounding produced a coordinate | exists (human path); agent use gated to explicit fallback |
+| Spec priority     | Lilypad tier   | Mechanism                                                                                                                                                                                                                                                                               | Status                                                    |
+| ----------------- | -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------- |
+| P1 direct OS      | tier 1 skills  | argv `CommandSpec`: `open -a`, `open <url>`, `open -R`, `shortcuts run`; extend with: open-file, mkdir/new-folder (path-validated, user-dir-jailed), app-quit, front-window AppleScript verbs generated from a **static allowlisted template set** (no free-form script from the model) | shipped (4 skills) + extension                            |
+| P2 sandboxed code | tier 1.5 (new) | model-generated scripts run under the sandbox (§7); languages: shell (restricted), AppleScript, Python-if-present                                                                                                                                                                       | missing — blocked on sandbox                              |
+| P3 AX/DOM         | tier 2         | `AXUIElement` read (~50ms) + `AXPress`/`CGEventPostToPid`; serialized AX tree as text observation (10× cheaper than screenshots)                                                                                                                                                        | planned (M5.3 step 4)                                     |
+| P4 vision         | tier 3         | provider `supports_vision` + screenshot observation, 1280-wide downscale, coordinate scale-back                                                                                                                                                                                         | planned (M5.3 step 5)                                     |
+| P5 raw input      | last resort    | existing `InputDispatcher` path with synthetic events; only reachable when P3/P4 grounding produced a coordinate                                                                                                                                                                        | exists (human path); agent use gated to explicit fallback |
 
 Selector rule (pure function, unit-testable): first tier whose capability set
 covers the subgoal wins; verification failure escalates exactly one tier.
@@ -212,14 +213,14 @@ macOS-native, no containers:
 Cheap, deterministic postconditions per action type — never trust the model's
 claim of success:
 
-| Action | Verify via | Cost |
-|---|---|---|
-| open_app | `NSRunningApplication` / `pgrep -x` + frontmost check | ~ms |
-| open_url | frontmost browser + (when AX lands) URL field / title read | ms–50ms |
-| file ops (P2) | stat the expected path from the *plan*, not the script | ms |
-| shortcut / script | exit code + declared postcondition probe | ms |
-| AX action | AX-tree diff: expected element/value present (M5.4 validator) | ~50ms |
-| vision action | re-screenshot + targeted VLM check — last resort only | s |
+| Action            | Verify via                                                    | Cost    |
+| ----------------- | ------------------------------------------------------------- | ------- |
+| open_app          | `NSRunningApplication` / `pgrep -x` + frontmost check         | ~ms     |
+| open_url          | frontmost browser + (when AX lands) URL field / title read    | ms–50ms |
+| file ops (P2)     | stat the expected path from the _plan_, not the script        | ms      |
+| shortcut / script | exit code + declared postcondition probe                      | ms      |
+| AX action         | AX-tree diff: expected element/value present (M5.4 validator) | ~50ms   |
+| vision action     | re-screenshot + targeted VLM check — last resort only         | s       |
 
 Failure policy (bounded): retry once at the same tier → re-plan the subgoal →
 escalate one tier → hold with an honest step summary. All transitions visible
@@ -284,6 +285,6 @@ redesign. What's missing is breadth, not shape: capability metadata + a second
 provider adapter (the model-agnostic mandate), the sandbox (the single biggest
 absent subsystem, prerequisite for Priority 2), verification (currently
 assume-success), the planner split (single-loop today), and production key
-storage. Technical debt is low; the one architectural relic to *not* copy
+storage. Technical debt is low; the one architectural relic to _not_ copy
 forward is the M1 plugin-host concept, which the codebase has already
 outgrown.

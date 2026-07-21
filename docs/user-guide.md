@@ -14,6 +14,7 @@ the Mac.
    Click **Grant** for each and confirm the system prompt. If a permission
    doesn't register, use **Open Settings**, flip the toggle, and click
    **Restart Lilypad** when offered.
+
 3. When both show **Granted**, you're ready to pair.
 
 ## Pairing your phone
@@ -27,15 +28,15 @@ the Mac.
 
 ## Controlling the Mac
 
-| Gesture | Action |
-| --- | --- |
-| Tap | Click (where you tap) |
-| Double-tap | Double-click (opens files/folders) |
-| Long-press | Right-click |
-| Drag | Move / drag with the mouse button held |
-| Two-finger drag | Scroll |
-| Pinch | Zoom your view in/out (up to 6×) |
-| Two-finger double-tap | Reset zoom |
+| Gesture               | Action                                 |
+| --------------------- | -------------------------------------- |
+| Tap                   | Click (where you tap)                  |
+| Double-tap            | Double-click (opens files/folders)     |
+| Long-press            | Right-click                            |
+| Drag                  | Move / drag with the mouse button held |
+| Two-finger drag       | Scroll                                 |
+| Pinch                 | Zoom your view in/out (up to 6×)       |
+| Two-finger double-tap | Reset zoom                             |
 
 - **Zoom lock** (toggle in the toolbar): while on, one-finger drag pans your
   zoomed view instead of dragging on the Mac — nothing is sent to the Mac.
@@ -84,10 +85,10 @@ see it anyway, report a bug with desktop logs.
 
 ## Troubleshooting
 
-| Problem | Fix |
-| --- | --- |
-| QR scan does nothing | Phone and Mac must reach the same backend — on LAN dev, same Wi-Fi. Regenerate the code (they expire in 60s). |
-| "Pairing declined" | Someone clicked Deny on the Mac. Re-scan and approve. |
-| Black screen after approve | Screen Recording permission missing/stale — rerun Setup on the Mac. |
-| Taps land in the wrong place | Toggle zoom fully out (two-finger double-tap) and re-try; if it persists, reconnect. |
-| Typing does nothing | Accessibility permission missing/stale — rerun Setup on the Mac. |
+| Problem                      | Fix                                                                                                           |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| QR scan does nothing         | Phone and Mac must reach the same backend — on LAN dev, same Wi-Fi. Regenerate the code (they expire in 60s). |
+| "Pairing declined"           | Someone clicked Deny on the Mac. Re-scan and approve.                                                         |
+| Black screen after approve   | Screen Recording permission missing/stale — rerun Setup on the Mac.                                           |
+| Taps land in the wrong place | Toggle zoom fully out (two-finger double-tap) and re-try; if it persists, reconnect.                          |
+| Typing does nothing          | Accessibility permission missing/stale — rerun Setup on the Mac.                                              |

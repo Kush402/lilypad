@@ -49,7 +49,9 @@ describe('useAppState', () => {
 
     renderHook(() => useAppState());
 
-    await waitFor(() => expect(listen).toHaveBeenCalledWith('lilypad://session', expect.any(Function)));
+    await waitFor(() =>
+      expect(listen).toHaveBeenCalledWith('lilypad://session', expect.any(Function)),
+    );
   });
 
   it('re-fetches state when the event fires, without a timer', async () => {
@@ -60,7 +62,10 @@ describe('useAppState', () => {
 
     const { listen } = await import('@tauri-apps/api/event');
     let eventHandler: (() => void) | undefined;
-    vi.mocked(listen).mockImplementation((async (_name: string, handler: (...args: unknown[]) => void) => {
+    vi.mocked(listen).mockImplementation((async (
+      _name: string,
+      handler: (...args: unknown[]) => void,
+    ) => {
       eventHandler = handler;
       return vi.fn();
     }) as typeof listen);

@@ -138,29 +138,29 @@ All suites are expected green before any commit.
 
 ## Troubleshooting
 
-| Symptom | Cause / fix |
-| --- | --- |
-| Phone can't reach backend after scanning | Phone and laptop must be on the same network for LAN dev. The backend auto-detects its LAN IP at boot — restart `pnpm --filter @lilypad/backend dev` after switching networks. |
-| Desktop shows a blank window in dev | The Vite dev server died (it must outlive the Tauri process). Restart `tauri dev`, or run Vite and the binary separately. |
-| macOS keeps re-asking for Screen Recording | Unsigned dev builds get a new code signature each rebuild, so TCC re-prompts. When launched from a terminal, macOS attributes the permission to the *terminal app* — grant it there. A signed production bundle does not have this problem. |
-| `pairing/create` returns 429 | Per-IP rate limit (30/min). Wait a minute; don't script against it. |
-| Session dies when the phone locks | Fixed in v1.0 (keep-awake + display-sleep assertions) — if you still see it, check `RUST_LOG=info` desktop output for `capture stream stopped`. |
+| Symptom                                    | Cause / fix                                                                                                                                                                                                                                 |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Phone can't reach backend after scanning   | Phone and laptop must be on the same network for LAN dev. The backend auto-detects its LAN IP at boot — restart `pnpm --filter @lilypad/backend dev` after switching networks.                                                              |
+| Desktop shows a blank window in dev        | The Vite dev server died (it must outlive the Tauri process). Restart `tauri dev`, or run Vite and the binary separately.                                                                                                                   |
+| macOS keeps re-asking for Screen Recording | Unsigned dev builds get a new code signature each rebuild, so TCC re-prompts. When launched from a terminal, macOS attributes the permission to the _terminal app_ — grant it there. A signed production bundle does not have this problem. |
+| `pairing/create` returns 429               | Per-IP rate limit (30/min). Wait a minute; don't script against it.                                                                                                                                                                         |
+| Session dies when the phone locks          | Fixed in v1.0 (keep-awake + display-sleep assertions) — if you still see it, check `RUST_LOG=info` desktop output for `capture stream stopped`.                                                                                             |
 
 ## Docs
 
-| Topic | Where |
-| --- | --- |
-| Architecture & design | [docs/architecture.md](docs/architecture.md) · [docs/technical-design.md](docs/technical-design.md) |
-| REST + signaling API | [docs/api.md](docs/api.md) · [docs/signaling-protocol.md](docs/signaling-protocol.md) |
-| Input protocol | [docs/input-protocol.md](docs/input-protocol.md) |
-| Database schema | [docs/db-schema.md](docs/db-schema.md) |
-| Security / threat model | [docs/threat-model.md](docs/threat-model.md) · [SECURITY.md](SECURITY.md) |
-| Operations & deployment | [docs/operations.md](docs/operations.md) |
-| End-user guide | [docs/user-guide.md](docs/user-guide.md) |
-| Trusted devices (M5.4) | [docs/m5.4-trusted-devices-audit.md](docs/m5.4-trusted-devices-audit.md) |
-| Ask AI operator (M5.3) | [docs/ask-architecture-audit.md](docs/ask-architecture-audit.md) · [docs/m5.3-ai-executor-plan.md](docs/m5.3-ai-executor-plan.md) |
-| Device identity (M5, forward spec) | [docs/m5-auth-design.md](docs/m5-auth-design.md) |
-| Changelog | [CHANGELOG.md](CHANGELOG.md) |
+| Topic                              | Where                                                                                                                             |
+| ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| Architecture & design              | [docs/architecture.md](docs/architecture.md) · [docs/technical-design.md](docs/technical-design.md)                               |
+| REST + signaling API               | [docs/api.md](docs/api.md) · [docs/signaling-protocol.md](docs/signaling-protocol.md)                                             |
+| Input protocol                     | [docs/input-protocol.md](docs/input-protocol.md)                                                                                  |
+| Database schema                    | [docs/db-schema.md](docs/db-schema.md)                                                                                            |
+| Security / threat model            | [docs/threat-model.md](docs/threat-model.md) · [SECURITY.md](SECURITY.md)                                                         |
+| Operations & deployment            | [docs/operations.md](docs/operations.md)                                                                                          |
+| End-user guide                     | [docs/user-guide.md](docs/user-guide.md)                                                                                          |
+| Trusted devices (M5.4)             | [docs/m5.4-trusted-devices-audit.md](docs/m5.4-trusted-devices-audit.md)                                                          |
+| Ask AI operator (M5.3)             | [docs/ask-architecture-audit.md](docs/ask-architecture-audit.md) · [docs/m5.3-ai-executor-plan.md](docs/m5.3-ai-executor-plan.md) |
+| Device identity (M5, forward spec) | [docs/m5-auth-design.md](docs/m5-auth-design.md)                                                                                  |
+| Changelog                          | [CHANGELOG.md](CHANGELOG.md)                                                                                                      |
 
 ## Contributing
 

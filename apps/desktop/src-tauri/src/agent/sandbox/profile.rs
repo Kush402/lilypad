@@ -127,7 +127,10 @@ pub fn build_profile(policy: &SandboxPolicy, home: &Path) -> String {
     // ── reads ────────────────────────────────────────────────────────────
     // Secret denies FIRST — an explicit deny outranks the broad allow below.
     for deny in sensitive_deny_subpaths(home) {
-        p.push_str(&format!("(deny file-read* (subpath {}))\n", sbpl_quote(&deny)));
+        p.push_str(&format!(
+            "(deny file-read* (subpath {}))\n",
+            sbpl_quote(&deny)
+        ));
     }
     for deny in SYSTEM_SECRET_DENY {
         p.push_str(&format!(
@@ -147,7 +150,10 @@ pub fn build_profile(policy: &SandboxPolicy, home: &Path) -> String {
         sbpl_quote(&policy.scratch_dir)
     ));
     for w in &policy.writable_paths {
-        p.push_str(&format!("(allow file-write* (subpath {}))\n", sbpl_quote(w)));
+        p.push_str(&format!(
+            "(allow file-write* (subpath {}))\n",
+            sbpl_quote(w)
+        ));
     }
     p.push_str("(allow file-write-data (literal \"/dev/null\") (literal \"/dev/stdout\") (literal \"/dev/stderr\"))\n");
 
@@ -212,7 +218,9 @@ mod tests {
     #[test]
     fn secret_paths_are_denied_before_the_broad_read_allow() {
         let prof = profile(&SandboxPolicy::read_only("/tmp/r".into()));
-        let allow_at = prof.find("(allow file-read*)").expect("broad read allow present");
+        let allow_at = prof
+            .find("(allow file-read*)")
+            .expect("broad read allow present");
         for sensitive in [
             "/Users/kush/.ssh",
             "/Users/kush/Library/Keychains",
@@ -231,7 +239,10 @@ mod tests {
             let deny = format!("(deny file-read* (subpath \"{sensitive}\"))");
             assert!(prof.contains(&deny), "missing deny for {sensitive}");
             // Explicit deny must precede the broad allow so it stays authoritative.
-            assert!(prof.find(&deny).unwrap() < allow_at, "{sensitive} denied too late");
+            assert!(
+                prof.find(&deny).unwrap() < allow_at,
+                "{sensitive} denied too late"
+            );
         }
     }
 

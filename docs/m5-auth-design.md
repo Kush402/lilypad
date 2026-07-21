@@ -68,7 +68,7 @@ below for exactly why.
   secrets — see that file's `productionSafetyProblems`).
 - **Access tokens**: short-lived (10–15 min) JWTs, signed with an asymmetric
   key (**Ed25519/EdDSA**, not HMAC) — lets the signaling hub, and any future
-  horizontally-scaled service, *verify* tokens without holding the *signing*
+  horizontally-scaled service, _verify_ tokens without holding the _signing_
   secret, which only the auth-issuing service needs. Claims:
 
   ```jsonc
@@ -88,7 +88,7 @@ below for exactly why.
   unlike a password) in Postgres with `deviceId`, `expiresAt`, `revokedAt`,
   and a `familyId` for **rotation with reuse detection**: each refresh
   exchanges the old token for a new one and immediately invalidates the old
-  value. If a *revoked* refresh token is ever presented again — a device
+  value. If a _revoked_ refresh token is ever presented again — a device
   double-using a stale token, or a stolen-and-already-used token being
   replayed by an attacker — the entire `familyId` is revoked immediately.
   This is the standard pattern (Auth0, Google's OAuth refresh flow use it)
@@ -112,12 +112,12 @@ This is the mechanism `trusted_devices`
   a random nonce, the device signs it with its private key, the server
   verifies the signature against the claimed public key before creating the
   `devices` row. This is what makes `deviceId` in the signaling `register`/
-  `pair-request` messages *provable* rather than merely *asserted*.
+  `pair-request` messages _provable_ rather than merely _asserted_.
 - `trusted_devices` rows are created only after an explicit user approval of
-  a *new* device pairing — reusing the existing Approve/Deny UX
+  a _new_ device pairing — reusing the existing Approve/Deny UX
   ([`apps/desktop/src-tauri/src/commands.rs`](../apps/desktop/src-tauri/src/commands.rs)).
   Once trusted, subsequent connections from that device's verified key
-  *could* skip the QR/pairing-token bootstrap entirely — a legitimate UX
+  _could_ skip the QR/pairing-token bootstrap entirely — a legitimate UX
   improvement this schema was clearly designed to enable. Whether/when to
   actually build that "skip re-pairing" flow is a **product decision**
   outside this design's scope; this document only specs the identity
@@ -167,15 +167,15 @@ export const refreshTokens = pgTable('refresh_tokens', {
 
 ## API surface
 
-| Route | Method | Purpose |
-| --- | --- | --- |
-| `/auth/register` | POST | Create a user (email + password, Argon2id hash). |
-| `/auth/login` | POST | Verify password, issue access + refresh token pair. |
-| `/auth/refresh` | POST | Rotate a refresh token; reuse of a revoked token revokes its whole family. |
-| `/auth/logout` | POST | Revoke the presented refresh token's family. |
-| `/auth/logout-all` | POST | Bump `users.tokenVersion` — invalidates every outstanding access token immediately. |
-| `/devices/register` | POST | Challenge-response device registration (issue nonce, verify signature, create/update `devices` row). |
-| `/devices/:id` | DELETE | Revoke a trusted device — cascades to that device's refresh tokens; audit-logs `device_revoked`. |
+| Route               | Method | Purpose                                                                                              |
+| ------------------- | ------ | ---------------------------------------------------------------------------------------------------- |
+| `/auth/register`    | POST   | Create a user (email + password, Argon2id hash).                                                     |
+| `/auth/login`       | POST   | Verify password, issue access + refresh token pair.                                                  |
+| `/auth/refresh`     | POST   | Rotate a refresh token; reuse of a revoked token revokes its whole family.                           |
+| `/auth/logout`      | POST   | Revoke the presented refresh token's family.                                                         |
+| `/auth/logout-all`  | POST   | Bump `users.tokenVersion` — invalidates every outstanding access token immediately.                  |
+| `/devices/register` | POST   | Challenge-response device registration (issue nonce, verify signature, create/update `devices` row). |
+| `/devices/:id`      | DELETE | Revoke a trusted device — cascades to that device's refresh tokens; audit-logs `device_revoked`.     |
 
 ## Signaling integration
 
@@ -199,8 +199,8 @@ string**, because that's all the pre-auth system has today.
 
 This design is forward-compatible with that check, not a replacement for
 it, by construction: `RoomAuthStore.verify()` takes a `deviceId` string as
-its whole interface. When this design lands, the *string* it's handed
-becomes the JWT's *verified* `deviceId` claim instead of the raw,
+its whole interface. When this design lands, the _string_ it's handed
+becomes the JWT's _verified_ `deviceId` claim instead of the raw,
 self-asserted wire value — the call site in `register()` doesn't change
 shape, only what's proven about the value flowing into it does. Concretely:
 
@@ -238,7 +238,7 @@ timing is a product decision, not something this design prescribes.
   expired).
 - Integration: end-to-end pairing using a trusted device's signed
   `register` message; `RoomAuthStore` interaction test proving a room bound
-  to device A's pairing flow rejects a *different*, even validly
+  to device A's pairing flow rejects a _different_, even validly
   authenticated, device B.
 
 ## Risks & sizing
@@ -266,8 +266,8 @@ the `trusted_devices` relationship already modeled in the schema.
 
 ---
 
-*Full originating analysis: [`docs/audit/m3/backend-security.md`](audit/m3/backend-security.md),
+_Full originating analysis: [`docs/audit/m3/backend-security.md`](audit/m3/backend-security.md),
 Finding 15. This document is the standalone, implementation-ready version of
 that finding, cross-referenced from
 [`docs/threat-model.md`](threat-model.md) and
-[`docs/audit/m3/ROADMAP.md`](audit/m3/ROADMAP.md) (Phase 2, item 14).*
+[`docs/audit/m3/ROADMAP.md`](audit/m3/ROADMAP.md) (Phase 2, item 14)._

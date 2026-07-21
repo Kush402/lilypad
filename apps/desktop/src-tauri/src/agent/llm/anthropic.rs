@@ -8,7 +8,9 @@
 use anyhow::{anyhow, Context, Result};
 use serde_json::{json, Value};
 
-use super::{AssistantReply, Block, ChatMessage, LlmProvider, ProviderCaps, Role, ToolCall, ToolSpec};
+use super::{
+    AssistantReply, Block, ChatMessage, LlmProvider, ProviderCaps, Role, ToolCall, ToolSpec,
+};
 
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 const DEFAULT_BASE_URL: &str = "https://api.anthropic.com";

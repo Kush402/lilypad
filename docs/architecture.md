@@ -28,15 +28,15 @@ tiered, sandboxed agent.
 
 ## Components
 
-| Component    | Tech                                             | Responsibility |
-| ------------ | ------------------------------------------------ | -------------- |
-| **Desktop**  | Rust + Tauri v2 (webrtc-rs), React UI            | Bubble/tray/QR/approve + trusted-devices dashboard, ScreenCaptureKit capture, VideoToolbox H.264 encode, adaptive bitrate, CGEvent input injection, presence channel, Ask agent (tiered executor + sandbox) |
-| **Mobile**   | React Native (bare), react-native-webrtc         | My Devices (no-QR connect), QR scanner, live viewer (touch/gesture/keyboard/clipboard), Ask panel + agent step feed, keychain-persisted identity + pairs |
-| **Backend**  | Node + Fastify                                   | REST (pairing, connect, device pairs), WS signaling hub (rooms, presence, approve, session mint), trust service, TURN cred minting, audit log |
-| **Postgres** | 16 (Drizzle)                                     | devices, trusted_devices (pair trust), sessions, audit_logs; users reserved for M5 accounts |
-| **Redis**    | 7                                                | 60s single-use pairing tokens, room-auth records, room/session persistence (restart resurrection) |
-| **TURN**     | coturn (LAN dev) / public relay (prod & cellular)| Media relay when P2P fails; per-session time-limited credentials |
-| **Admin**    | React + Vite scaffold                            | M6 |
+| Component    | Tech                                              | Responsibility                                                                                                                                                                                              |
+| ------------ | ------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Desktop**  | Rust + Tauri v2 (webrtc-rs), React UI             | Bubble/tray/QR/approve + trusted-devices dashboard, ScreenCaptureKit capture, VideoToolbox H.264 encode, adaptive bitrate, CGEvent input injection, presence channel, Ask agent (tiered executor + sandbox) |
+| **Mobile**   | React Native (bare), react-native-webrtc          | My Devices (no-QR connect), QR scanner, live viewer (touch/gesture/keyboard/clipboard), Ask panel + agent step feed, keychain-persisted identity + pairs                                                    |
+| **Backend**  | Node + Fastify                                    | REST (pairing, connect, device pairs), WS signaling hub (rooms, presence, approve, session mint), trust service, TURN cred minting, audit log                                                               |
+| **Postgres** | 16 (Drizzle)                                      | devices, trusted_devices (pair trust), sessions, audit_logs; users reserved for M5 accounts                                                                                                                 |
+| **Redis**    | 7                                                 | 60s single-use pairing tokens, room-auth records, room/session persistence (restart resurrection)                                                                                                           |
+| **TURN**     | coturn (LAN dev) / public relay (prod & cellular) | Media relay when P2P fails; per-session time-limited credentials                                                                                                                                            |
+| **Admin**    | React + Vite scaffold                             | M6                                                                                                                                                                                                          |
 
 ## System diagram
 

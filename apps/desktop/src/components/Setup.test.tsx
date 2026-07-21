@@ -80,7 +80,9 @@ describe('Setup', () => {
 
   it('updates status when a lilypad://permission event fires, without a poll timer', async () => {
     render(<Setup />);
-    await waitFor(() => expect(listen).toHaveBeenCalledWith('lilypad://permission', expect.any(Function)));
+    await waitFor(() =>
+      expect(listen).toHaveBeenCalledWith('lilypad://permission', expect.any(Function)),
+    );
 
     eventHandler?.({ payload: status({ screen_capture: true }) });
 
@@ -136,7 +138,9 @@ describe('Setup', () => {
     await waitFor(() => expect(listen).toHaveBeenCalled());
 
     fireEvent.click(nth(screen.getAllByText('Open Settings'), 1)); // accessibility
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith('open_permission_settings', { kind: 'accessibility' }));
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith('open_permission_settings', { kind: 'accessibility' }),
+    );
 
     eventHandler?.({ payload: status() });
     eventHandler?.({ payload: status() });

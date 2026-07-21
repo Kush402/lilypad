@@ -82,10 +82,7 @@ export async function upsertPair(
 /** Store the connect secret the backend delivered for a desktop pair. Creates
  * a minimal pair entry if somehow missing (defensive — the pair is normally
  * saved at redeem time just before the secret arrives). */
-export async function setPairSecret(
-  desktopDeviceId: string,
-  connectSecret: string,
-): Promise<void> {
+export async function setPairSecret(desktopDeviceId: string, connectSecret: string): Promise<void> {
   const pairs = await loadPairs();
   const pair = pairs.find((p) => p.desktopDeviceId === desktopDeviceId);
   if (pair) {

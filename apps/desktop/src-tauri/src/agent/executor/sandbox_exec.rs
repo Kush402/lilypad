@@ -218,10 +218,16 @@ mod tests {
     #[tokio::test]
     #[allow(clippy::await_holding_lock)] // current-thread test runtime; guard is fine across .await
     async fn rejects_non_runscript_actions() {
-        let _g = crate::agent::executor::verify::HOME_TEST_LOCK.lock().unwrap();
+        let _g = crate::agent::executor::verify::HOME_TEST_LOCK
+            .lock()
+            .unwrap();
         // from_env may fail in a HOME-less CI; guard.
         if let Ok(mut ex) = SandboxExecutor::from_env() {
-            let r = ex.execute(&Action::OpenApp { name: "Safari".into() }).await;
+            let r = ex
+                .execute(&Action::OpenApp {
+                    name: "Safari".into(),
+                })
+                .await;
             assert!(r.is_err());
         }
     }
@@ -233,9 +239,10 @@ mod tests {
     #[tokio::test]
     #[allow(clippy::await_holding_lock)] // current-thread test runtime; guard is fine across .await
     async fn runs_a_real_shell_script_and_returns_stdout() {
-        let _g = crate::agent::executor::verify::HOME_TEST_LOCK.lock().unwrap();
-        if !std::path::Path::new("/usr/bin/sandbox-exec").exists()
-            || std::env::var("HOME").is_err()
+        let _g = crate::agent::executor::verify::HOME_TEST_LOCK
+            .lock()
+            .unwrap();
+        if !std::path::Path::new("/usr/bin/sandbox-exec").exists() || std::env::var("HOME").is_err()
         {
             return;
         }
@@ -258,11 +265,15 @@ mod tests {
     #[tokio::test]
     #[allow(clippy::await_holding_lock)] // current-thread test runtime; guard is fine across .await
     async fn script_writing_outside_scratch_fails_closed() {
-        let _g = crate::agent::executor::verify::HOME_TEST_LOCK.lock().unwrap();
+        let _g = crate::agent::executor::verify::HOME_TEST_LOCK
+            .lock()
+            .unwrap();
         if !std::path::Path::new("/usr/bin/sandbox-exec").exists() {
             return;
         }
-        let Ok(home) = std::env::var("HOME") else { return };
+        let Ok(home) = std::env::var("HOME") else {
+            return;
+        };
         let mut ex = SandboxExecutor::from_env().unwrap();
         let target = format!("{home}/lilypad_p2_should_not_exist_{}", std::process::id());
         let obs = ex

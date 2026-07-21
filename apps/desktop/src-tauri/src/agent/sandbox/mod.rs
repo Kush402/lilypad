@@ -253,7 +253,10 @@ mod tests {
         .await
         .unwrap();
         assert!(!outcome.succeeded(), "write outside scratch should fail");
-        assert!(!Path::new(&forbidden).exists(), "the file must not have been created");
+        assert!(
+            !Path::new(&forbidden).exists(),
+            "the file must not have been created"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -280,7 +283,10 @@ mod tests {
         .unwrap();
         assert!(outcome.timed_out);
         assert!(!outcome.succeeded());
-        assert!(start.elapsed() < Duration::from_secs(5), "kill was not prompt");
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "kill was not prompt"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 }

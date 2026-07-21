@@ -52,10 +52,7 @@ pub fn plan_command(action: &Action) -> Result<CommandSpec> {
             // Jail to the user's home so the model can't probe arbitrary
             // filesystem locations by "revealing" them.
             let jailed = resolve_user_path(path)?;
-            Ok(CommandSpec::new(
-                "open",
-                &["-R", &jailed.to_string_lossy()],
-            ))
+            Ok(CommandSpec::new("open", &["-R", &jailed.to_string_lossy()]))
         }
         Action::OpenFile { path } => {
             let jailed = resolve_user_path(path)?;
@@ -65,7 +62,10 @@ pub fn plan_command(action: &Action) -> Result<CommandSpec> {
             let jailed = resolve_user_path(path)?;
             // `mkdir -p`: idempotent, argv-only (no shell). Verification
             // (below) confirms the directory actually exists afterward.
-            Ok(CommandSpec::new("mkdir", &["-p", &jailed.to_string_lossy()]))
+            Ok(CommandSpec::new(
+                "mkdir",
+                &["-p", &jailed.to_string_lossy()],
+            ))
         }
         Action::RunShortcut { name } => {
             reject_control_chars(name, "shortcut name")?;
@@ -160,7 +160,9 @@ mod tests {
 
     #[test]
     fn plans_reveal_and_shortcut() {
-        let _g = crate::agent::executor::verify::HOME_TEST_LOCK.lock().unwrap();
+        let _g = crate::agent::executor::verify::HOME_TEST_LOCK
+            .lock()
+            .unwrap();
         let prev = std::env::var("HOME").ok();
         std::env::set_var("HOME", "/Users/x");
         assert_eq!(
@@ -198,20 +200,34 @@ mod tests {
 
     #[test]
     fn plans_jailed_file_and_folder_skills() {
-        let _g = crate::agent::executor::verify::HOME_TEST_LOCK.lock().unwrap();
+        let _g = crate::agent::executor::verify::HOME_TEST_LOCK
+            .lock()
+            .unwrap();
         let prev = std::env::var("HOME").ok();
         std::env::set_var("HOME", "/Users/kush");
         assert_eq!(
-            plan_command(&Action::NewFolder { path: "~/Research".into() }).unwrap(),
+            plan_command(&Action::NewFolder {
+                path: "~/Research".into()
+            })
+            .unwrap(),
             CommandSpec::new("mkdir", &["-p", "/Users/kush/Research"])
         );
         assert_eq!(
-            plan_command(&Action::OpenFile { path: "Downloads/a.pdf".into() }).unwrap(),
+            plan_command(&Action::OpenFile {
+                path: "Downloads/a.pdf".into()
+            })
+            .unwrap(),
             CommandSpec::new("open", &["/Users/kush/Downloads/a.pdf"])
         );
         // Escaping paths are refused before any command is constructed.
-        assert!(plan_command(&Action::NewFolder { path: "/etc/evil".into() }).is_err());
-        assert!(plan_command(&Action::OpenFile { path: "~/../../etc/passwd".into() }).is_err());
+        assert!(plan_command(&Action::NewFolder {
+            path: "/etc/evil".into()
+        })
+        .is_err());
+        assert!(plan_command(&Action::OpenFile {
+            path: "~/../../etc/passwd".into()
+        })
+        .is_err());
         match prev {
             Some(v) => std::env::set_var("HOME", v),
             None => std::env::remove_var("HOME"),

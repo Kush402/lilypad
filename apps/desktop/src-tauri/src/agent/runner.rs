@@ -242,9 +242,9 @@ where
     }
 
     fn end(&self, run_id: &str, outcome: RunOutcome) -> RunOutcome {
-        let _ =
-            self.steps_tx
-                .send(AgentOutbound::run_end(run_id, outcome, (self.now_ms)()));
+        let _ = self
+            .steps_tx
+            .send(AgentOutbound::run_end(run_id, outcome, (self.now_ms)()));
         outcome
     }
 
@@ -484,12 +484,9 @@ mod tests {
     impl Brain for ScriptedBrain {
         async fn next(&mut self, _task: &str, history: &[Observation]) -> Result<Decision> {
             self.seen_history_lens.push(history.len());
-            Ok(self
-                .script
-                .pop_front()
-                .unwrap_or(Decision::Finish {
-                    summary: "done".into(),
-                }))
+            Ok(self.script.pop_front().unwrap_or(Decision::Finish {
+                summary: "done".into(),
+            }))
         }
     }
 
@@ -595,9 +592,7 @@ mod tests {
             tx,
             || 0,
         );
-        let out = runner
-            .run("r", "wipe disk", &mut drx, &Cancel::new())
-            .await;
+        let out = runner.run("r", "wipe disk", &mut drx, &Cancel::new()).await;
         assert_eq!(out, RunOutcome::Completed); // refusal is not fatal; agent finishes
         assert_eq!(executed.lock().unwrap().len(), 0); // never ran
         let msgs = drain(&mut rx);
@@ -701,7 +696,12 @@ mod tests {
                 })
             })
             .collect();
-        let mut runner = AgentRunner::new(ScriptedBrain::new(script), RecordingExecutor::default(), tx, || 0);
+        let mut runner = AgentRunner::new(
+            ScriptedBrain::new(script),
+            RecordingExecutor::default(),
+            tx,
+            || 0,
+        );
         let cancel = Cancel::new();
         cancel.cancel(); // already cancelled before we start
 

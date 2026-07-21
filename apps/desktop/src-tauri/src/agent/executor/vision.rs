@@ -78,7 +78,12 @@ fn capture_png_base64() -> Result<String> {
     // Downscale to TARGET_WIDTH (only if larger), preserving aspect.
     let img = if width > TARGET_WIDTH {
         let target_h = (height as u64 * TARGET_WIDTH as u64 / width as u64) as u32;
-        image::imageops::resize(&img, TARGET_WIDTH, target_h.max(1), image::imageops::FilterType::Triangle)
+        image::imageops::resize(
+            &img,
+            TARGET_WIDTH,
+            target_h.max(1),
+            image::imageops::FilterType::Triangle,
+        )
     } else {
         img
     };

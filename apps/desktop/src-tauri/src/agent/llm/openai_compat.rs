@@ -11,7 +11,9 @@
 use anyhow::{anyhow, Context, Result};
 use serde_json::{json, Value};
 
-use super::{AssistantReply, Block, ChatMessage, LlmProvider, ProviderCaps, Role, ToolCall, ToolSpec};
+use super::{
+    AssistantReply, Block, ChatMessage, LlmProvider, ProviderCaps, Role, ToolCall, ToolSpec,
+};
 
 const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
 pub const DEFAULT_MODEL: &str = "gpt-4o-mini";
@@ -444,7 +446,9 @@ mod tests {
             }],
         };
         let body = build_body("s", &[bare], &[], "m", 10);
-        assert!(body["messages"][1]["tool_calls"][0].get("extra_content").is_none());
+        assert!(body["messages"][1]["tool_calls"][0]
+            .get("extra_content")
+            .is_none());
     }
 
     #[test]

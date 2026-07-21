@@ -17,26 +17,26 @@ Every message shares:
 
 ## Message types
 
-| type               | direction                 | payload                                                |
-| ------------------ | ------------------------- | ------------------------------------------------------ |
-| `register`         | peer → server             | `{ role, deviceId }` — join the room as desktop/mobile |
-| `pair-request`     | mobile → server → desktop | `{ deviceId, deviceName, requestedScopes }`            |
-| `pair-approved`    | desktop → server          | `{ grantedScopes }` — server mints session id + ICE    |
-| `pair-denied`      | desktop → server → mobile | `{ reason }`                                           |
-| `session-start`    | server → both             | `{ sessionId, grantedScopes, iceServers }`             |
-| `offer`            | desktop → mobile          | `{ type:"offer", sdp }`                                |
-| `answer`           | mobile → desktop          | `{ type:"answer", sdp }`                               |
-| `ice-candidate`    | both                      | `{ candidate, sdpMid, sdpMLineIndex }`                 |
-| `renegotiate`      | either → desktop          | `{ reason?, iceRestart? }` — desktop re-offers         |
-| `pause` / `resume` | either                    | `{ reason? }` / `{}` — stop/restart stream, keep ICE   |
-| `disconnect`       | either                    | `{ reason? }` — graceful teardown                      |
-| `heartbeat`        | peer → server             | `{ seq? }` — liveness; stale peers are reaped          |
-| `session-end`      | server → both             | `{ reason }`                                           |
-| `frame-size`       | desktop → mobile          | `{ width, height, mode }` — capture size for touch mapping |
+| type               | direction                 | payload                                                     |
+| ------------------ | ------------------------- | ----------------------------------------------------------- |
+| `register`         | peer → server             | `{ role, deviceId }` — join the room as desktop/mobile      |
+| `pair-request`     | mobile → server → desktop | `{ deviceId, deviceName, requestedScopes }`                 |
+| `pair-approved`    | desktop → server          | `{ grantedScopes }` — server mints session id + ICE         |
+| `pair-denied`      | desktop → server → mobile | `{ reason }`                                                |
+| `session-start`    | server → both             | `{ sessionId, grantedScopes, iceServers }`                  |
+| `offer`            | desktop → mobile          | `{ type:"offer", sdp }`                                     |
+| `answer`           | mobile → desktop          | `{ type:"answer", sdp }`                                    |
+| `ice-candidate`    | both                      | `{ candidate, sdpMid, sdpMLineIndex }`                      |
+| `renegotiate`      | either → desktop          | `{ reason?, iceRestart? }` — desktop re-offers              |
+| `pause` / `resume` | either                    | `{ reason? }` / `{}` — stop/restart stream, keep ICE        |
+| `disconnect`       | either                    | `{ reason? }` — graceful teardown                           |
+| `heartbeat`        | peer → server             | `{ seq? }` — liveness; stale peers are reaped               |
+| `session-end`      | server → both             | `{ reason }`                                                |
+| `frame-size`       | desktop → mobile          | `{ width, height, mode }` — capture size for touch mapping  |
 | `set-capture-mode` | mobile → desktop          | `{ mode: "motion" \| "text" }` — switch capture/encode mode |
-| `clipboard-update` | desktop → mobile          | `{ text }` — desktop clipboard changed                 |
-| `error`            | server → peer             | `{ code, message }`                                    |
-| `ping` / `pong`    | keepalive                 | `{}`                                                   |
+| `clipboard-update` | desktop → mobile          | `{ text }` — desktop clipboard changed                      |
+| `error`            | server → peer             | `{ code, message }`                                         |
+| `ping` / `pong`    | keepalive                 | `{}`                                                        |
 
 ## Connection lifecycle
 

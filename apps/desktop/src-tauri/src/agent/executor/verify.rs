@@ -97,7 +97,10 @@ fn resolve_in(home: &Path, raw: &str) -> Result<PathBuf> {
     // trickery can't slip through.
     let home_norm = lexical_normalize(home).unwrap_or_else(|| home.to_path_buf());
     if normalized != home_norm && !normalized.starts_with(&home_norm) {
-        bail!("path is outside the home directory: {}", normalized.display());
+        bail!(
+            "path is outside the home directory: {}",
+            normalized.display()
+        );
     }
     Ok(normalized)
 }
@@ -179,7 +182,10 @@ mod tests {
             resolve_in(home(), "Research").unwrap(),
             PathBuf::from("/Users/kush/Research")
         );
-        assert_eq!(resolve_in(home(), "~").unwrap(), PathBuf::from("/Users/kush"));
+        assert_eq!(
+            resolve_in(home(), "~").unwrap(),
+            PathBuf::from("/Users/kush")
+        );
     }
 
     #[test]
@@ -214,16 +220,22 @@ mod tests {
             Postcondition::PathIsDir(PathBuf::from("/Users/kush/R"))
         );
         assert_eq!(
-            postcondition(&Action::OpenFile { path: "Downloads/a.pdf".into() }),
+            postcondition(&Action::OpenFile {
+                path: "Downloads/a.pdf".into()
+            }),
             Postcondition::PathExists(PathBuf::from("/Users/kush/Downloads/a.pdf"))
         );
         assert_eq!(
-            postcondition(&Action::OpenApp { name: "Safari".into() }),
+            postcondition(&Action::OpenApp {
+                name: "Safari".into()
+            }),
             Postcondition::None
         );
         // An escaping path yields None (plan_command refuses it first).
         assert_eq!(
-            postcondition(&Action::NewFolder { path: "/etc/evil".into() }),
+            postcondition(&Action::NewFolder {
+                path: "/etc/evil".into()
+            }),
             Postcondition::None
         );
         match prev {

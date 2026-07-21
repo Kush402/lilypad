@@ -23,9 +23,7 @@ type Handler = (msg: SignalingMessage) => void;
  * rejection already tells the caller that attempt failed.
  */
 export type SignalingLifecycleEvent =
-  | { kind: 'closed' }
-  | { kind: 'reconnected' }
-  | { kind: 'lost'; error: Error };
+  { kind: 'closed' } | { kind: 'reconnected' } | { kind: 'lost'; error: Error };
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));

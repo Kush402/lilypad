@@ -1,4 +1,8 @@
-import { PressRepeater, PRESS_REPEAT_INITIAL_DELAY_MS, PRESS_REPEAT_INTERVAL_MS } from './pressRepeat';
+import {
+  PressRepeater,
+  PRESS_REPEAT_INITIAL_DELAY_MS,
+  PRESS_REPEAT_INTERVAL_MS,
+} from './pressRepeat';
 
 describe('PressRepeater', () => {
   beforeEach(() => {

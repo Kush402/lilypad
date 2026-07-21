@@ -58,9 +58,9 @@ describe('loadEnv', () => {
     });
 
     it('refuses the default TURN_SECRET', () => {
-      expect(() =>
-        loadEnv(secureProdEnv({ TURN_SECRET: 'lilypad_dev_turn_secret' })),
-      ).toThrow(/TURN_SECRET/);
+      expect(() => loadEnv(secureProdEnv({ TURN_SECRET: 'lilypad_dev_turn_secret' }))).toThrow(
+        /TURN_SECRET/,
+      );
     });
 
     it('refuses a TURN_SECRET shorter than 32 characters, even if not the literal dev default', () => {
@@ -98,9 +98,9 @@ describe('loadEnv', () => {
     });
 
     it('refuses a Redis URL with no password', () => {
-      expect(() =>
-        loadEnv(secureProdEnv({ REDIS_URL: 'redis://redis.internal:6379' })),
-      ).toThrow(/REDIS_URL/);
+      expect(() => loadEnv(secureProdEnv({ REDIS_URL: 'redis://redis.internal:6379' }))).toThrow(
+        /REDIS_URL/,
+      );
     });
 
     it('refuses a Redis URL with a username but no password', () => {
@@ -110,9 +110,7 @@ describe('loadEnv', () => {
     });
 
     it('treats an unparseable REDIS_URL as unsafe rather than silently passing', () => {
-      expect(() => loadEnv(secureProdEnv({ REDIS_URL: 'not a url at all' }))).toThrow(
-        /REDIS_URL/,
-      );
+      expect(() => loadEnv(secureProdEnv({ REDIS_URL: 'not a url at all' }))).toThrow(/REDIS_URL/);
     });
 
     it('reports every problem at once, not just the first', () => {

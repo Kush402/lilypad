@@ -171,7 +171,11 @@ fn on_connect_request(app: &AppHandle, signaling_url: &str, payload: ConnectRequ
             // path the instant the phone's pair-request arrives.
             s.auto_approve_room = Some(payload.session_room_id.clone());
         }
-        (s.control_tx.take(), s.device_id.clone(), s.offered_scopes.clone())
+        (
+            s.control_tx.take(),
+            s.device_id.clone(),
+            s.offered_scopes.clone(),
+        )
     };
     if let Some(tx) = old_tx {
         log::info!(

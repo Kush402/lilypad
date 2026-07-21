@@ -356,7 +356,10 @@ export class TouchInterpreter {
       // avoid a surprise cursor jump. An unclassified pair that ends this
       // fast is a two-finger TAP — remember it for the zoom-reset double-tap
       // (resolved in the all-fingers-up branch below via 'consumed').
-      if (this.phase === 'two_finger' && now - this.twoFingerStartNow < this.tuning.twoFingerTapMs) {
+      if (
+        this.phase === 'two_finger' &&
+        now - this.twoFingerStartNow < this.tuning.twoFingerTapMs
+      ) {
         this.phase = 'consumed';
         return this.registerTwoFingerTap(now);
       }
