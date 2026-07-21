@@ -56,7 +56,10 @@ jobs:
     # ScreenCaptureKit + VideoToolbox are macOS-only (see apps/desktop/src-tauri/Cargo.toml
     # target.'cfg(target_os = "macos")' deps) — the desktop crate will not compile on Linux.
     name: Rust — fmt, clippy, test (macOS)
-    runs-on: macos-14
+    # apple-metal's Swift bridge references Metal APIs from Xcode 16 / macOS
+    # 15 (MTLResidencySet, MTLLogState, …) — macos-14's older Xcode can't
+    # compile it. macos-latest tracks a current Xcode.
+    runs-on: macos-latest
     defaults:
       run:
         working-directory: apps/desktop/src-tauri
@@ -88,7 +91,7 @@ jobs:
     # would kill this run partway through otherwise).
     if: github.event.schedule == '0 3 * * *'
     name: Soak (nightly, 4h)
-    runs-on: macos-14
+    runs-on: macos-latest
     timeout-minutes: 300
     defaults:
       run:
@@ -110,7 +113,7 @@ jobs:
     # default 360-minute job timeout.
     if: github.event.schedule == '0 1 * * 0'
     name: Soak (weekly, 24h)
-    runs-on: macos-14
+    runs-on: macos-latest
     timeout-minutes: 1500
     defaults:
       run:

@@ -43,7 +43,10 @@ async fn main() {
         while let Some(ev) = event_rx.recv().await {
             eprintln!("[desktop-event] {ev:?}");
             if matches!(ev, SessionEvent::PairRequested { .. }) {
-                let _ = control_tx.send(Control::Approve(vec!["view".into(), "control".into()]));
+                let _ = control_tx.send(Control::Approve {
+                    scopes: vec!["view".into(), "control".into()],
+                    trust: false,
+                });
             }
         }
     });

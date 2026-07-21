@@ -671,9 +671,7 @@ mod tests {
 
     #[test]
     fn pair_request_requested_scopes_rejects_over_max_length() {
-        let scopes: Vec<&str> = std::iter::repeat("view")
-            .take(MAX_REQUESTED_SCOPES + 1)
-            .collect();
+        let scopes: Vec<&str> = std::iter::repeat_n("view", MAX_REQUESTED_SCOPES + 1).collect();
         let json = serde_json::json!({
             "deviceId": "mobile-01",
             "deviceName": null,

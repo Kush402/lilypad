@@ -23,16 +23,14 @@ vi.mock('../lib/tauri', () => ({
     getLoginItemEnabled: vi.fn().mockResolvedValue(true),
     setLoginItemEnabled: vi.fn(),
     getPermissionStatus: vi.fn().mockResolvedValue({ screen_capture: true, accessibility: true }),
-    getAgentConfig: vi
-      .fn()
-      .mockResolvedValue({
-        providerKind: null,
-        model: null,
-        baseUrl: null,
-        vision: false,
-        hasKey: false,
-        source: 'none',
-      }),
+    getAgentConfig: vi.fn().mockResolvedValue({
+      providerKind: null,
+      model: null,
+      baseUrl: null,
+      vision: false,
+      hasKey: false,
+      source: 'none',
+    }),
     showSetup: vi.fn(),
   },
 }));
