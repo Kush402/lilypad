@@ -1,4 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
+import { getVersion } from '@tauri-apps/api/app';
+import { check, type Update } from '@tauri-apps/plugin-updater';
+import { relaunch } from '@tauri-apps/plugin-process';
 
 /** Mirrors the Rust QrPayloadDto returned by `create_pairing`. */
 export interface QrPayloadDto {
@@ -59,6 +62,22 @@ export const api = {
   getAgentConfig: () => invoke<AgentConfigDto>('get_agent_config'),
   showSetup: () => invoke<void>('show_setup_window'),
   showControl: () => invoke<void>('show_control_window'),
+};
+
+/**
+ * Automatic binary updates (M6) — a thin wrapper over
+ * `@tauri-apps/plugin-updater` and `@tauri-apps/plugin-process` so the update
+ * flow is mockable through the same `vi.mock('../lib/tauri')` seam the rest of
+ * the UI uses, instead of components importing the plugin SDKs directly.
+ */
+export type { Update };
+export const updater = {
+  /** The running app's version (from the bundle), e.g. "0.1.0". */
+  currentVersion: () => getVersion(),
+  /** Resolves to an `Update` when a newer signed release is available, else null. */
+  check: () => check(),
+  /** Quit and restart into the just-installed version. */
+  relaunch: () => relaunch(),
 };
 
 /** Mirrors the Rust PermissionStatusDto. */

@@ -1,0 +1,107 @@
+name: Release
+
+# Cut a release by pushing a version tag (see `pnpm release`), or run manually.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+concurrency:
+  # Never cancel an in-flight release build — a half-published release is worse
+  # than a queued one.
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build, sign, notarize & publish (macOS)
+    runs-on: macos-latest
+    permissions:
+      # tauri-action creates the GitHub Release and uploads assets.
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Enable corepack (pins pnpm via package.json#packageManager)
+        run: corepack enable
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          # Universal binary — both arches so a single .app/.dmg runs on Intel
+          # and Apple Silicon.
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Detect which optional secrets exist so a fork / secret-less run still
+      # produces an UNSIGNED build instead of hard-failing. tauri-action treats
+      # an empty APPLE_CERTIFICATE as "don't sign", so passing empties below is
+      # safe; this step only gates the notarization key-file decode and surfaces
+      # human-readable warnings.
+      - name: Preflight — detect signing/notarization secrets
+        id: preflight
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: |
+          if [ -n "$APPLE_CERTIFICATE" ]; then
+            echo "signing=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "signing=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::APPLE_CERTIFICATE not set — building UNSIGNED (no Developer ID signature)."
+          fi
+          if [ -n "$APPLE_API_KEY_P8" ]; then
+            echo "notarize=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "notarize=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::APPLE_API_KEY_P8 not set — skipping notarization."
+          fi
+
+      # The App Store Connect API key is stored base64-encoded; write it to a
+      # .p8 file and expose its path for the build step.
+      - name: Decode App Store Connect API key
+        if: steps.preflight.outputs.notarize == 'true'
+        env:
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/asc"
+          echo "$APPLE_API_KEY_P8" | base64 --decode > "$RUNNER_TEMP/asc/AuthKey.p8"
+          echo "APPLE_API_KEY_PATH=$RUNNER_TEMP/asc/AuthKey.p8" >> "$GITHUB_ENV"
+
+      - name: Build, sign, notarize & publish
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # ── Updater signing (minisign) — signs the updater artifacts and the
+          # latest.json emitted by createUpdaterArtifacts. ──
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # ── macOS Developer ID signing (empty when unset → unsigned build). ──
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # ── Notarization via App Store Connect API key. APPLE_API_KEY_PATH is
+          # exported by the decode step above only when the .p8 secret exists. ──
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+        with:
+          projectPath: apps/desktop
+          # For a tag push this is the tag itself; a manual dispatch falls back
+          # to a run-scoped tag so the action still has something to publish to.
+          tagName: ${{ github.ref_type == 'tag' && github.ref_name || format('v0.0.0-dispatch.{0}', github.run_number) }}
+          releaseName: 'Lilypad __VERSION__'
+          releaseBody: 'Download an installer below. Existing installs update automatically via the built-in updater.'
+          releaseDraft: false
+          prerelease: false
+          # Universal binary so one artifact covers Intel + Apple Silicon.
+          args: --target universal-apple-darwin

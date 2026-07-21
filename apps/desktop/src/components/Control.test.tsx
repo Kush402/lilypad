@@ -33,6 +33,14 @@ vi.mock('../lib/tauri', () => ({
     }),
     showSetup: vi.fn(),
   },
+  // The launch-time update banner runs a silent check on mount — stub it so
+  // Control tests exercise the dashboard, not the updater (covered separately
+  // in SoftwareUpdate.test.tsx). `check` resolving null keeps the banner hidden.
+  updater: {
+    currentVersion: vi.fn().mockResolvedValue('0.1.0'),
+    check: vi.fn().mockResolvedValue(null),
+    relaunch: vi.fn(),
+  },
 }));
 
 function dto(overrides: Partial<AppStateDto> = {}): AppStateDto {

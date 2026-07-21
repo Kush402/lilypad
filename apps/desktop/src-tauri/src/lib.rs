@@ -222,8 +222,19 @@ pub fn run() {
         }
     }
 
-    tauri::Builder::default()
-        .plugin(tauri_plugin_shell::init())
+    let mut builder = tauri::Builder::default().plugin(tauri_plugin_shell::init());
+
+    // Automatic updates (M6). Both plugins are desktop-only; `relaunch()` after
+    // a successful install lives in the process plugin. Guarded so a future
+    // mobile build (see `mobile_entry_point` above) still compiles.
+    #[cfg(desktop)]
+    {
+        builder = builder
+            .plugin(tauri_plugin_updater::Builder::new().build())
+            .plugin(tauri_plugin_process::init());
+    }
+
+    builder
         .setup(|app| {
             let device_id = load_or_create_device_id(app);
             let backend = std::env::var("LILYPAD_BACKEND_URL")
