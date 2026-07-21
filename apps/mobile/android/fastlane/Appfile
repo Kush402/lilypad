@@ -1,0 +1,9 @@
+# Android Appfile — values overridable via env, nothing sensitive baked in.
+# package_name is derived from android/app/build.gradle
+# (applicationId / namespace = com.lilypad.mobile).
+
+package_name(ENV["ANDROID_PACKAGE_NAME"] || "com.lilypad.mobile")
+
+# Play service-account JSON used by upload_to_play_store. CI decodes the
+# PLAY_SERVICE_ACCOUNT_JSON secret to a file and points this env at it.
+json_key_file(ENV["PLAY_SERVICE_ACCOUNT_JSON_PATH"]) if ENV["PLAY_SERVICE_ACCOUNT_JSON_PATH"]

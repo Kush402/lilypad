@@ -1,0 +1,75 @@
+# Android Fastfile — Lilypad mobile (bare React Native 0.76.5)
+#
+# `beta` lane: build a signed AAB and APK via Gradle and upload the AAB to the
+# Play Console "internal" track using a service-account JSON.
+#
+# Signing is injected at build time through the AGP `android.injected.signing.*`
+# Gradle properties, so the checked-in android/app/build.gradle needs no change.
+# All credentials are read from env; CI decodes secrets to files first.
+
+default_platform(:android)
+
+platform :android do
+  desc "Build a signed AAB + APK and upload the AAB to the Play internal track"
+  lane :beta do
+    package_name = ENV["ANDROID_PACKAGE_NAME"] || "com.lilypad.mobile"
+
+    keystore_path = ENV.fetch("ANDROID_KEYSTORE_PATH")
+    unless File.exist?(keystore_path)
+      UI.user_error!("Keystore not found at ANDROID_KEYSTORE_PATH=#{keystore_path}")
+    end
+
+    # A unique versionCode per run avoids Play rejecting a duplicate upload.
+    version_code = ENV["ANDROID_VERSION_CODE"] || ENV["GITHUB_RUN_NUMBER"]
+
+    signing_props = {
+      "android.injected.signing.store.file" => File.expand_path(keystore_path),
+      "android.injected.signing.store.password" => ENV.fetch("ANDROID_KEYSTORE_PASSWORD"),
+      "android.injected.signing.key.alias" => ENV.fetch("ANDROID_KEY_ALIAS"),
+      "android.injected.signing.key.password" => ENV.fetch("ANDROID_KEY_PASSWORD")
+    }
+    signing_props["android.injected.version.code"] = version_code if version_code
+
+    # project_dir "." == the android/ dir (this Fastfile lives in android/fastlane).
+    gradle(task: "clean", project_dir: ".")
+
+    # AAB for the Play upload.
+    gradle(
+      task: "bundle",
+      build_type: "Release",
+      project_dir: ".",
+      properties: signing_props
+    )
+    aab_path = lane_context[SharedValues::GRADLE_AAB_OUTPUT_PATH]
+
+    # APK for sideload / the workflow artifact.
+    gradle(
+      task: "assemble",
+      build_type: "Release",
+      project_dir: ".",
+      properties: signing_props
+    )
+    apk_path = lane_context[SharedValues::GRADLE_APK_OUTPUT_PATH]
+    UI.message("Built APK: #{apk_path}")
+
+    json_key = ENV["PLAY_SERVICE_ACCOUNT_JSON_PATH"]
+    if json_key && !json_key.empty? && File.exist?(json_key)
+      upload_to_play_store(
+        track: "internal",
+        package_name: package_name,
+        aab: aab_path,
+        json_key: json_key,
+        release_status: ENV["PLAY_RELEASE_STATUS"] || "draft",
+        skip_upload_apk: true,
+        skip_upload_metadata: true,
+        skip_upload_images: true,
+        skip_upload_screenshots: true
+      )
+    else
+      UI.important(
+        "PLAY_SERVICE_ACCOUNT_JSON_PATH not set — built the AAB/APK but skipped " \
+        "the Play Store upload."
+      )
+    end
+  end
+end

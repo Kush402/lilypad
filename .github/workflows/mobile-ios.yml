@@ -1,0 +1,106 @@
+name: Mobile — iOS (TestFlight)
+
+# Decoupled from the desktop `v*` release tags: mobile ships on its own
+# `mobile-v*` tags plus manual dispatch.
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'mobile-v*'
+
+concurrency:
+  group: mobile-ios-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ios:
+    name: Build & upload to TestFlight
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: apps/mobile
+    steps:
+      # ---------------------------------------------------------------------
+      # Preflight: decide whether the required signing secrets are present.
+      # GitHub forbids `secrets.*` in a job-level `if:`, so we read them into
+      # env here and expose a boolean output the later steps gate on. When they
+      # are missing the job ends GREEN with a clear "skipped" line.
+      # ---------------------------------------------------------------------
+      - name: Preflight — are iOS release secrets configured?
+        id: preflight
+        working-directory: ${{ github.workspace }}
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+        run: |
+          if [ -n "$ASC_KEY_ID" ] && [ -n "$ASC_ISSUER_ID" ] && [ -n "$ASC_KEY_P8" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+            echo "iOS release secrets detected — proceeding with build + upload."
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "skipped: mobile iOS secrets not configured (ASC_KEY_ID / ASC_ISSUER_ID / ASC_KEY_P8). Ending green."
+          fi
+
+      - name: Checkout
+        if: steps.preflight.outputs.configured == 'true'
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        if: steps.preflight.outputs.configured == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Enable corepack (pins pnpm via package.json#packageManager)
+        if: steps.preflight.outputs.configured == 'true'
+        run: corepack enable
+        working-directory: ${{ github.workspace }}
+
+      - name: Install JS dependencies
+        if: steps.preflight.outputs.configured == 'true'
+        run: pnpm install --frozen-lockfile
+        working-directory: ${{ github.workspace }}
+
+      - name: Setup Ruby + Bundler
+        if: steps.preflight.outputs.configured == 'true'
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+          bundler-cache: true
+          working-directory: apps/mobile
+
+      - name: Write App Store Connect API key (.p8)
+        if: steps.preflight.outputs.configured == 'true'
+        env:
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+        run: |
+          mkdir -p ios/fastlane
+          echo "$ASC_KEY_P8" | base64 --decode > ios/fastlane/AuthKey.p8
+          echo "ASC_KEY_P8_PATH=$(pwd)/ios/fastlane/AuthKey.p8" >> "$GITHUB_ENV"
+
+      - name: Install CocoaPods
+        if: steps.preflight.outputs.configured == 'true'
+        working-directory: apps/mobile/ios
+        run: bundle exec pod install
+
+      - name: Fastlane beta (archive → IPA → TestFlight)
+        if: steps.preflight.outputs.configured == 'true'
+        working-directory: apps/mobile/ios
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          # ASC_KEY_P8_PATH is exported into $GITHUB_ENV by the key-write step.
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          IOS_APP_IDENTIFIER: ${{ secrets.IOS_APP_IDENTIFIER }}
+          # Optional `match` signing — leave unset for Xcode-managed automatic signing.
+          MATCH_GIT_URL: ${{ secrets.MATCH_GIT_URL }}
+          MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
+          FASTLANE_APPLE_ID: ${{ secrets.FASTLANE_APPLE_ID }}
+        run: bundle exec fastlane ios beta
+
+      - name: Skipped notice
+        if: steps.preflight.outputs.configured != 'true'
+        working-directory: ${{ github.workspace }}
+        run: |
+          echo "skipped: mobile iOS secrets not configured — nothing to build. This is expected until signing secrets are added."
