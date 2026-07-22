@@ -36,6 +36,23 @@ cd apps/mobile && pnpm pods && pnpm ios            # mobile (needs full Xcode)
 
 Verify a machine anytime with `pnpm doctor`.
 
+**Off-LAN / cellular testing (`TUNNEL=1`):** run the backend **built, not
+watched** — a `tsx watch` restart mints a fresh Cloudflare quick-tunnel URL,
+so the phone that paired seconds ago ends up signaling a dead host (pairs,
+connects ~1s, then silence). Use the compiled server instead:
+
+```bash
+pnpm --filter @lilypad/backend build
+pnpm --filter @lilypad/backend start        # node dist/index.js — no watch
+```
+
+`dev` (tsx watch) is fine on LAN, where the QR carries a stable
+`192.168.x.x` address that survives restarts. It's specifically the *ephemeral
+tunnel URL* that a restart rotates. Running compiled also cuts the
+recompile-restart-reconnect churn: one stable process, one stable URL, sessions
+that stay up. (Quick tunnels are still ephemeral — for a URL that never
+changes, use a named cloudflared tunnel or deploy the backend.)
+
 ---
 
 ## 2. Reclaim disk, then rebuild later
