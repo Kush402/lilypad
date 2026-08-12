@@ -25,6 +25,7 @@ apps/mobile/android/build/
 apps/mobile/android/local.properties
 apps/mobile/.expo/
 *.keystore
+*.jks
 !debug.keystore
 
 # Env & secrets

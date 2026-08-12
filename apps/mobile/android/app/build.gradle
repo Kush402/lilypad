@@ -72,6 +72,28 @@ def enableProguardInReleaseBuilds = false
  */
 def jscFlavor = 'org.webkit:android-jsc:+'
 
+/**
+ * Release signing credentials.
+ *
+ * Read from the environment first — the same four names the CI workflow
+ * already exports (.github/workflows/mobile-android.yml) — then from Gradle
+ * properties so a developer can put them in ~/.gradle/gradle.properties
+ * without them ever reaching this repository.
+ *
+ * All four must be present. A partially-configured signing config is the kind
+ * of thing that fails at the end of a long release build, so it is treated as
+ * unconfigured.
+ */
+def releaseCredential = { String name ->
+    System.getenv(name) ?: project.findProperty(name)
+}
+def releaseKeystorePath = releaseCredential("ANDROID_KEYSTORE_PATH")
+def releaseKeystorePassword = releaseCredential("ANDROID_KEYSTORE_PASSWORD")
+def releaseKeyAlias = releaseCredential("ANDROID_KEY_ALIAS")
+def releaseKeyPassword = releaseCredential("ANDROID_KEY_PASSWORD")
+def hasReleaseSigning = releaseKeystorePath && releaseKeystorePassword &&
+        releaseKeyAlias && releaseKeyPassword
+
 android {
     ndkVersion rootProject.ext.ndkVersion
     buildToolsVersion rootProject.ext.buildToolsVersion
@@ -87,10 +109,21 @@ android {
     }
     signingConfigs {
         debug {
+            // The stock React Native debug key, committed on purpose and shared
+            // by every developer. Safe for `debug` ONLY — it is public, so
+            // anything it signs can be forged by anyone.
             storeFile file('debug.keystore')
             storePassword 'android'
             keyAlias 'androiddebugkey'
             keyPassword 'android'
+        }
+        if (hasReleaseSigning) {
+            release {
+                storeFile file(releaseKeystorePath)
+                storePassword releaseKeystorePassword
+                keyAlias releaseKeyAlias
+                keyPassword releaseKeyPassword
+            }
         }
     }
     buildTypes {
@@ -98,9 +131,18 @@ android {
             signingConfig signingConfigs.debug
         }
         release {
-            // Caution! In production, you need to generate your own keystore file.
-            // see https://reactnative.dev/docs/signed-apk-android.
-            signingConfig signingConfigs.debug
+            // Release used to fall back to signingConfigs.debug. That produced
+            // an APK that LOOKED shippable while being signed with a key
+            // published in this repository — anyone could have forged an update
+            // for it, and an app's signing key can never be changed after its
+            // first Play release.
+            //
+            // With no credentials configured the build now yields an
+            // -unsigned.apk instead. Unsigned cannot be installed or uploaded,
+            // so the failure is loud and immediate rather than silent and
+            // permanent. CI is unaffected: fastlane passes
+            // `android.injected.signing.*`, which overrides this either way.
+            signingConfig hasReleaseSigning ? signingConfigs.release : null
             minifyEnabled enableProguardInReleaseBuilds
             proguardFiles getDefaultProguardFile("proguard-android.txt"), "proguard-rules.pro"
         }

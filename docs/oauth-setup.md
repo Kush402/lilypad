@@ -84,18 +84,23 @@ unavailable.
 - Package name: **`com.takedia.lilypad`**
 - SHA-1 certificate fingerprint: of the **release upload keystore**.
 
-> **Blocked today.** [`build.gradle`](../apps/mobile/android/app/build.gradle)
-> still signs release builds with the committed `debug.keystore`. Registering
-> its SHA-1 would bind the OAuth client to a throwaway key that must never ship.
-> Generate the real upload keystore first, then:
->
-> ```bash
-> keytool -list -v -keystore upload.keystore -alias <alias> | grep SHA1
-> ```
->
-> A debug-key SHA-1 can be registered _as well_ if you want Google sign-in to
-> work in local debug builds — they are separate fingerprint entries on the same
-> client.
+The debug-key fallback that made this unsafe is **fixed**: release builds now
+produce an unsigned APK unless real credentials are supplied, so there is no
+longer a debug-signed artefact that could be mistaken for shippable. See
+[RELEASE.md](../apps/mobile/docs/RELEASE.md) for generating the upload keystore,
+then read the fingerprint the OAuth client is registered against:
+
+```bash
+keytool -list -v -keystore lilypad-upload.jks -alias upload | grep SHA1
+```
+
+> **If Play App Signing is enabled**, Google re-signs uploads with its own key
+> and the fingerprint OAuth actually sees is **Play's app signing certificate**
+> (Play Console → Setup → App signing), not the upload key's. Register both, or
+> sign-in works in your local build and fails for every Play install.
+
+A debug-key SHA-1 can be registered as well if you want Google sign-in to work
+in local debug builds — separate fingerprint entries on the same client.
 
 ## Apple — what to create
 
@@ -179,16 +184,17 @@ implemented; awaiting a decision.**
 
 ## Status — what is built and what is not
 
-| Piece                           | State                                          |
-| ------------------------------- | ---------------------------------------------- |
-| Backend ID-token verification   | **Implemented**, 15 tests                      |
-| Mobile Google sign-in           | **Implemented**, 6 tests; unverified on device |
-| Mobile Apple sign-in            | **Implemented**, 4 tests; unverified on device |
-| Mobile magic link               | **Implemented**, 4 tests; dev-only delivery    |
-| iOS entitlement + target wiring | **Implemented**, plists validated              |
-| iOS Google URL scheme           | **Waiting on the client id**                   |
-| Android OAuth client            | **Blocked on the release keystore**            |
-| Desktop sign-in                 | **Not started** — see the decision above       |
+| Piece                           | State                                              |
+| ------------------------------- | -------------------------------------------------- |
+| Backend ID-token verification   | **Implemented**, 15 tests                          |
+| Mobile Google sign-in           | **Implemented**, 6 tests; unverified on device     |
+| Mobile Apple sign-in            | **Implemented**, 4 tests; unverified on device     |
+| Mobile magic link               | **Implemented**, 4 tests; dev-only delivery        |
+| iOS entitlement + target wiring | **Implemented**, plists validated                  |
+| iOS Google URL scheme           | **Waiting on the client id**                       |
+| Android release signing         | **Fixed** — fails closed; verified in a Gradle run |
+| Android OAuth client            | **Waiting on the upload keystore's SHA-1**         |
+| Desktop sign-in                 | **Not started** — see the decision above           |
 
 "Unverified on device" is literal: the sign-in modules typecheck against the real
 SDK type definitions and their logic is unit-tested against mocked SDKs, but no

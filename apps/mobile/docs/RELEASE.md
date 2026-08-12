@@ -109,6 +109,74 @@ matching the checked-in project). Set `MATCH_GIT_URL`/`MATCH_PASSWORD` to use
 
 ---
 
+## Android release signing
+
+### What was wrong, and why it mattered
+
+Until M8, `app/build.gradle` had `release { signingConfig signingConfigs.debug }`.
+Any `./gradlew assembleRelease` therefore produced an APK that **looked
+shippable while being signed with a key committed to this repository**. Anyone
+with the repo could have forged an update for it. An Android app's signing key
+can never be changed after its first Play release, so shipping once with that
+key would have been permanent.
+
+CI was never exposed — fastlane injects `android.injected.signing.*`, which
+overrides the build type — but nothing stopped a local release build, and
+nothing said so.
+
+### How it behaves now
+
+Release signing is read from **the environment first, then Gradle properties**,
+using the same four names CI already exports:
+
+| Name                        | What                                 |
+| --------------------------- | ------------------------------------ |
+| `ANDROID_KEYSTORE_PATH`     | absolute path to the upload keystore |
+| `ANDROID_KEYSTORE_PASSWORD` | store password                       |
+| `ANDROID_KEY_ALIAS`         | key alias                            |
+| `ANDROID_KEY_PASSWORD`      | key password                         |
+
+**All four or none.** A partial configuration counts as unconfigured, because
+the alternative is failing at the end of a long release build.
+
+With none configured, `assembleRelease` yields an **`-unsigned.apk`**, which
+cannot be installed or uploaded. That is deliberate: unsigned fails loudly and
+immediately, where debug-signed failed silently and permanently.
+
+Put them in `~/.gradle/gradle.properties` (outside the repo) for local release
+builds:
+
+```properties
+ANDROID_KEYSTORE_PATH=/Users/you/keys/lilypad-upload.jks
+ANDROID_KEYSTORE_PASSWORD=…
+ANDROID_KEY_ALIAS=upload
+ANDROID_KEY_PASSWORD=…
+```
+
+### Creating the upload keystore
+
+```bash
+keytool -genkeypair -v \
+  -keystore lilypad-upload.jks -alias upload \
+  -keyalg RSA -keysize 4096 -validity 10000
+```
+
+Store it outside the repository and back it up somewhere you cannot lose —
+losing it means you can never publish an update to the same listing. `*.jks`
+and `*.keystore` are git-ignored (except the stock `debug.keystore`).
+
+Then read the SHA-1 that the **Google OAuth Android client** must be registered
+against ([docs/oauth-setup.md](../../../docs/oauth-setup.md)):
+
+```bash
+keytool -list -v -keystore lilypad-upload.jks -alias upload | grep SHA1
+```
+
+> If Play App Signing is enabled, Google re-signs uploads with its own key and
+> the SHA-1 that matters for OAuth is **Play's app signing certificate**, shown
+> in Play Console → Setup → App signing — not the upload key's. Register the
+> upload key's SHA-1 as well so pre-Play builds work.
+
 ## Android secrets
 
 | Secret                      | Required | What it is                                                         |
