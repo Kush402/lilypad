@@ -12,6 +12,10 @@ export const redisKeys = {
    * record the signature is checked against (M8). Redis for the same reason:
    * a nonce that survives a restart is a replay window. */
   deviceChallenge: (challengeId: string) => `lilypad:device-challenge:${challengeId}`,
+  /** Single-use desktop-enrollment code → the JSON record binding it to the
+   * desktop's public key (M8). Redis for the same reason as the others: a
+   * pending enrollment that survives a restart is a standing invitation. */
+  desktopEnrollment: (code: string) => `lilypad:desktop-enrollment:${code}`,
   /** Signaling room membership/state (M2+). */
   room: (roomId: string) => `lilypad:room:${roomId}`,
   /** Room-authorization record written by the pairing flow (`desktopDeviceId`,

@@ -89,3 +89,61 @@ export type DeviceIdentityErrorCode =
   | 'device_revoked'
   | 'device_owned_by_another_account'
   | 'public_key_in_use';
+
+// ── Desktop enrollment via an authenticated phone (M8) ───────────────────────
+
+/**
+ * The desktop has no OAuth client of its own
+ * ([ADR-0008](../../../docs/adr/0008-desktop-enrollment-via-phone.md)). It is
+ * enrolled by a phone that is already signed in, using the QR surface the
+ * desktop already has — the WhatsApp Web / Steam model.
+ *
+ * This exists because Google removed the implicit ID-token flow for installed
+ * apps: a desktop app can only obtain a Google ID token by exchanging an
+ * authorization code, which would put a code exchange into a product that has
+ * deliberately avoided one everywhere else. Borrowing the phone's session
+ * avoids the exchange, the extra OAuth client, and the browser round-trip
+ * entirely.
+ */
+
+/** The desktop asks for an enrollment code, proving it holds the key that the
+ * code will be bound to. Unauthenticated by necessity — an unenrolled desktop
+ * has no token yet, which is the whole point. */
+export const DesktopEnrollmentCodeRequestSchema = z.object({
+  ...proofFields,
+  fingerprint: z.string().min(8).max(128),
+  name: z.string().min(1).max(120).nullish(),
+  platform: PlatformSchema.nullish(),
+});
+export type DesktopEnrollmentCodeRequest = z.infer<typeof DesktopEnrollmentCodeRequestSchema>;
+
+/** What the desktop renders as a QR for the phone to scan. */
+export const DesktopEnrollmentCodeSchema = z.object({
+  code: z.string().min(16).max(128),
+  expiresInSeconds: z.number().int().positive(),
+});
+export type DesktopEnrollmentCode = z.infer<typeof DesktopEnrollmentCodeSchema>;
+
+/** The QR payload itself. `deviceName`/`platform` are shown to the user before
+ * they approve — they are supplied by the DESKTOP, so they are a label to help
+ * a human recognise their own machine, never an authorization input. */
+export const DesktopEnrollmentQrSchema = z.object({
+  v: z.literal(1),
+  kind: z.literal('desktop-enrollment'),
+  code: z.string().min(16).max(128),
+  apiBaseUrl: z.string().url(),
+  deviceName: z.string().max(120).nullable(),
+  platform: PlatformSchema.nullable(),
+});
+export type DesktopEnrollmentQr = z.infer<typeof DesktopEnrollmentQrSchema>;
+
+/** The phone approves, presenting its own DEVICE token. The account the
+ * desktop joins is the token's subject — never anything in this body. */
+export const DesktopEnrollmentApproveSchema = z.object({
+  code: z.string().min(16).max(128),
+});
+export type DesktopEnrollmentApprove = z.infer<typeof DesktopEnrollmentApproveSchema>;
+
+/** Machine-readable failures for the desktop-enrollment exchange. */
+export type DesktopEnrollmentErrorCode =
+  'invalid_signature' | 'invalid_code' | 'device_owned_by_another_account' | 'public_key_in_use';

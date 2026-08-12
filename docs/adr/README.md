@@ -40,3 +40,4 @@ the old one `Superseded by ADR-NNNN`.
 | [0005](0005-turn-topology.md)                  | TURN topology: dedicated regional VMs, not Kubernetes      | Accepted |
 | [0006](0006-lan-first-connectivity.md)         | LAN-first: the laptop is its own control plane             | Accepted |
 | [0007](0007-cloud-is-control-plane-only.md)    | The cloud is a control plane, never a data plane           | Accepted |
+| [0008](0008-desktop-enrollment-via-phone.md)   | The desktop enrolls through an authenticated phone         | Accepted |

@@ -156,6 +156,34 @@ function cache(session: DeviceSession): void {
   };
 }
 
+/**
+ * Approve a desktop onto THIS phone's account
+ * ([ADR-0008](../../../../docs/adr/0008-desktop-enrollment-via-phone.md)).
+ *
+ * The laptop is identified entirely by the code — it was bound to the laptop's
+ * public key when the code was minted, so nothing here can redirect the
+ * enrollment to a different machine. The ACCOUNT it joins is the subject of
+ * this phone's device token, never a value we send.
+ */
+export async function approveDesktopEnrollment(
+  apiBaseUrl: string,
+  code: string,
+): Promise<{ deviceId: string }> {
+  const { status, text } = await postJson(
+    endpoint(apiBaseUrl, '/devices/enrollment-code/approve'),
+    { code },
+    await accessToken(apiBaseUrl),
+  );
+  if (status === 404) {
+    throw new Error('That code has expired. Show a new one on the computer.');
+  }
+  if (status === 409) {
+    throw new Error('That computer is already on another account.');
+  }
+  if (status !== 200) throw new Error(`could not add that computer (HTTP ${status})`);
+  return JSON.parse(text) as { deviceId: string };
+}
+
 /** Drop the cached token so the next call re-authenticates. Called when the
  * backend answers 401 — the token may have been revoked under us. */
 export function invalidateAccessToken(): void {

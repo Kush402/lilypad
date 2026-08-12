@@ -271,6 +271,45 @@ itself back in after a restart, with no user interaction. Rate-limited to
 not allowed. Retrying with the same key will never help, and a client that
 cannot tell those apart retries forever.
 
+### `POST /devices/enrollment-code` ✅
+
+The desktop asks for a single-use code to show as a QR
+([ADR-0008](adr/0008-desktop-enrollment-via-phone.md)). The desktop has **no
+OAuth client of its own** — it is enrolled by a phone that is already signed in.
+Unauthenticated by necessity, since an unenrolled desktop has no token; that is
+safe because the code is **bound server-side to the public key proved here**, so
+an intercepted code can only ever enroll that one machine. 120-second TTL.
+Rate-limited to **20/minute** per IP.
+
+```jsonc
+// request — same proof fields as /devices/enroll, minus `kind` (always desktop)
+{ "challenge": "…", "publicKey": "…", "signature": "…",
+  "fingerprint": "desktop-…", "name": "Work Mac", "platform": "macos" }
+// 201 Created
+{ "code": "…", "expiresInSeconds": 120 }
+```
+
+### `POST /devices/enrollment-code/approve` ✅ 🔒 device token
+
+An already-enrolled phone adds that desktop to **its own** account. Requires a
+**device** token, not merely an account session: approving another machine is
+exactly the act that should need a device that was itself enrolled. The account
+the desktop joins is the token's subject — the body carries only the code.
+Rate-limited to **20/minute** per IP.
+
+```jsonc
+{ "code": "…" }
+// 200 OK
+{ "ok": true, "deviceId": "uuid" }
+// 404 — unknown, expired, or already used; all answer identically so a caller
+//       cannot probe for live codes
+{ "error": "invalid_code", "message": "…" }
+// 409 { "error": "device_owned_by_another_account" }   // or "public_key_in_use"
+```
+
+The desktop learns it succeeded because its next `POST /devices/token` starts
+working. There is no completion endpoint and no push channel.
+
 Both proof-carrying routes **burn the challenge before checking the
 signature**. The other order would leave a failed attempt's nonce spendable,
 handing an attacker unlimited tries against one challenge.

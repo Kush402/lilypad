@@ -2,6 +2,8 @@ import type { FastifyInstance, FastifyReply } from 'fastify';
 import {
   DeviceEnrollRequestSchema,
   DeviceTokenRequestSchema,
+  DesktopEnrollmentCodeRequestSchema,
+  DesktopEnrollmentApproveSchema,
   type DeviceChallenge,
   type DeviceSession,
 } from '@lilypad/protocol';
@@ -12,7 +14,11 @@ import {
 } from '../auth/deviceIdentity.js';
 import { DeviceRegistry, createDrizzleDeviceIdentityStore } from '../auth/deviceRegistry.js';
 import { signAccessToken, ACCESS_TOKEN_TTL_SECONDS } from '../auth/tokens.js';
-import { requireAuth, actorOf } from '../auth/requireAuth.js';
+import { requireAuth, requireDevice, actorOf, deviceActorOf } from '../auth/requireAuth.js';
+import {
+  createDesktopEnrollmentCode,
+  consumeDesktopEnrollmentCode,
+} from '../auth/desktopEnrollment.js';
 import { AuditLogService, createDrizzleAuditLogStore } from '../services/auditLog.js';
 import { log } from '../logging.js';
 
@@ -137,6 +143,108 @@ export async function enrollmentRoutes(app: FastifyInstance): Promise<void> {
       return reply
         .code(200)
         .send(await deviceSession(authenticated.deviceId, authenticated.userId, req.ip));
+    },
+  );
+
+  /**
+   * A desktop asks for an enrollment code, proving it holds the keypair the
+   * code will be bound to ([ADR-0008](../../../../docs/adr/0008-desktop-enrollment-via-phone.md)).
+   *
+   * Unauthenticated by necessity — an unenrolled desktop has no token, which is
+   * the entire reason this flow exists. What makes that safe is the binding: a
+   * code can only ever enroll the key it was minted for, so intercepting one
+   * does not let an attacker enroll their own machine.
+   */
+  app.post(
+    '/devices/enrollment-code',
+    { config: { rateLimit: { max: 20, timeWindow: '1 minute' } } },
+    async (req, reply) => {
+      const parsed = DesktopEnrollmentCodeRequestSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return reply.code(400).send({ error: 'invalid_request', issues: parsed.error.issues });
+      }
+      const { challenge, publicKey, signature, fingerprint, name, platform } = parsed.data;
+      if (!(await proofHolds(challenge, publicKey, signature))) {
+        return invalidSignature(reply, req.ip, { step: 'desktop_enrollment_code' });
+      }
+      const minted = await createDesktopEnrollmentCode({
+        publicKey,
+        fingerprint,
+        name: name ?? null,
+        platform: platform ?? null,
+      });
+      return reply.code(201).send(minted);
+    },
+  );
+
+  /**
+   * An already-enrolled phone approves a desktop onto ITS OWN account.
+   *
+   * `requireDevice`, not `requireAuth`: approving another machine onto an
+   * account is exactly the kind of act that should need a device that was
+   * itself enrolled, rather than any account session. The account the desktop
+   * joins is the token's subject and nothing else — the request body carries
+   * only the code.
+   */
+  app.post(
+    '/devices/enrollment-code/approve',
+    {
+      preHandler: requireDevice,
+      config: { rateLimit: { max: 20, timeWindow: '1 minute' } },
+    },
+    async (req, reply) => {
+      const parsed = DesktopEnrollmentApproveSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return reply.code(400).send({ error: 'invalid_request', issues: parsed.error.issues });
+      }
+      const approver = deviceActorOf(req);
+      const record = await consumeDesktopEnrollmentCode(parsed.data.code);
+      if (!record) {
+        // Unknown, expired, and already-used answer identically: a phone that
+        // could tell them apart could probe for live codes.
+        return reply
+          .code(404)
+          .send({ error: 'invalid_code', message: 'that code has expired — show a new one' });
+      }
+
+      const enrolled = await registry.enroll({
+        userId: approver.userId,
+        kind: 'desktop',
+        fingerprint: record.fingerprint,
+        publicKey: record.publicKey,
+        name: record.name,
+        platform: record.platform,
+      });
+      if (!enrolled.ok) {
+        void auditLog
+          .loginFailed({
+            userId: approver.userId,
+            ip: req.ip,
+            metadata: { reason: enrolled.reason, step: 'desktop_enrollment_approve' },
+          })
+          .catch((err) => log.audit.error({ err }, 'failed to write login_failed audit log'));
+        return reply.code(409).send({
+          error: enrolled.reason,
+          message:
+            enrolled.reason === 'public_key_in_use'
+              ? 'that key already identifies a different device'
+              : 'that computer is already on another account',
+        });
+      }
+
+      void auditLog
+        .login({
+          userId: approver.userId,
+          deviceId: enrolled.deviceId,
+          ip: req.ip,
+          metadata: { subject: 'desktop', approvedBy: approver.deviceId },
+        })
+        .catch((err) => log.audit.error({ err }, 'failed to write login audit log'));
+
+      // The desktop learns it succeeded by its next /devices/token call
+      // starting to work — no extra endpoint, no push channel, no polling
+      // protocol to specify.
+      return reply.code(200).send({ ok: true, deviceId: enrolled.deviceId });
     },
   );
 

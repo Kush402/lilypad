@@ -41,6 +41,15 @@ struct ChallengeResponse {
     challenge: String,
 }
 
+/// A single-use code a signed-in phone scans to add this laptop to its account
+/// ([ADR-0008](../../../../docs/adr/0008-desktop-enrollment-via-phone.md)).
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EnrollmentCode {
+    pub code: String,
+    pub expires_in_seconds: u64,
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DeviceSession {
@@ -151,6 +160,49 @@ impl DeviceAuth {
             .context("the backend's enrollment response was not valid JSON")?;
         self.cache(&session);
         Ok(session)
+    }
+
+    /// Ask for an enrollment code to show as a QR.
+    ///
+    /// The desktop has no OAuth client of its own: it is enrolled by a phone
+    /// that is already signed in. The code is bound server-side to the public
+    /// key proved here, so an intercepted code cannot enroll a different
+    /// machine — it can only enroll THIS one, onto whichever account scans it.
+    ///
+    /// After showing the code, poll `sign_in()`: it stops returning
+    /// `AuthError::NotEnrolled` the moment a phone approves. That is the whole
+    /// completion protocol — no extra endpoint and no push channel.
+    pub async fn request_enrollment_code(
+        &self,
+        fingerprint: &str,
+        name: &str,
+        platform: &str,
+    ) -> Result<EnrollmentCode> {
+        let (challenge, public_key, signature) = self.signed_proof().await?;
+        let response = self
+            .http
+            .post(self.url("/devices/enrollment-code"))
+            .json(&serde_json::json!({
+                "challenge": challenge,
+                "publicKey": public_key,
+                "signature": signature,
+                "fingerprint": fingerprint,
+                "name": name,
+                "platform": platform,
+            }))
+            .send()
+            .await
+            .context("could not reach the backend for an enrollment code")?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            bail!("could not start enrollment (HTTP {status}): {body}");
+        }
+        response
+            .json()
+            .await
+            .context("the backend's enrollment-code response was not valid JSON")
     }
 
     /// A valid access token, re-authenticating if the cached one is missing or
