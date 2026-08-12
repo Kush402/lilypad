@@ -77,22 +77,23 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      # Reports known-vulnerable dependencies at high/critical severity.
+      # BLOCKING: fails the build on any high/critical advisory. Moderate and
+      # below are reported by `pnpm audit` locally but do not gate CI, so a
+      # noisy transitive advisory can't halt unrelated work.
       #
-      # NOT blocking yet, deliberately: at the time this job was added the tree
-      # already carried 18 high + 1 critical advisories, several in backend
-      # RUNTIME deps (drizzle-orm <0.45.2, find-my-way <9.7.0, fast-uri <3.1.5)
-      # plus a critical in vitest <3.2.6. Clearing them needs real version bumps
-      # (vitest 2→3, drizzle 0.38→0.45, a fastify bump for the transitives) with
-      # genuine regression risk against the existing suite — that is its own
-      # reviewed pass, not a silent side effect of another milestone.
+      # Transitive advisories whose parent already permits a patched range are
+      # pinned via `pnpm.overrides` in the root package.json rather than by
+      # waiting on the parent to re-release.
       #
-      # A green-by-default gate that hides 19 findings is worse than an honest
-      # warning. Flip `continue-on-error` off once the tree is clean; that is a
-      # release blocker for M12 (security hardening), and the upgrade should land
-      # BEFORE M8 builds authentication on top of this router and ORM.
+      # Two advisories are explicitly ignored via `pnpm.auditConfig.ignoreGhsas`:
+      # GHSA-w3rx-r6r6-pgpr and GHSA-5p2g-fcmc-qvqq (image-size DoS via the ICNS
+      # and JXL/HEIF parsers). There is no patched release — npm reports the
+      # patched range as `<0.0.0`. It reaches us only through
+      # metro-config → metro, i.e. React Native's *bundler*, which runs at build
+      # time over our own asset files and never ships in the app or processes
+      # untrusted input. Re-evaluate when metro bumps it; do not extend this list
+      # without the same reasoning written down.
       - name: Dependency audit
-        continue-on-error: true
         run: pnpm audit --audit-level high
 
       - uses: github/codeql-action/init@v3

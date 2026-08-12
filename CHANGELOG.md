@@ -10,6 +10,23 @@ Cellular-stability hardening on top of 1.0.0 driven by live-hardware findings
 (2026-07-19 → 2026-07-20), plus the release-engineering pass that makes the
 apps shippable and self-updating.
 
+### Security — dependencies
+
+- **Cleared every high and critical dependency advisory** (19 findings) and made
+  the CI audit **blocking**. Direct bumps: `drizzle-orm` 0.38.4 → 0.45.2 and
+  `fastify` 5.2 → 5.11.3 (both backend **runtime**), `vitest` 2.1.9 → 3.2.7
+  (clears a critical), `vite` 6.0.7 → 6.4.3, `drizzle-kit` 0.30 → 0.31.10.
+  Transitives that their parents already permit — `find-my-way`, `fast-uri`,
+  `postcss`, `nanoid`, `js-yaml`, `brace-expansion`, `esbuild`,
+  `fast-xml-parser` — are pinned via `pnpm.overrides` rather than waiting on a
+  parent re-release. Versions were chosen as the **minimum that clears the
+  advisory within the existing major**, not "latest", to keep the change
+  reviewable. All 537 JS/TS tests, typecheck, lint, build, and format pass
+  unchanged.
+- Two `image-size` advisories (GHSA-w3rx-r6r6-pgpr, GHSA-5p2g-fcmc-qvqq) are
+  explicitly ignored with the reasoning recorded in `ci.yml`: no patched release
+  exists, and it reaches us only through React Native's bundler at build time.
+
 ### Engineering process
 
 - **Documentation is now enforced by CI** (`pnpm docs:check`). It fails the build
