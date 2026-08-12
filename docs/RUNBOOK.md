@@ -43,7 +43,44 @@ cd apps/mobile && pnpm pods && pnpm ios            # mobile (needs full Xcode)
 
 Verify a machine anytime with `pnpm doctor`.
 
-**Off-LAN / cellular testing (`TUNNEL=1`):** run the backend **built, not
+## Off-LAN / cellular testing — the named tunnel
+
+`lilypad.takedia.com` is a **permanent** hostname served by a named cloudflared
+tunnel. Use it for anything that has to work off wifi. Production is unchanged
+and still targets AWS (M13) — **a tunnel is not a deployment.**
+
+```bash
+# 1. terminal one — the tunnel (config is versioned in the repo)
+cloudflared tunnel --config infra/cloudflared/lilypad.yml run
+
+# 2. terminal two — the backend, BUILT (see the warning below)
+pnpm --filter @lilypad/backend build
+pnpm --filter @lilypad/backend start
+
+# 3. confirm the public path before touching a phone
+curl -s https://lilypad.takedia.com/health
+curl -s -o /dev/null -w '%{http_code}\n' --http1.1 \
+  -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
+  -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
+  https://lilypad.takedia.com/ws/signal      # must print 101
+```
+
+`.env` pins `PUBLIC_BASE_URL`/`SIGNALING_URL` to that hostname, which is what
+stops `config.ts` auto-detecting a `192.168.x.x` address no phone on cellular
+can reach. Media relays through the configured public TURN (`PUBLIC_TURN_URL`),
+since a Cloudflare tunnel carries HTTP and WebSockets only — never TURN's UDP.
+
+Two traps worth knowing:
+
+- **Always pass `--config`.** `~/.cloudflared/config.yml` belongs to a different
+  tunnel on this machine and sets its own default `tunnel:`, which silently wins
+  over the tunnel named on the command line — including for
+  `cloudflared tunnel route dns`, where it will happily point your hostname at
+  the wrong tunnel.
+- **Port 8080 is contended** — `tokito.takedia.com` forwards there too. Do not
+  run both backends at once.
+
+**Quick tunnels (`TUNNEL=1`) — fallback only:** run the backend **built, not
 watched** — a `tsx watch` restart mints a fresh Cloudflare quick-tunnel URL,
 so the phone that paired seconds ago ends up signaling a dead host (pairs,
 connects ~1s, then silence). Use the compiled server instead:

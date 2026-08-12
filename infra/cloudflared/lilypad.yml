@@ -1,0 +1,34 @@
+# Lilypad local development, reached over a permanent hostname.
+#
+# Local development only. The documented production architecture is unchanged
+# and still targets AWS (see docs/PROJECT-INDEX.md §7 and the M13 milestone);
+# a tunnel is never a deployment and is never referenced by production config.
+#
+# Replaces the Quick Tunnel (`TUNNEL=1`, apps/backend/src/tunnel/quickTunnel.ts)
+# whose *.trycloudflare.com hostname rotated on every restart. That rotation is
+# fatal here for two reasons beyond inconvenience: a pairing QR encodes the
+# api/signaling URLs at mint time, so every restart invalidated every code
+# already on screen; and OAuth/deep-link registrations cannot follow a moving
+# hostname.
+#
+# This config is deliberately NOT ~/.cloudflared/config.yml — that file belongs
+# to the tokito tunnel on this machine and sets its own default `tunnel:`, which
+# silently wins over the tunnel named on the command line. Always pass this file
+# explicitly:
+#
+#   cloudflared tunnel --config infra/cloudflared/lilypad.yml run
+#
+# ⚠️ Port collision: tokito.takedia.com also forwards to localhost:8080. Only one
+# of the two backends can own that port at a time, so do not run the tokito
+# gateway and the Lilypad backend simultaneously.
+
+tunnel: a52a0521-8e9b-4146-99f0-b3fd4cfc8170
+credentials-file: /Users/kushsharma/.cloudflared/a52a0521-8e9b-4146-99f0-b3fd4cfc8170.json
+
+ingress:
+  # The Lilypad backend: REST plus the /ws/signal WebSocket. cloudflared proxies
+  # WebSockets natively, so signaling needs no extra configuration.
+  - hostname: lilypad.takedia.com
+    service: http://localhost:8080
+  # Required terminator. Anything not matched above is refused, not forwarded.
+  - service: http_status:404
