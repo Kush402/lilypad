@@ -29,15 +29,15 @@ Items marked 🔜 were confirmed absent from the code.
 | `pnpm typecheck`                | ✅ 8/8 tasks pass                                |
 | `pnpm lint` (ESLint)            | ✅ 6/6 tasks pass, 0 warnings                    |
 | `pnpm test` (JS/TS)             | ✅ **697 pass, 0 fail** across 55 files/suites   |
-| `cargo test` (desktop)          | ✅ **294 pass, 0 fail, 0 ignored**               |
+| `cargo test` (desktop)          | ✅ **298 pass, 0 fail, 0 ignored**               |
 | `cargo clippy --all-targets`    | ✅ clean — no errors, no warnings                |
 | `cargo fmt --check`             | ✅ clean                                         |
 | `pnpm format:check`             | ✅ clean                                         |
 | `pnpm docs:check`               | ✅ clean — 54 markdown files                     |
 | `pnpm audit --audit-level high` | ✅ clean — blocking in CI (2 documented ignores) |
-| **Total automated tests**       | **991**                                          |
+| **Total automated tests**       | **995**                                          |
 
-Test breakdown: backend 386 · mobile 249 · desktop Rust 294 · desktop UI 44 ·
+Test breakdown: backend 386 · mobile 249 · desktop Rust 298 · desktop UI 44 ·
 shared 18.
 
 A further **11 opt-in end-to-end tests** are skipped by default
@@ -99,7 +99,7 @@ are cleanly separated.
 | `signaling/` | messages (712 lines), mod                                                                                                                                                 | ✅ serde mirror of the zod contract, drift-tested                                                   |
 | Lifecycle    | lib, main, commands (835), state, presence, permission, power, autostart, single_instance, health, clipboard                                                              | ✅ all shipped                                                                                      |
 | Frontend     | `src/components/*` (Bubble, QrOverlay, Control, Setup, Diagnostics, SoftwareUpdate, AgentProviderCard), `src/lib/*`                                                       | ✅ 44 tests pass                                                                                    |
-| Tests        | `src-tauri/tests/*` — 12 integration suites + soak                                                                                                                        | ✅ 294 total incl. fault injection + clipboard race                                                 |
+| Tests        | `src-tauri/tests/*` — 12 integration suites + soak                                                                                                                        | ✅ 298 total incl. fault injection + clipboard race                                                 |
 | Examples     | 6 benches/harnesses (`bench_encode`, `bench_input`, `bench_pipeline`, `headless_mobile_peer`, …)                                                                          | ✅ compile + run                                                                                    |
 
 ### `apps/backend` — Fastify + Postgres + Redis ✅

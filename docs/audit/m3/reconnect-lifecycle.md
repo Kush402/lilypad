@@ -1646,6 +1646,56 @@ attempt counter, for the same flapping-tolerance benefit).
 
 ---
 
+### Confirmed in production, and fixed (2026-08-12)
+
+This finding's predicted failure mode — "an effectively unbounded number of
+restarts over a long enough flaky session" — was reproduced live over cellular
+on an iPhone 13. It arrived through a reset path added _after_ this audit was
+written, not the reset-on-`connected` one described above:
+`session/mod.rs`'s heartbeat lifted a `recovery_deadline` the moment peer
+traffic read fresh, and set `ice_restarts = 0` in the same breath.
+
+Captured evidence (`lilypad::session`, one session):
+
+```
+23:42:05  attempting ICE restart 1/2
+23:42:08  recovery deadline lifted — peer traffic is live
+23:42:31  attempting ICE restart 1/2
+23:42:32  recovery deadline lifted — peer traffic is live
+23:42:56  attempting ICE restart 1/2
+23:43:00  recovery deadline lifted — peer traffic is live
+23:43:12  attempting ICE restart 1/2
+```
+
+**Every restart logs `1/2`.** `MAX_ICE_RESTARTS` was unreachable, so the
+"budget reached — holding; traffic/recovery-deadline owns recovery" brake could
+never engage. `MIN_ICE_RESTART_SPACING` (8s) was the only remaining limit and
+the observed cadence was 16–26s, so every request was honored. Each restart
+costs a candidate regather, an IDR and a bitrate reset — which is the lag the
+user reported, and exactly what `TRAFFIC_LIVENESS_WINDOW`'s own comment already
+describes as "the lag itself".
+
+The timing also rules out the desktop's `failed` path for at least the 23:42:56
+restart: traffic was live at 23:42:32, 24s earlier and well inside the 34s
+`TRAFFIC_LIVENESS_WINDOW`, so `peer_traffic_fresh()` was true and the `failed`
+branch could not have fired it. Both call sites logged an identical line, so the
+trigger could not be attributed from a capture at all; `attempt_ice_restart` now
+takes a `reason` and logs it (`trigger: phone renegotiate` /
+`trigger: ICE reported failed`).
+
+**Fix:** resumed traffic proves the session is _usable_, never that the restart
+_accomplished_ anything, so it no longer refunds the budget on its own.
+`ice_budget_earned_back()` requires `ICE_RESTART_STABILITY_WINDOW` (60s) of
+flowing traffic since the last restart before the counter resets. A restart that
+genuinely fixed the path still earns a full budget for a later, unrelated
+outage; a storm at ~20s intervals now exhausts the budget and engages the hold
+brake instead of restarting forever. Guarded by four tests in
+`session::tests`, verified to fail against the previous behavior.
+
+**Still open from this finding:** the budget is still desktop-only and still
+`2`, and the "several restarts needed to find a stable path" case above is
+unaddressed. Only the unbounded-reset half is fixed.
+
 ## Finding 10: No OS-level sleep/wake detection on desktop — recovery is purely reactive through the media pipeline's own failure detection, which tears down the whole session
 
 ### Current implementation

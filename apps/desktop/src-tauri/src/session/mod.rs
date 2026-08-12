@@ -173,6 +173,27 @@ const COUNTERPART_GONE_MEDIA_WINDOW: Duration = Duration::from_secs(45);
 /// genuine request is still honored, just after the window elapses.
 const MIN_ICE_RESTART_SPACING: Duration = Duration::from_secs(8);
 
+/// How long a session must run *after* an ICE restart before that restart is
+/// credited as having actually fixed something, earning the budget back.
+///
+/// Without this, `MAX_ICE_RESTARTS` is unreachable and therefore meaningless.
+/// The heartbeat lifts a recovery deadline the moment peer traffic reads
+/// fresh, and it used to reset `ice_restarts` to 0 in the same breath — but
+/// fresh traffic only proves the session is USABLE, never that the restart
+/// accomplished anything. On a flappy cellular path the phone re-requests a
+/// renegotiate every ~20s; each one restarted ICE, traffic resumed a second
+/// later, the counter reset, and the next request started again from 1/2. The
+/// budget never filled, so the "hold and let traffic own recovery" brake never
+/// engaged and the restarts continued indefinitely — candidate regathering, a
+/// keyframe storm and a bitrate reset every time, which IS the lag the user
+/// sees (observed live 2026-08-12: restarts at 23:42:05, :31, :56, 23:43:12,
+/// every one logged `1/2`).
+///
+/// A restart that is followed by a full minute of flowing traffic genuinely
+/// did its job, and a later unrelated outage deserves a fresh budget. One that
+/// is followed by another restart request 20s later did not.
+const ICE_RESTART_STABILITY_WINDOW: Duration = Duration::from_secs(60);
+
 fn recovery_timeout_for_attempt(attempt: u32) -> Duration {
     if attempt <= 1 {
         Duration::from_secs(12)
@@ -222,6 +243,23 @@ fn counterpart_gone(
     signaling_offline
         && ever_connected
         && !last_traffic.is_some_and(|t| now.duration_since(t) < window)
+}
+
+/// Whether resumed peer traffic should earn the ICE-restart budget back.
+///
+/// Only once the session has been stable for `stability` since the LAST
+/// restart. Resetting on traffic alone makes `MAX_ICE_RESTARTS` unreachable —
+/// see `ICE_RESTART_STABILITY_WINDOW`. A session that has never restarted has
+/// nothing to earn back and trivially qualifies.
+fn ice_budget_earned_back(
+    last_ice_restart: Option<Instant>,
+    now: Instant,
+    stability: Duration,
+) -> bool {
+    match last_ice_restart {
+        None => true,
+        Some(t) => now.duration_since(t) >= stability,
+    }
 }
 
 /// Bundles the session-lifetime state that used to be five independent
@@ -510,7 +548,7 @@ impl SessionRunner {
                         "renegotiate throttled — ICE restarted {}s ago",
                         self.last_ice_restart.unwrap().elapsed().as_secs()
                     );
-                } else if self.attempt_ice_restart(sig).await? {
+                } else if self.attempt_ice_restart(sig, "phone renegotiate").await? {
                     return Ok(true);
                 }
             }
@@ -639,7 +677,7 @@ impl SessionRunner {
                         target: "lilypad::session",
                         "ICE reports failed but peer traffic is live — ignoring"
                     );
-                } else if self.attempt_ice_restart(sig).await? {
+                } else if self.attempt_ice_restart(sig, "ICE reported failed").await? {
                     return Ok(true);
                 }
             }
@@ -693,7 +731,12 @@ impl SessionRunner {
     /// desktop-initiated restart can't combine to exceed the intended cap).
     /// Returns `Ok(true)` if the session should end (budget exhausted, no
     /// live peer, or the restart itself failed).
-    async fn attempt_ice_restart(&mut self, sig: &SignalingClient) -> Result<bool> {
+    /// `reason` is logged so a restart storm can be attributed to its actual
+    /// trigger. Both call sites previously logged an identical line, which made
+    /// a desktop-side `failed` verdict and a phone-requested `renegotiate`
+    /// indistinguishable in a capture — the exact ambiguity that made diagnosing
+    /// the 2026-08-12 cellular restart loop guesswork.
+    async fn attempt_ice_restart(&mut self, sig: &SignalingClient, reason: &str) -> Result<bool> {
         if self.ice_restarts >= MAX_ICE_RESTARTS {
             // Budget exhausted. If media is still running, this is a count
             // exhausted over the unhealthy period, not proof the session is
@@ -719,7 +762,11 @@ impl SessionRunner {
         };
         self.ice_restarts += 1;
         self.fsm.transition(SessionState::Recovering);
-        log::warn!(target: "lilypad::session", "attempting ICE restart {}/{MAX_ICE_RESTARTS}", self.ice_restarts);
+        log::warn!(
+            target: "lilypad::session",
+            "attempting ICE restart {}/{MAX_ICE_RESTARTS} (trigger: {reason})",
+            self.ice_restarts
+        );
         match peer.restart_ice().await {
             Ok(sdp) => {
                 sig.send(Envelope::offer(&self.room_id, &sdp))?;
@@ -995,7 +1042,18 @@ pub async fn run_session(
                             "recovery deadline lifted — peer traffic is live"
                         );
                         runner.recovery_deadline = None;
-                        runner.ice_restarts = 0;
+                        // Traffic proves the session is usable, NOT that the
+                        // restart fixed anything — only sustained stability
+                        // earns the budget back. Resetting here unconditionally
+                        // made MAX_ICE_RESTARTS unreachable and let a flappy
+                        // radio drive restarts forever, each one logged `1/2`.
+                        if ice_budget_earned_back(
+                            runner.last_ice_restart,
+                            Instant::now(),
+                            ICE_RESTART_STABILITY_WINDOW,
+                        ) {
+                            runner.ice_restarts = 0;
+                        }
                     } else if !runner.peer_connected && Instant::now() >= deadline {
                         runner.end("connection did not recover in time");
                         break;
@@ -1071,6 +1129,88 @@ mod tests {
             last_traffic,
             now,
             COUNTERPART_GONE_MEDIA_WINDOW
+        ));
+    }
+
+    // ── ICE-restart budget (the 2026-08-12 cellular restart loop) ──────────
+    //
+    // Regression guard for a storm observed live over cellular: restarts at
+    // 23:42:05, :31, :56 and 23:43:12, EVERY one logged `1/2`. The heartbeat
+    // reset `ice_restarts` to 0 whenever peer traffic read fresh, so the
+    // budget never filled, the "hold and let traffic own recovery" brake never
+    // engaged, and each restart cost a candidate regather, a keyframe and a
+    // bitrate reset — which is the lag itself.
+
+    #[test]
+    fn repeated_restarts_do_not_earn_the_budget_back() {
+        // The storm's exact shape: another restart ~20s after the last one.
+        // This MUST NOT refund the budget, or MAX_ICE_RESTARTS is unreachable.
+        let now = Instant::now();
+        let last_restart = Some(now - Duration::from_secs(20));
+        assert!(!ice_budget_earned_back(
+            last_restart,
+            now,
+            ICE_RESTART_STABILITY_WINDOW
+        ));
+    }
+
+    #[test]
+    fn a_restart_followed_by_sustained_traffic_earns_the_budget_back() {
+        // A restart that genuinely fixed the path: a later, unrelated outage
+        // deserves a full budget rather than inheriting old failures.
+        let now = Instant::now();
+        let last_restart = Some(now - ICE_RESTART_STABILITY_WINDOW - Duration::from_secs(1));
+        assert!(ice_budget_earned_back(
+            last_restart,
+            now,
+            ICE_RESTART_STABILITY_WINDOW
+        ));
+    }
+
+    #[test]
+    fn a_session_that_never_restarted_has_nothing_to_earn_back() {
+        assert!(ice_budget_earned_back(
+            None,
+            Instant::now(),
+            ICE_RESTART_STABILITY_WINDOW
+        ));
+    }
+
+    #[test]
+    fn budget_survives_a_storm_but_recovers_after_stability() {
+        // End-to-end over the counter itself: four restarts at the observed
+        // ~20s cadence must exhaust MAX_ICE_RESTARTS instead of sitting at 1.
+        let start = Instant::now();
+        let mut ice_restarts: u32 = 0;
+        let mut last_ice_restart: Option<Instant> = None;
+
+        for i in 0..4 {
+            let at = start + Duration::from_secs(i * 20);
+            // The restart itself, when the budget still allows one.
+            if ice_restarts < MAX_ICE_RESTARTS {
+                ice_restarts += 1;
+                last_ice_restart = Some(at);
+            }
+            // Traffic resumes a second later and the deadline is lifted.
+            if ice_budget_earned_back(
+                last_ice_restart,
+                at + Duration::from_secs(1),
+                ICE_RESTART_STABILITY_WINDOW,
+            ) {
+                ice_restarts = 0;
+            }
+        }
+        assert_eq!(
+            ice_restarts, MAX_ICE_RESTARTS,
+            "a ~20s restart cadence must exhaust the budget, not reset it to 1 forever"
+        );
+
+        // A full stability window of flowing traffic, and the budget returns.
+        let calm = start + Duration::from_secs(3 * 20) + ICE_RESTART_STABILITY_WINDOW;
+        assert!(ice_budget_earned_back(
+            last_ice_restart,
+            calm,
+            ICE_RESTART_STABILITY_WINDOW
         ));
     }
 
