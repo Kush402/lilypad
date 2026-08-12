@@ -62,6 +62,16 @@ revocation a one-row change.
 provisioning and renewal on four client platforms plus a load balancer that must
 be configured to pass client certs through, for no gain over signed challenges.
 
+**Give devices a refresh token too, as account sessions have.** Rejected during
+implementation, and this ADR is amended to say so. A device that can sign a
+challenge can always mint itself a new access token, so a refresh token would be
+a _second_ credential for a job the key already does — and the weaker of the two,
+because it is a bearer string that grants device access to anyone who copies it,
+whereas the key is non-exportable and hardware-backed. Renewal costs one extra
+round trip every ten minutes, which is not a reason to store a copyable secret on
+four platforms. `refresh_tokens` therefore belongs to browser sessions and to the
+window between sign-in and enrollment.
+
 ## Consequences
 
 - Knowing any device id, pair id, room id, or session id becomes worthless. This
@@ -75,7 +85,16 @@ be configured to pass client certs through, for no gain over signed challenges.
   re-enrolling that device. Acceptable, and the same as every comparable product.
 - Token verification is signature-based, so device auth keeps working during a
   Postgres outage.
+- **Enrollment is where a device gains an owner**, and it is refused if the
+  fingerprint already belongs to a different account. A pre-account row is
+  claimable by the first account that enrolls it — the documented backfill path,
+  and the reason existing trust rows survive the arrival of accounts.
+- **A signature is domain-separated** (`lilypad-device-auth:v1:`), because the
+  same key will also bind the desktop's LAN TLS certificate
+  ([ADR-0006](0006-lan-first-connectivity.md)) and one purpose's signature must
+  not be valid for the other.
 
 ## Status
 
-Accepted (2026-08-12). Implemented in milestone M8.
+Accepted (2026-08-12). Implemented in milestone M8; amended during that
+implementation to drop the device-scoped refresh token (see Alternatives).

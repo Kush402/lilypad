@@ -49,10 +49,11 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
   async function issueSession(userId: string, ip: string): Promise<AuthSession> {
     // Sign-in is account-level: no device is bound yet. A device binds itself
     // by enrolling with this session (ADR-0002), which mints a second,
-    // device-scoped token.
+    // device-scoped token — and from then on renews with its key, not with a
+    // refresh token.
     const [accessToken, refresh] = await Promise.all([
       signAccessToken({ userId, deviceId: null }),
-      refreshTokens.issue(userId, null),
+      refreshTokens.issue(userId),
     ]);
     void auditLog
       .login({ userId, ip })
@@ -187,10 +188,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
         logRefreshFailure(rotated.reason);
         return denySignIn(reply, req.ip, `refresh_${rotated.reason}`);
       }
-      const accessToken = await signAccessToken({
-        userId: rotated.userId,
-        deviceId: rotated.deviceId,
-      });
+      const accessToken = await signAccessToken({ userId: rotated.userId, deviceId: null });
       const session: AuthSession = {
         accessToken,
         expiresInSeconds: ACCESS_TOKEN_TTL_SECONDS,
@@ -206,7 +204,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       // The one refresh failure that is a security EVENT rather than an
       // expiry: a retired token was presented, so the family has just been
       // revoked and someone is about to be signed out unexpectedly.
-      log.server.warn('refresh token reuse detected — revoked every token for that user+device');
+      log.server.warn('refresh token reuse detected — revoked every refresh token for that user');
     }
   }
 }

@@ -7,6 +7,7 @@ import { parseTrustProxy } from './trustProxy.js';
 import { parseAllowedOrigins } from './allowedOrigins.js';
 import { healthRoutes } from './routes/health.js';
 import { authRoutes } from './routes/auth.js';
+import { enrollmentRoutes } from './routes/enrollment.js';
 import { pairingRoutes } from './routes/pairing.js';
 import { signalingRoutes } from './routes/signaling.js';
 import { deviceRoutes } from './routes/devices.js';
@@ -49,6 +50,7 @@ export async function buildServer(): Promise<FastifyInstance> {
 
   await app.register(healthRoutes);
   await app.register(authRoutes);
+  await app.register(enrollmentRoutes);
   await app.register(pairingRoutes);
   await app.register(signalingRoutes, hubBundle);
   await app.register(deviceRoutes, { hub: hubBundle.hub });

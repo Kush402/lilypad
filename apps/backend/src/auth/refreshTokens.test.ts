@@ -21,7 +21,6 @@ function fakeStore(): RefreshTokenStore & {
       rows.set(id, {
         id,
         userId: row.userId,
-        deviceId: row.deviceId,
         expiresAt: row.expiresAt,
         revokedAt: null,
         hash: row.tokenHash,
@@ -35,14 +34,6 @@ function fakeStore(): RefreshTokenStore & {
     markRotated(id) {
       const row = rows.get(id);
       if (row) row.revokedAt = new Date();
-      return Promise.resolve();
-    },
-    revokeForUserDevice(userId, deviceId) {
-      for (const row of rows.values()) {
-        if (row.userId === userId && row.deviceId === deviceId && row.revokedAt === null) {
-          row.revokedAt = new Date();
-        }
-      }
       return Promise.resolve();
     },
     revokeAllForUser(userId) {
@@ -64,7 +55,7 @@ describe('RefreshTokenService', () => {
   });
 
   it('stores only the hash, never the token', async () => {
-    const issued = await service.issue('user-1', 'device-1');
+    const issued = await service.issue('user-1');
     const stored = [...store.rows.values()];
     expect(stored).toHaveLength(1);
     expect(stored[0]!.hash).toBe(hashRefreshToken(issued.token));
@@ -72,15 +63,15 @@ describe('RefreshTokenService', () => {
   });
 
   it('rotates a valid token into a new one', async () => {
-    const first = await service.issue('user-1', 'device-1');
+    const first = await service.issue('user-1');
     const result = await service.rotate(first.token);
-    expect(result).toMatchObject({ ok: true, userId: 'user-1', deviceId: 'device-1' });
+    expect(result).toMatchObject({ ok: true, userId: 'user-1' });
     if (!result.ok) throw new Error('unreachable');
     expect(result.token).not.toBe(first.token);
   });
 
   it('retires the presented token, so it is single-use', async () => {
-    const first = await service.issue('user-1', 'device-1');
+    const first = await service.issue('user-1');
     await service.rotate(first.token);
     expect(await service.rotate(first.token)).toEqual({ ok: false, reason: 'reused' });
   });
@@ -88,7 +79,7 @@ describe('RefreshTokenService', () => {
   // The property that makes rotation worth having: a leaked token cannot be
   // used quietly alongside the legitimate one.
   it('revokes the whole family when a retired token is replayed', async () => {
-    const first = await service.issue('user-1', 'device-1');
+    const first = await service.issue('user-1');
     const second = await service.rotate(first.token);
     if (!second.ok) throw new Error('unreachable');
 
@@ -99,22 +90,13 @@ describe('RefreshTokenService', () => {
   });
 
   it('does not touch another user when revoking a family', async () => {
-    const victim = await service.issue('user-1', 'device-1');
-    const bystander = await service.issue('user-2', 'device-2');
+    const victim = await service.issue('user-1');
+    const bystander = await service.issue('user-2');
     await service.rotate(victim.token);
     await service.rotate(victim.token); // triggers family revocation
 
     const stillWorks = await service.rotate(bystander.token);
     expect(stillWorks.ok).toBe(true);
-  });
-
-  it('does not touch another device on the same account', async () => {
-    const laptop = await service.issue('user-1', 'device-laptop');
-    const phone = await service.issue('user-1', 'device-phone');
-    await service.rotate(laptop.token);
-    await service.rotate(laptop.token);
-
-    expect((await service.rotate(phone.token)).ok).toBe(true);
   });
 
   it('rejects an unknown token', async () => {
@@ -123,33 +105,16 @@ describe('RefreshTokenService', () => {
 
   it('rejects an expired token without revoking anything', async () => {
     const expiring = new RefreshTokenService(store, -1);
-    const issued = await expiring.issue('user-1', 'device-1');
+    const issued = await expiring.issue('user-1');
     expect(await expiring.rotate(issued.token)).toEqual({ ok: false, reason: 'expired' });
   });
 
-  it('signs out one device', async () => {
-    const laptop = await service.issue('user-1', 'device-laptop');
-    const phone = await service.issue('user-1', 'device-phone');
-    await service.revokeDevice('user-1', 'device-laptop');
-
-    expect(await service.rotate(laptop.token)).toEqual({ ok: false, reason: 'reused' });
-    expect((await service.rotate(phone.token)).ok).toBe(true);
-  });
-
   it('signs out everywhere', async () => {
-    const laptop = await service.issue('user-1', 'device-laptop');
-    const phone = await service.issue('user-1', 'device-phone');
+    const one = await service.issue('user-1');
+    const two = await service.issue('user-1');
     await service.revokeUser('user-1');
 
-    expect((await service.rotate(laptop.token)).ok).toBe(false);
-    expect((await service.rotate(phone.token)).ok).toBe(false);
-  });
-
-  // Browser sessions have a null deviceId; SQL `= NULL` never matches, so this
-  // is the case a naive `eq(deviceId, …)` would silently fail to revoke.
-  it('revokes browser sessions, which carry a null deviceId', async () => {
-    const browser = await service.issue('user-1', null);
-    await service.revokeDevice('user-1', null);
-    expect((await service.rotate(browser.token)).ok).toBe(false);
+    expect((await service.rotate(one.token)).ok).toBe(false);
+    expect((await service.rotate(two.token)).ok).toBe(false);
   });
 });

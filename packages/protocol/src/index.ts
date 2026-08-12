@@ -6,6 +6,7 @@
 export * from './constants.js';
 export * from './qr.js';
 export * from './auth.js';
+export * from './identity.js';
 export * from './pairing.js';
 export * from './connect.js';
 export * from './signaling.js';

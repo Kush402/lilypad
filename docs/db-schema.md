@@ -84,22 +84,30 @@ non-NULL ([ADR-0002](adr/0002-device-identity.md)).
 
 ### `refresh_tokens` (M8)
 
-Rotating opaque refresh tokens ([ADR-0001](adr/0001-account-authentication.md)).
+Rotating opaque refresh tokens for **account** sessions
+([ADR-0001](adr/0001-account-authentication.md)).
 
-| column         | type                      | notes                                        |
-| -------------- | ------------------------- | -------------------------------------------- |
-| id             | uuid PK                   |                                              |
-| user_id        | uuid FK→users (cascade)   | indexed                                      |
-| device_id      | uuid FK→devices (cascade) | NULL for the web dashboard                   |
-| token_hash     | text unique               | SHA-256 of the token; plaintext never stored |
-| expires_at     | timestamptz               |                                              |
-| revoked_at     | timestamptz nullable      | set on rotation or explicit sign-out         |
-| replaced_by_id | uuid nullable             | the token that superseded this one           |
-| created_at     | timestamptz               |                                              |
+| column         | type                    | notes                                        |
+| -------------- | ----------------------- | -------------------------------------------- |
+| id             | uuid PK                 |                                              |
+| user_id        | uuid FK→users (cascade) | indexed                                      |
+| token_hash     | text unique             | SHA-256 of the token; plaintext never stored |
+| expires_at     | timestamptz             |                                              |
+| revoked_at     | timestamptz nullable    | set on rotation or explicit sign-out         |
+| replaced_by_id | uuid nullable           | the token that superseded this one           |
+| created_at     | timestamptz             |                                              |
 
-In Postgres rather than Redis precisely because these must be revocable and
-enumerable: "sign out everywhere" and "this laptop was stolen" are queries, and
-a Redis flush must not silently un-revoke a stolen token.
+**Deliberately not per-device.** An enrolled device renews by signing a fresh
+challenge with its Ed25519 key ([ADR-0002](adr/0002-device-identity.md)), so
+giving it a refresh token too would add a second, weaker, copyable credential
+for a job a non-exportable hardware-backed key already does. A `device_id`
+column was added in `0003` and dropped again in `0004` for exactly that reason —
+it would have been permanently NULL. These rows belong to browser sessions and
+to the window between sign-in and enrollment.
+
+In Postgres rather than Redis precisely because they must be revocable and
+enumerable: "sign out everywhere" is a query, and a Redis flush must not
+silently un-revoke a stolen token.
 
 `replaced_by_id` is what makes **replay detectable**: presenting an
 already-rotated token means it leaked or was replayed, so the whole chain is
@@ -160,11 +168,13 @@ The one unbounded table, and the only one that needs a retention policy — see
 
 ## Redis keys (ephemeral)
 
-| key                          | value                                                                    | TTL                      |
-| ---------------------------- | ------------------------------------------------------------------------ | ------------------------ |
-| `lilypad:pairing:<token>`    | JSON `{ roomId, desktopDeviceId, desktopDeviceName, scopes, createdAt }` | 60s, single-use (GETDEL) |
-| `lilypad:room-auth:<roomId>` | device-binding record consulted at `register` time (seat-hijack defense) | session lifetime         |
-| `lilypad:room:<roomId>`      | signaling room membership/state                                          | session lifetime (M2)    |
+| key                                    | value                                                                    | TTL                      |
+| -------------------------------------- | ------------------------------------------------------------------------ | ------------------------ |
+| `lilypad:pairing:<token>`              | JSON `{ roomId, desktopDeviceId, desktopDeviceName, scopes, createdAt }` | 60s, single-use (GETDEL) |
+| `lilypad:magic-link:<token>`           | the email address the token proves                                       | 15m, single-use (GETDEL) |
+| `lilypad:device-challenge:<challenge>` | presence marker only — the value carries nothing                         | 2m, single-use (GETDEL)  |
+| `lilypad:room-auth:<roomId>`           | device-binding record consulted at `register` time (seat-hijack defense) | session lifetime         |
+| `lilypad:room:<roomId>`                | signaling room membership/state                                          | session lifetime (M2)    |
 
 ## Migrations
 
@@ -178,3 +188,5 @@ duplicate device rows that nothing references, then aborts with an actionable
 message if any referenced duplicate remains. Merging two referenced device rows
 merges their trust grants — a security decision a migration must not make
 silently.
+
+`0004` drops `refresh_tokens.device_id` — see that table's note above.

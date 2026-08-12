@@ -195,6 +195,86 @@ Rate-limited to **60/minute** per IP.
 { "refreshToken": "…" } // → 200 (same session shape) · 401 invalid_token
 ```
 
+## Device identity ✅ (M8)
+
+A device proves who it is by signing a server-issued challenge with an Ed25519
+private key that never leaves it ([ADR-0002](adr/0002-device-identity.md)). The
+self-asserted `deviceId` string survives as a label and as `devices.fingerprint`,
+but stops being the thing anything trusts.
+
+Clients sign the UTF-8 bytes of `lilypad-device-auth:v1:` + the challenge. The
+prefix is domain separation: the same key also binds the desktop's LAN TLS
+certificate ([ADR-0006](adr/0006-lan-first-connectivity.md)), and a signature
+made for one purpose must not be valid for the other.
+
+Public keys and signatures are **base64url of the raw bytes** — 43 characters
+for a 32-byte key, 86 for a 64-byte signature.
+
+> **No device refresh token, on purpose.** A device renews by signing a fresh
+> challenge, so its durable credential is a non-exportable, hardware-backed
+> private key rather than a stored bearer string that grants device access to
+> anyone who copies it.
+
+### `POST /devices/challenge` ✅
+
+Issue a single-use nonce. Unauthenticated by necessity — a device that has no
+token yet is the entire point. **120-second TTL**, burned on use.
+Rate-limited to **60/minute** per IP.
+
+```jsonc
+// 201 Created
+{ "challenge": "…43 base64url chars…", "expiresInSeconds": 120 }
+```
+
+### `POST /devices/enroll` ✅ 🔒 account token
+
+Bind a device's public key to the signed-in account. This is the moment a
+machine gains an owner, so an owner must be present to gain: it requires an
+**account** access token from `/auth/*`. Rate-limited to **20/minute** per IP.
+
+Also **claims a pre-account row with the same fingerprint** if one exists, so
+trust relationships created before accounts survive rather than being orphaned.
+
+```jsonc
+// request
+{ "challenge": "…", "publicKey": "…", "signature": "…",
+  "kind": "desktop", "fingerprint": "desktop-…",
+  "name": "Work Mac", "platform": "macos" }     // name/platform optional
+// 200 OK
+{ "accessToken": "eyJ…", "expiresInSeconds": 600,
+  "deviceId": "uuid",       // devices.id — a real server-side uuid
+  "userId": "uuid" }
+// 401 — unknown, expired, already-spent, or wrongly-signed challenge
+{ "error": "invalid_signature" }
+// 409
+{ "error": "device_owned_by_another_account" }  // or "public_key_in_use"
+```
+
+Re-enrolling the same device on the same account is idempotent, rotates the
+stored key, and lifts a revocation — that is how a user restores a device they
+revoked, and how a device recovers after a reinstall.
+
+### `POST /devices/token` ✅
+
+Exchange proof of key possession for a device access token — how a device signs
+itself back in after a restart, with no user interaction. Rate-limited to
+**60/minute** per IP.
+
+```jsonc
+{ "challenge": "…", "publicKey": "…", "signature": "…" }
+// 200 OK — same shape as /devices/enroll
+// 401 { "error": "invalid_signature" }
+// 403 { "error": "device_revoked" }   // or "device_not_enrolled"
+```
+
+403 rather than 401 for the last two: the credential is valid, the _device_ is
+not allowed. Retrying with the same key will never help, and a client that
+cannot tell those apart retries forever.
+
+Both proof-carrying routes **burn the challenge before checking the
+signature**. The other order would leave a failed attempt's nonce spendable,
+handing an attacker unlimited tries against one challenge.
+
 ## Sessions 🔜 M5 remainder
 
 `GET /sessions` · `POST /sessions/:id/end`. (Device/pair management shipped in

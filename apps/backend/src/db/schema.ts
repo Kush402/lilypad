@@ -110,11 +110,19 @@ export const devices = pgTable(
 
 // ── refresh_tokens (M8) ──────────────────────────────────────────────────────
 /**
- * Rotating opaque refresh tokens ([ADR-0001](../../../../docs/adr/0001-account-authentication.md)).
+ * Rotating opaque refresh tokens for ACCOUNT sessions
+ * ([ADR-0001](../../../../docs/adr/0001-account-authentication.md)).
  *
- * In Postgres rather than Redis precisely because these must be *revocable*
- * and *enumerable*: "sign out everywhere" and "this laptop was stolen" are
- * queries, and a Redis flush must not silently un-revoke a stolen token.
+ * Deliberately not per-device. An enrolled device renews by signing a fresh
+ * challenge with its Ed25519 key ([ADR-0002](../../../../docs/adr/0002-device-identity.md)),
+ * so issuing it a refresh token as well would add a second, weaker, copyable
+ * credential for a job a non-exportable hardware-backed key already does.
+ * These rows therefore belong to browser sessions and to the window between
+ * sign-in and enrollment.
+ *
+ * In Postgres rather than Redis precisely because they must be *revocable* and
+ * *enumerable*: "sign out everywhere" is a query, and a Redis flush must not
+ * silently un-revoke a stolen token.
  *
  * Only the SHA-256 of the token is stored. The token is 32 bytes of CSPRNG
  * output, so a plain hash is correct — there is no low-entropy input to
@@ -128,8 +136,6 @@ export const refreshTokens = pgTable(
     userId: uuid('user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
-    /** NULL for the web dashboard, which has no enrolled device. */
-    deviceId: uuid('device_id').references(() => devices.id, { onDelete: 'cascade' }),
     tokenHash: text('token_hash').notNull().unique(),
     expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
     /** Set on rotation (superseded) or explicit sign-out. */
