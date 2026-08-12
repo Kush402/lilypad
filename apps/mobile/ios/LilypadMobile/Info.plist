@@ -12,6 +12,22 @@
 	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
+	<!-- Google Sign-In (M8) needs the REVERSED iOS OAuth client id registered as
+	     a URL scheme, or the SDK cannot receive the callback. It is not committed
+	     because the client id does not exist yet; add this block once it does and
+	     set GOOGLE_IOS_CLIENT_ID in src/config/oauth.ts to the un-reversed value.
+	     See docs/oauth-setup.md.
+
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>com.googleusercontent.apps.YOUR-IOS-CLIENT-ID</string>
+			</array>
+		</dict>
+	</array>
+	-->
 	<key>CFBundleName</key>
 	<string>$(PRODUCT_NAME)</string>
 	<key>CFBundlePackageType</key>

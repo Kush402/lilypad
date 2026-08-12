@@ -190,6 +190,7 @@ All suites are expected green before any commit; CI enforces the same set plus
 | Trusted devices (M5.4)             | [docs/m5.4-trusted-devices-audit.md](docs/m5.4-trusted-devices-audit.md)                                                          |
 | Ask AI operator (M5.3)             | [docs/ask-architecture-audit.md](docs/ask-architecture-audit.md) · [docs/m5.3-ai-executor-plan.md](docs/m5.3-ai-executor-plan.md) |
 | Device identity (M5, forward spec) | [docs/m5-auth-design.md](docs/m5-auth-design.md)                                                                                  |
+| OAuth / sign-in setup (M8)         | [docs/oauth-setup.md](docs/oauth-setup.md)                                                                                        |
 | Changelog                          | [CHANGELOG.md](CHANGELOG.md)                                                                                                      |
 
 ## Contributing

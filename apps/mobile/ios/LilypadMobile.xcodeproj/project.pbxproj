@@ -484,6 +484,7 @@
 					"-ObjC",
 					"-lc++",
 				);
+				CODE_SIGN_ENTITLEMENTS = LilypadMobile/LilypadMobile.entitlements;
 				PRODUCT_BUNDLE_IDENTIFIER = com.takedia.lilypad;
 				PRODUCT_NAME = LilypadMobile;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
@@ -512,6 +513,7 @@
 					"-ObjC",
 					"-lc++",
 				);
+				CODE_SIGN_ENTITLEMENTS = LilypadMobile/LilypadMobile.entitlements;
 				PRODUCT_BUNDLE_IDENTIFIER = com.takedia.lilypad;
 				PRODUCT_NAME = LilypadMobile;
 				SWIFT_VERSION = 5.0;

@@ -180,6 +180,9 @@ importers:
 
   apps/mobile:
     dependencies:
+      '@invertase/react-native-apple-authentication':
+        specifier: ^2.5.1
+        version: 2.5.1
       '@lilypad/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
@@ -195,6 +198,9 @@ importers:
       '@react-native-community/netinfo':
         specifier: ^11.4.1
         version: 11.5.2(react-native@0.76.5(@babel/core@7.29.7)(@babel/preset-env@7.29.7(@babel/core@7.29.7))(@react-native-community/cli-server-api@15.0.1)(@types/react@18.3.31)(react@18.3.1))(react@18.3.1)
+      '@react-native-google-signin/google-signin':
+        specifier: ^16.1.4
+        version: 16.1.4(react-native@0.76.5(@babel/core@7.29.7)(@babel/preset-env@7.29.7(@babel/core@7.29.7))(@react-native-community/cli-server-api@15.0.1)(@types/react@18.3.31)(react@18.3.1))(react@18.3.1)
       '@react-navigation/native':
         specifier: ^7.0.14
         version: 7.3.8(react-native@0.76.5(@babel/core@7.29.7)(@babel/preset-env@7.29.7(@babel/core@7.29.7))(@react-native-community/cli-server-api@15.0.1)(@types/react@18.3.31)(react@18.3.1))(react@18.3.1)
@@ -1466,6 +1472,10 @@ packages:
     resolution: {integrity: sha512-bV0Tgo9K4hfPCek+aMAn81RppFKv2ySDQeMoSZuvTASywNTnVJCArCZE2FWqpvIatKu7VMRLWlR1EazvVhDyhQ==}
     engines: {node: '>=18.18'}
 
+  '@invertase/react-native-apple-authentication@2.5.1':
+    resolution: {integrity: sha512-KPKKc0wtRYpH4J0RkDfHzoKSZ+dYPEHmCXhpPdgHsT2MbK5AIkW1cYurjhAgev/kL7nOHFmWITjY1At5WhFEMQ==}
+    engines: {node: '>=14'}
+
   '@ioredis/commands@1.10.0':
     resolution: {integrity: sha512-UmeW7z4LfctwoQ5wkhVzgq8tXkreED2xZGpX+Bg+zA+WJFZCT6c062AfCK/Dfk81xZnnwdhJCUMkitihRaoC2Q==}
 
@@ -1662,6 +1672,16 @@ packages:
     peerDependencies:
       react: '*'
       react-native: '>=0.59'
+
+  '@react-native-google-signin/google-signin@16.1.4':
+    resolution: {integrity: sha512-Lt4vjihJ+Nk9I4HjScWHzch3ebtIlP3QIea0XEHVN0PJumwUwiK/J2tU8qs7H9DIqNblC0qlXkR0Ts4ELvq7yA==}
+    peerDependencies:
+      expo: '>=52.0.40'
+      react: '*'
+      react-native: '*'
+    peerDependenciesMeta:
+      expo:
+        optional: true
 
   '@react-native/assets-registry@0.76.5':
     resolution: {integrity: sha512-MN5dasWo37MirVcKWuysRkRr4BjNc81SXwUtJYstwbn8oEkfnwR9DaqdDTo/hHOnTdhafffLIa2xOOHcjDIGEw==}
@@ -6343,6 +6363,8 @@ snapshots:
 
   '@humanwhocodes/retry@0.4.3': {}
 
+  '@invertase/react-native-apple-authentication@2.5.1': {}
+
   '@ioredis/commands@1.10.0': {}
 
   '@isaacs/ttlcache@1.4.1': {}
@@ -6717,6 +6739,11 @@ snapshots:
       - utf-8-validate
 
   '@react-native-community/netinfo@11.5.2(react-native@0.76.5(@babel/core@7.29.7)(@babel/preset-env@7.29.7(@babel/core@7.29.7))(@react-native-community/cli-server-api@15.0.1)(@types/react@18.3.31)(react@18.3.1))(react@18.3.1)':
+    dependencies:
+      react: 18.3.1
+      react-native: 0.76.5(@babel/core@7.29.7)(@babel/preset-env@7.29.7(@babel/core@7.29.7))(@react-native-community/cli-server-api@15.0.1)(@types/react@18.3.31)(react@18.3.1)
+
+  '@react-native-google-signin/google-signin@16.1.4(react-native@0.76.5(@babel/core@7.29.7)(@babel/preset-env@7.29.7(@babel/core@7.29.7))(@react-native-community/cli-server-api@15.0.1)(@types/react@18.3.31)(react@18.3.1))(react@18.3.1)':
     dependencies:
       react: 18.3.1
       react-native: 0.76.5(@babel/core@7.29.7)(@babel/preset-env@7.29.7(@babel/core@7.29.7))(@react-native-community/cli-server-api@15.0.1)(@types/react@18.3.31)(react@18.3.1)
