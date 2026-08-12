@@ -15,6 +15,7 @@ mod presence;
 mod single_instance;
 // Public so a headless example / integration test can drive a real session
 // without the Tauri GUI.
+pub mod clipboard;
 pub mod input;
 pub mod media;
 pub mod permission;

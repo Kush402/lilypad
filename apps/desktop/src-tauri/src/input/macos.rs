@@ -369,11 +369,9 @@ impl InputBackend for MacInputBackend {
     }
 
     fn set_clipboard(&mut self, text: &str) -> Result<()> {
-        let mut clipboard =
-            arboard::Clipboard::new().map_err(|e| anyhow::anyhow!("clipboard unavailable: {e}"))?;
-        clipboard
-            .set_text(text.to_string())
-            .map_err(|e| anyhow::anyhow!("failed to set clipboard: {e}"))
+        // Via `crate::clipboard` so this write is serialized against the
+        // session tick's clipboard poll — see CRASH-1.
+        crate::clipboard::write_text(text)
     }
 
     fn shutdown(&mut self) -> Result<()> {

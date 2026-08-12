@@ -10,6 +10,28 @@ Cellular-stability hardening on top of 1.0.0 driven by live-hardware findings
 (2026-07-19 → 2026-07-20), plus the release-engineering pass that makes the
 apps shippable and self-updating.
 
+### Fixed — desktop crash
+
+- **`NSPasteboard` data race that killed the app mid-session.** The clipboard
+  watcher polls the OS clipboard every 750ms on the session tick, while the
+  `InputWorker` writes it whenever the phone pastes — two threads, neither the
+  main one, both constructing their own `arboard::Clipboard`. `NSPasteboard` is
+  not thread-safe: concurrent access corrupted AppKit's internal type cache and
+  aborted the process inside `-[NSPasteboard _updateTypeCacheIfNeeded]`. It
+  reproduced as a SIGSEGV in roughly **one run in three** of the
+  `session_connect_lifecycle` integration test, which drives exactly that pair
+  of threads, and would have crashed the desktop app whenever a real poll raced
+  a real paste.
+
+  All clipboard access now funnels through a new `clipboard` module that owns a
+  process-wide lock and exposes `read_text`/`write_text` **rather than the lock**
+  — handing callers a mutex they must remember to take would leave the same bug
+  one forgotten line away. `arboard` is referenced nowhere else in the crate;
+  that is the invariant to preserve. New regression test
+  `tests/clipboard_race.rs` hammers both paths concurrently, and was verified to
+  kill the process when the lock is neutered. The previously-flaky binary now
+  passes 12/12.
+
 ### Security — dependencies
 
 - **Cleared every high and critical dependency advisory** (19 findings) and made

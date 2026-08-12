@@ -19,17 +19,15 @@ pub trait ClipboardReader: Send {
     fn read(&mut self) -> Result<String>;
 }
 
-/// The real backend — `arboard`, already a dependency for the phone→desktop
-/// paste bridge (`input::macos`/`input::windows` `set_clipboard`).
+/// The real backend. Goes through [`crate::clipboard`], which serializes every
+/// OS clipboard access process-wide — this poll runs on the session tick while
+/// the `InputWorker` thread may be writing the clipboard for a phone paste, and
+/// `NSPasteboard` is not thread-safe (CRASH-1).
 pub struct SystemClipboardReader;
 
 impl ClipboardReader for SystemClipboardReader {
     fn read(&mut self) -> Result<String> {
-        let mut clipboard =
-            arboard::Clipboard::new().map_err(|e| anyhow::anyhow!("clipboard unavailable: {e}"))?;
-        clipboard
-            .get_text()
-            .map_err(|e| anyhow::anyhow!("clipboard read failed: {e}"))
+        crate::clipboard::read_text()
     }
 }
 

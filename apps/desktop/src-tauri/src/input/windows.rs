@@ -50,11 +50,10 @@ impl InputBackend for WindowsInputBackend {
     }
     fn set_clipboard(&mut self, text: &str) -> Result<()> {
         // arboard is cross-platform — this path is real on Windows already.
-        let mut clipboard =
-            arboard::Clipboard::new().map_err(|e| anyhow::anyhow!("clipboard unavailable: {e}"))?;
-        clipboard
-            .set_text(text.to_string())
-            .map_err(|e| anyhow::anyhow!("failed to set clipboard: {e}"))
+        // Via `crate::clipboard` so it is serialized against the session tick's
+        // clipboard poll, same as the macOS backend (CRASH-1). The Win32
+        // clipboard is likewise single-owner, so the lock is correct here too.
+        crate::clipboard::write_text(text)
     }
     fn shutdown(&mut self) -> Result<()> {
         Ok(())
