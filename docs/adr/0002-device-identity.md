@@ -36,8 +36,25 @@ anticipation of this change and has never been populated.
 the private key via challenge-response. The backend issues a short-lived device
 access token; the self-asserted `deviceId` leaves the trust path entirely.**
 
-- Private key never leaves the device: Keychain/Secure Enclave on Apple
-  platforms, Android Keystore, DPAPI+TPM on Windows.
+- Private key never leaves the device, stored in the platform's credential
+  store: macOS/iOS Keychain (`ThisDeviceOnly`, non-syncing), Android Keystore,
+  DPAPI on Windows.
+
+  **Not the Secure Enclave, and this is a correction.** An earlier draft of this
+  ADR promised Secure Enclave / TPM storage. That is not achievable for Ed25519:
+  Apple's Secure Enclave supports only NIST P-256, Windows' Platform Crypto
+  Provider supports only P-256/P-384, and Android Keystore gained Ed25519 only
+  in API 33. Hardware-backed Ed25519 is unavailable on three of the four target
+  platforms.
+
+  Ed25519 was kept anyway, deliberately. The only attack hardware backing
+  prevents is key extraction by code already running as the user on that
+  machine — and on the desktop, such code could simply drive the remote-control
+  session it already has, so the marginal protection is small. In exchange
+  Ed25519 keeps fixed 64-byte signatures, deterministic signing, and no ECDSA
+  nonce-reuse failure mode. Moving to P-256 for hardware backing remains
+  available later as an additive second algorithm.
+
 - The public key is registered during an **authenticated enrollment** — the user
   is already signed in ([ADR-0001](0001-account-authentication.md)), so a device
   is bound to an account at the moment it is created.

@@ -15,5 +15,7 @@ module.exports = {
   // pnpm nests real packages under node_modules/.pnpm/<pkg>/node_modules/<pkg>,
   // so a plain "node_modules/(?!pkg/)" prefix match never sees past the
   // ".pnpm" segment. Search across the whole remaining path instead.
-  transformIgnorePatterns: ['node_modules/(?!.*(react-native|@react-navigation))'],
+  // `@noble/*` is ESM-only too (M8 device identity), so it needs the same
+  // treatment as react-native's own ESM packages.
+  transformIgnorePatterns: ['node_modules/(?!.*(react-native|@react-navigation|@noble))'],
 };

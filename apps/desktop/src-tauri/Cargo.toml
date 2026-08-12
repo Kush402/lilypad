@@ -32,6 +32,20 @@ log = "0.4"
 # dropped — diagnosing on-device sessions requires RUST_LOG to actually work.
 env_logger = "0.11"
 uuid = { version = "1", features = ["v4"] }
+# base64 0.21 matches the version already in the lock. Cross-platform since M8:
+# the agent's vision tier encodes screenshots with it, and device identity
+# (identity.rs) encodes public keys and signatures with it on every platform.
+base64 = "0.21"
+
+# ── Device identity (M8, docs/adr/0002-device-identity.md) ───────────────────
+# Ed25519 signing. `ring` is ALREADY in the tree via rustls and rcgen, so
+# naming it directly costs nothing and avoids adding a second crypto crate.
+ring = "0.17"
+# The OS credential store for the private key — macOS/iOS Keychain, Windows
+# Credential Manager. Platform backends are named explicitly: keyring's default
+# on an unlisted platform is a MOCK store that silently forgets, which for a
+# device key would mean re-enrolling on every launch.
+keyring = { version = "3", features = ["apple-native", "windows-native"] }
 
 # ── WebRTC transport (M2) ────────────────────────────────────────────────────
 webrtc = "0.11"
@@ -61,10 +75,9 @@ apple-cf = { version = ">=0.9, <0.10", default-features = false, features = ["cm
 # setrlimit / setsid / killpg for the agent sandbox harness (agent/sandbox).
 libc = "0.2"
 # Screenshot capture → downscale → PNG for the agent's tier-3 vision fallback
-# (agent/executor/vision). `image` with only the png codec; base64 for the
-# data the model receives. base64 0.21 matches the version already in the lock.
+# (agent/executor/vision). `image` with only the png codec; the base64 the
+# model receives comes from the cross-platform dependency above.
 image = { version = "0.25", default-features = false, features = ["png"] }
-base64 = "0.21"
 
 [features]
 # by default Tauri runs in production mode unless `tauri dev` sets this.
