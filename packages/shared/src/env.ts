@@ -95,6 +95,26 @@ const EnvSchema = z.object({
   // docs/audit/m3/backend-security.md Finding 13). Optional in dev so
   // `curl localhost:8080/metrics` keeps working with no setup.
   METRICS_BEARER_TOKEN: z.string().min(16).optional(),
+
+  // ── M8 auth (docs/adr/0001-account-authentication.md, 0002-device-identity.md)
+  // Signing key for Lilypad's OWN access tokens. Symmetric (HS256) on purpose:
+  // only this backend ever verifies these tokens, so an asymmetric key would
+  // add key distribution for no property we need. Provider ID tokens are a
+  // different matter and are verified against the provider's public JWKS.
+  // No `.min()` here for the same reason as TURN_SECRET — the length floor is
+  // a production-only rule enforced in `productionSafetyProblems`, and a
+  // schema-level minimum would reject the (deliberately short) dev default.
+  AUTH_TOKEN_SECRET: z.string().default('lilypad_dev_auth_token_secret'),
+
+  // Accepted `aud` values for Apple/Google ID tokens, comma-separated. A
+  // single provider issues a DIFFERENT client id per platform (iOS bundle id,
+  // Android client id, web client id, Apple Services ID), and the audience
+  // check is what stops an ID token minted for someone else's app from
+  // signing its bearer into Lilypad — so this must be a list, not one value.
+  // Empty = that provider is not configured; its routes answer 503 rather
+  // than pretending to work.
+  APPLE_CLIENT_IDS: z.string().default(''),
+  GOOGLE_CLIENT_IDS: z.string().default(''),
 });
 
 export type Env = z.infer<typeof EnvSchema>;
@@ -107,6 +127,7 @@ let cached: Env | undefined;
 const INSECURE_DEV_DEFAULTS: Partial<Record<keyof Env, string>> = {
   TURN_SECRET: 'lilypad_dev_turn_secret',
   DATABASE_URL: 'postgres://lilypad:lilypad_dev_password@localhost:5432/lilypad',
+  AUTH_TOKEN_SECRET: 'lilypad_dev_auth_token_secret',
 };
 
 /** Does this URL carry a password in its userinfo? An unparseable URL can't
@@ -145,6 +166,15 @@ function productionSafetyProblems(env: Env): string[] {
   if (env.TURN_SECRET.length < 32) {
     problems.push(
       'TURN_SECRET must be at least 32 characters — generate with e.g. `openssl rand -hex 32`',
+    );
+  }
+
+  // Same reasoning as TURN_SECRET, with a larger blast radius: this key signs
+  // every access token, so anyone who can guess it can mint a token for any
+  // account and any device — the whole authorization model reduces to it.
+  if (env.AUTH_TOKEN_SECRET.length < 32) {
+    problems.push(
+      'AUTH_TOKEN_SECRET must be at least 32 characters — generate with e.g. `openssl rand -hex 32`',
     );
   }
 

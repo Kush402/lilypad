@@ -7,11 +7,12 @@ import { auditLogs } from '../db/schema.js';
  * row promises: "Audit logs: login, login_failed, device_paired,
  * session_start/stop, pair_denied, panic_disconnect (with ip + metadata)."
  *
- *  - `login` / `login_failed` are NOT implemented. There is no
- *    authentication yet (real auth ships in M5 — see `docs/threat-model.md`
- *    and the `users` table's doc comment in `db/schema.ts`): no code path
- *    produces a login attempt today, so wiring these would mean inventing a
- *    fake trigger. Wire them the same way as the events below once M5 ships.
+ *  - `login` / `login_failed` ship in M8 with the auth routes that finally
+ *    produce a login attempt to record (`routes/auth.ts`). `login_failed`
+ *    deliberately carries the REAL reason in `metadata` even though the HTTP
+ *    response flattens every failure to `invalid_token` — the distinction an
+ *    operator needs for incident response is exactly the one a caller must
+ *    not be handed.
  *  - `panic_disconnect` is NOT its own event type. Both the desktop's tray
  *    "Panic disconnect" and its ordinary "Disconnect" command resolve to the
  *    exact same `Control::Disconnect` value with no distinguishing payload
@@ -25,10 +26,13 @@ import { auditLogs } from '../db/schema.js';
  *    captured generically by `session_end` below, whose `metadata.reason`
  *    carries whatever string the room actually ended with.
  */
-export type AuditEventType = 'device_paired' | 'session_start' | 'session_end' | 'pair_denied';
+export type AuditEventType =
+  'login' | 'login_failed' | 'device_paired' | 'session_start' | 'session_end' | 'pair_denied';
 
 export interface AuditLogFields {
-  /** Real authenticated user id, once M5 ships. Always `null` pre-auth. */
+  /** The authenticated `users.id`. Written by the auth routes since M8;
+   * still null for events on paths that have not been moved behind
+   * `requireAuth` yet. */
   userId?: string | null;
   /**
    * A `devices.id` (Postgres) UUID foreign key. Always `null` today: the
@@ -86,6 +90,17 @@ export function createDrizzleAuditLogStore(
  */
 export class AuditLogService {
   constructor(private readonly store: AuditLogStore) {}
+
+  /** A caller proved an identity and was issued a session (M8). */
+  login(fields: AuditLogFields = {}): Promise<void> {
+    return this.write('login', fields);
+  }
+
+  /** A sign-in or refresh attempt was rejected. `metadata.reason` carries the
+   * real cause; the HTTP response deliberately does not. */
+  loginFailed(fields: AuditLogFields = {}): Promise<void> {
+    return this.write('login_failed', fields);
+  }
 
   /** A mobile device successfully redeemed a pairing token — the desktop and
    * mobile device are now bound to the same room. */

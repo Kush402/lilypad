@@ -27,6 +27,7 @@
     "drizzle-orm": "^0.45.2",
     "fastify": "^5.11.3",
     "ioredis": "^5.4.2",
+    "jose": "^6.2.8",
     "postgres": "^3.4.5"
   },
   "devDependencies": {

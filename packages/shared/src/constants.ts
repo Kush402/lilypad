@@ -4,6 +4,14 @@
 export const redisKeys = {
   /** Single-use pairing token → JSON blob (TTL = PAIRING_TOKEN_TTL_SECONDS). */
   pairingToken: (token: string) => `lilypad:pairing:${token}`,
+  /** Single-use magic-link sign-in token → the email address it proves
+   * (M8). Ephemeral and single-use, exactly like a pairing token, which is
+   * why it lives in Redis rather than Postgres. */
+  magicLink: (token: string) => `lilypad:magic-link:${token}`,
+  /** Single-use device-enrollment / login challenge → the JSON challenge
+   * record the signature is checked against (M8). Redis for the same reason:
+   * a nonce that survives a restart is a replay window. */
+  deviceChallenge: (challengeId: string) => `lilypad:device-challenge:${challengeId}`,
   /** Signaling room membership/state (M2+). */
   room: (roomId: string) => `lilypad:room:${roomId}`,
   /** Room-authorization record written by the pairing flow (`desktopDeviceId`,

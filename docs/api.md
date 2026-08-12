@@ -117,10 +117,83 @@ Requires `Authorization: Bearer $METRICS_BEARER_TOKEN`; returns **401** without
 it. The token is optional in development and **required in production**
 (enforced at boot by the env safety guard).
 
-## Auth 🔜 M5 remainder
+## Account authentication ✅ (M8)
 
-`POST /auth/signup` · `POST /auth/login` · `POST /auth/refresh`. Not built —
-see [m5-auth-design.md](./m5-auth-design.md).
+The only routes reachable without a token, because they are how a caller gets
+one. See [ADR-0001](adr/0001-account-authentication.md). There are no passwords
+and no signup endpoint: a first sign-in creates the account.
+
+Two rules apply across all of them:
+
+- **Failures do not distinguish themselves.** Expired, forged, replayed, and
+  unknown all answer `401 invalid_token`. The audit log records which it really
+  was; the response does not, because a caller that can tell them apart has an
+  oracle for probing.
+- **Every attempt is audited** — `login` on success, `login_failed` with the
+  real reason in `metadata` otherwise.
+
+### `POST /auth/oauth` ✅
+
+Sign in with an Apple or Google ID token the client already obtained from the
+platform SDK. Lilypad never handles the provider password or the
+authorization-code exchange; it verifies what the SDK produced: signature
+against the provider's JWKS, issuer, **audience against our own client ids**,
+and a pinned algorithm list. Rate-limited to **20/minute** per IP.
+
+```jsonc
+// request
+{ "provider": "apple", "idToken": "eyJ…" }
+// 200 OK
+{ "accessToken": "eyJ…", "expiresInSeconds": 600, "refreshToken": "…", "userId": "uuid" }
+// 401 — token invalid, expired, forged, or minted for another app
+{ "error": "invalid_token" }
+// 403 — actionable by the user, and neither answer reveals whether an account exists
+{ "error": "email_unverified" }   // or "email_required"
+// 503 — this server has no client ids configured for that provider
+{ "error": "provider_not_configured", "message": "…" }
+```
+
+### `POST /auth/magic-link/request` ✅
+
+Ask for a sign-in link. Answers **202 whether or not the address has an
+account**, deliberately: a response that differed would be an
+account-enumeration oracle. Rate-limited to **5/minute** per IP.
+
+```jsonc
+{ "email": "ada@example.com" }   // → 202 { "ok": true }
+// 503 — no email sender is configured on this server (see below)
+{ "error": "magic_link_unavailable", "message": "…" }
+```
+
+> **Delivery is dev-only today.** The token flow is complete and tested, but the
+> only sender that exists writes the link to the server log. A production sender
+> (SES/Resend/SMTP) is chosen with the rest of the hosting in **M13**, and the
+> clickable-link/deep-link UX lands in **M14**. Until then this endpoint answers
+> 503 outside development rather than accepting sign-ins whose email never
+> arrives.
+
+### `POST /auth/magic-link/verify` ✅
+
+Redeem the single-use token. Burned with `GETDEL`, so a replay finds nothing;
+15-minute TTL. Possession of the inbox is the proof, so there is no separate
+email-verification step. Rate-limited to **20/minute** per IP.
+
+```jsonc
+{ "token": "…" } // → 200 (same session shape as /auth/oauth) · 401 invalid_token
+```
+
+### `POST /auth/refresh` ✅
+
+Exchange a refresh token for a fresh pair. **Single-use:** the presented token
+is retired by the exchange, and presenting it again revokes every live token for
+that user+device — a retired token in an attacker's hands and in the client's
+hands are indistinguishable from the server, so the safe response is to force a
+re-sign-in. Clients MUST replace their stored copy with the returned one.
+Rate-limited to **60/minute** per IP.
+
+```jsonc
+{ "refreshToken": "…" } // → 200 (same session shape) · 401 invalid_token
+```
 
 ## Sessions 🔜 M5 remainder
 
@@ -135,7 +208,13 @@ billing.
 ## Errors
 
 `400 invalid_request` (zod issues array) · `401 unauthorized` (`/metrics`
-without a valid bearer token) · `410 token_invalid` · `429` (rate limit) ·
-`503` (health degraded). Rate limiting: a generous global default (120/min per
-IP) plus a tighter per-route limit on `POST /pairing/create` (30/min per IP);
-auth-route limits land with M5.
+without a valid bearer token) · `401 invalid_token` (any auth failure) ·
+`403 email_required` / `email_unverified` · `410 token_invalid` · `429` (rate
+limit) · `503` (health degraded, `provider_not_configured`,
+`magic_link_unavailable`).
+
+Rate limiting: a generous global default (120/min per IP), a tighter per-route
+limit on `POST /pairing/create` and `/connect/request` (30/min), and tighter
+still on the auth routes — 20/min for the two token-verifying endpoints, 60/min
+for refresh, and **5/min for magic-link requests**, which are the only endpoint
+that causes mail to be sent on an unauthenticated caller's say-so.

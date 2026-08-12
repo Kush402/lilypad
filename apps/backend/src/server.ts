@@ -6,6 +6,7 @@ import { config } from './config.js';
 import { parseTrustProxy } from './trustProxy.js';
 import { parseAllowedOrigins } from './allowedOrigins.js';
 import { healthRoutes } from './routes/health.js';
+import { authRoutes } from './routes/auth.js';
 import { pairingRoutes } from './routes/pairing.js';
 import { signalingRoutes } from './routes/signaling.js';
 import { deviceRoutes } from './routes/devices.js';
@@ -47,6 +48,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   const hubBundle = createSignalingHubBundle();
 
   await app.register(healthRoutes);
+  await app.register(authRoutes);
   await app.register(pairingRoutes);
   await app.register(signalingRoutes, hubBundle);
   await app.register(deviceRoutes, { hub: hubBundle.hub });

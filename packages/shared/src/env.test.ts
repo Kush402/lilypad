@@ -11,6 +11,7 @@ function secureProdEnv(overrides: Record<string, string | undefined> = {}): Node
     DATABASE_URL: 'postgres://lilypad:s3cr3t@db.internal:5432/lilypad',
     REDIS_URL: 'redis://:s3cr3t@redis.internal:6379',
     TURN_SECRET: 'a-real-unique-secret-at-least-32-chars-long',
+    AUTH_TOKEN_SECRET: 'a-real-unique-auth-signing-key-32-chars-plus',
     METRICS_BEARER_TOKEN: 'a-real-unique-metrics-token',
     ...overrides,
   };
@@ -66,6 +67,20 @@ describe('loadEnv', () => {
     it('refuses a TURN_SECRET shorter than 32 characters, even if not the literal dev default', () => {
       expect(() => loadEnv(secureProdEnv({ TURN_SECRET: 'short-but-not-the-default' }))).toThrow(
         /TURN_SECRET/,
+      );
+    });
+
+    // This key signs every access token, so guessing it mints a token for any
+    // account and any device — the whole authorization model reduces to it.
+    it('refuses the default AUTH_TOKEN_SECRET', () => {
+      expect(() =>
+        loadEnv(secureProdEnv({ AUTH_TOKEN_SECRET: 'lilypad_dev_auth_token_secret' })),
+      ).toThrow(/AUTH_TOKEN_SECRET/);
+    });
+
+    it('refuses an AUTH_TOKEN_SECRET shorter than 32 characters', () => {
+      expect(() => loadEnv(secureProdEnv({ AUTH_TOKEN_SECRET: 'too-short' }))).toThrow(
+        /AUTH_TOKEN_SECRET/,
       );
     });
 
