@@ -28,17 +28,24 @@ Items marked 🔜 were confirmed absent from the code.
 | ------------------------------- | ------------------------------------------------ |
 | `pnpm typecheck`                | ✅ 8/8 tasks pass                                |
 | `pnpm lint` (ESLint)            | ✅ 6/6 tasks pass, 0 warnings                    |
-| `pnpm test` (JS/TS)             | ✅ **537 pass, 0 fail** across 44 files/suites   |
-| `cargo test` (desktop)          | ✅ **280 pass, 0 fail, 0 ignored**               |
+| `pnpm test` (JS/TS)             | ✅ **697 pass, 0 fail** across 55 files/suites   |
+| `cargo test` (desktop)          | ✅ **294 pass, 0 fail, 0 ignored**               |
 | `cargo clippy --all-targets`    | ✅ clean — no errors, no warnings                |
 | `cargo fmt --check`             | ✅ clean                                         |
 | `pnpm format:check`             | ✅ clean                                         |
-| `pnpm docs:check`               | ✅ clean — 47 markdown files                     |
+| `pnpm docs:check`               | ✅ clean — 54 markdown files                     |
 | `pnpm audit --audit-level high` | ✅ clean — blocking in CI (2 documented ignores) |
-| **Total automated tests**       | **817**                                          |
+| **Total automated tests**       | **991**                                          |
 
-Test breakdown: backend 288 · mobile 189 · desktop Rust 280 · desktop UI 44 ·
-shared 16.
+Test breakdown: backend 386 · mobile 249 · desktop Rust 294 · desktop UI 44 ·
+shared 18.
+
+A further **11 opt-in end-to-end tests** are skipped by default
+(`apps/mobile/src/lib/deviceFlow.e2e.test.ts`). They drive the mobile app's own
+`identity.ts` and `auth.ts` against a running backend with real Postgres and
+Redis, substituting only the Keychain, and are excluded from the total because
+`pnpm test` must stay hermetic. See [oauth-setup.md](oauth-setup.md) for how to
+run them.
 
 ## 2. Repo scale
 
@@ -92,7 +99,7 @@ are cleanly separated.
 | `signaling/` | messages (712 lines), mod                                                                                                                                                 | ✅ serde mirror of the zod contract, drift-tested                                                   |
 | Lifecycle    | lib, main, commands (835), state, presence, permission, power, autostart, single_instance, health, clipboard                                                              | ✅ all shipped                                                                                      |
 | Frontend     | `src/components/*` (Bubble, QrOverlay, Control, Setup, Diagnostics, SoftwareUpdate, AgentProviderCard), `src/lib/*`                                                       | ✅ 44 tests pass                                                                                    |
-| Tests        | `src-tauri/tests/*` — 12 integration suites + soak                                                                                                                        | ✅ 280 total incl. fault injection + clipboard race                                                 |
+| Tests        | `src-tauri/tests/*` — 12 integration suites + soak                                                                                                                        | ✅ 294 total incl. fault injection + clipboard race                                                 |
 | Examples     | 6 benches/harnesses (`bench_encode`, `bench_input`, `bench_pipeline`, `headless_mobile_peer`, …)                                                                          | ✅ compile + run                                                                                    |
 
 ### `apps/backend` — Fastify + Postgres + Redis ✅
@@ -112,7 +119,7 @@ are cleanly separated.
 
 | Area       | Files                                                                                                                         | Status                                                                   |
 | ---------- | ----------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
-| `lib/`     | webrtc (936), touch (543), signaling, input, api, device, pairs, agentFeed, quality, viewport, lifecycle, errors, pressRepeat | ✅ 25 files, 189 tests                                                   |
+| `lib/`     | webrtc (936), touch (543), signaling, input, api, device, pairs, agentFeed, quality, viewport, lifecycle, errors, pressRepeat | ✅ 28 files, 249 tests                                                   |
 | `screens/` | ViewerScreen (1,094), ScannerScreen, DeviceListScreen, AgentPanel                                                             | ✅                                                                       |
 | iOS        | Xcode project, Podfile.lock, fastlane, PrivacyInfo                                                                            | ✅ real-device verified                                                  |
 | Android    | Gradle, Kotlin `MainActivity`/`MainApplication`, fastlane                                                                     | ✅ builds + ships in CI; ⚠️ not hardware-verified in this repo's records |
@@ -195,7 +202,7 @@ These are the reason the product is not yet consumer-ready. Each is verified.
 
 | ID          | Gap                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | Milestone |
 | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- |
-| SEC-1       | No accounts — nothing is owned, so nothing can be authorized — **backend done.** `/auth/oauth`, magic link, and rotating refresh ship; mobile sign-in is written but unverified on device, and desktop sign-in is undecided ([oauth-setup.md](oauth-setup.md)).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | M8        |
+| SEC-1       | No accounts — nothing is owned, so nothing can be authorized — **backend done.** `/auth/oauth`, magic link, and rotating refresh ship. Desktop sign-in is decided and implemented ([ADR-0008](adr/0008-desktop-enrollment-via-phone.md)). The enrollment and device-token flow is verified end to end against a live backend; the provider SDK paths still need a real iOS/Android build ([oauth-setup.md](oauth-setup.md)).                                                                                                                                                                                                                                                                                                                                                                | M8        |
 | SEC-2       | Device identity is a self-asserted string — **backend + clients done, not yet enforced.** Ed25519 challenge-response ships in `/devices/{challenge,enroll,token}`; both clients generate, store, and sign. The self-asserted id is still ACCEPTED because no route requires a token yet (see SEC-3).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | M8        |
 | SEC-3       | Every route except `/metrics` is unauthenticated                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | M8        |
 | SEC-4       | Presence room is claimable by asserting a device id, and the claim evicts the incumbent socket                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | M9        |

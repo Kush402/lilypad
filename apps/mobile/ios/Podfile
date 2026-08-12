@@ -17,6 +17,14 @@ end
 target 'LilypadMobile' do
   config = use_native_modules!
 
+  # Sign in with Google pulls in GoogleSignIn -> AppCheckCore, which is Swift and
+  # cannot import these two Objective-C pods unless they generate module maps.
+  # Without this, `pod install` fails outright and the app cannot be built.
+  # Scoped to the two offending pods on purpose: `use_modular_headers!` globally
+  # would change header semantics for every React Native pod as well.
+  pod 'GoogleUtilities', :modular_headers => true
+  pod 'RecaptchaInterop', :modular_headers => true
+
   use_react_native!(
     :path => config[:reactNativePath],
     # An absolute path to your application root.

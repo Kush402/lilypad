@@ -179,27 +179,41 @@ Three options, none of them invented:
    macOS and returns an identity token directly with no exchange, but calling it
    from Rust needs Objective-C interop.
 
-Option 2 is the smallest and the one the roadmap already implies. **Not yet
-implemented; awaiting a decision.**
+Option 2 was chosen and is implemented — see
+[ADR-0008](adr/0008-desktop-enrollment-via-phone.md). **The desktop therefore
+needs no Google or Apple client, no client secret, and no redirect URI at all.**
 
 ## Status — what is built and what is not
 
-| Piece                           | State                                              |
-| ------------------------------- | -------------------------------------------------- |
-| Backend ID-token verification   | **Implemented**, 15 tests                          |
-| Mobile Google sign-in           | **Implemented**, 6 tests; unverified on device     |
-| Mobile Apple sign-in            | **Implemented**, 4 tests; unverified on device     |
-| Mobile magic link               | **Implemented**, 4 tests; dev-only delivery        |
-| iOS entitlement + target wiring | **Implemented**, plists validated                  |
-| iOS Google URL scheme           | **Waiting on the client id**                       |
-| Android release signing         | **Fixed** — fails closed; verified in a Gradle run |
-| Android OAuth client            | **Waiting on the upload keystore's SHA-1**         |
-| Desktop sign-in                 | **Not started** — see the decision above           |
+| Piece                           | State                                                                  |
+| ------------------------------- | ---------------------------------------------------------------------- |
+| Backend ID-token verification   | **Implemented**, 15 tests                                              |
+| Device enrollment + sign-in     | **Implemented**, 11 tests against a live backend                       |
+| Desktop enrollment via phone    | **Implemented** ([ADR-0008](adr/0008-desktop-enrollment-via-phone.md)) |
+| Mobile Google sign-in           | **Implemented**, 6 tests; not run on a device                          |
+| Mobile Apple sign-in            | **Implemented**, 4 tests; not run on a device                          |
+| Mobile magic link               | **Implemented**, 4 tests; dev-only delivery                            |
+| iOS entitlement + target wiring | **Implemented**, plists validated                                      |
+| iOS CocoaPods integration       | **Verified** — `pod install` succeeds, 86 pods                         |
+| iOS Google URL scheme           | **Waiting on the client id**                                           |
+| Android release signing         | **Fixed** — fails closed; verified in a Gradle run                     |
+| Android OAuth client            | **Waiting on the upload keystore's SHA-1**                             |
 
-"Unverified on device" is literal: the sign-in modules typecheck against the real
-SDK type definitions and their logic is unit-tested against mocked SDKs, but no
-iOS or Android build has been run. Native module linking, the entitlement, and
-the URL scheme cannot be proven by any test in this repository.
+### What "not run on a device" means, precisely
 
-Mobile gained native modules, so **iOS needs `pnpm pods` and Android a clean
-rebuild** before either will launch.
+The device-identity flow — enrollment, key-only re-authentication, challenge
+replay, signature forgery, domain-prefix separation, and desktop enrollment by an
+approving phone — **is** verified end to end against a real backend, real
+Postgres and real Redis by `apps/mobile/src/lib/deviceFlow.e2e.test.ts`, which
+drives the app's own `identity.ts` and `auth.ts`. Only the Keychain is
+substituted there, because it cannot exist off a device.
+
+What remains unproven is everything that requires compiling and launching an iOS
+or Android binary: the Keychain native module itself, the Apple Sign In
+entitlement being honoured by a provisioning profile, the Google URL scheme, and
+the Android signing DSL. No test in this repository can establish those, and
+building requires a full Xcode / Android SDK install.
+
+Mobile gained native modules, so **iOS needs `pnpm pods`** (already run — the
+`Podfile.lock` in the tree is current) **and Android a clean rebuild** before
+either will launch.
