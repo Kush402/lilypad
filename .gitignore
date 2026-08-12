@@ -52,3 +52,7 @@ coverage/
 # Derived code-intelligence indexes (rebuilt on demand, never committed)
 .codegraph/
 .code-review-graph/
+
+# React Native pins the node path here per machine; the versioned
+# .xcode.env already resolves it with $(command -v node).
+apps/mobile/ios/.xcode.env.local
