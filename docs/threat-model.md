@@ -1,3 +1,10 @@
+---
+status: Implemented
+owner: @kushsharma024
+last-verified: 2026-08-12
+summary: Assets, threats, and mitigations.
+---
+
 # Lilypad — Threat Model
 
 Remote laptop control is high-stakes: a session grants view + input over the

@@ -1,3 +1,10 @@
+---
+status: Reference
+owner: @kushsharma024
+last-verified: 2026-08-12
+summary: M3 production audit — backend security findings.
+---
+
 # Lilypad Backend Security Audit — M3 Hardening Pass
 
 **Scope:** `apps/backend` (Fastify + Redis + Postgres signaling/pairing service), the shared `packages/protocol` and `packages/shared` contracts it depends on, `infra/` deployment config, and the desktop-side (`apps/desktop/src-tauri`) enforcement points that the backend's authorization model depends on for its guarantees to actually hold end-to-end.

@@ -1,3 +1,10 @@
+---
+status: Implemented
+owner: @kushsharma024
+last-verified: 2026-08-12
+summary: Input event vocabulary carried over the DataChannel.
+---
+
 # Lilypad — Input Protocol
 
 Carried over the WebRTC **DataChannel** (`lilypad-input`, reliable + ordered),

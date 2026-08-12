@@ -1,3 +1,10 @@
+---
+status: Implemented
+owner: @kushsharma024
+last-verified: 2026-08-12
+summary: Desktop capability architecture (replaced the old PluginHost).
+---
+
 # Lilypad — Desktop Capability Architecture
 
 > **Status:** this document originally described a generic `Plugin`/`PluginHost`

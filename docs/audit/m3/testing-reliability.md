@@ -1,3 +1,10 @@
+---
+status: Reference
+owner: @kushsharma024
+last-verified: 2026-08-12
+summary: M3 production audit — testing and reliability findings.
+---
+
 # Lilypad M3 Engineering Audit — Testing & Reliability
 
 **Auditor:** Staff Engineer, Quality/Reliability

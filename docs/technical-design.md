@@ -1,3 +1,10 @@
+---
+status: Implemented
+owner: @kushsharma024
+last-verified: 2026-08-12
+summary: Design decisions behind the architecture.
+---
+
 # Lilypad — Technical Design
 
 Detailed design decisions behind the [architecture](./architecture.md).

@@ -1,3 +1,10 @@
+---
+status: Implemented
+owner: @kushsharma024
+last-verified: 2026-08-12
+summary: Canonical map of the system as built.
+---
+
 # Lilypad — Architecture Overview
 
 _Current as of 2026-07-19 (post-M5.4). This is the canonical map of the system
@@ -154,6 +161,9 @@ apps/desktop/src-tauri/src/
   signaling/   WS client + serde message mirror (defense-in-depth bounds)
   presence.rs  standing presence connection + ring/supersede
   agent/       Ask: runner, security gate, tiered executor, sandbox, llm/, ax/
+apps/desktop/src/
+  components/  Bubble · QrOverlay · Control (dashboard) · Setup · Diagnostics
+  lib/         tauri bridge, useAppState, useLiveResource, useUpdater (auto-update FSM)
 apps/mobile/src/
   lib/         webrtc client, signaling, touch/gesture, identity, pairs, agent feed
   screens/     DeviceList (My Devices) · Scanner · Viewer (+AgentPanel)
@@ -169,7 +179,8 @@ packages/shared/    env, logger, redis keys, cross-tier timing constants
 
 **Living reference:** this file · `technical-design.md` · `api.md` ·
 `signaling-protocol.md` · `input-protocol.md` · `db-schema.md` ·
-`threat-model.md` · `operations.md` · `user-guide.md` · `milestones.md`.
+`threat-model.md` · `operations.md` · `RUNBOOK.md` (build/release/auto-update) ·
+`user-guide.md` · `milestones.md`.
 
 **Design/audit records (rationale, cited from code):**
 `m5.4-trusted-devices-audit.md` (pairing audit + trusted-device design) ·

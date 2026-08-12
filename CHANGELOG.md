@@ -6,8 +6,54 @@ All notable changes to Lilypad are documented here. The format follows
 
 ## [Unreleased]
 
-Cellular-stability hardening on top of 1.0.0, driven by live-hardware findings
-(2026-07-19 → 2026-07-20).
+Cellular-stability hardening on top of 1.0.0 driven by live-hardware findings
+(2026-07-19 → 2026-07-20), plus the release-engineering pass that makes the
+apps shippable and self-updating.
+
+### Engineering process
+
+- **Documentation is now enforced by CI** (`pnpm docs:check`). It fails the build
+  on three specific drifts, each of which had already happened in this repo:
+  a doc under `docs/` without `status`/`owner`/`last-verified` frontmatter, a
+  broken relative link, or an HTTP route that exists in the backend but not in
+  `docs/api.md` (or the reverse). Rules and the what-to-update-when table are in
+  `CONTRIBUTING.md`.
+- **Architecture Decision Records** (`docs/adr/`). ADR-0001..0005 record the
+  decisions behind the consumer-product track: OAuth-with-no-passwords account
+  auth, Ed25519 device identity, replacing same-account QR pairing with account
+  ownership, scaling signaling via Redis pub/sub while keeping rooms in memory,
+  and running TURN on dedicated regional VMs rather than Kubernetes.
+- **Security scanning in CI**: CodeQL plus a dependency audit. The audit is
+  reporting-only for now — the tree carries 19 high/critical advisories including
+  backend runtime dependencies, and clearing them is a separate reviewed pass
+  rather than a silent side effect of another milestone.
+- `docs/PROJECT-INDEX.md` gained a verified gap register (`SEC-*`, `OPS-*`,
+  `NET-*`, `OBS-*`, `DEP-*`) and a roadmap position, and `docs/milestones.md`
+  gained the M7–M18 consumer-product track.
+
+### Distribution & CI/CD
+
+- **Desktop auto-update**: the Tauri v2 updater plugin checks a signed
+  `latest.json` published to GitHub Releases (minisign pubkey pinned in
+  `tauri.conf.json`). The client lifecycle is one explicit state machine
+  (`useUpdater.ts`: idle → checking → available → downloading → ready →
+  relaunch), surfaced as a "check now" panel in Diagnostics.
+- **Signed + notarized macOS release pipeline** (`.github/workflows/release.yml`):
+  pushing a `v*` tag builds a universal (aarch64 + x86_64) `.app`/`.dmg`,
+  Developer-ID signs, notarizes, staples, and publishes the GitHub Release with
+  the updater artifacts. `pnpm release` cuts the tag.
+- **Mobile CI/CD**: `mobile-ios.yml` (fastlane → TestFlight) and
+  `mobile-android.yml` (fastlane → Play internal track + APK artifact).
+  `Gemfile.lock` is committed multi-platform so fastlane resolves identically
+  on a developer Mac and on CI Linux.
+- **CI** (`ci.yml`): TypeScript (lint + typecheck + test) and Rust (fmt +
+  clippy + test) jobs, plus nightly and weekly soak runs. Two flaky media tests
+  were made deterministic (an unmocked promise, and a one-frame
+  recovery-keyframe race in the drop test) rather than retried.
+- **Reproducible fresh clone**: `pnpm bootstrap` now seeds `.env` from
+  `.env.example`, and [`docs/RUNBOOK.md`](docs/RUNBOOK.md) documents the full
+  lifecycle — fresh clone → running, cutting releases, how updates reach
+  installed apps, and reclaiming disk.
 
 ### Desktop
 

@@ -1,3 +1,10 @@
+---
+status: Reference
+owner: @kushsharma024
+last-verified: 2026-08-12
+summary: M3 production audit — streaming and media findings.
+---
+
 # Streaming Media Engineering Audit — M2 → M5
 
 **Scope:** desktop capture/encode pipeline (`apps/desktop/src-tauri/src/media/*`), the WebRTC peer (`apps/desktop/src-tauri/src/rtc/mod.rs`), the session runner's wiring of adaptive bitrate (`apps/desktop/src-tauri/src/session.rs`), and the mobile viewer's receive path (`apps/mobile/src/lib/webrtc.ts`, `apps/mobile/src/screens/ViewerScreen.tsx`).

@@ -1,3 +1,10 @@
+---
+status: Implemented
+owner: @kushsharma024
+last-verified: 2026-08-12
+summary: JSON-over-WebSocket signaling contract.
+---
+
 # Lilypad — Signaling Protocol
 
 JSON over WebSocket at `/ws/signal`. Room-routed by `roomId`; the backend relays

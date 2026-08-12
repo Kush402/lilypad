@@ -1,3 +1,10 @@
+---
+status: Reference
+owner: @kushsharma024
+last-verified: 2026-08-12
+summary: M3 production audit — mobile UX findings.
+---
+
 # Lilypad Mobile — M3 UX Production-Readiness Audit
 
 **Scope:** `apps/mobile/src/screens/{LoginScreen,DeviceListScreen,ScannerScreen,ViewerScreen}.tsx`, `apps/mobile/src/lib/{api,device,webrtc,signaling,input}.ts`, `apps/mobile/src/theme.ts`, `apps/mobile/src/types.ts`, `apps/mobile/App.tsx`, plus the shared contracts they depend on in `packages/protocol/src/{qr,pairing,signaling,input,constants}.ts` and the backend pairing route/service (`apps/backend/src/routes/pairing.ts`, `apps/backend/src/services/pairing.ts`) that determine what data and error information the mobile app has available to render.

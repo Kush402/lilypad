@@ -1,3 +1,10 @@
+---
+status: Reference
+owner: @kushsharma024
+last-verified: 2026-08-12
+summary: M3 production audit — remediation roadmap.
+---
+
 # Lilypad M2→M5 Production Roadmap
 
 **Source:** 9 parallel specialist audits (input/touch, streaming/media, reconnect/lifecycle,

@@ -1,6 +1,20 @@
+---
+status: Reference
+owner: @kushsharma024
+last-verified: 2026-08-12
+summary: Design rationale behind the shipped Ask agent (M5.3).
+---
+
 # Ask — Architectural Audit & Implementation Proposal
 
-> Status: audit complete, implementation NOT started (per directive).
+> **Status (updated 2026-08-12): SHIPPED as M5.3.** The tiered executor this
+> audit proposed is implemented and live — P1 skills, P2 sandboxed codegen, P3
+> accessibility, P4 vision, security gate, model-agnostic provider layer. The
+> code lives in [`apps/desktop/src-tauri/src/agent/`](../apps/desktop/src-tauri/src/agent/);
+> see [`milestones.md`](./milestones.md) §M5.3 for the shipped scope. This
+> document is retained as the **design rationale** behind that implementation —
+> read it for _why_ the tiers are shaped this way, not as a to-do list.
+>
 > Supersedes nothing — this refines `docs/m5.3-ai-executor-plan.md` against the
 > full Ask product vision (intent-first, hierarchical execution, model-agnostic).
 > Audited at `efb1f0d` after the first live device round-trips of the existing

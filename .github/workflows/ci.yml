@@ -49,8 +49,59 @@ jobs:
       - name: Format check
         run: pnpm format:check
 
+      # Documentation drift is treated as a build failure: this repo has shipped
+      # features whose docs said "not started", and routes that existed in code
+      # but nowhere in docs/api.md. See scripts/docs-check.mjs.
+      - name: Docs check
+        run: pnpm docs:check
+
       - name: Test
         run: pnpm turbo run test
+
+  security:
+    name: Security — CodeQL + dependency audit
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Enable corepack (pins pnpm via package.json#packageManager)
+        run: corepack enable
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Reports known-vulnerable dependencies at high/critical severity.
+      #
+      # NOT blocking yet, deliberately: at the time this job was added the tree
+      # already carried 18 high + 1 critical advisories, several in backend
+      # RUNTIME deps (drizzle-orm <0.45.2, find-my-way <9.7.0, fast-uri <3.1.5)
+      # plus a critical in vitest <3.2.6. Clearing them needs real version bumps
+      # (vitest 2→3, drizzle 0.38→0.45, a fastify bump for the transitives) with
+      # genuine regression risk against the existing suite — that is its own
+      # reviewed pass, not a silent side effect of another milestone.
+      #
+      # A green-by-default gate that hides 19 findings is worse than an honest
+      # warning. Flip `continue-on-error` off once the tree is clean; that is a
+      # release blocker for M12 (security hardening), and the upgrade should land
+      # BEFORE M8 builds authentication on top of this router and ORM.
+      - name: Dependency audit
+        continue-on-error: true
+        run: pnpm audit --audit-level high
+
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: javascript-typescript
+
+      - uses: github/codeql-action/analyze@v3
+        with:
+          category: '/language:javascript-typescript'
 
   rust:
     # ScreenCaptureKit + VideoToolbox are macOS-only (see apps/desktop/src-tauri/Cargo.toml

@@ -1,3 +1,10 @@
+---
+status: Reference
+owner: @kushsharma024
+last-verified: 2026-08-12
+summary: M3 production audit — prior-art survey.
+---
+
 # Lilypad Prior-Art / Competitive Technical Audit (M3 → M5)
 
 **Scope:** every technique that makes Parsec, Jump Desktop, AnyDesk, Chrome

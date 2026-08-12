@@ -1,3 +1,10 @@
+---
+status: Implemented
+owner: @kushsharma024
+last-verified: 2026-08-12
+summary: REST + WebSocket API reference.
+---
+
 # Lilypad — API Reference
 
 Backend base URL defaults to `http://localhost:8080` (`PUBLIC_BASE_URL`).
@@ -49,6 +56,49 @@ Called by the **mobile** app after scanning. Atomically burns the token.
 { "error": "token_invalid", "message": "…" }
 ```
 
+## `POST /connect/request` ✅ (M5.4 — no-QR reconnect)
+
+Called by a **trusted phone** to ring its desktop without a QR. The backend
+verifies the pair, mints a room-auth-bound session room, and delivers a
+`connect-request` over the desktop's presence channel. The response
+deliberately mirrors `POST /pairing/redeem`, so the phone's downstream session
+flow is identical either way. Rate-limited **30/minute per IP**. Schemas:
+[`connect.ts`](../packages/protocol/src/connect.ts).
+
+```jsonc
+// request
+{ "desktopDeviceId": "desktop-…", "mobileDeviceId": "mobile-…",
+  "mobileDeviceName": "ios phone",   // optional
+  "pairSecret": "…" }                // per-pair secret; optional only for
+                                     // legacy pairs made before secrets existed
+// 200 OK
+{ "roomId": "uuid", "signalingUrl": "wss://…", "scopes": ["view","control"],
+  "desktopDeviceName": "macos desktop" }
+// 404 not_trusted   — no pair, or a bad pairSecret (reported identically on
+//                     purpose, so device-id guessing can't probe for existence)
+// 403 revoked       — the pairing was revoked; re-pair with a QR
+// 503 desktop_offline — the desktop has no live presence channel
+```
+
+## Trusted-pair management ✅ (M5.4)
+
+Consumed by the desktop's **Trusted Devices** dashboard and the phone's
+"Forget". Pre-M5-keys these are as unauthenticated as the rest of the pairing
+surface (device ids are self-asserted); the M5 device-identity upgrade gates
+them behind a key signature without changing their shape. Mutating routes are
+rate-limited **30/minute per IP**.
+Handlers: [`routes/devices.ts`](../apps/backend/src/routes/devices.ts).
+
+| Route                                  | Purpose                                                                                                                                                                                                    |
+| -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /devices/pairs?desktopDeviceId=…` | Every pair for a desktop → `{ pairs: TrustedPairListing[] }`.                                                                                                                                              |
+| `PATCH /devices/pairs/:pairId`         | Flip "connect without approval" — body `{ "autoApprove": bool }` → `{ ok: true }`.                                                                                                                         |
+| `DELETE /devices/pairs/:pairId`        | Desktop-side **Revoke**. Row kept as audit trail; the connect gate fails closed and any live session for the pair is ended immediately with reason `revoked`.                                              |
+| `POST /devices/unpair`                 | Mobile-side **Forget** — body `{ desktopDeviceId, mobileDeviceId }`. Idempotent. Ends a live session with the neutral reason `unpaired` (not `revoked`, which is reserved for the desktop-initiated case). |
+
+A `TrustedPairListing` is
+`{ pairId, mobileFingerprint, displayName, autoApprove, revoked, lastConnectedAt, createdAt }`.
+
 ## `GET /ws/signal` ✅
 
 WebSocket signaling — **fully implemented**: room-routed relay, session state
@@ -67,13 +117,15 @@ Requires `Authorization: Bearer $METRICS_BEARER_TOKEN`; returns **401** without
 it. The token is optional in development and **required in production**
 (enforced at boot by the env safety guard).
 
-## Auth 🔜 M5
+## Auth 🔜 M5 remainder
 
-`POST /auth/signup` · `POST /auth/login` · `POST /auth/refresh`.
+`POST /auth/signup` · `POST /auth/login` · `POST /auth/refresh`. Not built —
+see [m5-auth-design.md](./m5-auth-design.md).
 
-## Devices & sessions 🔜 M5
+## Sessions 🔜 M5 remainder
 
-`GET/POST/DELETE /devices` · `GET /sessions` · `POST /sessions/:id/end`.
+`GET /sessions` · `POST /sessions/:id/end`. (Device/pair management shipped in
+M5.4 — see **Trusted-pair management** above.)
 
 ## Admin 🔜 M6
 

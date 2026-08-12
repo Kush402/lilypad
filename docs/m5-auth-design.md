@@ -1,6 +1,21 @@
+---
+status: Planned
+owner: @kushsharma024
+last-verified: 2026-08-12
+summary: Forward spec for accounts + Ed25519 device identity. Not built.
+---
+
 # Lilypad — M5 Auth & Device-Trust Design
 
-**Status:** design-only. Nothing in this document is implemented yet — it is
+**Status (checked 2026-08-12):** still design-only — **accounts and Ed25519
+device keys are not implemented.** Partially superseded in _scope_ by M5.4,
+which shipped the trusted-devices layer described in
+[`m5.4-trusted-devices-audit.md`](./m5.4-trusted-devices-audit.md) using
+**self-asserted `deviceId` strings** plus a per-pair connect secret. This
+document remains the forward spec for the cryptographic upgrade that replaces
+those self-asserted strings (the `devices.publicKey` column in
+[`schema.ts`](../apps/backend/src/db/schema.ts) is already reserved for it),
+plus email/password accounts. It is
 the forward spec Phase 2 of [`docs/audit/m3/ROADMAP.md`](audit/m3/ROADMAP.md)
 (item 14) calls for, so that Phase 2's own seat-binding fix (item 8, the
 `RoomAuthStore` design in

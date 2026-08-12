@@ -1,3 +1,10 @@
+---
+status: Implemented
+owner: @kushsharma024
+last-verified: 2026-08-12
+summary: Milestone status, past and current.
+---
+
 # Lilypad — Milestone Plan
 
 Internet-first is proven early: signaling + WebRTC over STUN/TURN lands in M2,
@@ -193,11 +200,121 @@ Email/password (then Google/Apple), Ed25519 device keys + challenge-response
 (the `m5-auth-design.md` spec — upgrades the self-asserted deviceId strings in
 place), session expiry, per-device scope policies.
 
-## M6 — Harden + productize
+## M6 — Harden + productize (in progress)
 
-TURN hardening (rotating creds) + deploy, Stripe billing (free/pro/team), admin
-dashboard, observability overlay (capture/encode time, RTT, input round-trip,
-ICE candidate type), desktop auto-update.
+### Shipped
+
+- ✅ **Desktop auto-update** — Tauri v2 updater plugin against a
+  `latest.json` published to GitHub Releases; signed with a minisign key
+  (`tauri.conf.json#plugins.updater`), driven by an explicit state machine
+  (`useUpdater.ts`: idle → checking → available → downloading → ready →
+  relaunch) with a manual "check now" panel in Diagnostics.
+- ✅ **Signed + notarized macOS CD** — [`release.yml`](../.github/workflows/release.yml):
+  a `v*` tag builds a universal (aarch64 + x86_64) `.app`/`.dmg`, Developer-ID
+  signs, notarizes, staples, and publishes the Release plus updater artifacts.
+  Cut with `pnpm release`.
+- ✅ **Mobile CI/CD** — [`mobile-ios.yml`](../.github/workflows/mobile-ios.yml)
+  (fastlane → TestFlight) and
+  [`mobile-android.yml`](../.github/workflows/mobile-android.yml)
+  (fastlane → Play internal track + APK artifact).
+- ✅ **CI** — [`ci.yml`](../.github/workflows/ci.yml): TypeScript (lint +
+  typecheck + test) and Rust (fmt + clippy + test) jobs, plus nightly and
+  weekly soak runs.
+- ✅ **TURN hardening (self-hosted)** — `infra/coturn-prod/` runs coturn with
+  `use-auth-secret`, sharing `TURN_SECRET` with the backend so credentials are
+  short-lived HMAC-derived per session/role. `FORCE_RELAY` pins
+  `iceTransportPolicy: relay`.
+- ✅ **Operational runbook** — [`RUNBOOK.md`](./RUNBOOK.md): fresh clone → running,
+  cutting releases, how updates reach installed apps, reclaiming disk.
+
+### Remaining
+
+- 🔜 Stripe billing (free/pro/team).
+- 🔜 Admin dashboard — `apps/admin` is scaffolded (Vite + React) and probes
+  `/health`; the users/devices/sessions cards are still placeholders, and the
+  `/admin/*` API is unbuilt.
+- 🔜 Observability overlay (capture/encode time, RTT, input round-trip, ICE
+  candidate type).
+- 🔜 Rotating TURN credentials in a managed deploy (the self-hosted relay above
+  is the prerequisite, not the whole item).
+
+---
+
+# Consumer product track (M7+)
+
+From here the goal changes: take a working **single-user engineering product**
+and make it a **secure, scalable, polished consumer product** where many
+independent users control their own laptops. The decisions driving this live in
+[`adr/`](adr/); the verified gap list lives in
+[`PROJECT-INDEX.md`](PROJECT-INDEX.md).
+
+## M7 — Documentation system + CI guardrails 🚧
+
+Deliberately first: this repo has already shipped docs claiming features were
+unbuilt when they had shipped, and API docs missing five live routes. Every later
+milestone makes that worse unless the guardrails exist first.
+
+- ✅ `pnpm docs:check` — frontmatter (`status`/`owner`/`last-verified`), relative
+  link resolution, and **API route drift** (routes in code vs `api.md`, both
+  directions). Wired into CI.
+- ✅ Status vocabulary on every doc under `docs/`; rules in
+  [`CONTRIBUTING.md`](../CONTRIBUTING.md#documentation).
+- ✅ [`adr/`](adr/) — ADR-0001..0005 record authentication, device identity, the
+  QR→same-account change, signaling scale-out, and TURN topology.
+- ✅ CodeQL + dependency audit job in CI.
+- 🔜 Make the dependency audit blocking (gap DEP-1 — 19 high/critical advisories
+  must be cleared first; this should land before M8).
+
+## M8 — Accounts + device identity 🔜
+
+Apple/Google OAuth + email magic link ([ADR-0001](adr/0001-account-authentication.md));
+Ed25519 device enrollment with challenge-response
+([ADR-0002](adr/0002-device-identity.md)); every route behind `requireAuth` +
+an owner/capability check. Closes SEC-1, SEC-2, SEC-3, SEC-5.
+
+## M9 — Same-account device visibility 🔜
+
+The phone lists the account's laptops and connects — no pairing ceremony. QR is
+repurposed to desktop sign-in and cross-account sharing
+([ADR-0003](adr/0003-same-account-device-visibility.md)). Closes SEC-4.
+
+## M10 — Desktop security hardening 🔜
+
+Real CSP, drop `withGlobalTauri`, per-window command authorization, scoped
+`shell:allow-open`, persisted rotating logs, panic hook, crash reporting.
+Closes SEC-6, part of OBS-1.
+
+## M11 — Horizontal scaling 🔜
+
+In-memory rooms + Redis pub/sub relay
+([ADR-0004](adr/0004-signaling-horizontal-scaling.md)), Redis-backed rate
+limiting, backend Dockerfile, readiness probes, graceful drain. Closes OPS-1.
+
+## M12 — Security hardening + isolation suite 🔜
+
+Refreshed threat model, agent prompt-injection and sandbox-escape tests, and a
+**release-blocking table-driven multi-user isolation suite** — a new route
+without an isolation case fails CI. Closes SEC-7.
+
+## M13 — Production infrastructure + takedia.com 🔜
+
+Managed PaaS + managed Postgres/Redis, regional coturn VMs
+([ADR-0005](adr/0005-turn-topology.md)), `turns:` 443, self-hosted STUN, full
+DNS/TLS/CDN, staging, and updater manifests moved off GitHub. Closes OPS-2,
+OPS-3, OPS-4, NET-1, NET-2.
+
+## M14 — Consumer UX · M15 — Observability
+
+Onboarding, plain-language errors, device management, marketing site and web
+dashboard; then privacy-preserving metrics and crash reporting across all tiers.
+
+## M16 — Android GA · M17 — Windows GA · M18 — Ask productisation
+
+Android needs a real signing keystore (it currently ships with the committed
+debug keystore) and hardware validation. Windows needs its input path actually
+executed, a real encoder, and a Windows-compatible single-instance guard.
+
+---
 
 ## Non-negotiables (all milestones)
 

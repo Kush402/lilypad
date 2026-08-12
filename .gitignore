@@ -47,3 +47,7 @@ coverage/
 
 # Xcode per-user IDE state (window layout etc.) — never meaningful in git
 **/xcuserdata/
+
+# Derived code-intelligence indexes (rebuilt on demand, never committed)
+.codegraph/
+.code-review-graph/

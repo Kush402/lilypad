@@ -1,3 +1,10 @@
+---
+status: Implemented
+owner: @kushsharma024
+last-verified: 2026-08-12
+summary: End-user guide for the Mac + iPhone apps.
+---
+
 # Lilypad User Guide
 
 Control your Mac from your iPhone — see the screen live, tap to click, type

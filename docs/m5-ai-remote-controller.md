@@ -1,3 +1,10 @@
+---
+status: Reference
+owner: @kushsharma024
+last-verified: 2026-08-12
+summary: Competitive analysis and M5 planning survey.
+---
+
 # Lilypad M5 — Universal AI Remote Controller: Competitive Analysis & Roadmap
 
 > Status: planning. Supersedes the old milestone map. The previous

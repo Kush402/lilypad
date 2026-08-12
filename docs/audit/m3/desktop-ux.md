@@ -1,3 +1,10 @@
+---
+status: Reference
+owner: @kushsharma024
+last-verified: 2026-08-12
+summary: M3 production audit — desktop UX findings.
+---
+
 # Lilypad Desktop — UX Engineering Audit (M3 → M5 Readiness)
 
 **Scope:** `apps/desktop` (Tauri v2 shell + React frontend). Read in full: `src/App.tsx`, `src/components/Bubble.tsx`, `src/components/QrOverlay.tsx`, `src/components/Control.tsx`, `src/lib/tauri.ts`, `src/styles.css`, `src/main.tsx`, `src-tauri/src/commands.rs`, `src-tauri/src/lib.rs`, `src-tauri/src/state.rs`, `src-tauri/src/permission.rs`, `src-tauri/tauri.conf.json`. Also read for grounding: `src-tauri/src/session.rs`, `src-tauri/src/os/{mod,macos}.rs`, `src-tauri/src/plugins/{mod,screen_capture,input_injection,dev_shortcuts,audit_log}.rs`, `src-tauri/src/input/macos.rs`, `src-tauri/src/media/capture/screencapturekit.rs`, `src-tauri/capabilities/default.json`, `src-tauri/Cargo.toml`, `apps/backend/src/routes/pairing.ts`.

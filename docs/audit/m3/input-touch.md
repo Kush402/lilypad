@@ -1,3 +1,10 @@
+---
+status: Reference
+owner: @kushsharma024
+last-verified: 2026-08-12
+summary: M3 production audit — input and touch findings.
+---
+
 # Lilypad M3 Engineering Audit: End-to-End Touch Input Pipeline
 
 **Scope:** phone touch surface → `InputSender` batching → protocol wire format → WebRTC DataChannel → `InputWorker` → `InputDispatcher` → `InputBackend` (macOS `CGEvent` injection).

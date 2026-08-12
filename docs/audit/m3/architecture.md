@@ -1,3 +1,10 @@
+---
+status: Reference
+owner: @kushsharma024
+last-verified: 2026-08-12
+summary: M3 production audit — architecture findings.
+---
+
 # Lilypad Architecture Audit — M2→M5 Readiness
 
 **Scope:** desktop session runtime (`apps/desktop/src-tauri`), backend signaling

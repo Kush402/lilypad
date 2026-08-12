@@ -9,13 +9,22 @@ public internet**, not just the same Wi-Fi.
 Transport is **WebRTC + STUN + TURN (coturn)**. No custom video protocol, no
 LAN-only design, **no silent remote access**.
 
-> **Status (2026-07-19, post-M5.4)** — working end-to-end on real hardware
-> over cellular: **pair once with a QR, reconnect forever without one** (My
-> Devices → Connect rings the Mac; trusted devices auto-connect), live H.264
-> streaming (ScreenCaptureKit → VideoToolbox → WebRTC) with self-healing
-> recovery machinery, touch/keyboard/clipboard input, pinch-zoom viewer, a
-> trusted-devices dashboard on the desktop, and the **Ask** AI operator
-> (tiered, sandboxed, model-agnostic) driving the Mac from the phone.
+> **Status (2026-08-12, post-M5.4 + release engineering)** — working end-to-end
+> on real hardware over cellular: **pair once with a QR, reconnect forever
+> without one** (My Devices → Connect rings the Mac; trusted devices
+> auto-connect), live H.264 streaming (ScreenCaptureKit → VideoToolbox →
+> WebRTC) with self-healing recovery machinery, touch/keyboard/clipboard input,
+> pinch-zoom viewer, a trusted-devices dashboard on the desktop, and the **Ask**
+> AI operator (tiered, sandboxed, model-agnostic) driving the Mac from the
+> phone. Shipping is automated: a `v*` tag builds a **signed + notarized
+> universal macOS bundle** published to GitHub Releases, and installed apps
+> **auto-update** from it; mobile ships to TestFlight / Play internal via
+> fastlane. See [docs/RUNBOOK.md](docs/RUNBOOK.md).
+>
+> **Verified green at `fa1581a`:** 537 JS/TS tests (backend 288 · mobile 189 ·
+> desktop UI 44 · shared 16) plus 277 Rust tests — and lint, typecheck,
+> formatting, and clippy all clean. Next up (M6): billing, admin dashboard,
+> observability overlay, and the Ed25519 device-identity upgrade.
 
 ## Monorepo layout
 
@@ -125,16 +134,27 @@ LILYPAD_SIGNALING=ws://localhost:8080/ws/signal LILYPAD_ROOM=demo \
 7. A dropped transport mid-session holds the seat for a grace window and
    recovers with an ICE restart instead of ending the session.
 
+**After the first pairing, steps 1–3 are optional.** If the phone ticked "Trust
+this device", it stores the pair (keychain identity + per-pair connect secret)
+and later calls `POST /connect/request` instead: the backend verifies the pair,
+mints the same room-auth-bound session, and rings the Mac over its presence
+channel. Step 4 still applies unless that pair is set to **Always allow** — and
+either side can sever the trust at any time (desktop **Revoke**, phone
+**Forget**), which also kills any live session for the pair immediately.
+
 ## Testing
 
 ```bash
-pnpm --filter @lilypad/backend exec vitest run   # backend (unit + route + protocol drift)
-pnpm --filter @lilypad/mobile test               # mobile (jest, gesture/screen/logic)
+pnpm test                                        # every JS/TS suite via turbo (537 tests)
+pnpm --filter @lilypad/backend exec vitest run   # backend (unit + route + protocol drift) — 288
+pnpm --filter @lilypad/mobile test               # mobile (jest, gesture/screen/logic) — 189
+pnpm --filter @lilypad/desktop exec vitest run   # desktop UI (vitest + testing-library) — 44
 pnpm --filter @lilypad/mobile typecheck
-cd apps/desktop/src-tauri && cargo test          # desktop (unit + fault-injection + soak)
+cd apps/desktop/src-tauri && cargo test          # desktop (unit + fault-injection + soak) — 277
 ```
 
-All suites are expected green before any commit.
+All suites are expected green before any commit; CI enforces the same set plus
+`cargo fmt --check` and `cargo clippy`.
 
 ## Troubleshooting
 
@@ -150,6 +170,9 @@ All suites are expected green before any commit.
 
 | Topic                              | Where                                                                                                                             |
 | ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| **Full index & verified status**   | [docs/PROJECT-INDEX.md](docs/PROJECT-INDEX.md)                                                                                    |
+| Build, release & auto-update       | [docs/RUNBOOK.md](docs/RUNBOOK.md) · [apps/mobile/docs/RELEASE.md](apps/mobile/docs/RELEASE.md)                                   |
+| Milestone status                   | [docs/milestones.md](docs/milestones.md)                                                                                          |
 | Architecture & design              | [docs/architecture.md](docs/architecture.md) · [docs/technical-design.md](docs/technical-design.md)                               |
 | REST + signaling API               | [docs/api.md](docs/api.md) · [docs/signaling-protocol.md](docs/signaling-protocol.md)                                             |
 | Input protocol                     | [docs/input-protocol.md](docs/input-protocol.md)                                                                                  |

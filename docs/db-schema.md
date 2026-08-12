@@ -1,3 +1,10 @@
+---
+status: Implemented
+owner: @kushsharma024
+last-verified: 2026-08-12
+summary: Postgres schema owned by Drizzle migrations.
+---
+
 # Lilypad — Database Schema
 
 Postgres 16, owned by Drizzle migrations

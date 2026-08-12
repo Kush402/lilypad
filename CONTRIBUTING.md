@@ -26,6 +26,54 @@ test` (pure logic is kept in dependency-free modules precisely so it can
   merged, regardless of how convenient it is for testing.
 - **Fail closed at boundaries.** Input events are dropped (and counted) when
   scope, permission, or gating disallows them — never "best-effort injected."
+- **Documentation drift is a bug.** Docs change in the same PR as the code, not
+  in a cleanup pass afterwards. See below.
+
+## Documentation
+
+`pnpm docs:check` runs in CI and fails the build on drift. It enforces three
+things, each because that exact failure has already happened here:
+
+1. **Every file under `docs/` declares frontmatter** — `status`, `owner`, and
+   `last-verified`. A doc that does not say how current it is cannot be trusted.
+2. **Every relative link resolves.**
+3. **Every HTTP route registered in the backend appears in
+   [docs/api.md](docs/api.md), and vice versa.** Five shipped routes once lived
+   in the code and nowhere in the docs; this makes that state unmergeable.
+
+### Status values
+
+| Status         | Meaning                                                   |
+| -------------- | --------------------------------------------------------- |
+| `Implemented`  | Describes what the code does today                        |
+| `In Progress`  | Partially built; the doc currently leads the code         |
+| `Planned`      | Design only, nothing built                                |
+| `Experimental` | Built, not committed to                                   |
+| `Deprecated`   | Still accurate, on the way out                            |
+| `Superseded`   | Replaced; kept for history, points at its replacement     |
+| `Reference`    | Historical record (audits, ADRs) — cited, never "current" |
+
+**Never leave a doc claiming something is unbuilt when it has shipped**, or
+implemented when it has not. If you change a status, update `last-verified` to
+the date you actually checked it against the code.
+
+### What to update when
+
+| You changed…               | Also update                                                   |
+| -------------------------- | ------------------------------------------------------------- |
+| An HTTP or WS route        | `docs/api.md` (CI enforces), `docs/architecture.md`           |
+| The database schema        | `docs/db-schema.md`, a Drizzle migration                      |
+| Anything security-relevant | `docs/threat-model.md` + the test that proves the fix         |
+| Infrastructure             | `docs/operations.md`, `docs/RUNBOOK.md`                       |
+| Desktop/mobile behavior    | `docs/user-guide.md`, `docs/architecture.md`                  |
+| A milestone's status       | `docs/milestones.md`, `docs/PROJECT-INDEX.md`, `CHANGELOG.md` |
+
+### Architecture Decision Records
+
+Significant decisions get an ADR in [docs/adr/](docs/adr/) — hard-to-reverse
+choices, anything spanning multiple subsystems, or anything that rules out an
+option someone would otherwise reach for. Routine implementation choices do not.
+Never edit an accepted ADR; supersede it with a new one.
 
 ## Style
 
@@ -37,10 +85,10 @@ test` (pure logic is kept in dependency-free modules precisely so it can
 ## Before you push
 
 ```bash
-pnpm lint && pnpm typecheck
-pnpm --filter @lilypad/backend exec vitest run
-pnpm --filter @lilypad/mobile test
-(cd apps/desktop/src-tauri && cargo test && cargo clippy --all-targets)
+pnpm lint && pnpm typecheck && pnpm format:check
+pnpm docs:check
+pnpm test
+(cd apps/desktop/src-tauri && cargo test && cargo clippy --all-targets && cargo fmt --check)
 ```
 
 ## Commit / PR conventions

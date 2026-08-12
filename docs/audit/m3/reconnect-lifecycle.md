@@ -1,3 +1,10 @@
+---
+status: Reference
+owner: @kushsharma024
+last-verified: 2026-08-12
+summary: M3 production audit — reconnect lifecycle findings.
+---
+
 # Lilypad Reconnect & Session-Lifecycle Audit (M3 → M5)
 
 **Scope:** every disruption scenario a live remote-desktop session can hit — phone

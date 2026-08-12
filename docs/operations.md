@@ -1,3 +1,10 @@
+---
+status: Implemented
+owner: @kushsharma024
+last-verified: 2026-08-12
+summary: Running, observing, and recovering the backend.
+---
+
 # Operations Guide
 
 How to run, observe, and recover the Lilypad backend + infra. (The desktop

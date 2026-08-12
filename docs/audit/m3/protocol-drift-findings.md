@@ -1,3 +1,10 @@
+---
+status: Reference
+owner: @kushsharma024
+last-verified: 2026-08-12
+summary: M3 production audit — protocol drift findings.
+---
+
 # Protocol drift audit — Phase 1.3
 
 **Source:** a dedicated workflow cross-referenced every field in

@@ -1,3 +1,10 @@
+---
+status: Implemented
+owner: @kushsharma024
+last-verified: 2026-08-12
+summary: Build, release, auto-update, and disk-reclaim procedures.
+---
+
 # Lilypad Runbook — build, release, update, reclaim
 
 This is the operational companion to the [README](../README.md). It covers the
@@ -47,8 +54,8 @@ pnpm --filter @lilypad/backend start        # node dist/index.js — no watch
 ```
 
 `dev` (tsx watch) is fine on LAN, where the QR carries a stable
-`192.168.x.x` address that survives restarts. It's specifically the *ephemeral
-tunnel URL* that a restart rotates. Running compiled also cuts the
+`192.168.x.x` address that survives restarts. It's specifically the _ephemeral
+tunnel URL_ that a restart rotates. Running compiled also cuts the
 recompile-restart-reconnect churn: one stable process, one stable URL, sessions
 that stay up. (Quick tunnels are still ephemeral — for a URL that never
 changes, use a named cloudflared tunnel or deploy the backend.)
