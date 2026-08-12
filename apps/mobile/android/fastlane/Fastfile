@@ -12,7 +12,7 @@ default_platform(:android)
 platform :android do
   desc "Build a signed AAB + APK and upload the AAB to the Play internal track"
   lane :beta do
-    package_name = ENV["ANDROID_PACKAGE_NAME"] || "com.lilypad.mobile"
+    package_name = ENV["ANDROID_PACKAGE_NAME"] || "com.takedia.lilypad"
 
     keystore_path = ENV.fetch("ANDROID_KEYSTORE_PATH")
     unless File.exist?(keystore_path)

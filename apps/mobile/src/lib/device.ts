@@ -19,7 +19,7 @@
 import * as Keychain from 'react-native-keychain';
 
 /** Keychain service namespace — distinct from any credential storage. */
-const SERVICE = 'com.lilypad.device-identity';
+const SERVICE = 'com.takedia.lilypad.device-identity';
 
 let cached: string | null = null;
 let initPromise: Promise<string> | null = null;

@@ -15,7 +15,7 @@ import type * as ProvidersModule from './providers.js';
  * network.
  */
 
-process.env.APPLE_CLIENT_IDS = 'com.lilypad.ios,com.lilypad.services';
+process.env.APPLE_CLIENT_IDS = 'com.takedia.lilypad,com.takedia.lilypad.web';
 process.env.GOOGLE_CLIENT_IDS = 'google-ios-client-id';
 
 type Providers = typeof ProvidersModule;
@@ -44,7 +44,7 @@ function mint(options: TokenOptions = {}): Promise<string> {
     .setProtectedHeader({ alg: options.alg ?? 'RS256' })
     .setSubject(options.subject ?? 'provider-subject-1')
     .setIssuer(options.issuer ?? 'https://appleid.apple.com')
-    .setAudience(options.audience ?? 'com.lilypad.ios')
+    .setAudience(options.audience ?? 'com.takedia.lilypad')
     .setIssuedAt()
     .setExpirationTime(options.expiresIn ?? '10m')
     .sign(privateKey);
@@ -66,7 +66,7 @@ describe('verifyProviderToken', () => {
   });
 
   it('accepts every configured audience for a provider', async () => {
-    const token = await mint({ audience: 'com.lilypad.services' });
+    const token = await mint({ audience: 'com.takedia.lilypad.web' });
     expect((await providers.verifyProviderToken('apple', token, getKey)).ok).toBe(true);
   });
 

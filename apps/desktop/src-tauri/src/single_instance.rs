@@ -35,7 +35,7 @@ pub struct InstanceLock {
 /// id itself is read from). `TMPDIR` is per-user on macOS and survives for the
 /// login session, which is exactly the scope we want the lock to cover.
 fn lock_path() -> PathBuf {
-    std::env::temp_dir().join("com.lilypad.desktop.instance.lock")
+    std::env::temp_dir().join("com.takedia.lilypad.desktop.instance.lock")
 }
 
 /// Try to become the single instance. Returns `Some(lock)` for the first

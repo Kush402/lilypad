@@ -23,7 +23,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-const LABEL: &str = "com.lilypad.desktop";
+const LABEL: &str = "com.takedia.lilypad.desktop";
 
 fn launch_agents_dir() -> Option<PathBuf> {
     let home = std::env::var_os("HOME")?;

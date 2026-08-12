@@ -10,10 +10,38 @@ Lilypad mobile is a **bare React Native 0.76.5** app. Releases are driven by
 
 Confirmed identifiers (derived from the project files, not guessed):
 
-- **iOS bundle id:** `com.kushsharma.lilypad` (tests: `com.kushsharma.lilypad.tests`)
+- **iOS bundle id:** `com.takedia.lilypad` (tests: `com.takedia.lilypad.tests`)
 - **iOS scheme / workspace:** `LilypadMobile` / `LilypadMobile.xcworkspace`
 - **iOS team id (default):** `7TYFS43RR3` (overridable via `APPLE_TEAM_ID`)
-- **Android applicationId / namespace:** `com.lilypad.mobile`
+- **Android applicationId / namespace:** `com.takedia.lilypad`
+- **Desktop bundle id:** `com.takedia.lilypad.desktop`
+
+### The M8 identifier rename, and what it invalidates
+
+Before M8 these were three unrelated roots — `com.kushsharma.lilypad` on iOS,
+`com.lilypad.mobile` on Android, `com.lilypad.desktop` on the desktop. They were
+unified under `com.takedia.*` in M8, because OAuth clients are registered against
+these strings and both an iOS OAuth client's bundle id and an Android package
+name are **immutable once created**.
+
+Renaming an app identifier is not cosmetic. It invalidates, on every device that
+already has a build installed:
+
+| What                       | Why                                                                                                                      |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| iOS Keychain entries       | the keychain access group derives from the app id, so the device key, device id, and paired-desktop list are unreachable |
+| Android app data           | a new package name is a different app; the old one is not upgraded, it is simply left behind                             |
+| Desktop `device_id` file   | lives under `~/Library/Application Support/<bundle id>/`                                                                 |
+| Desktop Keychain entry     | service name renamed with it                                                                                             |
+| TestFlight / Play listings | a new identifier is a new app record                                                                                     |
+
+Every installed build therefore re-enrolls and re-pairs. **Acceptable only
+because nothing has shipped to real users yet** — after GA this would be a
+migration, not a rename.
+
+The Android **package directory moved too**
+(`app/src/main/java/com/lilypad/mobile/` → `com/takedia/lilypad/`); Kotlin
+package declarations must match the directory or the build fails.
 
 ## How releases trigger
 
@@ -54,7 +82,7 @@ Apple ID password or 2FA session required in CI.
 | `ASC_ISSUER_ID`      | ✅       | The Issuer ID (UUID) of your App Store Connect team.                                                                                                       |
 | `ASC_KEY_P8`         | ✅       | **base64** of the downloaded `AuthKey_XXXX.p8` file.                                                                                                       |
 | `APPLE_TEAM_ID`      | optional | Overrides the default team id `7TYFS43RR3`.                                                                                                                |
-| `IOS_APP_IDENTIFIER` | optional | Overrides the default bundle id `com.kushsharma.lilypad`.                                                                                                  |
+| `IOS_APP_IDENTIFIER` | optional | Overrides the default bundle id `com.takedia.lilypad`.                                                                                                     |
 | `FASTLANE_APPLE_ID`  | optional | Apple ID email, only for username-based flows (not needed for beta).                                                                                       |
 | `MATCH_GIT_URL`      | optional | Git repo URL for [`match`](https://docs.fastlane.tools/actions/match/) certs/profiles. Set this to switch from Xcode-managed automatic signing to `match`. |
 | `MATCH_PASSWORD`     | optional | Passphrase for the `match` encrypted repo (required if `MATCH_GIT_URL` is set).                                                                            |
@@ -90,7 +118,7 @@ matching the checked-in project). Set `MATCH_GIT_URL`/`MATCH_PASSWORD` to use
 | `ANDROID_KEY_ALIAS`         | ✅       | Key alias inside the keystore.                                     |
 | `ANDROID_KEY_PASSWORD`      | ✅       | Password for that key alias.                                       |
 | `PLAY_SERVICE_ACCOUNT_JSON` | ✅*      | Full JSON of a Google Play service account (raw JSON, not base64). |
-| `ANDROID_PACKAGE_NAME`      | optional | Overrides the default applicationId `com.lilypad.mobile`.          |
+| `ANDROID_PACKAGE_NAME`      | optional | Overrides the default applicationId `com.takedia.lilypad`.         |
 
 The four keystore secrets are what the preflight gate checks. `PLAY_SERVICE_ACCOUNT_JSON`
 is required to actually **upload** — without it (*) the lane still builds a

@@ -23,7 +23,7 @@ pub struct DeviceIdentity {
 
 /// Keychain coordinates. Distinct from any other credential this app stores, so
 /// a future entry cannot collide with the device key.
-const KEYCHAIN_SERVICE: &str = "com.lilypad.desktop.device-key";
+const KEYCHAIN_SERVICE: &str = "com.takedia.lilypad.desktop.device-key";
 const KEYCHAIN_ACCOUNT: &str = "ed25519-pkcs8";
 
 fn b64(bytes: &[u8]) -> String {

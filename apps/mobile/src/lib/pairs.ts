@@ -12,7 +12,7 @@
  */
 import * as Keychain from 'react-native-keychain';
 
-const SERVICE = 'com.lilypad.paired-desktops';
+const SERVICE = 'com.takedia.lilypad.paired-desktops';
 
 export interface PairedDesktop {
   /** The desktop's wire deviceId — the key /connect/request rings. */

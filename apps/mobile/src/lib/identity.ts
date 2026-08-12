@@ -24,7 +24,7 @@ import { DEVICE_AUTH_PREFIX } from '@lilypad/protocol';
 // every sign/verify call goes through it.
 ed.hashes.sha512 = sha512;
 
-const SERVICE = 'com.lilypad.device-key';
+const SERVICE = 'com.takedia.lilypad.device-key';
 const ACCOUNT = 'ed25519-secret';
 
 let cached: Uint8Array | null = null;

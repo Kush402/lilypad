@@ -44,7 +44,7 @@ platform :ios do
   lane :beta do
     workspace  = ENV["IOS_WORKSPACE"] || "LilypadMobile.xcworkspace"
     scheme     = ENV["IOS_SCHEME"] || "LilypadMobile"
-    app_id     = ENV["IOS_APP_IDENTIFIER"] || "com.kushsharma.lilypad"
+    app_id     = ENV["IOS_APP_IDENTIFIER"] || "com.takedia.lilypad"
     team_id    = ENV["APPLE_TEAM_ID"] || ENV["FASTLANE_TEAM_ID"] || "7TYFS43RR3"
     build_dir  = "build"
     output_ipa = "#{scheme}.ipa"

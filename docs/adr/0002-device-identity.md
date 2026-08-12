@@ -11,9 +11,15 @@ summary: Why devices authenticate with an Ed25519 keypair instead of a self-asse
 
 Every device in Lilypad today identifies itself with a **string it chose for
 itself**. The desktop writes `desktop-<uuid>` to
-`~/Library/Application Support/com.lilypad.desktop/device_id`; the phone mints
+`~/Library/Application Support/<bundle id>/device_id`; the phone mints
 `mobile-<random>` into its keychain. The backend stores that string as
 `devices.fingerprint` and treats it as identity.
+
+> The bundle identifier was `com.lilypad.desktop` when this was written and is
+> `com.takedia.lilypad.desktop` from M8 onward — the path is derived from it, so
+> renaming the app orphaned the old file. See
+> [apps/mobile/docs/RELEASE.md](../../apps/mobile/docs/RELEASE.md) for the full
+> rename and what it invalidates.
 
 The consequences are not theoretical:
 

@@ -1,4 +1,4 @@
-package com.lilypad.mobile
+package com.takedia.lilypad
 
 import android.app.Application
 import com.facebook.react.PackageList

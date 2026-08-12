@@ -1,9 +1,9 @@
 # iOS Appfile — all values overridable via env so nothing sensitive is baked in.
 # Bundle id / team id are derived from the Xcode project
-# (LilypadMobile.xcodeproj: PRODUCT_BUNDLE_IDENTIFIER=com.kushsharma.lilypad,
+# (LilypadMobile.xcodeproj: PRODUCT_BUNDLE_IDENTIFIER=com.takedia.lilypad,
 #  DEVELOPMENT_TEAM=7TYFS43RR3) but stay overridable for other signers.
 
-app_identifier(ENV["IOS_APP_IDENTIFIER"] || "com.kushsharma.lilypad")
+app_identifier(ENV["IOS_APP_IDENTIFIER"] || "com.takedia.lilypad")
 team_id(ENV["APPLE_TEAM_ID"] || ENV["FASTLANE_TEAM_ID"] || "7TYFS43RR3")
 
 # Optional — only needed for username/password auth flows. Beta lane uses an

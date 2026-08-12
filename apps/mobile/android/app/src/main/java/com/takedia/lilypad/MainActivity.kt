@@ -1,4 +1,4 @@
-package com.lilypad.mobile
+package com.takedia.lilypad
 
 import com.facebook.react.ReactActivity
 import com.facebook.react.ReactActivityDelegate
