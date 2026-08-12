@@ -166,6 +166,9 @@ what-to-update-when table.
 | Input protocol        | [input-protocol.md](input-protocol.md)                               |
 | Database              | [db-schema.md](db-schema.md)                                         |
 | Security              | [threat-model.md](threat-model.md), [../SECURITY.md](../SECURITY.md) |
+| Connectivity          | [NETWORKING.md](NETWORKING.md)                                       |
+| Infrastructure cost   | [INFRASTRUCTURE-COST-MODEL.md](INFRASTRUCTURE-COST-MODEL.md)         |
+| Reuse / build-vs-buy  | [REUSE-INVENTORY.md](REUSE-INVENTORY.md)                             |
 | Infrastructure / ops  | [operations.md](operations.md), [RUNBOOK.md](RUNBOOK.md)             |
 | Consumer product      | [user-guide.md](user-guide.md)                                       |
 | Roadmap               | [milestones.md](milestones.md)                                       |
@@ -209,6 +212,12 @@ These are the reason the product is not yet consumer-ready. Each is verified.
 | OBS-2       | No observability beyond in-memory counters that reset on restart                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | M15       |
 | ~~DEP-1~~   | ~~19 high/critical dependency advisories~~ — **fixed**: drizzle-orm 0.38→0.45.2, fastify 5.2→5.11.3, vitest 2→3.2.7, vite 6.0→6.4.3, plus `pnpm.overrides` for transitives. CI audit is now **blocking**.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | ✅ done   |
 | ~~CRASH-1~~ | ~~`NSPasteboard` data race → SIGSEGV~~ — **fixed.** The clipboard watcher (session tick, every 750 ms) and the InputWorker's paste write both hit `NSPasteboard` unsynchronized off the main thread; AppKit's pasteboard type cache is not thread-safe, and it killed the process ~1 run in 3 of `session_connect_lifecycle`. All access now funnels through [`clipboard.rs`](../apps/desktop/src-tauri/src/clipboard.rs), which owns a process-wide lock and exposes functions rather than the lock itself. `arboard` appears nowhere else in the crate — that is the invariant. Regression test: [`tests/clipboard_race.rs`](../apps/desktop/src-tauri/tests/clipboard_race.rs), verified to kill the process when the lock is neutered. 12/12 clean runs of the previously-flaky binary. | ✅ done   |
+
+| LAN-1 | **No LAN discovery of any kind.** No mDNS/Bonjour/`NsdManager`/broadcast anywhere, and no local-network entitlements. The phone learns the laptop's address only from a QR or a saved pair's stored `apiBaseUrl`. | M9.5 |
+| LAN-2 | **A session cannot start without a reachable backend**, even on a LAN — `/ws/signal` brokers approval and offer/answer. It works offline today only because the backend runs on the laptop (`DEFAULT_BACKEND_URL = http://localhost:8080`), which is a dev artifact, not a designed capability. | M9.5 |
+| LAN-3 | **Presence and no-QR reconnect are cloud-only.** `presence.rs` holds a standing WS to the backend and `/connect/request` is an HTTP round-trip; neither has a LAN path. | M9.5 |
+| COST-1 | **coturn relay port range allows ~50 concurrent relays** (`min-port`/`max-port` span 100 ports) — far below any real scale. | M13 |
+| COST-2 | **Google public STUN is hardcoded**, disclosing every user's IP to a third party and adding gathering latency when offline. Our own coturn can serve STUN. | M9.5/M13 |
 
 ### Platform gaps
 

@@ -38,3 +38,5 @@ the old one `Superseded by ADR-NNNN`.
 | [0003](0003-same-account-device-visibility.md) | Same-account device visibility replaces QR pairing         | Accepted |
 | [0004](0004-signaling-horizontal-scaling.md)   | Signaling scale-out: in-memory rooms + Redis pub/sub relay | Accepted |
 | [0005](0005-turn-topology.md)                  | TURN topology: dedicated regional VMs, not Kubernetes      | Accepted |
+| [0006](0006-lan-first-connectivity.md)         | LAN-first: the laptop is its own control plane             | Accepted |
+| [0007](0007-cloud-is-control-plane-only.md)    | The cloud is a control plane, never a data plane           | Accepted |

@@ -1,13 +1,20 @@
 # 🪷 Lilypad
 
-**Internet-first, phone-first remote laptop control.** A lightweight desktop app
-shows a floating "Lilypad" bubble; click it to display a short-lived QR code.
-Scan it from the phone, **approve on the laptop**, and your laptop screen streams
-live to the phone with touch, keyboard, and developer shortcuts — **over the
-public internet**, not just the same Wi-Fi.
+**Phone-first remote laptop control — your computer, anywhere.** A lightweight
+desktop app shows a floating "Lilypad" bubble; pair your phone once, and your
+laptop screen streams live to it with touch, keyboard, and developer shortcuts.
 
-Transport is **WebRTC + STUN + TURN (coturn)**. No custom video protocol, no
-LAN-only design, **no silent remote access**.
+**At home, it connects directly over your own network — no internet required.**
+Away from home, it connects over the internet, peer-to-peer wherever possible.
+
+Transport is **WebRTC + STUN + TURN (coturn)**, chosen cheapest-path-first:
+**LAN direct → internet P2P → TURN relay only when nothing else works.** Your
+screen never passes through our servers — it is direct on LAN and P2P, and
+end-to-end encrypted (DTLS-SRTP) on the rare occasions it must be relayed.
+
+No custom video protocol, **no silent remote access**, and no cloud dependency
+for a session between two devices on the same network. See
+[docs/NETWORKING.md](docs/NETWORKING.md).
 
 > **Status (2026-08-12, post-M5.4 + release engineering)** — working end-to-end
 > on real hardware over cellular: **pair once with a QR, reconnect forever

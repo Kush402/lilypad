@@ -10,28 +10,57 @@ summary: Canonical map of the system as built.
 _Current as of 2026-07-19 (post-M5.4). This is the canonical map of the system
 as built; per-subsystem rationale lives in the docs it links._
 
-Lilypad is an **internet-first, phone-first remote laptop control** system with
-a built-in AI operator. Pair a phone with a Mac **once** (QR + explicit
-approval), and from then on the phone connects from anywhere — cellular
-included — straight into a live, controllable screen session. An **Ask** bar
-lets the phone hand the Mac a task in plain language, executed on-device by a
-tiered, sandboxed agent.
+Lilypad is a **phone-first remote laptop control** system with a built-in AI
+operator. Pair a phone with a Mac **once**, and from then on the phone connects
+— over the local network when both are on it, over the internet when they are
+not — straight into a live, controllable screen session. An **Ask** bar lets the
+phone hand the Mac a task in plain language, executed on-device by a tiered,
+sandboxed agent.
 
 ## Design pillars (non-negotiables)
 
-1. **Works over the public internet.** Phone on cellular, laptop behind NAT.
-   WebRTC + STUN + TURN; signaling reachable through a public URL. Same-Wi-Fi
-   is a dev convenience, never the design target.
-2. **No custom video protocol.** Standard WebRTC H.264 + DataChannels.
-3. **No silent remote access.** Trust is established by an explicit desktop
+1. **LAN-direct first, internet-capable always.** When phone and laptop share a
+   network, the **entire session — including signaling — stays local and works
+   with no internet at all**. When they do not, the path is direct P2P via STUN,
+   and TURN only as a last resort. The client races these paths; the user never
+   picks one. See [NETWORKING.md](NETWORKING.md) and
+   [ADR-0006](adr/0006-lan-first-connectivity.md).
+2. **The cloud is a control plane, never a data plane.** Screen video, input,
+   clipboard, and files never pass through our servers — direct on LAN and P2P,
+   and end-to-end encrypted (DTLS-SRTP) when relayed through TURN. This is also
+   the constraint that makes a free tier affordable:
+   [ADR-0007](adr/0007-cloud-is-control-plane-only.md),
+   [INFRASTRUCTURE-COST-MODEL.md](INFRASTRUCTURE-COST-MODEL.md).
+3. **No custom video protocol.** Standard WebRTC H.264 + DataChannels.
+4. **No silent remote access.** Trust is established by an explicit desktop
    approval; every session shows a visible indicator, writes audit logs, and
    has a tray panic-disconnect. Trusted auto-connect is per-device opt-out,
    revocable in the dashboard.
-4. **Connection stability is priority #1.** No user activity (zoom, mode
+5. **Connection stability is priority #1.** No user activity (zoom, mode
    switch, network flap, radio handoff) may break a session; recovery
    machinery owns life/death decisions (see "Resilience machinery").
-5. **Model-agnostic AI.** The agent engine never names a vendor; providers are
+6. **Model-agnostic AI.** The agent engine never names a vendor; providers are
    config behind one adapter seam (enforced by a tripwire test).
+
+## Connectivity: the path hierarchy
+
+Ordered cheapest and fastest first. The client tries them in order and the user
+never chooses.
+
+| Path             | When                                | Cloud involvement                                     | Marginal cost                 |
+| ---------------- | ----------------------------------- | ----------------------------------------------------- | ----------------------------- |
+| **LAN direct**   | Same network                        | **None at all** — the laptop serves its own signaling | **Zero**                      |
+| **Internet P2P** | Different networks, NAT traversable | Rendezvous + signaling only                           | Near zero                     |
+| **TURN relay**   | Both behind hostile NAT/CGNAT       | Relays encrypted packets it cannot read               | Bandwidth — the dominant cost |
+
+The full algorithm, discovery mechanism, failure modes, and privacy boundary are
+in [NETWORKING.md](NETWORKING.md).
+
+> **Status note.** LAN-direct _media_ already works today (host ICE candidates
+> win on-LAN). LAN-direct _signaling_ — the embedded server on the laptop that
+> removes the internet dependency entirely — is milestone M9.5 and is not built
+> yet. Until then a session still requires a reachable backend, which in
+> development is a process on the laptop itself.
 
 ## Components
 

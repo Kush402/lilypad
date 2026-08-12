@@ -278,6 +278,38 @@ The phone lists the account's laptops and connects — no pairing ceremony. QR i
 repurposed to desktop sign-in and cross-account sharing
 ([ADR-0003](adr/0003-same-account-device-visibility.md)). Closes SEC-4.
 
+## M9.5 — LAN-direct connectivity (no internet required) 🔜
+
+**Deliberately before the cloud deployment milestone**, so the cloud is added
+_beside_ a working local path rather than in front of it. See
+[ADR-0006](adr/0006-lan-first-connectivity.md),
+[ADR-0007](adr/0007-cloud-is-control-plane-only.md),
+[NETWORKING.md](NETWORKING.md).
+
+**Why now:** M13 as originally written would have moved signaling to
+`signal.takedia.com` and thereby made every same-room session depend on the
+public internet — a regression against a hard product requirement. Building the
+local path first prevents that.
+
+- **Embedded signaling server on the desktop** serving the existing
+  `@lilypad/protocol` contract at `https://<laptop>:PORT/ws/signal`. A LAN room
+  is exactly two known peers, so no room registry, capacity policy, or Redis —
+  it reuses `MessageRouter`'s decision semantics.
+- **Local channel security:** TLS with a self-signed certificate bound to the
+  device's Ed25519 identity ([ADR-0002](adr/0002-device-identity.md)), pinned by
+  the phone at pairing. No CA, no name resolution, no internet.
+- **Discovery:** cached last-known address first (one TCP connect, works where
+  multicast is blocked), then mDNS `_lilypad._tcp.local` via each platform's
+  native API — `NWBrowser`/`NetService`, `NsdManager`, `dns-sd`. Needs only the
+  iOS Local Network permission, **not** the multicast entitlement.
+- **Connection race** in the client: LAN paths are attempted before any cloud
+  call, with a ~1.5s budget before falling through.
+- **Local presence** — "is my laptop here?" answered by discovery, not the cloud.
+- Drop the hardcoded Google STUN; serve STUN from our own coturn.
+- **DoD (release-blocking):** an automated scenario with **the cloud entirely
+  unreachable** and both devices on one LAN proves discovery, connection, video,
+  input, and clipboard all work, and asserts **zero cloud requests** occur.
+
 ## M10 — Desktop security hardening 🔜
 
 Real CSP, drop `withGlobalTauri`, per-window command authorization, scoped
@@ -298,10 +330,27 @@ without an isolation case fails CI. Closes SEC-7.
 
 ## M13 — Production infrastructure + takedia.com 🔜
 
-Managed PaaS + managed Postgres/Redis, regional coturn VMs
-([ADR-0005](adr/0005-turn-topology.md)), `turns:` 443, self-hosted STUN, full
-DNS/TLS/CDN, staging, and updater manifests moved off GitHub. Closes OPS-2,
-OPS-3, OPS-4, NET-1, NET-2.
+**Revised for cost.** The earlier version assumed managed PaaS and managed
+everything. The cost model shows self-hosted coturn on bandwidth-inclusive VPS is
+~1000× cheaper than managed TURN at scale — the difference between a sustainable
+free tier and none. See
+[INFRASTRUCTURE-COST-MODEL.md](INFRASTRUCTURE-COST-MODEL.md).
+
+- **Phase 1 footprint only:** one VPS running API + signaling + Postgres, one
+  coturn VPS. **No Redis** (not needed until multi-instance), no Kubernetes, no
+  managed observability. Target: **under €30/month**.
+- coturn self-hosted with a properly sized relay port range (the current config
+  allows only ~50 concurrent relays), the auth secret off the command line,
+  `turns:` on 443, and our own STUN replacing Google's.
+- Full DNS/TLS for `takedia.com`, staging mirroring production, migrations run on
+  deploy, updater manifests moved off GitHub.
+- **The cloud never becomes required for a LAN session** — M9.5's local path
+  keeps working unchanged.
+- **DoD:** staging and production reachable, health-checked, monitored; deploy
+  and **rollback** runbook exercised once; measured cost matches the model's
+  Phase 1 estimate.
+
+Closes OPS-2, OPS-3, OPS-4, NET-1, NET-2.
 
 ## M14 — Consumer UX · M15 — Observability
 

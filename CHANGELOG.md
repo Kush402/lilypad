@@ -10,6 +10,43 @@ Cellular-stability hardening on top of 1.0.0 driven by live-hardware findings
 (2026-07-19 → 2026-07-20), plus the release-engineering pass that makes the
 apps shippable and self-updating.
 
+### Architecture — LAN-first, cloud as control plane only
+
+Two hard requirements were adopted and the architecture and roadmap revised
+around them: **a LAN session must work with no internet at all**, and **cloud
+spend must be minimized aggressively**.
+
+- **Audit finding that changed the plan.** The media path is already LAN-direct
+  (host ICE candidates win on-LAN), but the _control_ path is not: a session
+  cannot start without the backend. It works offline today only because the
+  backend runs on the laptop — a development artifact, not a designed
+  capability. There is **no LAN discovery of any kind** in the codebase. Most
+  importantly, the previous roadmap's plan to move signaling to
+  `signal.takedia.com` **would have regressed LAN capability**, making every
+  same-room session depend on the public internet.
+- **New milestone M9.5 — LAN-direct connectivity**, sequenced _before_ the cloud
+  deployment milestone so the cloud is added beside a working local path rather
+  than in front of it. The desktop gains an embedded signaling server (TLS bound
+  to its Ed25519 identity, pinned at pairing), and discovery is a cached
+  last-known address first, then native mDNS — no new wire protocol and no iOS
+  multicast entitlement. Release-blocking DoD: an automated cloud-unreachable
+  scenario proving discovery, video, input, and clipboard all work with **zero
+  cloud requests**.
+- **New docs:** [NETWORKING.md](docs/NETWORKING.md) (connection algorithm,
+  discovery decision, failure modes, privacy boundary),
+  [INFRASTRUCTURE-COST-MODEL.md](docs/INFRASTRUCTURE-COST-MODEL.md) (cost drivers
+  and per-scale estimates), [REUSE-INVENTORY.md](docs/REUSE-INVENTORY.md)
+  (build-vs-buy with costs at 1K/10K/100K users).
+- **New ADRs:** [ADR-0006](docs/adr/0006-lan-first-connectivity.md) (the laptop
+  is its own control plane) and
+  [ADR-0007](docs/adr/0007-cloud-is-control-plane-only.md) (the cloud never
+  carries the data plane).
+- **M13 revised for cost.** Self-hosted coturn on bandwidth-inclusive VPS is
+  roughly **1000× cheaper** than managed TURN at scale (~€36/mo vs ~$59,000/mo of
+  relay at 100k users) — the difference between a sustainable free tier and none.
+  Phase 1 targets a footprint under €30/month with no Redis, no Kubernetes, and
+  no managed observability.
+
 ### Fixed — desktop crash
 
 - **`NSPasteboard` data race that killed the app mid-session.** The clipboard
@@ -57,15 +94,14 @@ apps shippable and self-updating.
   broken relative link, or an HTTP route that exists in the backend but not in
   `docs/api.md` (or the reverse). Rules and the what-to-update-when table are in
   `CONTRIBUTING.md`.
-- **Architecture Decision Records** (`docs/adr/`). ADR-0001..0005 record the
+- **Architecture Decision Records** (`docs/adr/`). ADR-0001..0007 record the
   decisions behind the consumer-product track: OAuth-with-no-passwords account
   auth, Ed25519 device identity, replacing same-account QR pairing with account
   ownership, scaling signaling via Redis pub/sub while keeping rooms in memory,
-  and running TURN on dedicated regional VMs rather than Kubernetes.
-- **Security scanning in CI**: CodeQL plus a dependency audit. The audit is
-  reporting-only for now — the tree carries 19 high/critical advisories including
-  backend runtime dependencies, and clearing them is a separate reviewed pass
-  rather than a silent side effect of another milestone.
+  running TURN on dedicated regional VMs rather than Kubernetes, LAN-first
+  connectivity, and the cloud as a control plane only.
+- **Security scanning in CI**: CodeQL plus a dependency audit (now blocking —
+  see "Security — dependencies" above).
 - `docs/PROJECT-INDEX.md` gained a verified gap register (`SEC-*`, `OPS-*`,
   `NET-*`, `OBS-*`, `DEP-*`) and a roadmap position, and `docs/milestones.md`
   gained the M7–M18 consumer-product track.
