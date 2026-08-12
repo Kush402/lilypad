@@ -233,18 +233,32 @@ export function createDrizzleTrustStore(database: typeof defaultDb = defaultDb):
   });
   return {
     async upsertDevice(kind, fingerprint) {
+      // Fast path: the device almost always already exists, and a bare SELECT
+      // avoids write amplification on every connect.
       const found = await database
         .select({ id: devices.id })
         .from(devices)
         .where(and(eq(devices.kind, kind), eq(devices.fingerprint, fingerprint)))
         .limit(1);
       if (found[0]) return found[0].id;
+      // Slow path: select-then-insert is a race, and since M8 the unique index
+      // `devices_kind_fingerprint_idx` enforces the invariant it used to
+      // violate. Yielding to the concurrent winner rather than raising keeps
+      // the race invisible to callers — the outcome ("one row for this
+      // device") is identical either way.
       const inserted = await database
         .insert(devices)
         .values({ kind, fingerprint })
+        .onConflictDoNothing({ target: [devices.kind, devices.fingerprint] })
         .returning({ id: devices.id });
-      const row = inserted[0];
-      if (!row) throw new Error('device insert returned no row');
+      if (inserted[0]) return inserted[0].id;
+      const raced = await database
+        .select({ id: devices.id })
+        .from(devices)
+        .where(and(eq(devices.kind, kind), eq(devices.fingerprint, fingerprint)))
+        .limit(1);
+      const row = raced[0];
+      if (!row) throw new Error('device insert conflicted but no row exists');
       return row.id;
     },
     async getPairByDeviceIds(desktopId, mobileId) {
