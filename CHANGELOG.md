@@ -6,6 +6,33 @@ All notable changes to Lilypad are documented here. The format follows
 
 ## [Unreleased]
 
+### P1 — first-run onboarding
+
+The **Setup** window now carries the whole first run in order — **permissions →
+link this computer → pair a phone** — rather than stopping after the
+permissions.
+
+#### Fixed
+
+- **The wizard claimed to be finished when it was not.** It ended with _"All set
+  — you can start pairing now"_ as soon as the two permissions were granted,
+  which is the one thing P1's definition of done forbids: the desktop announcing
+  it is ready before a phone has approved it. Permissions say what the machine
+  can do; they say nothing about whose it is. The final card now states
+  whichever of two things is true — set up **and on your account**, or set up
+  and **not on an account yet**. The regression test was mutation-checked
+  against the exact old behaviour.
+
+#### Changed
+
+- Steps 2 and 3 stay hidden until the permissions are granted: offering to put a
+  computer on an account, or pair a phone with it, before it can capture or type
+  is a step that cannot work.
+- Linking is **offered, not demanded** — pairing genuinely works on an unlinked
+  computer, so blocking on it would be a lie in the other direction.
+- Step 2 reuses the existing `AccountPanel` and step 3 the existing pairing
+  window; nothing new was built for either.
+
 ### P4 — the marketing site
 
 `apps/site` — one HTML file and one stylesheet, no framework and no JavaScript

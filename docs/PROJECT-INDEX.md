@@ -307,7 +307,7 @@ in `milestones.md` unchanged.
 
 | Milestone | Objective                                                                                                     |
 | --------- | ------------------------------------------------------------------------------------------------------------- |
-| **P1** 🚧 | Account-connected clients — sign-in, enrollment QR, approval screen. Closes PROD-1                            |
+| **P1** 🚧 | Account-connected clients — sign-in, enrollment QR, approval screen, first-run wizard. Human tap-through left |
 | **P2** 🚧 | Device management — list, rename, revoke, active sessions (phone done; desktop view + session history remain) |
 | **P3** ✅ | Design system — `@lilypad/design`; one palette for all three surfaces ([ADR-0011](adr/0011-design-tokens.md)) |
 | **P4** ✅ | `lilypadhome.takedia.com` — `apps/site`, static, claims-tested. Hosting and DNS remain M13's                  |

@@ -458,10 +458,31 @@ and pair a phone without ever having an account (gap PROD-1).
   computer permanently.
 - ✅ Sign-in is routed, reached from the act that needs it, and its copy no
   longer promises the same-account discovery ADR-0010 reversed.
-- 🔜 Onboarding that walks a first-run user through sign-in → link → pair.
-- 🔜 Real-device run of the whole flow (needs the iOS build).
+- ✅ Onboarding: the **Setup** window now carries the whole first run in order —
+  **1 permissions → 2 link this computer → 3 pair a phone** — instead of stopping
+  after the permissions. Steps 2 and 3 stay hidden until the permissions are
+  granted, because offering to put a computer on an account, or to pair a phone
+  with it, before it can capture or type is a step that cannot work.
+- ✅ **The wizard no longer claims to be finished when it isn't.** It used to end
+  with _"All set — you can start pairing now"_ the moment the two permissions
+  landed, which is precisely what the DoD's second clause forbids: permissions
+  say what the machine can do, never whose it is. The final card now states
+  whichever of two things is actually true — set up **and on your account**, or
+  set up and **not on an account yet**. Regression-tested, and the test was
+  mutation-checked against the exact old behaviour.
+- ✅ Linking is **offered, not demanded**. Pairing genuinely works on an unlinked
+  computer, so blocking on step 2 would be a lie in the other direction.
+  Sign-in has no step of its own by design: the desktop has no OAuth client
+  ([ADR-0008](adr/0008-desktop-enrollment-via-phone.md)), so it happens on the
+  phone inside step 2, where the QR is what tells the phone which backend to
+  sign in to.
+- 🔜 Human tap-through of the whole flow on the phone.
 - **DoD:** a fresh install completes sign-in → link → pair with no manual steps,
   and the desktop never implies it is available before a phone has approved it.
+  **The second clause is now enforced by a test.** The first is built and
+  covered by unit tests end to end, but a person still has to walk it once on
+  real hardware — driving a touchscreen is not something that can be automated
+  here.
 
 **A constraint that shaped this, verified in the repo rather than assumed:** the
 phone has **no configured backend address**. Every `apiBaseUrl` it uses comes

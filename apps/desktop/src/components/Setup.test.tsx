@@ -14,9 +14,19 @@ vi.mock('@tauri-apps/api/event', () => ({
 vi.mock('@tauri-apps/api/window', () => ({
   getCurrentWindow: vi.fn(),
 }));
+// The linking panel has its own suite (AccountPanel.test.tsx); stubbing it here
+// keeps these tests about the wizard's own ordering and its final claim.
+vi.mock('./AccountPanel', () => ({
+  AccountPanel: () => <div data-testid="account-panel" />,
+}));
 
 function status(overrides: Partial<{ screen_capture: boolean; accessibility: boolean }> = {}) {
   return { screen_capture: false, accessibility: false, ...overrides };
+}
+
+/** Grant both permissions, which is what unlocks steps 2 and 3. */
+function grantAll(handler: ((event: { payload: unknown }) => void) | undefined) {
+  handler?.({ payload: status({ screen_capture: true, accessibility: true }) });
 }
 
 /** `noUncheckedIndexedAccess` makes `arr[n]` possibly-`undefined`; every call
@@ -37,6 +47,7 @@ describe('Setup', () => {
     eventHandler = undefined;
     vi.mocked(invoke).mockImplementation(async (cmd: string) => {
       if (cmd === 'get_permission_status') return status();
+      if (cmd === 'get_link_state') return { state: 'unlinked' };
       return undefined;
     });
     vi.mocked(listen).mockImplementation((async (
@@ -89,18 +100,76 @@ describe('Setup', () => {
     await waitFor(() => expect(screen.getAllByText('Granted')).toHaveLength(1));
   });
 
-  it('shows a Continue button once both permissions are granted, which closes the window', async () => {
+  it('shows a Done button once both permissions are granted, which closes the window', async () => {
     const closeMock = vi.fn().mockResolvedValue(undefined);
     vi.mocked(getCurrentWindow).mockReturnValue({ close: closeMock } as never);
 
     render(<Setup />);
     await waitFor(() => expect(listen).toHaveBeenCalled());
 
-    eventHandler?.({ payload: status({ screen_capture: true, accessibility: true }) });
+    grantAll(eventHandler);
 
-    const continueBtn = await screen.findByText('Continue');
-    fireEvent.click(continueBtn);
+    fireEvent.click(await screen.findByText('Done'));
     expect(closeMock).toHaveBeenCalled();
+  });
+
+  // ── First run as a whole (P1) ───────────────────────────────────────────
+  // Offering to put a computer on an account, or to pair a phone with it,
+  // before it can capture or type is a step out of order — neither would work.
+  it('withholds linking and pairing until the permissions are granted', async () => {
+    render(<Setup />);
+    await waitFor(() => expect(listen).toHaveBeenCalled());
+
+    expect(screen.queryByTestId('account-panel')).not.toBeInTheDocument();
+    expect(screen.queryByText('Show pairing code')).not.toBeInTheDocument();
+
+    grantAll(eventHandler);
+
+    expect(await screen.findByTestId('account-panel')).toBeInTheDocument();
+    expect(screen.getByText('Show pairing code')).toBeInTheDocument();
+  });
+
+  /**
+   * The defect this whole change exists for. The wizard used to finish with
+   * "All set — you can start pairing now" as soon as the two permissions were
+   * granted, which is the one thing P1's definition of done forbids: the
+   * desktop announcing it is ready before a phone has approved it. Permissions
+   * say what the machine can do, never whose it is.
+   */
+  it('does not claim the computer is on an account when it is not', async () => {
+    render(<Setup />);
+    await waitFor(() => expect(listen).toHaveBeenCalled());
+    grantAll(eventHandler);
+
+    const done = await screen.findByTestId('setup-done-unlinked');
+    expect(done).toHaveTextContent(/not on an account yet/i);
+    expect(screen.queryByTestId('setup-done-linked')).not.toBeInTheDocument();
+  });
+
+  it('says the computer belongs to the account once a phone has adopted it', async () => {
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === 'get_permission_status') return status();
+      if (cmd === 'get_link_state') return { state: 'linked' };
+      return undefined;
+    });
+
+    render(<Setup />);
+    await waitFor(() => expect(listen).toHaveBeenCalled());
+    grantAll(eventHandler);
+
+    expect(await screen.findByTestId('setup-done-linked')).toHaveTextContent(
+      /belongs to your account/i,
+    );
+    expect(screen.queryByTestId('setup-done-unlinked')).not.toBeInTheDocument();
+  });
+
+  it('opens the pairing code window from the last step', async () => {
+    render(<Setup />);
+    await waitFor(() => expect(listen).toHaveBeenCalled());
+    grantAll(eventHandler);
+
+    fireEvent.click(await screen.findByText('Show pairing code'));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('show_qr_window'));
   });
 
   // Regression test for the relaunch heuristic in
