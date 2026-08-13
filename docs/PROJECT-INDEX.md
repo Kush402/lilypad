@@ -33,7 +33,7 @@ Items marked 🔜 were confirmed absent from the code.
 | `cargo clippy --all-targets`    | ✅ clean — no errors, no warnings                |
 | `cargo fmt --check`             | ✅ clean                                         |
 | `pnpm format:check`             | ✅ clean                                         |
-| `pnpm docs:check`               | ✅ clean — 54 markdown files                     |
+| `pnpm docs:check`               | ✅ clean — 56 markdown files                     |
 | `pnpm audit --audit-level high` | ✅ clean — blocking in CI (2 documented ignores) |
 | **Total automated tests**       | **996**                                          |
 

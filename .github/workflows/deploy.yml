@@ -1,0 +1,139 @@
+# Production deploy for the Lilypad control plane.
+#
+# Gate first, deploy second, verify third. The gate is the same one `ci.yml`
+# runs on every push — repeated here rather than assumed, because a deploy that
+# trusts a green check from an older commit is how untested code reaches
+# production.
+#
+# Manual dispatch by default. Nothing deploys because a branch moved; a human
+# (or a tag) decides.
+
+name: deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment
+        type: choice
+        options: [staging, production]
+        default: staging
+  push:
+    tags: ['v*']
+
+concurrency:
+  # Never let two deploys race onto one VM.
+  group: deploy-${{ github.event.inputs.environment || 'production' }}
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/lilypad-backend
+
+jobs:
+  gate:
+    name: test · typecheck · lint · build · docs · audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm lint
+      - run: pnpm test
+      - run: pnpm build
+      - run: pnpm docs:check
+      - run: pnpm format:check
+      # Blocking: a known-vulnerable dependency must not reach production
+      # silently. Documented exceptions live in the audit config, not here.
+      - run: pnpm audit --audit-level high
+
+  image:
+    name: build and push image
+    needs: gate
+    runs-on: ubuntu-latest
+    permissions: { contents: read, packages: write }
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/backend/Dockerfile
+          # arm64 is not optional: the $0 tier (Oracle Ampere) is ARM, and the
+          # paid fallback (Hetzner CX) is x86. One image must serve both.
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:${{ github.sha }}
+            ${{ env.IMAGE }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    name: deploy and health-check
+    needs: image
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment || 'production' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script: |
+            set -euo pipefail
+            cd ${{ secrets.DEPLOY_PATH }}
+            git fetch --all --tags && git checkout ${{ github.sha }}
+            # Migrations run BEFORE the new image serves traffic. Drizzle
+            # migrations here are additive, so the old container tolerates the
+            # new schema for the seconds between these two steps.
+            docker compose -f infra/production/docker-compose.yml run --rm \
+              -e BACKEND_IMAGE=${{ env.IMAGE }}:${{ github.sha }} \
+              backend node dist/db/migrate.js
+            BACKEND_IMAGE=${{ env.IMAGE }}:${{ github.sha }} \
+              docker compose -f infra/production/docker-compose.yml up -d --pull always
+            docker image prune -f
+
+      - name: Verify the deployment is actually serving
+        run: |
+          set -euo pipefail
+          url="${{ vars.HEALTH_URL }}"
+          for i in $(seq 1 30); do
+            body=$(curl -fsS --max-time 10 "$url" || true)
+            if echo "$body" | grep -q '"status":"ok"'; then
+              echo "healthy: $body"; exit 0
+            fi
+            echo "attempt $i not healthy yet: ${body:-<no response>}"; sleep 5
+          done
+          echo "::error::deployment did not become healthy within 150s"
+          exit 1
+
+      # A failed health check must not leave a broken image serving. Roll the
+      # compose stack back to the previously running tag.
+      - name: Roll back on failure
+        if: failure()
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script: |
+            set -euo pipefail
+            cd ${{ secrets.DEPLOY_PATH }}
+            BACKEND_IMAGE=${{ env.IMAGE }}:latest \
+              docker compose -f infra/production/docker-compose.yml up -d
+            echo "rolled back to :latest"

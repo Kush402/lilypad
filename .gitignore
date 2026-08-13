@@ -32,6 +32,9 @@ apps/mobile/.expo/
 .env
 .env.*
 !.env.example
+# Templates carry only placeholders and must be versioned; the `.env.*` rule
+# above would otherwise swallow them along with the real secrets.
+!infra/production/.env.production.example
 
 # Editor / OS
 .DS_Store

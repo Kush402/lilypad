@@ -1,0 +1,107 @@
+# Lilypad production control plane — one VM, four containers.
+#
+#   docker compose --env-file .env.production -f infra/production/docker-compose.yml up -d
+#
+# This is the CONTROL PLANE only: accounts, pairing, signaling. Screen and
+# input never traverse it — they are peer-to-peer, and on a LAN they never
+# touch the internet at all. That is what keeps bandwidth cost near zero
+# regardless of how long sessions run.
+#
+# TURN is deliberately NOT here. It needs a public IP and a wide UDP port
+# range, which a Cloudflare tunnel cannot carry, and its bandwidth profile is
+# nothing like the control plane's. It has its own stack in ../coturn-prod.
+#
+# No Kubernetes, no service mesh, no managed anything. At this scale the whole
+# control plane is a single Node process, one Postgres and one Redis; adding
+# orchestration would cost more than it saves. See docs/deployment.md for when
+# that stops being true.
+
+name: lilypad-prod
+
+services:
+  backend:
+    image: ${BACKEND_IMAGE:-ghcr.io/kushsharma024/lilypad-backend:latest}
+    restart: unless-stopped
+    env_file: [../../.env.production]
+    environment:
+      NODE_ENV: production
+      BACKEND_HOST: 0.0.0.0
+      BACKEND_PORT: 8080
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    # Not published to the host: cloudflared reaches it over the compose
+    # network, so the backend has NO inbound port open on the public internet.
+    expose: ['8080']
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "fetch('http://127.0.0.1:8080/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    logging: &logging
+      driver: json-file
+      # Without a cap, a chatty container fills the VM's disk and takes
+      # Postgres down with it. 3x10MB is plenty to debug a recent incident.
+      options: { max-size: '10m', max-file: '3' }
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-lilypad}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./backups:/backups
+    # Never published. Reachable only from the compose network.
+    expose: ['5432']
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB:-lilypad}']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    logging: *logging
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # `--requirepass` is mandatory: loadEnv() refuses to boot in production
+    # against a passwordless Redis, because Redis holds pairing tokens, device
+    # challenges and live room-routing state — reachable-and-unauthenticated is
+    # a session-hijack surface, not merely a cache risk.
+    #
+    # Persistence stays off by design. Everything here is single-use and
+    # short-TTL; a nonce or pairing token that survives a restart is a replay
+    # window, not a recovered value.
+    command:
+      ['redis-server', '--requirepass', '${REDIS_PASSWORD}', '--save', '', '--appendonly', 'no']
+    expose: ['6379']
+    healthcheck:
+      test: ['CMD', 'redis-cli', '-a', '${REDIS_PASSWORD}', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    logging: *logging
+
+  # Public ingress. Terminates TLS at Cloudflare's edge and dials OUT to it, so
+  # the VM needs no inbound ports, no firewall exception and no certificate
+  # renewal — three things that otherwise break at 3am. Also gives DDoS
+  # absorption and a stable hostname for free.
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: ['tunnel', '--no-autoupdate', 'run', '--token', '${CLOUDFLARE_TUNNEL_TOKEN}']
+    depends_on:
+      backend: { condition: service_started }
+    logging: *logging
+
+volumes:
+  pgdata:

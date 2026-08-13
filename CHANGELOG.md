@@ -6,6 +6,29 @@ All notable changes to Lilypad are documented here. The format follows
 
 ## [Unreleased]
 
+### Deployment — control plane artifacts (not yet deployed)
+
+- **Production image.** `apps/backend/Dockerfile`, multi-stage, non-root,
+  `linux/amd64` + `linux/arm64` (the $0 tier is ARM, the paid tier is x86).
+  Verified locally: boots under real production configuration and reports
+  `{"status":"ok","checks":{"postgres":"up","redis":"up"}}`.
+- **Production stack.** `infra/production/docker-compose.yml` — backend,
+  Postgres, Redis and a Cloudflare tunnel on one VM. Nothing is published to
+  the host; cloudflared dials outward, so the VM opens **no inbound ports**.
+- **Deploy pipeline.** `.github/workflows/deploy.yml`: gate (test, typecheck,
+  lint, build, docs, format, audit) → multi-arch image → migrate → deploy →
+  health-check → automatic rollback on failure.
+- **Documentation.** [`docs/deployment.md`](docs/deployment.md) and
+  [ADR-0009](docs/adr/0009-control-plane-deployment.md) record the staged
+  $0 → ~€9/mo → scale path, a cost model from 0 to 100,000 users, and recovery
+  procedures. Egress pricing is the deciding factor: 1 TB of TURN relay is €0
+  on Hetzner, $20 on Fly, ~$90 on AWS.
+- **Verified security posture** on the image: the production guard refuses dev
+  defaults, short secrets, a passwordless Redis and non-HTTPS public URLs;
+  `/metrics` answers 401 without a bearer token; CORS fails closed.
+- **Not deployed.** No VM, no `api.takedia.com`, no TURN host. The backend must
+  not be exposed publicly until route authorization (SEC-3) lands.
+
 Cellular-stability hardening on top of 1.0.0 driven by live-hardware findings
 (2026-07-19 → 2026-07-20), plus the release-engineering pass that makes the
 apps shippable and self-updating.
