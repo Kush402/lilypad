@@ -47,31 +47,55 @@ export type GateDecision =
  * peer's `register` attempt is gated at all — every other message (including
  * a harmless duplicate `register` from an already-seated peer, or any
  * message from a peer that isn't attempting to register) proceeds exactly as
- * before. `verify` rejecting (a Redis error, not an authorization failure)
- * maps to `'error'` — distinct from `'reject_unauthorized'` so the caller can
- * close the socket without implying the device was actually checked and
- * found unauthorized.
+ * before. `verify`/`verifyPresenceOwner` rejecting (a Redis or Postgres error,
+ * not an authorization failure) maps to `'error'` — distinct from
+ * `'reject_unauthorized'` so the caller can close the socket without implying
+ * the device was actually checked and found unauthorized.
+ *
+ * Both lookups therefore fail CLOSED on an outage. For presence that is a
+ * deliberate trade: a Postgres outage stops new presence registrations, but
+ * `/connect/request` needs the same database to authorize a ring at all, so a
+ * presence seat nobody could use is worth less than an unauthenticated one.
+ * Live sessions are unaffected — they registered already.
  */
 export async function decideRegisterGate(
   json: unknown,
   isRegistered: boolean,
   verify: (roomId: string, role: DeviceKind, deviceId: string) => Promise<boolean>,
+  verifyPresenceOwner: (deviceId: string) => Promise<boolean>,
 ): Promise<GateDecision> {
   const attempt = isRegistered ? null : extractRegisterAttempt(json);
   if (!attempt) return { action: 'proceed' };
 
-  // Presence rooms (`presence:<deviceId>`, M5.4) are authorized by the claim
-  // itself — only a desktop, and only into ITS OWN device's room — with no
-  // pairing-flow record involved (none exists; presence outlives any one
-  // pairing). Same trust level as the rest of the pre-key system: the
-  // deviceId is self-asserted, upgraded to a key signature by the M5 device
-  // identity. The suffix must look like a real deviceId (the schema's own
-  // min length) so `presence:` alone can never become a claimable room.
+  // Presence rooms (`presence:<deviceId>`, M5.4) have no pairing-flow record
+  // to check against — none exists, because presence outlives any one pairing.
+  // So the shape of the claim is checked here (only a desktop, only into ITS
+  // OWN device's room, and a suffix long enough that `presence:` alone can
+  // never become a claimable room) and WHO is claiming it is checked by
+  // `verifyPresenceOwner`.
+  //
+  // That second half is SEC-4 and it is not cosmetic. A presence seat receives
+  // the `connect-request` frames a trusted phone sends to ring its laptop, and
+  // claiming an occupied seat EVICTS the incumbent as a same-device reconnect.
+  // Until M9 the suffix match was the whole gate, so knowing a laptop's device
+  // id was enough to take over its presence — silently intercepting every ring
+  // meant for it and knocking the real machine offline.
   const presenceOwner = presenceRoomDeviceId(attempt.roomId);
   if (presenceOwner !== null) {
-    const ok =
-      attempt.role === 'desktop' && presenceOwner.length >= 8 && attempt.deviceId === presenceOwner;
-    return ok ? { action: 'proceed' } : { action: 'reject_unauthorized', attempt };
+    if (
+      attempt.role !== 'desktop' ||
+      presenceOwner.length < 8 ||
+      attempt.deviceId !== presenceOwner
+    ) {
+      return { action: 'reject_unauthorized', attempt };
+    }
+    try {
+      return (await verifyPresenceOwner(attempt.deviceId))
+        ? { action: 'proceed' }
+        : { action: 'reject_unauthorized', attempt };
+    } catch {
+      return { action: 'error', attempt };
+    }
   }
 
   let authorized: boolean;

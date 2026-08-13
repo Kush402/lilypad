@@ -6,6 +6,45 @@ All notable changes to Lilypad are documented here. The format follows
 
 ## [Unreleased]
 
+### Security — ownership authorization on every route (M9, SEC-3/4/7)
+
+Knowing a device id, a pair id, or a room id is no longer worth anything.
+See [ADR-0010](docs/adr/0010-explicit-device-linking.md).
+
+- **One rule, two questions** (`auth/authorize.ts`, pure and DB-free). _Acting
+  as_ a device — `/pairing/create`, `/pairing/redeem`, `/connect/request`,
+  `/devices/unpair`, presence `register` — requires **that device's own
+  token**; owning it is not enough, or one compromised device could impersonate
+  every sibling. _Managing_ a device or pair — the three `/devices/pairs`
+  routes — requires **owning** it, which is what will let a phone manage its
+  laptop's pairs.
+- **Presence rooms need a token now (SEC-4).** `presence:<deviceId>` was
+  authorized by a suffix match alone, so knowing a laptop's device id was
+  enough to take its presence seat — evicting the real machine as a
+  "same-device reconnect" and receiving every ring meant for it. The claim must
+  now be backed by a device token on the WebSocket upgrade. Session rooms are
+  unchanged: they were already bound to a server-minted room record.
+- **Denials answer 404, never 403**, so "not yours" cannot be told apart from
+  "does not exist". A present-but-invalid token is still a 401 — silently
+  downgrading an expired token to anonymous would tell a client its device had
+  vanished when its session had merely lapsed.
+- **Both clients send a device token whenever they can mint one.** The desktop
+  attaches one to all four backend calls and to its presence socket; the phone
+  attaches one to redeem, connect and unpair. Neither treats its absence as an
+  error — a computer no account owns has nothing to prove, and pairing one
+  works exactly as before.
+- **The gate keys on the resource, not the route.** A device row with no owner
+  keeps its pre-accounts behaviour, so nothing breaks for existing installs
+  while the sign-in UI is still M10. Both halves meet per-device with no flag
+  day; when enrolment becomes mandatory the unowned branch is deleted.
+- **SEC-7 is answered by tests, not by assertion:** a table of every actor Bob
+  can be against every resource Alice owns on every gated route
+  (`auth/authorize.test.ts`), plus a per-route wiring suite that catches the
+  failure a rule test cannot — a route that simply forgot its `preHandler`
+  (`routes/authorization.test.ts`).
+- The phone now memoizes "this device has no account" so pairing does not pay
+  for a challenge and a rejection on every scan.
+
 ### Deployment — control plane artifacts (not yet deployed)
 
 - **Production image.** `apps/backend/Dockerfile`, multi-stage, non-root,
@@ -26,8 +65,8 @@ All notable changes to Lilypad are documented here. The format follows
 - **Verified security posture** on the image: the production guard refuses dev
   defaults, short secrets, a passwordless Redis and non-HTTPS public URLs;
   `/metrics` answers 401 without a bearer token; CORS fails closed.
-- **Not deployed.** No VM, no `api.takedia.com`, no TURN host. The backend must
-  not be exposed publicly until route authorization (SEC-3) lands.
+- **Not deployed.** No VM, no `api.takedia.com`, no TURN host. Route
+  authorization (SEC-3) has since landed — see the security entry above.
 
 Cellular-stability hardening on top of 1.0.0 driven by live-hardware findings
 (2026-07-19 → 2026-07-20), plus the release-engineering pass that makes the

@@ -15,6 +15,10 @@ import {
   isUnexpectedBrowserOrigin,
 } from '../signaling/guards.js';
 import { decideRegisterGate } from '../signaling/registerAuth.js';
+import { optionalAuth, optionalActorOf } from '../auth/requireAuth.js';
+import { actAsDevice } from '../auth/authorize.js';
+import { deviceOwnershipByFingerprint } from '../auth/ownership.js';
+import { bearerToken, verifyAccessToken, type Actor } from '../auth/tokens.js';
 import type { SignalingHubBundle } from '../signaling/hubBundle.js';
 import { advertisedUrls } from '../services/advertisedUrls.js';
 import { log } from '../logging.js';
@@ -88,7 +92,7 @@ export async function signalingRoutes(
   // unauthenticated pre-M5-keys and mints Redis state on success.
   app.post(
     '/connect/request',
-    { config: { rateLimit: { max: 30, timeWindow: '1 minute' } } },
+    { preHandler: optionalAuth, config: { rateLimit: { max: 30, timeWindow: '1 minute' } } },
     async (req, reply) => {
       const parsed = ConnectRequestSchema.safeParse(req.body);
       if (!parsed.success) {
@@ -96,15 +100,25 @@ export async function signalingRoutes(
       }
       const { desktopDeviceId, mobileDeviceId, mobileDeviceName, pairSecret } = parsed.data;
 
+      // The caller must BE the phone it names (M9, ADR-0010). Ringing someone
+      // else's laptop is the single highest-value thing an attacker could do
+      // here, and until now the only thing between them and it was knowing two
+      // device ids and a secret. Same 404 as an unknown pair: a caller that
+      // could tell "not your phone" from "no such pair" could enumerate.
+      const mobile = await deviceOwnershipByFingerprint('mobile', mobileDeviceId);
+      const notTrusted = () =>
+        reply.code(404).send({
+          error: 'not_trusted',
+          message: 'no trust relationship — pair with a QR first',
+        });
+      if (!actAsDevice(optionalActorOf(req), mobile).allow) return notTrusted();
+
       // Authorize: trusted, not revoked, and the per-pair connect secret must
       // match (unless this is a legacy pre-secret pair). Fails closed.
       const authz = await trust.authorizeConnect(desktopDeviceId, mobileDeviceId, pairSecret);
       if (!authz.ok) {
         if (authz.reason === 'not_trusted') {
-          return reply.code(404).send({
-            error: 'not_trusted',
-            message: 'no trust relationship — pair with a QR first',
-          });
+          return notTrusted();
         }
         if (authz.reason === 'revoked') {
           return reply.code(403).send({
@@ -192,6 +206,22 @@ export async function signalingRoutes(
       return;
     }
 
+    // Who this socket is, resolved once here rather than per frame, and only
+    // after the cheap transport guards above have had their say — a socket
+    // being rejected for its origin or the per-IP cap must not first cost a
+    // signature verification.
+    //
+    // The token rides the `Authorization` header on the upgrade request: a
+    // WebSocket carries no per-message headers, and a bearer token inside a
+    // routed signaling payload would spread through logs and relay paths.
+    // Never rejects — an unauthenticated socket is exactly what an unlinked
+    // device has, and only the claims it goes on to make decide whether that
+    // is enough.
+    const socketActor: Promise<Actor | null> = (async () => {
+      const token = bearerToken(req.headers.authorization);
+      return token ? verifyAccessToken(token) : null;
+    })();
+
     const rate = new TokenBucket(MSG_BURST, MSG_REFILL_PER_SEC);
     let released = false;
     const release = () => {
@@ -266,6 +296,10 @@ export async function signalingRoutes(
         json,
         hub.isRegistered(peer),
         (roomId, role, deviceId) => roomAuth.verify(roomId, role, deviceId),
+        async (deviceId) => {
+          const desktop = await deviceOwnershipByFingerprint('desktop', deviceId);
+          return actAsDevice(await socketActor, desktop).allow;
+        },
       );
       switch (decision.action) {
         case 'error':

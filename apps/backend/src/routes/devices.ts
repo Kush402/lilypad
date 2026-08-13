@@ -1,4 +1,4 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyReply } from 'fastify';
 import {
   DevicePairsQuerySchema as ListQuerySchema,
   PairIdParamsSchema as PairParamsSchema,
@@ -7,15 +7,24 @@ import {
 } from '@lilypad/protocol';
 import { TrustService, createDrizzleTrustStore } from '../services/trust.js';
 import { AuditLogService, createDrizzleAuditLogStore } from '../services/auditLog.js';
+import { optionalAuth, optionalActorOf } from '../auth/requireAuth.js';
+import { actAsDevice, manageDevice, managePair } from '../auth/authorize.js';
+import { deviceOwnershipByFingerprint, pairOwnership } from '../auth/ownership.js';
 import type { SignalingHub } from '../signaling/hub.js';
 import { log } from '../logging.js';
 
 /**
  * Trusted-pair management (M5.4) — consumed by the desktop's dashboard
- * (Trusted Devices pane). Pre-M5-keys these are as unauthenticated as the
- * rest of the pairing surface (deviceIds are self-asserted); the M5 device
- * identity upgrade gates them behind a key signature without changing their
- * shape. Rate-limited like the other unauthenticated mutating endpoints.
+ * (Trusted Devices pane) and by the phone's Forget.
+ *
+ * Every route here is ownership-gated (M9,
+ * [ADR-0010](../../../../docs/adr/0010-explicit-device-linking.md)). Before it,
+ * these took the caller's word: `?desktopDeviceId=` listed any laptop's phones
+ * and a pair uuid revoked any pair and killed its live session. Knowing an
+ * identifier is no longer sufficient for anything an account owns.
+ *
+ * `optionalAuth`, not `requireAuth`: a device no account owns has no owner to
+ * prove and keeps the behaviour it shipped with — see `auth/authorize.ts`.
  */
 export async function deviceRoutes(
   app: FastifyInstance,
@@ -25,12 +34,18 @@ export async function deviceRoutes(
   const trust = new TrustService(createDrizzleTrustStore());
   const auditLog = new AuditLogService(createDrizzleAuditLogStore());
 
+  /** One answer for "not yours" and "never existed" alike — a caller that can
+   * tell them apart can enumerate other accounts' devices. */
+  const notFound = (reply: FastifyReply) => reply.code(404).send({ error: 'not_found' });
+
   /** Every pair for a desktop, for its Trusted Devices list. */
-  app.get('/devices/pairs', async (req, reply) => {
+  app.get('/devices/pairs', { preHandler: optionalAuth }, async (req, reply) => {
     const parsed = ListQuerySchema.safeParse(req.query);
     if (!parsed.success) {
       return reply.code(400).send({ error: 'invalid_request', issues: parsed.error.issues });
     }
+    const desktop = await deviceOwnershipByFingerprint('desktop', parsed.data.desktopDeviceId);
+    if (!manageDevice(optionalActorOf(req), desktop).allow) return notFound(reply);
     const pairs = await trust.listForDesktop(parsed.data.desktopDeviceId);
     return reply.code(200).send({ pairs });
   });
@@ -38,13 +53,15 @@ export async function deviceRoutes(
   /** Flip a pair's "connect without approval" (Always allow) setting. */
   app.patch(
     '/devices/pairs/:pairId',
-    { config: { rateLimit: { max: 30, timeWindow: '1 minute' } } },
+    { preHandler: optionalAuth, config: { rateLimit: { max: 30, timeWindow: '1 minute' } } },
     async (req, reply) => {
       const params = PairParamsSchema.safeParse(req.params);
       const body = PatchBodySchema.safeParse(req.body);
       if (!params.success || !body.success) {
         return reply.code(400).send({ error: 'invalid_request' });
       }
+      const pair = await pairOwnership(params.data.pairId);
+      if (!managePair(optionalActorOf(req), pair).allow) return notFound(reply);
       await trust.setAutoApprove(params.data.pairId, body.data.autoApprove);
       return reply.code(200).send({ ok: true });
     },
@@ -56,12 +73,14 @@ export async function deviceRoutes(
    * phone to happen to disconnect on its own. */
   app.delete(
     '/devices/pairs/:pairId',
-    { config: { rateLimit: { max: 30, timeWindow: '1 minute' } } },
+    { preHandler: optionalAuth, config: { rateLimit: { max: 30, timeWindow: '1 minute' } } },
     async (req, reply) => {
       const params = PairParamsSchema.safeParse(req.params);
       if (!params.success) {
         return reply.code(400).send({ error: 'invalid_request' });
       }
+      const pair = await pairOwnership(params.data.pairId);
+      if (!managePair(optionalActorOf(req), pair).allow) return notFound(reply);
       const fingerprints = await trust.revoke(params.data.pairId);
       if (fingerprints) {
         const ended = hub.endRoomsForDevicePair(
@@ -89,13 +108,20 @@ export async function deviceRoutes(
    * revoked" alert, which is reserved for the desktop-initiated Revoke. */
   app.post(
     '/devices/unpair',
-    { config: { rateLimit: { max: 30, timeWindow: '1 minute' } } },
+    { preHandler: optionalAuth, config: { rateLimit: { max: 30, timeWindow: '1 minute' } } },
     async (req, reply) => {
       const parsed = UnpairRequestSchema.safeParse(req.body);
       if (!parsed.success) {
         return reply.code(400).send({ error: 'invalid_request', issues: parsed.error.issues });
       }
       const { desktopDeviceId, mobileDeviceId } = parsed.data;
+      // The phone must BE the phone it names — severing someone else's pairing
+      // is a denial of service against their laptop, and naming a device is
+      // not being it. The desktop side needs no separate check: either side of
+      // a pair may sever it (`canManagePair`), and an unrelated desktop id
+      // simply finds no pair below.
+      const mobile = await deviceOwnershipByFingerprint('mobile', mobileDeviceId);
+      if (!actAsDevice(optionalActorOf(req), mobile).allow) return notFound(reply);
       const pair = await trust.findPair(desktopDeviceId, mobileDeviceId);
       if (pair && !pair.revoked) {
         await trust.revoke(pair.pairId);

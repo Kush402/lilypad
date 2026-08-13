@@ -265,14 +265,19 @@ milestone makes that worse unless the guardrails exist first.
 - 🔜 Make the dependency audit blocking (gap DEP-1 — 19 high/critical advisories
   must be cleared first; this should land before M8).
 
-## M8 — Accounts + device identity 🔜
+## M8 — Accounts + device identity ✅
 
 Apple/Google OAuth + email magic link ([ADR-0001](adr/0001-account-authentication.md));
 Ed25519 device enrollment with challenge-response
-([ADR-0002](adr/0002-device-identity.md)); every route behind `requireAuth` +
-an owner/capability check. Closes SEC-1, SEC-2, SEC-3, SEC-5.
+([ADR-0002](adr/0002-device-identity.md)); desktop enrolled by an authenticated
+phone ([ADR-0008](adr/0008-desktop-enrollment-via-phone.md)). Backend and both
+client libraries are implemented and verified end to end against a live
+backend. Closes SEC-1 and SEC-2.
 
-## M9 — Ownership + authorization 🚧
+Applying that identity to every route turned out to be its own body of work and
+became **M9** below; SEC-5 (legacy null-secret pairs) is still open.
+
+## M9 — Ownership + authorization ✅
 
 **Rewritten 2026-08-13.** The previous scope (same-account visibility, no
 pairing ceremony) is superseded by
@@ -286,11 +291,19 @@ SEC-7.
 - ✅ Linking makes a laptop reachable, not merely owned (ADR-0008 amendment)
 - ✅ Device states `unlinked → linked → revoked` (`auth/deviceState.ts`)
 - ✅ Ownership rule + isolation unit tests (`auth/ownership.ts`)
-- 🔜 Authorization applied to every HTTP route
-- 🔜 WebSocket `register` gate keyed on the authenticated device (SEC-4)
-- 🔜 Client token wiring — **must land with the route changes or pairing and
-  reconnect break**
-- 🔜 Table-driven cross-user isolation suite (SEC-7)
+- ✅ Authorization applied to every HTTP route (`auth/authorize.ts`, `optionalAuth`)
+- ✅ WebSocket presence `register` gate keyed on the authenticated device (SEC-4)
+- ✅ Client token wiring — both clients send a device token whenever they can
+  mint one, so pairing and reconnect are unchanged for a device no account owns
+- ✅ Table-driven cross-user isolation suite + route-wiring suite (SEC-7)
+- 🔜 Purge legacy `connect_secret_hash = NULL` pairs (SEC-5)
+
+**The unowned lane is deliberate, and it is what M10 closes.** A device row with
+no `user_id` has no owner to protect, so it keeps its pre-accounts behaviour;
+every route demands a matching token the moment a device is linked. Both halves
+meet without a flag day — clients send a token whenever they can mint one, the
+backend requires one whenever the resource is owned. When M10 makes enrolment
+mandatory in both clients, the unowned branch becomes unreachable and is deleted.
 
 ## M9.5 — LAN-direct connectivity (no internet required) 🔜
 

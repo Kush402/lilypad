@@ -47,6 +47,29 @@ export async function requireDevice(req: FastifyRequest, reply: FastifyReply): P
 }
 
 /**
+ * Fastify preHandler for a route that must serve both an enrolled device and a
+ * pre-accounts one: it establishes `req.actor` when a token is present and
+ * never demands one. The route then decides with `auth/authorize.ts`, which
+ * requires a matching actor for an OWNED resource and keeps the legacy path
+ * only where nothing owns the row.
+ *
+ * A present-but-invalid token is still a 401. Silently downgrading an expired
+ * token to the anonymous lane would turn "your session lapsed" into "that
+ * device does not exist", and a client that cannot tell those apart cannot
+ * know to re-authenticate.
+ */
+export async function optionalAuth(req: FastifyRequest, reply: FastifyReply): Promise<void> {
+  const token = bearerToken(req.headers.authorization);
+  if (!token) return;
+  const actor = await verifyAccessToken(token);
+  if (!actor) {
+    await reply.code(401).send({ error: 'unauthorized' });
+    return;
+  }
+  req.actor = actor;
+}
+
+/**
  * Read the actor a preHandler established.
  *
  * Throws rather than returning null: reaching a handler without an actor means
@@ -58,6 +81,12 @@ export function actorOf(req: FastifyRequest): Actor {
   const actor = req.actor;
   if (!actor) throw new Error('route handler ran without requireAuth — check its preHandler');
   return actor;
+}
+
+/** The actor an `optionalAuth` route may or may not have. Null is a normal
+ * answer here, not a wiring bug — see `auth/authorize.ts`'s unowned lane. */
+export function optionalActorOf(req: FastifyRequest): Actor | null {
+  return req.actor ?? null;
 }
 
 /** The actor's device id, for routes gated by `requireDevice`. */

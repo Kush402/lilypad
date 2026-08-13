@@ -88,7 +88,27 @@ would like to be trusted.
 
 ## Status
 
-Accepted (2026-08-13). Device states and the ownership rule are implemented and
-unit-tested (`auth/deviceState.ts`, `auth/ownership.ts`). Applying them to every
-route, the WebSocket `register` gate, and both clients is the remainder of M9 —
-**the backend must not be exposed publicly until that lands.**
+Accepted (2026-08-13). Implemented in full: device states
+(`auth/deviceState.ts`), the ownership rule (`auth/ownership.ts`), the
+authorization decision (`auth/authorize.ts`), every HTTP route, the WebSocket
+presence `register` gate, and both clients.
+
+**How the gate is conditional, and why that is not a hole.** Authorization keys
+on the RESOURCE, not the route: a device an account owns demands a matching
+token; a device NOBODY owns has no account to protect and keeps its
+pre-accounts behaviour. The alternative — demanding a token everywhere at
+once — would have broken pairing for every existing install, since the sign-in
+UI does not exist until M10. Instead both clients send a device token whenever
+they can mint one, and the backend requires one whenever the resource is owned,
+so the two halves meet per-device with no flag day. When M10 makes enrolment
+mandatory, `lane: 'unowned'` becomes unreachable and is deleted.
+
+**Two questions, deliberately not one.** _Acting as_ a device (ringing a
+laptop, redeeming a QR, unpairing, claiming a presence room) requires that
+device's own token — owning it is not enough, or one compromised device could
+impersonate every sibling. _Managing_ a device or pair (listing, Always-allow,
+revoking) requires owning it, which is what lets a phone manage its laptop's
+pairs in M11.
+
+Denials answer `404`, never `403`: a caller that could tell "not yours" from
+"does not exist" could enumerate other accounts' devices.

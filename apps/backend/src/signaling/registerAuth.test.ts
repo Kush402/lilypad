@@ -100,10 +100,13 @@ describe('extractRegisterAttempt', () => {
   });
 });
 
+/** The M9 presence-owner check, permissive — for the cases that never reach it. */
+const ownerOk = () => vi.fn().mockResolvedValue(true);
+
 describe('decideRegisterGate', () => {
   it('proceeds without calling verify for a non-register message', async () => {
     const verify = vi.fn();
-    const decision = await decideRegisterGate(offerMsg, false, verify);
+    const decision = await decideRegisterGate(offerMsg, false, verify, ownerOk());
     expect(decision).toEqual({ action: 'proceed' });
     expect(verify).not.toHaveBeenCalled();
   });
@@ -113,21 +116,36 @@ describe('decideRegisterGate', () => {
     // register from an already-seated peer is a harmless no-op the hub
     // handles itself; it must not be re-gated.
     const verify = vi.fn();
-    const decision = await decideRegisterGate(registerMsg('desktop', 'desktop-01'), true, verify);
+    const decision = await decideRegisterGate(
+      registerMsg('desktop', 'desktop-01'),
+      true,
+      verify,
+      ownerOk(),
+    );
     expect(decision).toEqual({ action: 'proceed' });
     expect(verify).not.toHaveBeenCalled();
   });
 
   it('proceeds when verify authorizes the attempt', async () => {
     const verify = vi.fn().mockResolvedValue(true);
-    const decision = await decideRegisterGate(registerMsg('desktop', 'desktop-01'), false, verify);
+    const decision = await decideRegisterGate(
+      registerMsg('desktop', 'desktop-01'),
+      false,
+      verify,
+      ownerOk(),
+    );
     expect(decision).toEqual({ action: 'proceed' });
     expect(verify).toHaveBeenCalledWith('room-1', 'desktop', 'desktop-01');
   });
 
   it('rejects with the attempt details when verify denies the attempt', async () => {
     const verify = vi.fn().mockResolvedValue(false);
-    const decision = await decideRegisterGate(registerMsg('mobile', 'intruder-01'), false, verify);
+    const decision = await decideRegisterGate(
+      registerMsg('mobile', 'intruder-01'),
+      false,
+      verify,
+      ownerOk(),
+    );
     expect(decision).toEqual({
       action: 'reject_unauthorized',
       attempt: { roomId: 'room-1', role: 'mobile', deviceId: 'intruder-01' },
@@ -136,7 +154,12 @@ describe('decideRegisterGate', () => {
 
   it('maps a verify() rejection to a distinct "error" action, not "reject_unauthorized"', async () => {
     const verify = vi.fn().mockRejectedValue(new Error('redis down'));
-    const decision = await decideRegisterGate(registerMsg('desktop', 'desktop-01'), false, verify);
+    const decision = await decideRegisterGate(
+      registerMsg('desktop', 'desktop-01'),
+      false,
+      verify,
+      ownerOk(),
+    );
     expect(decision).toEqual({
       action: 'error',
       attempt: { roomId: 'room-1', role: 'desktop', deviceId: 'desktop-01' },
@@ -149,22 +172,35 @@ describe('decideRegisterGate', () => {
       { type: 'register', roomId: 'room-1' },
       false,
       verify,
+      ownerOk(),
     );
     expect(decision).toEqual({ action: 'proceed' });
     expect(verify).not.toHaveBeenCalled();
   });
+
+  it('never consults the presence-owner check for a session room', async () => {
+    const verifyOwner = ownerOk();
+    await decideRegisterGate(
+      registerMsg('desktop', 'desktop-01'),
+      false,
+      vi.fn().mockResolvedValue(true),
+      verifyOwner,
+    );
+    expect(verifyOwner).not.toHaveBeenCalled();
+  });
 });
 
-describe('decideRegisterGate — presence rooms (M5.4)', () => {
+describe('decideRegisterGate — presence rooms (M5.4, gated in M9)', () => {
   const presenceReg = (role: string, deviceId: string, roomId: string) =>
     registerMsg(role, deviceId, roomId);
 
-  it('lets a desktop claim ITS OWN presence room without touching room-auth', async () => {
+  it('lets an authorized desktop claim ITS OWN presence room without touching room-auth', async () => {
     const verify = vi.fn();
     const decision = await decideRegisterGate(
       presenceReg('desktop', 'desktop-01', 'presence:desktop-01'),
       false,
       verify,
+      ownerOk(),
     );
     expect(decision).toEqual({ action: 'proceed' });
     expect(verify).not.toHaveBeenCalled(); // presence never consults pairing records
@@ -175,6 +211,7 @@ describe('decideRegisterGate — presence rooms (M5.4)', () => {
       presenceReg('desktop', 'intruder-99', 'presence:desktop-01'),
       false,
       vi.fn(),
+      ownerOk(),
     );
     expect(decision.action).toBe('reject_unauthorized');
   });
@@ -184,6 +221,7 @@ describe('decideRegisterGate — presence rooms (M5.4)', () => {
       presenceReg('mobile', 'mobile-01', 'presence:mobile-01'),
       false,
       vi.fn(),
+      ownerOk(),
     );
     expect(decision.action).toBe('reject_unauthorized');
   });
@@ -193,7 +231,55 @@ describe('decideRegisterGate — presence rooms (M5.4)', () => {
       presenceReg('desktop', 'short', 'presence:short'),
       false,
       vi.fn(),
+      ownerOk(),
     );
     expect(decision.action).toBe('reject_unauthorized');
+  });
+
+  // SEC-4. Before M9 the suffix match WAS the whole gate, so this exact frame
+  // — a correct self-claim, from a socket with no right to that device —
+  // proceeded, took the presence seat, evicted the real laptop as a
+  // "same-device reconnect", and received every ring meant for it.
+  it('rejects a self-consistent claim when the socket does not own that device', async () => {
+    const verifyOwner = vi.fn().mockResolvedValue(false);
+    const decision = await decideRegisterGate(
+      presenceReg('desktop', 'desktop-01', 'presence:desktop-01'),
+      false,
+      vi.fn(),
+      verifyOwner,
+    );
+    expect(decision).toEqual({
+      action: 'reject_unauthorized',
+      attempt: { roomId: 'presence:desktop-01', role: 'desktop', deviceId: 'desktop-01' },
+    });
+    expect(verifyOwner).toHaveBeenCalledWith('desktop-01');
+  });
+
+  // Fails CLOSED: a database outage must not become an open presence lane.
+  it('maps a presence-owner lookup failure to "error", never to proceed', async () => {
+    const decision = await decideRegisterGate(
+      presenceReg('desktop', 'desktop-01', 'presence:desktop-01'),
+      false,
+      vi.fn(),
+      vi.fn().mockRejectedValue(new Error('postgres down')),
+    );
+    expect(decision).toEqual({
+      action: 'error',
+      attempt: { roomId: 'presence:desktop-01', role: 'desktop', deviceId: 'desktop-01' },
+    });
+  });
+
+  // Shape first, identity second: a claim that is already malformed must not
+  // cost a database round trip, or an anonymous socket could drive one per
+  // frame.
+  it('rejects a malformed presence claim without consulting the owner check', async () => {
+    const verifyOwner = ownerOk();
+    await decideRegisterGate(
+      presenceReg('desktop', 'intruder-99', 'presence:desktop-01'),
+      false,
+      vi.fn(),
+      verifyOwner,
+    );
+    expect(verifyOwner).not.toHaveBeenCalled();
   });
 });

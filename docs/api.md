@@ -11,7 +11,33 @@ Backend base URL defaults to `http://localhost:8080` (`PUBLIC_BASE_URL`).
 Request/response bodies are zod-validated from
 [`@lilypad/protocol`](../packages/protocol/src).
 
-Legend: ✅ implemented · 🔜 later milestone.
+Legend: ✅ implemented · 🔜 later milestone · 🔒 requires a token.
+
+## Authorization (M9)
+
+Every pairing and trust route is gated by ownership
+([ADR-0010](adr/0010-explicit-device-linking.md)). Two rules, applied by
+[`auth/authorize.ts`](../apps/backend/src/auth/authorize.ts):
+
+- **Acting AS a device** (`/pairing/create`, `/pairing/redeem`,
+  `/connect/request`, `/devices/unpair`, and the presence `register`) requires
+  **that device's own token** — `Authorization: Bearer <device access token>`
+  from `POST /devices/token`. Naming a device is not being it.
+- **Managing a device or pair** (the three `/devices/pairs` routes below)
+  requires a token whose subject **owns** the resource. Any of the owner's
+  devices qualifies.
+
+The gate is conditional on ownership, not on the route: a device row that **no
+account owns** has nothing to protect and keeps its pre-accounts behaviour, so
+pairing a fresh install still works with no token at all. The moment a device is
+linked, its routes demand a matching token. Clients send one whenever they can
+mint one, so the two halves meet with no flag day. When M10 makes enrolment
+mandatory this branch disappears.
+
+**A denial is always `404 { "error": "not_found" }`** — never 403 — so "not
+yours" cannot be told apart from "does not exist". A present-but-invalid token
+is `401 { "error": "unauthorized" }`, because a client that cannot tell an
+expired session from a missing device cannot know to re-authenticate.
 
 ## `GET /health` ✅
 
@@ -31,7 +57,7 @@ Liveness + dependency checks.
 
 Called by the **desktop** to mint a single-use QR token (60s TTL in Redis).
 Rate-limited per IP: **30 requests/minute** (tighter than the global limiter —
-this endpoint is unauthenticated pre-M5 and mints Redis state per call).
+it mints Redis state per call). 🔒 device token when `deviceId` is linked.
 
 ```jsonc
 // request
@@ -45,6 +71,7 @@ this endpoint is unauthenticated pre-M5 and mints Redis state per call).
 ## `POST /pairing/redeem` ✅
 
 Called by the **mobile** app after scanning. Atomically burns the token.
+🔒 device token when `deviceId` is linked.
 
 ```jsonc
 // request
@@ -65,6 +92,10 @@ deliberately mirrors `POST /pairing/redeem`, so the phone's downstream session
 flow is identical either way. Rate-limited **30/minute per IP**. Schemas:
 [`connect.ts`](../packages/protocol/src/connect.ts).
 
+🔒 The caller must **be** `mobileDeviceId` when that phone is linked — ringing
+someone else's laptop is the highest-value action here, and until M9 the only
+thing between an attacker and it was knowing two device ids and a secret.
+
 ```jsonc
 // request
 { "desktopDeviceId": "desktop-…", "mobileDeviceId": "mobile-…",
@@ -83,10 +114,10 @@ flow is identical either way. Rate-limited **30/minute per IP**. Schemas:
 ## Trusted-pair management ✅ (M5.4)
 
 Consumed by the desktop's **Trusted Devices** dashboard and the phone's
-"Forget". Pre-M5-keys these are as unauthenticated as the rest of the pairing
-surface (device ids are self-asserted); the M5 device-identity upgrade gates
-them behind a key signature without changing their shape. Mutating routes are
-rate-limited **30/minute per IP**.
+"Forget". 🔒 Ownership-gated per the rules above: the three `/devices/pairs`
+routes need a token that **owns** the resource, `POST /devices/unpair` needs the
+token of the phone it names. Mutating routes are rate-limited
+**30/minute per IP**.
 Handlers: [`routes/devices.ts`](../apps/backend/src/routes/devices.ts).
 
 | Route                                  | Purpose                                                                                                                                                                                                    |
@@ -106,6 +137,21 @@ machine, per-peer time-limited TURN credentials, mid-session re-register grace,
 and graceful `session-end` on shutdown. Transport guards: per-IP connection cap,
 per-socket message-rate limit, unregistered-socket idle close, room cap, and a
 64 KB frame-size limit. See [signaling-protocol.md](./signaling-protocol.md).
+
+**Registering into a room** is authorized two different ways, because the two
+kinds of room are different:
+
+- A **session room** (a uuid) is authorized against the room record the backend
+  minted itself during `/pairing/create` or `/connect/request` — both already
+  authorized, so the record carries that authorization forward. No token needed
+  on the socket.
+- A **presence room** (`presence:<deviceId>`, M5.4) has no such record; the
+  claim is the only input. 🔒 So when that desktop is linked, the socket must
+  carry `Authorization: Bearer <device token>` **on the upgrade request**, and
+  it must belong to the device being claimed. A WebSocket has no per-message
+  headers, and a bearer token inside a routed signaling frame would spread
+  through logs and relay paths — the upgrade is the one private place for it.
+  Fails closed if the database is unreachable.
 
 ## `GET /metrics` ✅ 🔒
 

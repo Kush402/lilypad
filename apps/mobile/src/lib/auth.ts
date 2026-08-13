@@ -30,6 +30,20 @@ interface CachedToken {
 
 let cached: CachedToken | null = null;
 let inFlight: Promise<DeviceSession> | null = null;
+/**
+ * Set once the backend says this phone has no account behind it, so every
+ * later call fails immediately instead of re-running a two-request exchange it
+ * already knows the answer to.
+ *
+ * This matters because pairing now asks for a token on the way past
+ * (`api.ts`), and most phones are un-enrolled until M10 lands the sign-in
+ * screen — without the memo, every scan and every reconnect would pay for a
+ * challenge and a rejection first. Cleared by `enrollDevice` and
+ * `invalidateAccessToken`, so a phone that later signs in starts sending
+ * tokens without needing a restart. A network failure is deliberately NOT
+ * memoized: that is transient, and this is a verdict.
+ */
+let notEnrolled: DeviceAuthError | null = null;
 
 /** The device is not allowed, and retrying with the same key never helps.
  * Distinct from a network error so the UI can send the user to sign-in instead
@@ -108,6 +122,7 @@ export async function enrollDevice(
   );
   if (status !== 200) throw new Error(`enrollment failed (HTTP ${status}): ${text}`);
   const session = JSON.parse(text) as DeviceSession;
+  notEnrolled = null;
   cache(session);
   return session;
 }
@@ -120,12 +135,14 @@ export async function signInDevice(apiBaseUrl: string): Promise<DeviceSession> {
   const proof = await signedProof(apiBaseUrl);
   const { status, text } = await postJson(endpoint(apiBaseUrl, '/devices/token'), proof);
   if (status === 403) {
-    throw new DeviceAuthError(
+    notEnrolled = new DeviceAuthError(
       text.includes('device_revoked') ? 'device_revoked' : 'device_not_enrolled',
     );
+    throw notEnrolled;
   }
   if (status !== 200) throw new Error(`device sign-in failed (HTTP ${status}): ${text}`);
   const session = JSON.parse(text) as DeviceSession;
+  notEnrolled = null;
   cache(session);
   return session;
 }
@@ -140,6 +157,7 @@ export async function signInDevice(apiBaseUrl: string): Promise<DeviceSession> {
  */
 export async function accessToken(apiBaseUrl: string): Promise<string> {
   if (cached && Date.now() < cached.renewAfter) return cached.value;
+  if (notEnrolled) throw notEnrolled;
   inFlight ??= signInDevice(apiBaseUrl).finally(() => {
     inFlight = null;
   });
@@ -188,10 +206,12 @@ export async function approveDesktopEnrollment(
  * backend answers 401 — the token may have been revoked under us. */
 export function invalidateAccessToken(): void {
   cached = null;
+  notEnrolled = null;
 }
 
 /** Test seam. */
 export function resetAuthState(): void {
   cached = null;
   inFlight = null;
+  notEnrolled = null;
 }

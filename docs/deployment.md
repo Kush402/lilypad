@@ -206,9 +206,14 @@ Stated explicitly so nothing here reads as more finished than it is.
 
 - **Nothing is deployed.** No VM, no `api.takedia.com`, no TURN host. Every
   artifact below was verified locally only.
-- **Route authorization (SEC-3) is still open.** Most routes do not yet require
-  a token. **The backend must not be exposed publicly until that lands** — this
-  is the single hard blocker, and it is not a deployment problem.
+- **Route authorization (SEC-3, SEC-4, SEC-7) is closed** as of M9. Every
+  pairing and trust route, and the presence `register`, are gated by ownership
+  ([ADR-0010](adr/0010-explicit-device-linking.md)). A device an account owns
+  demands a matching device token; a device nobody owns keeps its pre-accounts
+  behaviour, and that lane disappears when M10 makes enrolment mandatory in
+  both clients. **Until then, a public deployment is reachable by unenrolled
+  devices on the legacy lane** — which is the pre-M8 posture, not a regression,
+  but it is the reason to finish M10 before opening this to strangers.
 - Legacy null-secret pairs (SEC-5) are not purged.
 - The `sessions` table is still never written.
 - No backup cron is installed; the procedure above is written, not automated.

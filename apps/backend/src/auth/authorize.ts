@@ -1,0 +1,100 @@
+import type { Actor } from './tokens.js';
+import {
+  ownsDevice,
+  canManagePair,
+  type DeviceOwnership,
+  type PairOwnership,
+} from './ownership.js';
+
+/**
+ * The authorization rule every route applies, as a pure decision
+ * ([ADR-0010](../../../../docs/adr/0010-explicit-device-linking.md)).
+ *
+ * `ownership.ts` answers "who owns this?"; this answers "may this caller
+ * proceed?". It is deliberately pure and DB-free — the same split as
+ * `signaling/registerAuth.ts` — so the rule that guards every route is
+ * exhaustively table-testable without a Postgres, a Fastify, or a socket.
+ *
+ * **Two questions, not one.** They are different and conflating them is how
+ * authorization bugs get written:
+ *
+ * - _Acting as_ a device (`actAsDevice`) — the caller claims to BE a machine:
+ *   ringing a laptop, redeeming a QR, unpairing, claiming a presence room.
+ *   Owning it is not enough; you must present that device's own token. This is
+ *   what makes a device id in a request body worthless.
+ * - _Managing_ a device or pair (`manageDevice`/`managePair`) — the caller acts
+ *   on a resource it owns: listing trusted phones, flipping Always-allow,
+ *   revoking. Any device of the owning account qualifies, which is what lets a
+ *   phone manage its laptop's pairs in M11.
+ *
+ * **The unowned lane.** A device row with no `user_id` is a pre-accounts
+ * device: it predates M8, or it has simply never been linked. There is no
+ * account to protect and no cross-user boundary to cross, so it keeps the
+ * behaviour it shipped with. That is not a hole left open — it is the only
+ * answer that exists when nothing owns the row, and it closes per-device the
+ * moment that device enrols. Once M10 makes enrolment mandatory in both
+ * clients, `lane: 'unowned'` becomes unreachable and this branch is deleted.
+ *
+ * A denied caller must never be able to tell "not yours" from "does not
+ * exist", so every caller maps `allow: false` to the same 404 it would return
+ * for a resource that was never there.
+ */
+
+export type Access =
+  /** The actor owns (or is) the resource. */
+  | { allow: true; lane: 'owner' }
+  /** Nothing owns the resource — pre-accounts behaviour, no boundary to cross. */
+  | { allow: true; lane: 'unowned' }
+  | { allow: false };
+
+const DENY: Access = { allow: false };
+const UNOWNED: Access = { allow: true, lane: 'unowned' };
+const OWNER: Access = { allow: true, lane: 'owner' };
+
+/**
+ * May this caller act AS this device?
+ *
+ * An unknown device (`null`) is unowned by definition — the caller named
+ * something that does not exist, and the route's own not-found handling
+ * answers that, not this.
+ */
+export function actAsDevice(actor: Actor | null, device: DeviceOwnership | null): Access {
+  if (device === null) return UNOWNED;
+  // A revoked device may not act, whoever asks. Revocation exists precisely
+  // for the machine that is no longer in the owner's hands.
+  if (device.state === 'revoked') return DENY;
+  if (device.userId === null) return UNOWNED;
+  if (actor === null) return DENY;
+  // Both halves: the token must have been minted FOR this device row, and its
+  // subject must still be the account that owns it.
+  if (actor.deviceId !== device.deviceId) return DENY;
+  return ownsDevice(actor.userId, device) ? OWNER : DENY;
+}
+
+/**
+ * May this caller manage this device?
+ *
+ * Unlike `actAsDevice`, a revoked device is still manageable by its owner —
+ * "I lost my laptop" must not also mean "and now you cannot clean up after
+ * it". What revocation stops is the device acting, which is the check above.
+ */
+export function manageDevice(actor: Actor | null, device: DeviceOwnership | null): Access {
+  if (device === null) return UNOWNED;
+  if (device.userId === null) return UNOWNED;
+  if (actor === null) return DENY;
+  return ownsDevice(actor.userId, device) ? OWNER : DENY;
+}
+
+/**
+ * May this caller manage this pair?
+ *
+ * A pair is unowned only when NEITHER side has an owner. One owned side is
+ * enough to make the relationship someone's business, and `canManagePair`
+ * then decides whose.
+ */
+export function managePair(actor: Actor | null, pair: PairOwnership | null): Access {
+  if (pair === null) return UNOWNED;
+  if (pair.desktop.userId === null && pair.mobile.userId === null) return UNOWNED;
+  if (actor === null) return DENY;
+  return canManagePair(actor.userId, pair) ? OWNER : DENY;
+}

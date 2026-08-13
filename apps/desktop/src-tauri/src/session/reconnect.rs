@@ -52,7 +52,7 @@ impl ReconnectPolicy {
     ) -> Result<(signaling::SignalingHandle, UnboundedReceiver<Envelope>)> {
         for attempt in 0..self.max_attempts {
             tokio::time::sleep(self.backoff(attempt)).await;
-            match signaling::connect(url).await {
+            match signaling::connect(url, None).await {
                 Ok((sig, inbound)) => {
                     sig.send(Envelope::register(room_id, device_id))?;
                     return Ok((sig, inbound));

@@ -4,13 +4,14 @@
 //! renders bubble / qr-overlay / control / diagnostics based on its window
 //! label.
 
-use std::sync::MutexGuard;
+use std::sync::{Arc, MutexGuard};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 use tokio::sync::mpsc::unbounded_channel;
 
+use crate::auth::{with_bearer, DesktopAuth};
 use crate::session::{run_session, Control, SessionEvent};
 use crate::state::{AppState, AppStateDto, PendingRequest, SessionStatus, SharedState};
 
@@ -98,6 +99,7 @@ pub fn get_state(state: State<'_, SharedState>) -> AppStateDto {
 pub async fn create_pairing(
     app: AppHandle,
     state: State<'_, SharedState>,
+    auth: State<'_, Arc<DesktopAuth>>,
 ) -> Result<QrPayloadDto, String> {
     // Never let a user pair into a session that will silently fail: a
     // session with either permission missing would show a QR, connect the
@@ -129,12 +131,13 @@ pub async fn create_pairing(
         "platform": current_platform(),
     });
 
-    let resp = reqwest::Client::new()
-        .post(&url)
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| format!("could not reach backend at {url}: {e}"))?;
+    let resp = with_bearer(
+        reqwest::Client::new().post(&url).json(&body),
+        auth.bearer().await,
+    )
+    .send()
+    .await
+    .map_err(|e| format!("could not reach backend at {url}: {e}"))?;
 
     if !resp.status().is_success() {
         return Err(format!("backend returned HTTP {}", resp.status()));
@@ -758,6 +761,7 @@ pub fn set_agent_config(args: SetAgentConfigArgs) -> Result<AgentConfigDto, Stri
 #[tauri::command]
 pub async fn list_trusted_devices(
     state: State<'_, SharedState>,
+    auth: State<'_, Arc<DesktopAuth>>,
 ) -> Result<serde_json::Value, String> {
     let (device_id, base_url) = {
         let s = lock_state(&state);
@@ -768,8 +772,7 @@ pub async fn list_trusted_devices(
         base_url.trim_end_matches('/'),
         device_id
     );
-    let resp = reqwest::Client::new()
-        .get(&url)
+    let resp = with_bearer(reqwest::Client::new().get(&url), auth.bearer().await)
         .send()
         .await
         .map_err(|e| format!("could not reach backend: {e}"))?;
@@ -783,17 +786,21 @@ pub async fn list_trusted_devices(
 #[tauri::command]
 pub async fn set_pair_auto_approve(
     state: State<'_, SharedState>,
+    auth: State<'_, Arc<DesktopAuth>>,
     pair_id: String,
     auto_approve: bool,
 ) -> Result<(), String> {
     let base_url = lock_state(&state).backend_base_url.clone();
     let url = format!("{}/devices/pairs/{pair_id}", base_url.trim_end_matches('/'));
-    let resp = reqwest::Client::new()
-        .patch(&url)
-        .json(&serde_json::json!({ "autoApprove": auto_approve }))
-        .send()
-        .await
-        .map_err(|e| format!("could not reach backend: {e}"))?;
+    let resp = with_bearer(
+        reqwest::Client::new()
+            .patch(&url)
+            .json(&serde_json::json!({ "autoApprove": auto_approve })),
+        auth.bearer().await,
+    )
+    .send()
+    .await
+    .map_err(|e| format!("could not reach backend: {e}"))?;
     if !resp.status().is_success() {
         return Err(format!("backend returned HTTP {}", resp.status()));
     }
@@ -819,11 +826,14 @@ pub fn set_login_item_enabled(enabled: bool) -> Result<(), String> {
 
 /// Revoke a pair — the phone can no longer connect without a fresh QR pairing.
 #[tauri::command]
-pub async fn revoke_pair(state: State<'_, SharedState>, pair_id: String) -> Result<(), String> {
+pub async fn revoke_pair(
+    state: State<'_, SharedState>,
+    auth: State<'_, Arc<DesktopAuth>>,
+    pair_id: String,
+) -> Result<(), String> {
     let base_url = lock_state(&state).backend_base_url.clone();
     let url = format!("{}/devices/pairs/{pair_id}", base_url.trim_end_matches('/'));
-    let resp = reqwest::Client::new()
-        .delete(&url)
+    let resp = with_bearer(reqwest::Client::new().delete(&url), auth.bearer().await)
         .send()
         .await
         .map_err(|e| format!("could not reach backend: {e}"))?;

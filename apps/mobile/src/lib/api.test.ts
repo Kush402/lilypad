@@ -1,11 +1,28 @@
-import { redeemToken, requestUnpair } from './api';
+import { redeemToken, requestUnpair, requestConnect } from './api';
 import { RedeemError } from './errors';
+import { accessToken } from './auth';
+
+// The device-token exchange is `auth.ts`'s job and has its own tests. Mocking
+// it keeps these about `api.ts` — and keeps a single `fetch` mock from having
+// to serve two unrelated conversations.
+jest.mock('./auth', () => ({ accessToken: jest.fn() }));
+
+const accessTokenMock = accessToken as jest.MockedFunction<typeof accessToken>;
+
+/** The default state until M10 lands sign-in: this phone has no account. */
+beforeEach(() => {
+  accessTokenMock.mockRejectedValue(new Error('This phone is not signed in yet.'));
+});
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
     headers: { 'content-type': 'application/json' },
   });
+}
+
+function headersOf(fetchMock: jest.Mock): Record<string, string> {
+  return (fetchMock.mock.calls[0][1] as RequestInit).headers as Record<string, string>;
 }
 
 describe('redeemToken', () => {
@@ -144,4 +161,50 @@ describe('requestUnpair', () => {
     await jest.advanceTimersByTimeAsync(8_000);
     await assertion;
   });
+});
+
+/**
+ * M9 — proving WHICH phone this is
+ * ([ADR-0010](../../../../docs/adr/0010-explicit-device-linking.md)).
+ *
+ * The backend demands a device token for a phone an account owns, and accepts
+ * none for a phone nobody owns. These are the client half of that contract:
+ * send one whenever we can get one, and never let its absence break pairing.
+ */
+describe('device token on the pairing surface', () => {
+  const realFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  const calls = [
+    ['redeemToken', () => redeemToken('http://api', 'tok')],
+    ['requestConnect', () => requestConnect('http://api', 'desktop-1')],
+    ['requestUnpair', () => requestUnpair('http://api', 'desktop-1')],
+  ] as const;
+
+  for (const [name, call] of calls) {
+    it(`${name} sends the device token when this phone has one`, async () => {
+      accessTokenMock.mockResolvedValue('a-device-token');
+      const fetchMock = jest.fn().mockResolvedValue(jsonResponse({ ok: true }));
+      globalThis.fetch = fetchMock;
+
+      await call();
+
+      expect(headersOf(fetchMock).authorization).toBe('Bearer a-device-token');
+    });
+
+    // The un-enrolled majority until M10. A phone with no account has nothing
+    // to prove, and pairing one must work exactly as it always has — an auth
+    // failure here must never become a pairing failure.
+    it(`${name} still works, with no header, when this phone has no account`, async () => {
+      const fetchMock = jest.fn().mockResolvedValue(jsonResponse({ ok: true }));
+      globalThis.fetch = fetchMock;
+
+      await call();
+
+      expect(headersOf(fetchMock).authorization).toBeUndefined();
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+  }
 });

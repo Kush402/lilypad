@@ -55,7 +55,10 @@ pub struct SignalingClient {
 impl SignalingClient {
     /// Connect and register as the desktop seat.
     pub async fn connect(url: String, room_id: String, device_id: String) -> Result<Self> {
-        let (sig, inbound) = signaling::connect(&url).await?;
+        // No token: a session room is authorized by the room record the
+        // backend minted for this exact pairing, not by a device claim. See
+        // `signaling::connect`.
+        let (sig, inbound) = signaling::connect(&url, None).await?;
         sig.send(Envelope::register(&room_id, &device_id))?;
         let (recon_tx, recon_rx) = mpsc::channel::<ReconnectResult>(1);
         Ok(Self {

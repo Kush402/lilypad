@@ -14,10 +14,12 @@
 //! Reconnects forever with capped backoff: presence is availability, not a
 //! session — there is no budget after which giving up is correct.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use tauri::{AppHandle, Manager};
 
+use crate::auth::DesktopAuth;
 use crate::signaling::{connect, messages::ConnectRequestPayload, Envelope};
 use crate::state::SharedState;
 
@@ -79,7 +81,13 @@ async fn run(app: AppHandle) {
 
     let mut attempt: usize = 0;
     loop {
-        match connect(&url).await {
+        // Freshly per attempt: the backend gates presence on proving this
+        // computer is the one it names (M9/SEC-4), and a token minted for an
+        // earlier attempt may well have expired during a long backoff. `None`
+        // is normal for a computer no account has linked yet — the backend
+        // still admits it, on the same terms it always has.
+        let token = app.state::<Arc<DesktopAuth>>().bearer().await;
+        match connect(&url, token.as_deref()).await {
             Ok((handle, mut inbound)) => {
                 if handle.send(Envelope::register(&room, &device_id)).is_ok() {
                     log::info!(target: "lilypad::presence", "presence online ({room})");

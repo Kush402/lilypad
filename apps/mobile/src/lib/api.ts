@@ -1,12 +1,32 @@
 import { Platform } from 'react-native';
 import type { ConnectResponse, PairingRedeemResponse } from '@lilypad/protocol';
 import { initDeviceIdentity } from './device';
+import { accessToken } from './auth';
 import { RedeemError, appError, classifyHttpStatus, classifyFetchError } from './errors';
 
 /** Bounded so a slow/dead network surfaces as a classified, actionable error
  * instead of a spinner that never resolves. See
  * `docs/audit/m3/mobile-ux.md` Finding 2. */
 const REDEEM_TIMEOUT_MS = 8_000;
+
+/**
+ * Headers proving WHICH phone this is, when it can prove it (M9,
+ * [ADR-0010](../../../../docs/adr/0010-explicit-device-linking.md)).
+ *
+ * Best-effort ON PURPOSE, and never throws. A phone no account owns has no
+ * identity to prove, and pairing one must keep working exactly as it always
+ * has. The backend applies the mirror-image rule — it demands a token only for
+ * a device an account owns — so the two halves meet without a flag day: the
+ * moment this phone enrols, these calls start carrying a token and the backend
+ * starts requiring one.
+ */
+async function deviceAuthHeaders(apiBaseUrl: string): Promise<Record<string, string>> {
+  try {
+    return { authorization: `Bearer ${await accessToken(apiBaseUrl)}` };
+  } catch {
+    return {};
+  }
+}
 
 /**
  * Redeem a scanned pairing token against the backend. This burns the token
@@ -47,7 +67,7 @@ export async function redeemToken(
     }
     const res = await fetch(`${apiBaseUrl.replace(/\/$/, '')}/pairing/redeem`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', ...(await deviceAuthHeaders(apiBaseUrl)) },
       body: JSON.stringify({
         token,
         deviceId,
@@ -93,7 +113,7 @@ export async function requestConnect(
     const mobileDeviceId = await initDeviceIdentity();
     const res = await fetch(`${apiBaseUrl.replace(/\/$/, '')}/connect/request`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', ...(await deviceAuthHeaders(apiBaseUrl)) },
       body: JSON.stringify({
         desktopDeviceId,
         mobileDeviceId,
@@ -133,7 +153,7 @@ export async function requestUnpair(apiBaseUrl: string, desktopDeviceId: string)
     const mobileDeviceId = await initDeviceIdentity();
     const res = await fetch(`${apiBaseUrl.replace(/\/$/, '')}/devices/unpair`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', ...(await deviceAuthHeaders(apiBaseUrl)) },
       body: JSON.stringify({ desktopDeviceId, mobileDeviceId }),
       signal: controller.signal,
     });

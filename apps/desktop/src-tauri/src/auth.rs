@@ -1,4 +1,4 @@
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
@@ -172,6 +172,13 @@ impl DeviceAuth {
     /// After showing the code, poll `sign_in()`: it stops returning
     /// `AuthError::NotEnrolled` the moment a phone approves. That is the whole
     /// completion protocol — no extra endpoint and no push channel.
+    ///
+    /// **`fingerprint` MUST be `AppState.device_id`**, the same string this app
+    /// puts in `/pairing/create` and in its presence room. The backend resolves
+    /// ownership by `(kind, fingerprint)`, so enrolling under any other value
+    /// creates a second device row: the machine would be linked, yet every
+    /// authorization check would still see the unlinked row and the presence
+    /// gate would reject it. Same rule for `enroll` above.
     pub async fn request_enrollment_code(
         &self,
         fingerprint: &str,
@@ -284,6 +291,74 @@ impl DeviceAuth {
     }
 }
 
+/// The app-wide handle every backend call reaches for, managed by Tauri.
+///
+/// The identity is loaded on FIRST USE, not at startup. Opening the OS
+/// credential store can block on a user prompt, and doing that from Tauri's
+/// `setup` hook would hold the whole launch — tray included — behind a dialog.
+/// Nothing needs the key until a backend call happens anyway.
+pub struct DesktopAuth {
+    base_url: String,
+    /// `None` inside means the keychain could not produce a durable keypair, so
+    /// this machine has no stable identity to prove. Calls then go out
+    /// unauthenticated, which the backend accepts only for a computer no
+    /// account owns — the honest outcome, and better than enrolling under an
+    /// ephemeral key that the next launch would lose, orphaning the device row.
+    inner: OnceLock<Option<DeviceAuth>>,
+}
+
+impl DesktopAuth {
+    pub fn new(base_url: String) -> Self {
+        Self {
+            base_url,
+            inner: OnceLock::new(),
+        }
+    }
+
+    fn device_auth(&self) -> Option<&DeviceAuth> {
+        self.inner
+            .get_or_init(|| match DeviceIdentity::load_or_create() {
+                Ok(identity) => Some(DeviceAuth::new(identity, self.base_url.clone())),
+                Err(e) => {
+                    log::warn!(
+                        target: "lilypad::auth",
+                        "no durable device identity ({e}) — backend calls will be unauthenticated",
+                    );
+                    None
+                }
+            })
+            .as_ref()
+    }
+
+    /// A bearer token for a backend call, or `None` when this computer is not
+    /// linked to an account yet.
+    ///
+    /// Best-effort ON PURPOSE. Pairing a computer no account owns must keep
+    /// working exactly as it always has, so a missing token is a normal state
+    /// and not an error to surface. The backend applies the mirror-image rule:
+    /// it demands a token only for a device an account owns, so the two halves
+    /// meet without a flag day — the moment a phone links this machine, these
+    /// calls start carrying a token and the backend starts requiring one.
+    pub async fn bearer(&self) -> Option<String> {
+        let auth = self.device_auth()?;
+        match auth.access_token().await {
+            Ok(token) => Some(token),
+            Err(e) => {
+                log::debug!(target: "lilypad::auth", "no device token available: {e}");
+                None
+            }
+        }
+    }
+}
+
+/// Attach a bearer token to a request when there is one to attach.
+pub fn with_bearer(req: reqwest::RequestBuilder, token: Option<String>) -> reqwest::RequestBuilder {
+    match token {
+        Some(t) => req.bearer_auth(t),
+        None => req,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -339,6 +414,49 @@ mod tests {
         let auth = auth();
         auth.cache(&session(0));
         assert!(auth.cached_token().is_none());
+    }
+
+    /// A computer with no durable identity must degrade to "unauthenticated",
+    /// never to a panic or a blocking error — that is exactly the state a
+    /// freshly-installed, unlinked machine is in. Seeded directly so the test
+    /// never touches this machine's real keychain.
+    #[tokio::test]
+    async fn no_identity_means_no_token_and_no_failure() {
+        let auth = DesktopAuth::new("http://localhost:8080".to_owned());
+        auth.inner.set(None).ok();
+        assert!(auth.bearer().await.is_none());
+    }
+
+    /// The keychain must not be opened until something actually needs a token —
+    /// doing it from Tauri's `setup` hook would hold the launch behind a prompt.
+    #[test]
+    fn constructing_it_touches_no_credential_store() {
+        let auth = DesktopAuth::new("http://localhost:8080".to_owned());
+        assert!(auth.inner.get().is_none());
+    }
+
+    #[test]
+    fn with_bearer_is_a_no_op_without_a_token() {
+        let client = reqwest::Client::new();
+        let req = with_bearer(client.get("http://localhost:8080/devices/pairs"), None)
+            .build()
+            .unwrap();
+        assert!(req.headers().get(reqwest::header::AUTHORIZATION).is_none());
+    }
+
+    #[test]
+    fn with_bearer_sets_the_authorization_header() {
+        let client = reqwest::Client::new();
+        let req = with_bearer(
+            client.get("http://localhost:8080/devices/pairs"),
+            Some("a-token".to_owned()),
+        )
+        .build()
+        .unwrap();
+        assert_eq!(
+            req.headers().get(reqwest::header::AUTHORIZATION).unwrap(),
+            "Bearer a-token"
+        );
     }
 
     #[test]

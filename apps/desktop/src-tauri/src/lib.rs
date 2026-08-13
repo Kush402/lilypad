@@ -243,6 +243,12 @@ pub fn run() {
             let backend = std::env::var("LILYPAD_BACKEND_URL")
                 .unwrap_or_else(|_| DEFAULT_BACKEND_URL.to_string());
 
+            // This computer's authenticated relationship with the backend
+            // (M9). Managed separately from `AppState` because obtaining a
+            // token is async and `AppState` lives behind a sync Mutex — a
+            // command must never hold that lock across a network round trip.
+            app.manage(std::sync::Arc::new(auth::DesktopAuth::new(backend.clone())));
+
             app.manage(Mutex::new(AppState::new(device_id, backend)));
 
             build_tray(app)?;

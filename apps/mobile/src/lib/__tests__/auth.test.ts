@@ -1,4 +1,4 @@
-import { accessToken, signInDevice, DeviceAuthError, resetAuthState } from '../auth';
+import { accessToken, signInDevice, enrollDevice, DeviceAuthError, resetAuthState } from '../auth';
 import { resetDeviceKeyCache } from '../identity';
 
 jest.mock('react-native-keychain', () => {
@@ -106,6 +106,44 @@ describe('device access tokens', () => {
     await expect(accessToken(API)).rejects.toThrow();
     const counts = mockBackend();
     await expect(accessToken(API)).resolves.toBe('token-1');
+    expect(counts.token).toBe(1);
+  });
+});
+
+/**
+ * M9: pairing now asks for a token on the way past (`api.ts`), and most phones
+ * have no account until M10 lands sign-in. Re-running the exchange on every
+ * scan and every reconnect, to be told the same thing each time, would put two
+ * pointless round trips in front of the product's core flow.
+ */
+describe('a phone with no account behind it', () => {
+  it('stops re-asking once the backend has said so', async () => {
+    const counts = mockBackend({ tokenStatus: 403, tokenBody: '{"error":"device_not_enrolled"}' });
+    await expect(accessToken(API)).rejects.toMatchObject({ code: 'device_not_enrolled' });
+    await expect(accessToken(API)).rejects.toMatchObject({ code: 'device_not_enrolled' });
+    expect(counts.token).toBe(1);
+    expect(counts.challenge).toBe(1);
+  });
+
+  // A verdict is memoized; a network blip must not be, or one bad moment
+  // would leave the phone unable to prove itself for the rest of the run.
+  it('keeps retrying after a transient failure', async () => {
+    mockBackend({ tokenStatus: 500, tokenBody: 'boom' });
+    await expect(accessToken(API)).rejects.toThrow(/HTTP 500/);
+    const counts = mockBackend();
+    await expect(accessToken(API)).resolves.toBe('token-1');
+    expect(counts.token).toBe(1);
+  });
+
+  // Enrolling is exactly the event that makes the memo wrong.
+  it('starts asking again once it enrols', async () => {
+    mockBackend({ tokenStatus: 403, tokenBody: '{"error":"device_not_enrolled"}' });
+    await expect(accessToken(API)).rejects.toThrow();
+    const counts = mockBackend();
+    await expect(enrollDevice(API, 'an-account-token')).resolves.toMatchObject({
+      accessToken: 'token-1',
+    });
+    await expect(accessToken(API)).resolves.toBe('token-1'); // cached, no new exchange
     expect(counts.token).toBe(1);
   });
 });
