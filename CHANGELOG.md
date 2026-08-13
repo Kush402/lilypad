@@ -44,6 +44,15 @@ See [ADR-0010](docs/adr/0010-explicit-device-linking.md).
   (`routes/authorization.test.ts`).
 - The phone now memoizes "this device has no account" so pairing does not pay
   for a challenge and a rejection on every scan.
+- **Pre-secret trust pairs are refused (SEC-5).** A pair with no
+  `connect_secret_hash` predates per-pair secrets and used to be admitted with
+  no secret whatsoever, so knowing two device ids was enough to ring a
+  laptop — on exactly the pairs whose owners never had a chance to opt in.
+  Migration `0005` revokes them (revoked, not deleted, so the row stays an
+  audit trail) and `authorizeConnect` refuses a null hash outright. Verified
+  against a live Postgres: one seeded legacy row revoked, two secret-bearing
+  pairs untouched. Affected phones re-pair once with a QR, which issues a
+  secret and un-revokes the row.
 
 ### Deployment — control plane artifacts (not yet deployed)
 

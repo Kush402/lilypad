@@ -268,8 +268,12 @@ describe('TrustService', () => {
       expect(revoked).toEqual({ ok: false, reason: 'revoked' });
     });
 
-    it('allows a legacy pre-secret pair without a secret (back-compat)', async () => {
-      // Simulate a row created before secrets existed: null hash.
+    // SEC-5. This used to assert the OPPOSITE — a legacy pre-secret pair was
+    // admitted with no secret at all for back-compat, which made knowing two
+    // device ids sufficient to ring a laptop, on exactly the pairs whose owners
+    // never had the chance to opt into a secret. Migration `0005` revokes the
+    // rows that exist; this is the guard that keeps it shut.
+    it('refuses a legacy pre-secret pair rather than admitting it with no secret', async () => {
       const store = new FakeTrustStore();
       const trust = new TrustService(store);
       const desktopId = await store.upsertDevice('desktop', 'desktop-01');
@@ -279,8 +283,32 @@ describe('TrustService', () => {
       const pair = (await trust.findPair('desktop-01', 'mobile-01'))!;
       store.pairs.get(pair.pairId)!.connectSecretHash = null as unknown as string;
 
-      const legacy = await trust.authorizeConnect('desktop-01', 'mobile-01', undefined);
-      expect(legacy.ok).toBe(true);
+      expect(await trust.authorizeConnect('desktop-01', 'mobile-01', undefined)).toEqual({
+        ok: false,
+        reason: 'not_trusted',
+      });
+      // Nor by guessing a secret — there is nothing to match against.
+      expect(await trust.authorizeConnect('desktop-01', 'mobile-01', 'anything')).toEqual({
+        ok: false,
+        reason: 'not_trusted',
+      });
+    });
+
+    // The recovery path has to actually work, or the fix is a lockout: the QR
+    // ceremony issues a secret and un-revokes the row.
+    it('lets a purged pair recover by re-pairing with a QR', async () => {
+      const store = new FakeTrustStore();
+      const trust = new TrustService(store);
+      const desktopId = await store.upsertDevice('desktop', 'desktop-01');
+      const mobileId = await store.upsertDevice('mobile', 'mobile-01');
+      await store.insertPair(desktopId, mobileId, true, '');
+      const pair = (await trust.findPair('desktop-01', 'mobile-01'))!;
+      store.pairs.get(pair.pairId)!.connectSecretHash = null as unknown as string;
+      await trust.revoke(pair.pairId); // what migration 0005 does
+
+      const { pairSecret } = await trust.establishTrust('desktop-01', 'mobile-01');
+      const authz = await trust.authorizeConnect('desktop-01', 'mobile-01', pairSecret);
+      expect(authz.ok).toBe(true);
     });
   });
 

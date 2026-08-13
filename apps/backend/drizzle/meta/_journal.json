@@ -36,6 +36,13 @@
       "when": 1786567090692,
       "tag": "0004_bizarre_silverclaw",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1786587608455,
+      "tag": "0005_purge_legacy_null_secret_pairs",
+      "breakpoints": true
     }
   ]
 }

@@ -275,7 +275,7 @@ client libraries are implemented and verified end to end against a live
 backend. Closes SEC-1 and SEC-2.
 
 Applying that identity to every route turned out to be its own body of work and
-became **M9** below; SEC-5 (legacy null-secret pairs) is still open.
+became **M9** below, which also closed SEC-5.
 
 ## M9 — Ownership + authorization ✅
 
@@ -296,7 +296,7 @@ SEC-7.
 - ✅ Client token wiring — both clients send a device token whenever they can
   mint one, so pairing and reconnect are unchanged for a device no account owns
 - ✅ Table-driven cross-user isolation suite + route-wiring suite (SEC-7)
-- 🔜 Purge legacy `connect_secret_hash = NULL` pairs (SEC-5)
+- ✅ Purge legacy `connect_secret_hash = NULL` pairs (SEC-5, migration `0005`)
 
 **The unowned lane is deliberate, and it is what M10 closes.** A device row with
 no `user_id` has no owner to protect, so it keeps its pre-accounts behaviour;

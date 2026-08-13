@@ -187,8 +187,10 @@ export const trustedDevices = pgTable(
     /** SHA-256 of the per-pair connect secret (M5.4 security). The plaintext
      * is issued to the phone over the mobile seat at trust time and never
      * stored server-side. `/connect/request` must present a secret hashing to
-     * this value. NULL = a pair created before secrets existed — allowed for
-     * back-compat until it re-pairs (which sets one). */
+     * this value. NULL = a pair created before secrets existed; `0005` revoked
+     * the ones that existed and `authorizeConnect` refuses any that appear
+     * (SEC-5). The column stays nullable because a secret cannot be
+     * backfilled — it is only ever known to the phone it was issued to. */
     connectSecretHash: text('connect_secret_hash'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },

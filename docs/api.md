@@ -100,8 +100,8 @@ thing between an attacker and it was knowing two device ids and a secret.
 // request
 { "desktopDeviceId": "desktop-…", "mobileDeviceId": "mobile-…",
   "mobileDeviceName": "ios phone",   // optional
-  "pairSecret": "…" }                // per-pair secret; optional only for
-                                     // legacy pairs made before secrets existed
+  "pairSecret": "…" }                // per-pair secret; required — a pair
+                                     // without one is refused (SEC-5)
 // 200 OK
 { "roomId": "uuid", "signalingUrl": "wss://…", "scopes": ["view","control"],
   "desktopDeviceName": "macos desktop" }

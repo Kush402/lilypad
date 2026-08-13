@@ -134,8 +134,12 @@ deleting**, so the row remains the audit trail.
 | connect_secret_hash                  | text nullable             | SHA-256 of the per-pair connect secret  |
 | created_at                           | timestamptz               |                                         |
 
-A **NULL `connect_secret_hash`** is a pair created before secrets existed and
-authorizes with no secret at all — tracked as SEC-5 and purged in M8.
+A **NULL `connect_secret_hash`** is a pair created before per-pair secrets
+existed. It used to authorize with no secret at all — SEC-5. Migration `0005`
+revokes every such row, and `authorizeConnect` refuses a null hash outright, so
+the affected phones re-pair once with a QR (which issues a secret and un-revokes
+the row). The column stays nullable: a secret is known only to the phone it was
+issued to, so it cannot be backfilled.
 
 ### `sessions`
 

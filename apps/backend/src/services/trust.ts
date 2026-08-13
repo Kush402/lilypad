@@ -170,11 +170,17 @@ export class TrustService {
   }
 
   /**
-   * Authorize a no-QR connect. Fails closed on: unknown/untrusted devices,
-   * a revoked pair, or a missing/wrong secret. A pair whose stored hash is
-   * null is a pre-secret legacy pair — allowed WITHOUT a secret for
-   * back-compat (it gets one the next time it re-pairs). The presented secret
-   * is compared in constant time.
+   * Authorize a no-QR connect. Fails closed on: unknown/untrusted devices, a
+   * revoked pair, a missing/wrong secret, and a pair that has no secret at all.
+   * The presented secret is compared in constant time.
+   *
+   * **A null `connectSecretHash` is refused (SEC-5).** Such rows predate
+   * per-pair secrets and used to be admitted with no secret whatsoever for
+   * back-compat — which made knowing two device ids sufficient to ring a
+   * laptop, on exactly the pairs whose owners had never had a chance to opt in.
+   * Migration `0005` revokes the ones that exist; this branch is what keeps the
+   * hole shut if one is ever created again. Recovery is the QR ceremony, which
+   * issues a secret and un-revokes the row.
    */
   async authorizeConnect(
     desktopFingerprint: string,
@@ -184,12 +190,11 @@ export class TrustService {
     const pair = await this.findPair(desktopFingerprint, mobileFingerprint);
     if (!pair) return { ok: false, reason: 'not_trusted' };
     if (pair.revoked) return { ok: false, reason: 'revoked' };
-    if (pair.connectSecretHash !== null) {
-      if (!presentedSecret) return { ok: false, reason: 'bad_secret' };
-      const presentedHash = hashSecret(presentedSecret);
-      if (!hashesMatch(presentedHash, pair.connectSecretHash)) {
-        return { ok: false, reason: 'bad_secret' };
-      }
+    if (pair.connectSecretHash === null) return { ok: false, reason: 'not_trusted' };
+    if (!presentedSecret) return { ok: false, reason: 'bad_secret' };
+    const presentedHash = hashSecret(presentedSecret);
+    if (!hashesMatch(presentedHash, pair.connectSecretHash)) {
+      return { ok: false, reason: 'bad_secret' };
     }
     return { ok: true, pair };
   }

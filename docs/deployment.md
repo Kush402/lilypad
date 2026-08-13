@@ -214,7 +214,8 @@ Stated explicitly so nothing here reads as more finished than it is.
   both clients. **Until then, a public deployment is reachable by unenrolled
   devices on the legacy lane** — which is the pre-M8 posture, not a regression,
   but it is the reason to finish M10 before opening this to strangers.
-- Legacy null-secret pairs (SEC-5) are not purged.
+- ~~Legacy null-secret pairs (SEC-5) are not purged.~~ Migration `0005` revokes
+  them and the connect gate refuses a null hash.
 - The `sessions` table is still never written.
 - No backup cron is installed; the procedure above is written, not automated.
 - No staging environment exists yet — the workflow supports it, nothing runs it.

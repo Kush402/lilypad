@@ -19,8 +19,10 @@ export const ConnectRequestSchema = z.object({
   mobileDeviceId: z.string().min(8).max(128),
   mobileDeviceName: z.string().min(1).max(120).nullish(),
   /** The per-pair connect secret issued at trust time (M5.4 security).
-   * Optional so pairs made before secrets existed still work (their stored
-   * hash is null → the server allows them); every new pair requires it. */
+   * Optional on the WIRE only, so an older client still parses; the server
+   * refuses every pair without one, including the pre-secret rows that were
+   * once admitted with no secret at all (SEC-5, migration `0005`). A phone
+   * that lost its secret re-pairs once with a QR. */
   pairSecret: z.string().min(16).max(128).optional(),
 });
 export type ConnectRequest = z.infer<typeof ConnectRequestSchema>;
