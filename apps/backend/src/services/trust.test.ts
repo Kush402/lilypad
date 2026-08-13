@@ -115,6 +115,44 @@ describe('TrustService', () => {
     expect(pair!.autoApprove).toBe(true);
   });
 
+  // Account enrollment (ADR-0008) already holds both devices.id uuids and must
+  // not re-derive them from wire fingerprints. Regression guard for a real
+  // defect: approving a laptop wrote devices.user_id and nothing else, while
+  // authorizeConnect authorizes purely on a trusted_devices row — so the user
+  // completed the whole linking ceremony and still could not connect.
+  it('establishTrustForDeviceIds makes an enrolled laptop reachable, not merely owned', async () => {
+    const store = new FakeTrustStore();
+    const trust = new TrustService(store);
+
+    // Both rows already exist, as they do after enrollment.
+    const desktopId = await store.upsertDevice('desktop', 'desktop-enrolled');
+    const mobileId = await store.upsertDevice('mobile', 'mobile-approver');
+
+    // Ownership alone leaves it unreachable.
+    expect(await trust.authorizeConnect('desktop-enrolled', 'mobile-approver', undefined)).toEqual({
+      ok: false,
+      reason: 'not_trusted',
+    });
+
+    const { pairSecret } = await trust.establishTrustForDeviceIds(desktopId, mobileId);
+
+    expect(store.devices.size).toBe(2); // no duplicate rows minted
+    expect(store.pairs.size).toBe(1);
+    const authorized = await trust.authorizeConnect(
+      'desktop-enrolled',
+      'mobile-approver',
+      pairSecret,
+    );
+    expect(authorized.ok).toBe(true);
+    // The secret is load-bearing: seeing the laptop is not reaching it.
+    const wrongSecret = await trust.authorizeConnect(
+      'desktop-enrolled',
+      'mobile-approver',
+      'not-the-secret',
+    );
+    expect(wrongSecret).toEqual({ ok: false, reason: 'bad_secret' });
+  });
+
   it('the dashboard toggle flips autoApprove and re-trusting never overrides it', async () => {
     const store = new FakeTrustStore();
     const trust = new TrustService(store);

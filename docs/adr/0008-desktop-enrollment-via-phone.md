@@ -43,7 +43,11 @@ WhatsApp Web / Steam model.
 2. The desktop shows the code as a QR.
 3. The phone scans it and calls `POST /devices/enrollment-code/approve` with its
    own **device token**. The account the desktop joins is the token's subject.
-4. The desktop learns it worked because its next `POST /devices/token` succeeds.
+4. Approval also establishes the **trust pair** between the approving phone and
+   the newly linked desktop, returning that pair's one-time `pairSecret`.
+   Linking must make the laptop _reachable_, not merely _owned_ — see
+   Consequences.
+5. The desktop learns it worked because its next `POST /devices/token` succeeds.
    There is no completion endpoint, no push channel, and no polling protocol to
    specify.
 
@@ -90,6 +94,23 @@ device that is sitting next to an already-authenticated phone.
 - The desktop still needs an account to exist. A user with no phone cannot
   currently create one — acceptable for a phone-first product, and the web
   dashboard (M14) removes the constraint.
+
+### Amendment (2026-08-13): approval had to create the trust pair
+
+As first shipped, approving a laptop wrote `devices.user_id` and nothing else.
+But `/connect/request` authorizes on a `trusted_devices` row and a per-pair
+secret and **never consults ownership** — so a user could complete the entire
+linking ceremony and still be unable to connect. Two ceremonies existed
+(enrollment for ownership, QR pairing for reachability) where the product needs
+one.
+
+Approval now also calls `TrustService.establishTrustForDeviceIds()` — the same
+path `/pairing/redeem` uses, reached with the `devices.id` uuids the handler
+already holds — and returns the `pairSecret` for one-time delivery to the phone.
+
+Ownership and reachability remain **separate facts**; the ceremony simply has to
+establish both. Verified against live Postgres: desktops linked before this
+change show no trust pair, desktops linked after show one with a secret.
 
 ## Status
 

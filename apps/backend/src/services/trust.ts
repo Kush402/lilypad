@@ -133,6 +133,26 @@ export class TrustService {
   ): Promise<{ pairSecret: string }> {
     const desktopId = await this.store.upsertDevice('desktop', desktopFingerprint);
     const mobileId = await this.store.upsertDevice('mobile', mobileFingerprint);
+    return this.establishTrustForDeviceIds(desktopId, mobileId);
+  }
+
+  /**
+   * The same ceremony, for callers that already hold both `devices.id` uuids.
+   *
+   * Account enrollment ([ADR-0008](../../../../docs/adr/0008-desktop-enrollment-via-phone.md))
+   * is one of them: approving a laptop resolves both rows itself, and must not
+   * re-derive them from wire fingerprints.
+   *
+   * This exists because enrollment previously wrote `devices.user_id` and
+   * nothing else, while `authorizeConnect` authorizes purely on a
+   * `trusted_devices` row — so a user could complete the linking ceremony and
+   * still be unable to connect. Ownership and reachability are separate facts,
+   * and the ceremony has to establish both.
+   */
+  async establishTrustForDeviceIds(
+    desktopId: string,
+    mobileId: string,
+  ): Promise<{ pairSecret: string }> {
     // A fresh secret every time trust is (re)established — a re-pair or an
     // un-revoke re-issues, and the phone stores whatever it's handed. Only the
     // hash is persisted; the plaintext is returned for one-time delivery.

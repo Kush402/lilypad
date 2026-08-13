@@ -300,7 +300,13 @@ Rate-limited to **20/minute** per IP.
 ```jsonc
 { "code": "…" }
 // 200 OK
-{ "ok": true, "deviceId": "uuid" }
+{
+  "ok": true,
+  "deviceId": "uuid",
+  "name": "Work Mac",       // label the desktop supplied, never an authz input
+  "platform": "macos",
+  "pairSecret": "…"         // delivered ONCE; never stored in plaintext
+}
 // 404 — unknown, expired, or already used; all answer identically so a caller
 //       cannot probe for live codes
 { "error": "invalid_code", "message": "…" }
@@ -309,6 +315,15 @@ Rate-limited to **20/minute** per IP.
 
 The desktop learns it succeeded because its next `POST /devices/token` starts
 working. There is no completion endpoint and no push channel.
+
+Approval also establishes the **trust pair** between the approving phone and the
+newly linked desktop, and returns that pair's `pairSecret`. Linking has to make
+the laptop _reachable_, not merely _owned_: enrollment writes `devices.user_id`,
+while [`/connect/request`](#post-connectrequest) authorizes on a
+`trusted_devices` row plus this secret and never consults ownership. Without it
+a user completed the whole ceremony and still could not connect. The phone must
+store the secret — losing it means seeing the computer but being unable to
+reach it, recoverable only by linking again.
 
 Both proof-carrying routes **burn the challenge before checking the
 signature**. The other order would leave a failed attempt's nonce spendable,

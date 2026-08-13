@@ -1,5 +1,5 @@
 import { Platform } from 'react-native';
-import type { DeviceSession } from '@lilypad/protocol';
+import type { DeviceSession, DesktopEnrollmentApproved } from '@lilypad/protocol';
 import { devicePublicKey, signChallenge } from './identity';
 import { initDeviceIdentity } from './device';
 
@@ -168,7 +168,7 @@ function cache(session: DeviceSession): void {
 export async function approveDesktopEnrollment(
   apiBaseUrl: string,
   code: string,
-): Promise<{ deviceId: string }> {
+): Promise<DesktopEnrollmentApproved> {
   const { status, text } = await postJson(
     endpoint(apiBaseUrl, '/devices/enrollment-code/approve'),
     { code },
@@ -181,7 +181,7 @@ export async function approveDesktopEnrollment(
     throw new Error('That computer is already on another account.');
   }
   if (status !== 200) throw new Error(`could not add that computer (HTTP ${status})`);
-  return JSON.parse(text) as { deviceId: string };
+  return JSON.parse(text) as DesktopEnrollmentApproved;
 }
 
 /** Drop the cached token so the next call re-authenticates. Called when the

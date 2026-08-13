@@ -144,6 +144,26 @@ export const DesktopEnrollmentApproveSchema = z.object({
 });
 export type DesktopEnrollmentApprove = z.infer<typeof DesktopEnrollmentApproveSchema>;
 
+/**
+ * What the phone gets back when it approves a laptop.
+ *
+ * `pairSecret` is delivered exactly once and never stored in plaintext
+ * server-side. It is what the phone presents to `/connect/request` later, so a
+ * phone that discards it can see the laptop but not reach it — the same
+ * one-time delivery contract as `/pairing/redeem`.
+ */
+export const DesktopEnrollmentApprovedSchema = z.object({
+  ok: z.literal(true),
+  /** The newly linked desktop's `devices.id`. */
+  deviceId: z.string(),
+  /** Display name the desktop supplied at mint time. A label for a human to
+   * recognise their own machine, never an authorization input. */
+  name: z.string().nullable(),
+  platform: PlatformSchema.nullable(),
+  pairSecret: z.string(),
+});
+export type DesktopEnrollmentApproved = z.infer<typeof DesktopEnrollmentApprovedSchema>;
+
 /** Machine-readable failures for the desktop-enrollment exchange. */
 export type DesktopEnrollmentErrorCode =
   'invalid_signature' | 'invalid_code' | 'device_owned_by_another_account' | 'public_key_in_use';

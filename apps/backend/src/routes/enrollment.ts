@@ -19,6 +19,7 @@ import {
   createDesktopEnrollmentCode,
   consumeDesktopEnrollmentCode,
 } from '../auth/desktopEnrollment.js';
+import { TrustService, createDrizzleTrustStore } from '../services/trust.js';
 import { AuditLogService, createDrizzleAuditLogStore } from '../services/auditLog.js';
 import { log } from '../logging.js';
 
@@ -37,6 +38,7 @@ import { log } from '../logging.js';
  */
 export async function enrollmentRoutes(app: FastifyInstance): Promise<void> {
   const registry = new DeviceRegistry(createDrizzleDeviceIdentityStore());
+  const trust = new TrustService(createDrizzleTrustStore());
   const auditLog = new AuditLogService(createDrizzleAuditLogStore());
 
   /** Issue a nonce for a device to sign. Unauthenticated by necessity — a
@@ -241,10 +243,28 @@ export async function enrollmentRoutes(app: FastifyInstance): Promise<void> {
         })
         .catch((err) => log.audit.error({ err }, 'failed to write login audit log'));
 
+      // Linking must make the laptop REACHABLE, not merely owned. Enrollment
+      // writes `devices.user_id`; `/connect/request` authorizes on a
+      // `trusted_devices` row and a per-pair secret and never consults
+      // ownership. Without this the user completes the whole ceremony and then
+      // cannot connect — one product step that silently needed two.
+      const { pairSecret } = await trust.establishTrustForDeviceIds(
+        enrolled.deviceId,
+        approver.deviceId,
+      );
+
       // The desktop learns it succeeded by its next /devices/token call
       // starting to work — no extra endpoint, no push channel, no polling
-      // protocol to specify.
-      return reply.code(200).send({ ok: true, deviceId: enrolled.deviceId });
+      // protocol to specify. The PHONE, though, needs the connect secret it
+      // will present later, and this is its one delivery: it is never stored
+      // in plaintext server-side and cannot be re-read.
+      return reply.code(200).send({
+        ok: true,
+        deviceId: enrolled.deviceId,
+        name: record.name,
+        platform: record.platform,
+        pairSecret,
+      });
     },
   );
 
