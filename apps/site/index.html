@@ -1,0 +1,250 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Lilypad — your Mac, on your phone</title>
+    <meta
+      name="description"
+      content="Phone-first remote control for your Mac. At home it connects directly over your own network. Pair once with a QR code, reconnect forever."
+    />
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <header class="nav">
+      <a class="nav__brand" href="#top"><span aria-hidden="true">🪷</span> Lilypad</a>
+      <nav class="nav__links" aria-label="Sections">
+        <a href="#how">How it works</a>
+        <a href="#security">Security</a>
+        <a href="#ask">Ask</a>
+        <a href="#pricing">Pricing</a>
+        <a href="#get">Get it</a>
+      </nav>
+    </header>
+
+    <main id="top">
+      <!-- Hero. Every claim here is one the repo can demonstrate. -->
+      <section class="hero">
+        <h1>Your Mac, on your phone.</h1>
+        <p class="hero__sub">
+          Pair once with a QR code, then reconnect forever. At home, Lilypad connects
+          <strong>directly over your own network</strong> — no internet required.
+        </p>
+        <p class="hero__platforms">
+          <span class="chip">macOS</span> <span class="chip">iOS</span>
+        </p>
+        <p class="hero__note">
+          Not yet released publicly. See <a href="#get">Get it</a> for where builds will appear.
+        </p>
+      </section>
+
+      <!-- The connection story is the product's actual architecture, in order. -->
+      <section id="how" class="band">
+        <div class="band__inner">
+          <h2>It takes the cheapest path that works</h2>
+          <p class="lede">
+            Lilypad tries three routes in order and stops at the first one that connects.
+          </p>
+          <ol class="paths">
+            <li>
+              <h3>On your network</h3>
+              <p>
+                Your phone talks to your Mac directly. Nothing leaves your home, and it works with the
+                internet down.
+              </p>
+            </li>
+            <li>
+              <h3>Peer to peer</h3>
+              <p>
+                Away from home, your phone and Mac connect straight to each other across the internet
+                wherever the network allows it.
+              </p>
+            </li>
+            <li>
+              <h3>Relayed, only if it must</h3>
+              <p>
+                When a network blocks a direct connection, traffic is relayed — and it stays
+                end-to-end encrypted in transit (DTLS-SRTP) the whole way.
+              </p>
+            </li>
+          </ol>
+          <p class="footnote">
+            On the first two paths your screen never passes through our servers. Lilypad is built on
+            WebRTC — there is no custom video protocol.
+          </p>
+        </div>
+      </section>
+
+      <section id="security" class="band band--alt">
+        <div class="band__inner">
+          <h2>Knowing your computer's name is never enough</h2>
+          <div class="grid">
+            <article>
+              <h3>Signing in does not reveal a computer</h3>
+              <p>
+                An account tells us who you are. It does not hand over your machines. You link each
+                computer deliberately, by scanning the code it shows — so a stolen password is not a
+                stolen laptop.
+              </p>
+            </article>
+            <article>
+              <h3>No silent access</h3>
+              <p>
+                A session has to be approved on the Mac. Nobody connects to a machine that is not
+                expecting them.
+              </p>
+            </article>
+            <article>
+              <h3>Every device proves itself</h3>
+              <p>
+                Each phone and Mac holds its own key, kept in the system keychain, and proves who it
+                is on every connection.
+              </p>
+            </article>
+            <article>
+              <h3>Removing a device is immediate</h3>
+              <p>
+                Remove one from your account and it loses access straight away — including a session
+                running at that moment. It does not wait for a token to expire.
+              </p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section id="ask" class="band">
+        <div class="band__inner">
+          <h2>Ask it to do things</h2>
+          <p class="lede">
+            Ask is an assistant that drives your Mac. It runs <strong>on the Mac itself</strong> — not
+            in our cloud.
+          </p>
+          <ul class="ticks">
+            <li>It asks your phone before it does anything consequential.</li>
+            <li>You can take over at any moment.</li>
+            <li>
+              Bring your own API key — Anthropic, or any OpenAI-compatible endpoint. Your key stays in
+              your Mac's keychain.
+            </li>
+          </ul>
+        </div>
+      </section>
+
+      <section id="platforms" class="band band--alt">
+        <div class="band__inner">
+          <h2>What actually runs today</h2>
+          <table class="platforms">
+            <caption class="sr-only">
+              Platform support
+            </caption>
+            <thead>
+              <tr>
+                <th scope="col">Platform</th>
+                <th scope="col">Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <th scope="row">macOS</th>
+                <td><span class="tag tag--yes">Supported</span> Universal build, signed and notarized</td>
+              </tr>
+              <tr>
+                <th scope="row">iOS</th>
+                <td><span class="tag tag--yes">Supported</span> iPhone</td>
+              </tr>
+              <tr>
+                <th scope="row">Windows</th>
+                <td><span class="tag tag--no">Not yet</span> Not validated on real hardware</td>
+              </tr>
+              <tr>
+                <th scope="row">Android</th>
+                <td><span class="tag tag--no">Not yet</span> Not validated on real hardware</td>
+              </tr>
+            </tbody>
+          </table>
+          <p class="footnote">
+            Windows and Android are listed as unavailable on purpose. Code exists for both, but
+            neither has been proven on a real machine, and shipping is not the same as working.
+          </p>
+        </div>
+      </section>
+
+      <section id="pricing" class="band">
+        <div class="band__inner">
+          <h2>Plans</h2>
+          <p class="lede">
+            <strong>Using Lilypad on your own network is always free.</strong> It costs us nothing to
+            run, so there is nothing to charge for. We only meter the two things that genuinely cost
+            money: relayed minutes, and AI we pay for on your behalf.
+          </p>
+
+          <div class="plans">
+            <article class="plan">
+              <h3>Free</h3>
+              <p class="plan__price">$XXXX</p>
+              <ul>
+                <li>Unlimited sessions on your own network</li>
+                <li>Unlimited direct peer-to-peer sessions</li>
+                <li>A monthly allowance of relayed minutes</li>
+                <li>Remote control, input and clipboard</li>
+                <li>Multiple devices</li>
+                <li>Ask with your own API key</li>
+              </ul>
+            </article>
+            <article class="plan">
+              <h3>Pro</h3>
+              <p class="plan__price">$XXXX</p>
+              <ul>
+                <li>Everything in Free</li>
+                <li>A higher relay allowance</li>
+                <li>Managed AI — no key of your own to supply</li>
+                <li>Premium models</li>
+                <li>Extended history</li>
+                <li>Priority support</li>
+              </ul>
+            </article>
+            <article class="plan">
+              <h3>Team</h3>
+              <p class="plan__price">$XXXX</p>
+              <ul>
+                <li>Everything in Pro</li>
+                <li>Team and business features</li>
+              </ul>
+            </article>
+          </div>
+
+          <p class="footnote">
+            <strong>Prices are not set.</strong> <code>$XXXX</code> is a placeholder, and the
+            allowances above are not yet quantified. Nothing here is an offer.
+          </p>
+        </div>
+      </section>
+
+      <section id="get" class="band band--alt">
+        <div class="band__inner">
+          <h2>Get it</h2>
+          <p class="lede">There is no public release yet.</p>
+          <p>
+            When there is, macOS will ship as a signed and notarized universal build through GitHub
+            Releases, and installed copies will update themselves from it. The iPhone app is
+            distributed through TestFlight.
+          </p>
+          <p class="cta">
+            <a class="btn btn--primary" href="https://github.com/Kush402/lilypad/releases"
+              >Releases on GitHub</a
+            >
+            <a class="btn" href="https://github.com/Kush402/lilypad">Source</a>
+          </p>
+        </div>
+      </section>
+    </main>
+
+    <footer class="foot">
+      <p>🪷 Lilypad</p>
+      <p class="foot__legal">
+        Privacy policy and terms are not written yet, so they are not linked here. When they exist
+        they will say what actually happens to your data, rather than what is customary to claim.
+      </p>
+    </footer>
+  </body>
+</html>

@@ -1,0 +1,25 @@
+{
+  "name": "@lilypad/site",
+  "version": "0.1.0",
+  "description": "lilypad.takedia.com \u2014 the marketing site (P4). Static; no framework.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "lint": "eslint src",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "clean": "rm -rf dist *.tsbuildinfo",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@lilypad/design": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "typescript": "^5.7.3",
+    "vite": "^6.4.3",
+    "vitest": "^3.2.7"
+  }
+}

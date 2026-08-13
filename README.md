@@ -41,9 +41,11 @@ apps/
   mobile/    React Native (bare) — scanner, viewer, dev input toolbar
   backend/   Fastify — REST (health, pairing) + WS signaling, Redis, Postgres
   admin/     React + Vite — dashboard (wired in M6)
+  site/      Static marketing site — lilypad.takedia.com (P4)
 packages/
   protocol/  zod schemas + types: QR payload, signaling, input, pairing
   shared/    env parsing, logger, Redis keys, constants
+  design/    colour tokens (both schemes), radii, font stack — CSS + TS
 infra/       docker-compose: Postgres, Redis, coturn
 docs/        architecture, technical design, schema, API, protocols, threat model
 ```

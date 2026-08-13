@@ -203,6 +203,7 @@ apps/backend/src/
 packages/protocol/  zod wire contracts shared by all tiers (+Rust mirrors by hand)
 packages/shared/    env, logger, redis keys, cross-tier timing constants
 packages/design/    colour tokens (both schemes), radii, font stack — CSS + TS
+apps/site/          static marketing site, no framework (P4)
 ```
 
 ## Documentation index

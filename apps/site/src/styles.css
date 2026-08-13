@@ -1,0 +1,385 @@
+/* lilypad.takedia.com (P4).
+ *
+ * Colour comes from the shared tokens, so the site cannot drift from the
+ * product it describes (P3, docs/adr/0011-design-tokens.md). Light is the
+ * default and dark follows the visitor's OS, both for free.
+ *
+ * Type sizes are this surface's own, as ADR-0011 sets out: a page read at
+ * browser width is not tuned like an app panel. */
+@import '@lilypad/design/tokens.css';
+
+:root {
+  font-family: var(--font-sans);
+  --measure: 68ch;
+  --page: 1080px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+a {
+  color: var(--accent);
+}
+
+/* ── Nav ─────────────────────────────────────────────────────────────────── */
+.nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  flex-wrap: wrap;
+  max-width: var(--page);
+  margin: 0 auto;
+  padding: 20px 24px;
+}
+.nav__brand {
+  font-weight: 700;
+  font-size: 18px;
+  color: var(--ink);
+  text-decoration: none;
+}
+.nav__links {
+  display: flex;
+  gap: 22px;
+  flex-wrap: wrap;
+  font-size: 15px;
+}
+.nav__links a {
+  color: var(--muted);
+  text-decoration: none;
+}
+.nav__links a:hover,
+.nav__links a:focus-visible {
+  color: var(--accent);
+}
+
+/* ── Hero ────────────────────────────────────────────────────────────────── */
+.hero {
+  max-width: var(--page);
+  margin: 0 auto;
+  padding: 72px 24px 56px;
+}
+.hero h1 {
+  font-size: clamp(38px, 7vw, 62px);
+  line-height: 1.08;
+  letter-spacing: -0.02em;
+  margin: 0 0 20px;
+  max-width: 16ch;
+}
+.hero__sub {
+  font-size: clamp(17px, 2.2vw, 21px);
+  color: var(--muted);
+  max-width: var(--measure);
+  margin: 0 0 26px;
+}
+.hero__sub strong {
+  color: var(--ink);
+}
+.hero__platforms {
+  display: flex;
+  gap: 10px;
+  margin: 0 0 18px;
+}
+.chip {
+  font-size: 13px;
+  font-weight: 600;
+  padding: 5px 13px;
+  border-radius: var(--radius-pill);
+  background: var(--accent-wash);
+  color: var(--accent);
+  border: 1px solid var(--accent);
+}
+.hero__note {
+  font-size: 14px;
+  color: var(--muted);
+  margin: 0;
+}
+
+/* ── Bands ───────────────────────────────────────────────────────────────── */
+/* A band spans the full width so its background can; `.band__inner` is the
+ * column the content actually sits in. The inner element is what keeps the two
+ * kinds of band aligned — centring the children directly does not work, because
+ * every child that sets a `margin` shorthand (the heading, the lede, the
+ * footnote all do) silently resets the auto margins doing the centring, and the
+ * result is a heading against the window edge beside cards in the column. */
+.band {
+  padding: 56px 24px;
+}
+.band__inner {
+  max-width: var(--page);
+  margin: 0 auto;
+}
+.band--alt {
+  background: var(--panel);
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+.band h2 {
+  font-size: clamp(26px, 3.6vw, 34px);
+  line-height: 1.15;
+  letter-spacing: -0.01em;
+  margin: 0 0 14px;
+  max-width: 22ch;
+}
+.lede {
+  font-size: 18px;
+  color: var(--muted);
+  max-width: var(--measure);
+  margin: 0 0 28px;
+}
+.lede strong {
+  color: var(--ink);
+}
+.footnote {
+  font-size: 14px;
+  color: var(--muted);
+  max-width: var(--measure);
+  margin: 26px 0 0;
+}
+.footnote code {
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  font-size: 13px;
+}
+
+/* ── The three connection paths ──────────────────────────────────────────── */
+.paths {
+  list-style: none;
+  counter-reset: path;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 18px;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+}
+.paths li {
+  counter-increment: path;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  padding: 22px;
+}
+.band--alt .paths li {
+  background: var(--bg);
+}
+.paths li::before {
+  content: counter(path);
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: 14px;
+  font-weight: 700;
+  margin-bottom: 12px;
+}
+.paths h3 {
+  font-size: 17px;
+  margin: 0 0 6px;
+}
+.paths p {
+  color: var(--muted);
+  font-size: 15px;
+  margin: 0;
+}
+
+/* ── Security grid ───────────────────────────────────────────────────────── */
+.grid {
+  display: grid;
+  gap: 18px;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+}
+.grid article {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  padding: 22px;
+}
+.grid h3 {
+  font-size: 17px;
+  margin: 0 0 8px;
+}
+.grid p {
+  color: var(--muted);
+  font-size: 15px;
+  margin: 0;
+}
+
+/* ── Ask ─────────────────────────────────────────────────────────────────── */
+.ticks {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 12px;
+  max-width: var(--measure);
+}
+.ticks li {
+  position: relative;
+  padding-left: 30px;
+  color: var(--muted);
+}
+.ticks li::before {
+  content: '✓';
+  position: absolute;
+  left: 0;
+  color: var(--accent);
+  font-weight: 700;
+}
+
+/* ── Platform table ──────────────────────────────────────────────────────── */
+.platforms {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 15px;
+}
+.platforms th,
+.platforms td {
+  text-align: left;
+  padding: 14px 12px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+}
+.platforms thead th {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+.platforms tbody th {
+  font-weight: 600;
+  width: 10rem;
+}
+.platforms td {
+  color: var(--muted);
+}
+.tag {
+  display: inline-block;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 2px 9px;
+  border-radius: var(--radius-pill);
+  margin-right: 8px;
+}
+.tag--yes {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+/* "Not yet" is deliberately the pending colour, not the danger colour: it is an
+ * honest absence, not a failure state. */
+.tag--no {
+  background: transparent;
+  color: var(--pending);
+  border: 1px solid var(--pending);
+}
+
+/* ── Plans ───────────────────────────────────────────────────────────────── */
+.plans {
+  display: grid;
+  gap: 18px;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+}
+.plan {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  padding: 24px;
+}
+.plan h3 {
+  font-size: 19px;
+  margin: 0 0 4px;
+}
+.plan__price {
+  font-size: 30px;
+  font-weight: 700;
+  margin: 0 0 16px;
+  color: var(--accent);
+}
+.plan ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 9px;
+  font-size: 15px;
+  color: var(--muted);
+}
+.plan li {
+  position: relative;
+  padding-left: 14px;
+}
+.plan li::before {
+  content: '·';
+  position: absolute;
+  left: 0;
+  color: var(--accent);
+  font-weight: 700;
+}
+
+/* ── Buttons ─────────────────────────────────────────────────────────────── */
+.cta {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 26px;
+}
+.btn {
+  display: inline-block;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--ink);
+  padding: 11px 20px;
+  border-radius: var(--radius-sm);
+  font-size: 15px;
+  font-weight: 600;
+  text-decoration: none;
+}
+.btn:hover {
+  border-color: var(--accent);
+}
+.btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.btn--primary {
+  background: var(--accent);
+  color: var(--on-accent);
+  border-color: transparent;
+}
+
+/* ── Footer ──────────────────────────────────────────────────────────────── */
+.foot {
+  max-width: var(--page);
+  margin: 0 auto;
+  padding: 40px 24px 64px;
+  color: var(--muted);
+  font-size: 14px;
+}
+.foot p {
+  margin: 0 0 10px;
+}
+.foot__legal {
+  max-width: var(--measure);
+}

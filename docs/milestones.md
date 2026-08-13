@@ -547,18 +547,55 @@ mobile and admin surfaces, and it had already drifted in four places
 tokens correctly inlined into the emitted CSS (both schemes intact), and the
 full mobile, desktop and backend suites.
 
-## P4 — `lilypad.takedia.com` 🔜
+## P4 — `lilypad.takedia.com` ✅ (content and build)
 
 The marketing site: what Lilypad is, which platforms are **actually** supported,
-and the plans. Static, deployed on the existing Cloudflare account.
+and the plans. Static, no framework — `apps/site` is one HTML file plus one
+stylesheet, and ships no JavaScript at all.
 
-- Advertise **macOS + iOS only** until Windows input and Android have been
-  validated on real hardware — see gap AND-1's history for why claiming
-  otherwise is not acceptable.
-- Tiers are `free`, `pro`, `team` (`users.tier`). **Prices render as `$XXXX`
-  placeholders** — no price point, quota or allowance exists anywhere in the
-  repository, and this track does not invent them.
-- DNS, TLS and hosting remain M13's.
+- ✅ Advertises **macOS + iOS only**. Windows and Android appear in the platform
+  table marked **Not yet**, with the reason stated: code exists for both, but
+  neither has been proven on real hardware — see gap AND-1's history for why
+  claiming otherwise is not acceptable.
+- ✅ Tiers are `free`, `pro`, `team` (`users.tier`), rendered as Free / Pro /
+  Team with **`$XXXX`** prices. The page says outright that prices are not set
+  and the allowances are not quantified, because no price point, quota or
+  allowance exists anywhere in the repository.
+- ✅ Colour comes from `@lilypad/design`, so the site cannot drift from the
+  product it describes, and it follows the visitor's light/dark preference for
+  free ([ADR-0011](adr/0011-design-tokens.md)).
+- ✅ **A claims test** (`apps/site/src/claims.test.ts`) asserts the page against
+  the rules the repo actually sets: macOS/iOS supported, Windows/Android not,
+  `$XXXX` the only price on the page, no legal pages linked, and Ask's internal
+  tier names absent. A marketing page does not crash when it goes wrong — it
+  keeps rendering a claim that stopped being true, so the claim is the thing
+  worth testing. Mutation-checked: marking Windows supported, or writing a real
+  price, both fail it.
+- ✅ No download button. There is **no tag and no published release**, so the
+  page says so and links to the Releases page rather than promising a binary
+  that does not exist.
+- 🔜 DNS, TLS and hosting remain M13's — and see the hostname conflict below.
+
+### The hostname is already taken
+
+`lilypad.takedia.com` is **live today as the named cloudflared tunnel** that
+serves the development backend for off-LAN and cellular testing
+([RUNBOOK](RUNBOOK.md)); `.env` pins `PUBLIC_BASE_URL`/`SIGNALING_URL` to it, and
+[deployment.md](deployment.md) lists it as **preserved**. Pointing it at a static
+site would break cellular testing, and `deployment.md` already reserves
+`takedia.com` for the marketing site.
+
+So P4 builds the site and does **not** touch DNS. Which hostname it finally
+answers on is an M13 decision, and a real one: the options are `takedia.com` as
+already planned, a new `lilypad.` sub-path arrangement, or moving the dev tunnel
+to another name. Recorded rather than guessed.
+
+### Not verified
+
+How the page looks **on the iPhone**. It was rendered and measured in Chrome at
+a 390×844 viewport, and the real iPhone did fetch and load it over the LAN — but
+Blink is not WebKit, and confirming it looks right on the phone needs a person
+looking at the phone.
 
 ## P5 — Ask productisation 🔜
 

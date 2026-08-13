@@ -62,14 +62,14 @@ nonce that survives a restart is a replay window, not a recovered value.
 
 ## Domains
 
-| Host                  | Purpose                   | Status               |
-| --------------------- | ------------------------- | -------------------- |
-| `lilypad.takedia.com` | Local-development tunnel  | **Live** — preserved |
-| `api.takedia.com`     | REST **and** `/ws/signal` | Planned              |
-| `turn.takedia.com`    | TURN/STUN relay           | Planned              |
-| `takedia.com`         | Marketing site            | Planned              |
-| `dl.takedia.com`      | Downloads                 | Planned              |
-| `status.takedia.com`  | Status page               | Planned              |
+| Host                  | Purpose                   | Status                                                                                                                                            |
+| --------------------- | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `lilypad.takedia.com` | Local-development tunnel  | **Live** — preserved, and **contended**: P4 was specified against this name while it serves the dev tunnel. Resolve before pointing DNS anywhere. |
+| `api.takedia.com`     | REST **and** `/ws/signal` | Planned                                                                                                                                           |
+| `turn.takedia.com`    | TURN/STUN relay           | Planned                                                                                                                                           |
+| `takedia.com`         | Marketing site            | Planned                                                                                                                                           |
+| `dl.takedia.com`      | Downloads                 | Planned                                                                                                                                           |
+| `status.takedia.com`  | Status page               | Planned                                                                                                                                           |
 
 Signaling shares `api.takedia.com` rather than taking its own host. A separate
 `signal.` subdomain buys independent scaling that matters only once REST and

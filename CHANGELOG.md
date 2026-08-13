@@ -6,6 +6,41 @@ All notable changes to Lilypad are documented here. The format follows
 
 ## [Unreleased]
 
+### P4 — the marketing site
+
+`apps/site` — one HTML file and one stylesheet, no framework and no JavaScript
+shipped. Colour comes from `@lilypad/design`, so the site follows the visitor's
+light/dark preference and cannot drift from the product it describes.
+
+#### Added
+
+- The page: what Lilypad is, the LAN → P2P → relay path in order, what the
+  security model actually promises, Ask, an honest platform table, and plans.
+- **A claims test.** A marketing page does not crash when it goes wrong — it
+  keeps rendering a claim that stopped being true. `src/claims.test.ts` asserts
+  the page against the rules the repo sets: macOS and iOS supported,
+  Windows and Android **not**, `$XXXX` as the only price on the page, no legal
+  pages linked, and Ask's internal tier names absent. Mutation-checked, both
+  ways.
+
+#### Deliberately absent
+
+- **A download button.** There is no tag and no published release, so the page
+  says there is no public release yet and links to the Releases page instead of
+  promising a binary that does not exist.
+- **Legal pages.** Privacy and terms need real answers about retention and
+  jurisdiction. The footer says they are not written rather than linking a
+  policy that does not exist.
+- **Real prices and quotas.** `$XXXX` throughout, and the page says outright
+  that prices are not set.
+
+#### Note
+
+`lilypad.takedia.com` is **already live** as the cloudflared tunnel serving the
+development backend for cellular testing, and `deployment.md` reserves
+`takedia.com` for marketing. P4 therefore builds the site and touches no DNS;
+which hostname it answers on is an M13 decision.
+
 ### P3 — design system
 
 One source of truth for colour, in a new `@lilypad/design` package
