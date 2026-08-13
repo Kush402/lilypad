@@ -250,6 +250,6 @@ const styles = StyleSheet.create({
     paddingVertical: 14,
     paddingHorizontal: 28,
   },
-  primaryText: { color: '#06231a', fontWeight: '700', fontSize: 16 },
+  primaryText: { color: theme.onAccent, fontWeight: '700', fontSize: 16 },
   error: { color: theme.danger, fontSize: 14, textAlign: 'center' },
 });

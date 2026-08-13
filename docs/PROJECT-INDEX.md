@@ -66,6 +66,7 @@ run them.
 | `apps/mobile`       |    95 |        7,856 | ✅ shipped (iOS real; Android builds in CI) |
 | `packages/protocol` |    11 |        1,014 | ✅ shipped                                  |
 | `packages/shared`   |     8 |          413 | ✅ shipped                                  |
+| `packages/design`   |     5 |          259 | ✅ shipped — design tokens (P3)             |
 | `apps/admin`        |     8 |           95 | 🚧 **scaffold only** — placeholder cards    |
 
 ### Detected communities (from the code graph)
@@ -307,7 +308,7 @@ in `milestones.md` unchanged.
 | --------- | ------------------------------------------------------------------------------------------------------------- |
 | **P1** 🚧 | Account-connected clients — sign-in, enrollment QR, approval screen. Closes PROD-1                            |
 | **P2** 🚧 | Device management — list, rename, revoke, active sessions (phone done; desktop view + session history remain) |
-| P3        | Design system — one palette, typography and interaction vocabulary                                            |
+| **P3** ✅ | Design system — `@lilypad/design`; one palette for all three surfaces ([ADR-0011](adr/0011-design-tokens.md)) |
 | P4        | `lilypad.takedia.com` — macOS + iOS only; tiers priced `$XXXX` until numbers exist                            |
 | P5        | Ask productisation — hide internal tier names, desktop Ask input                                              |
 | P6        | Entitlements — **blocked** on pricing decisions                                                               |

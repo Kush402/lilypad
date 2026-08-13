@@ -7,6 +7,8 @@ module.exports = {
   // like the rest of the app's TS.
   moduleNameMapper: {
     '^@lilypad/protocol$': '<rootDir>/../../packages/protocol/src/index.ts',
+    // @lilypad/design is pure ESM for the same reason and needs the same map.
+    '^@lilypad/design$': '<rootDir>/../../packages/design/src/index.ts',
     // The protocol package's source uses explicit ".js" extensions on relative
     // imports (correct for its own tsc/ESM build) — strip them so Jest's
     // runtime resolver finds the sibling ".ts" file instead of a literal ".js".

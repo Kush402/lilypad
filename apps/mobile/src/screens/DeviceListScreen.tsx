@@ -198,7 +198,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 22,
   },
   busy: { opacity: 0.6 },
-  connectText: { color: '#06231a', fontWeight: '700', fontSize: 15 },
+  connectText: { color: theme.onAccent, fontWeight: '700', fontSize: 15 },
   forget: { paddingVertical: 10, paddingHorizontal: 6 },
   forgetText: { color: theme.muted, fontSize: 14 },
   footer: { gap: 10 },
@@ -208,7 +208,7 @@ const styles = StyleSheet.create({
     paddingVertical: 16,
     alignItems: 'center',
   },
-  primaryText: { color: '#06231a', fontWeight: '700', fontSize: 16 },
+  primaryText: { color: theme.onAccent, fontWeight: '700', fontSize: 16 },
   secondary: {
     borderColor: theme.line,
     borderWidth: 1,

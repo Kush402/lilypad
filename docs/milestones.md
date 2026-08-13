@@ -515,11 +515,37 @@ Apple and Google sign-in cannot be exercised on this hardware; magic-link
 sign-in is the path that works. Clearing this needs a paid Apple Developer
 Program membership, not a code change.
 
-## P3 — Design system 🔜
+## P3 — Design system ✅
 
-One source of truth for colour, typography, spacing and interaction states. The
-palette is currently triplicated across the desktop, mobile and overlay
-surfaces; a product cannot look coherent while three copies drift.
+One source of truth for colour. The palette was triplicated across the desktop,
+mobile and admin surfaces, and it had already drifted in four places
+([ADR-0011](adr/0011-design-tokens.md)).
+
+- ✅ `@lilypad/design` holds colour (both schemes), corner radii and the font
+  stack. The web surfaces `@import '@lilypad/design/tokens.css'`; mobile imports
+  the TypeScript module. Three documented exemptions remain, each a colour that
+  must not follow the theme: the vendor sign-in buttons, the floating bubble,
+  and the QR code's white frame.
+- ✅ The four drifts closed: `#04140d` → `onAccent`, `#e0a83e` → `pending`, the
+  desktop's Apple-system status dots → `accent`/`pending`, and `SignInScreen` —
+  which had no background colour at all and rendered white in a dark-green
+  product — put on the palette.
+- ✅ A drift test parses the shipped `tokens.css` and fails if it disagrees with
+  `tokens.ts` in either direction. Mutation-checked: changing one hex in the CSS
+  does fail it.
+- **Deliberately out of scope: font sizes and spacing.** They are not
+  duplicated, they are genuinely different — the web surfaces are tuned around
+  11–18px and mobile around 13–26pt, because a phone is held at arm's length and
+  a laptop is not. One shared numeric scale would have to move one of them,
+  which is a redesign rather than a de-duplication. Recorded as a decision in
+  ADR-0011, not as unfinished work.
+- **One visible behaviour change:** the admin dashboard hardcoded the dark
+  palette and now follows the OS scheme like the desktop does. Its rendered
+  values are unchanged; which set applies is not.
+
+**Verified:** the design package's 5 drift tests, both Vite builds with the
+tokens correctly inlined into the emitted CSS (both schemes intact), and the
+full mobile, desktop and backend suites.
 
 ## P4 — `lilypad.takedia.com` 🔜
 

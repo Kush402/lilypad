@@ -1,12 +1,15 @@
+/* Shared palette (P3) — the same file the desktop imports.
+ *
+ * This dashboard used to hardcode the dark palette. Every rule in it already
+ * read `var(--*)`, so importing the shared tokens gives it the desktop's
+ * light/dark behaviour for free: the values it renders are unchanged, but it
+ * now follows the operator's OS scheme instead of being dark whatever they
+ * chose. That is a visible change, and a deliberate one — see
+ * docs/adr/0011-design-tokens.md. */
+@import '@lilypad/design/tokens.css';
+
 :root {
-  --bg: #0e1512;
-  --panel: #16211c;
-  --ink: #e8f5ee;
-  --muted: #8fb3a3;
-  --accent: #3ecf8e;
-  --danger: #ff5c5c;
-  --line: #24352d;
-  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  font-family: var(--font-sans);
 }
 * {
   box-sizing: border-box;
@@ -35,7 +38,7 @@ header h1 {
   font-size: 12px;
   color: var(--muted);
   border: 1px solid var(--line);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   padding: 3px 10px;
 }
 h2 {
@@ -70,7 +73,7 @@ h2 {
 .card {
   background: var(--panel);
   border: 1px solid var(--line);
-  border-radius: 14px;
+  border-radius: var(--radius-lg);
   padding: 16px;
   display: flex;
   flex-direction: column;

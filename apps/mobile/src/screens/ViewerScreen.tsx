@@ -962,7 +962,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 6,
   },
-  kbAccessoryDoneText: { color: '#06231a', fontWeight: '700', fontSize: 14 },
+  kbAccessoryDoneText: { color: theme.onAccent, fontWeight: '700', fontSize: 14 },
   trayOverlay: {
     position: 'absolute',
     left: 0,
@@ -989,7 +989,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginTop: 8,
   },
-  primaryText: { color: '#06231a', fontWeight: '700', fontSize: 15 },
+  primaryText: { color: theme.onAccent, fontWeight: '700', fontSize: 15 },
   badge: {
     position: 'absolute',
     top: 10,
@@ -1043,7 +1043,7 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
   },
   stickyKeyActive: { backgroundColor: theme.accent, borderColor: theme.accent },
-  stickyKeyTextActive: { color: '#06231a' },
+  stickyKeyTextActive: { color: theme.onAccent },
   stickyHint: { color: theme.muted, fontSize: 11, flex: 1 },
   modeRow: { flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' },
   modeKey: {
@@ -1090,5 +1090,5 @@ const styles = StyleSheet.create({
     borderWidth: 2,
     borderColor: theme.danger,
   },
-  disconnectText: { color: '#2a0808', fontWeight: '700', fontSize: 16 },
+  disconnectText: { color: theme.onDanger, fontWeight: '700', fontSize: 16 },
 });

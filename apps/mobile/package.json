@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@invertase/react-native-apple-authentication": "^2.5.1",
+    "@lilypad/design": "workspace:*",
     "@lilypad/protocol": "workspace:*",
     "@noble/ed25519": "^3.1.0",
     "@noble/hashes": "^2.3.0",

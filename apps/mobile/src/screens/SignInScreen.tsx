@@ -17,6 +17,7 @@ import {
   SignInError,
 } from '../lib/signIn';
 import { isGoogleConfigured } from '../config/oauth';
+import { theme, radius } from '../theme';
 
 /**
  * Sign in, then enroll this phone ([ADR-0001](../../../../docs/adr/0001-account-authentication.md)).
@@ -101,7 +102,7 @@ export function SignInScreen({ apiBaseUrl, onSignedIn }: SignInScreenProps): Rea
           onPress={() => void run('apple', () => signInWithApple(apiBaseUrl))}
         >
           {busy === 'apple' ? (
-            <ActivityIndicator color="#fff" />
+            <ActivityIndicator color="#000" />
           ) : (
             <Text style={styles.appleText}>Continue with Apple</Text>
           )}
@@ -132,6 +133,7 @@ export function SignInScreen({ apiBaseUrl, onSignedIn }: SignInScreenProps): Rea
             testID="sign-in-email"
             style={styles.input}
             placeholder="you@example.com"
+            placeholderTextColor={theme.muted}
             autoCapitalize="none"
             autoCorrect={false}
             keyboardType="email-address"
@@ -151,7 +153,11 @@ export function SignInScreen({ apiBaseUrl, onSignedIn }: SignInScreenProps): Rea
             ]}
             onPress={() => void sendLink()}
           >
-            {busy === 'email' ? <ActivityIndicator /> : <Text>Email me a sign-in link</Text>}
+            {busy === 'email' ? (
+              <ActivityIndicator color={theme.onAccent} />
+            ) : (
+              <Text style={styles.emailText}>Email me a sign-in link</Text>
+            )}
           </Pressable>
         </>
       ) : (
@@ -164,6 +170,7 @@ export function SignInScreen({ apiBaseUrl, onSignedIn }: SignInScreenProps): Rea
             testID="sign-in-token"
             style={styles.input}
             placeholder="Sign-in code"
+            placeholderTextColor={theme.muted}
             autoCapitalize="none"
             autoCorrect={false}
             value={linkToken}
@@ -181,7 +188,11 @@ export function SignInScreen({ apiBaseUrl, onSignedIn }: SignInScreenProps): Rea
             ]}
             onPress={() => void run('email', () => verifyMagicLink(apiBaseUrl, linkToken.trim()))}
           >
-            {busy === 'email' ? <ActivityIndicator /> : <Text>Sign in</Text>}
+            {busy === 'email' ? (
+              <ActivityIndicator color={theme.onAccent} />
+            ) : (
+              <Text style={styles.emailText}>Sign in</Text>
+            )}
           </Pressable>
         </>
       )}
@@ -195,19 +206,45 @@ export function SignInScreen({ apiBaseUrl, onSignedIn }: SignInScreenProps): Rea
   );
 }
 
+/**
+ * P3: this screen was on no palette at all — no background colour, so it
+ * rendered white while every other screen is dark green, with `#ccc` borders
+ * and a Material red error. It is the first thing a new user sees, which made
+ * it the most visible incoherence in the product.
+ *
+ * The two provider buttons keep their vendor colours on purpose. Apple's and
+ * Google's sign-in buttons are brand assets with published appearance rules,
+ * and a palette is not licence to restyle them; Apple's white style is the one
+ * of its permitted styles that stays legible on a dark background.
+ */
 const styles = StyleSheet.create({
-  container: { flex: 1, justifyContent: 'center', padding: 24, gap: 12 },
-  title: { fontSize: 26, fontWeight: '700', textAlign: 'center' },
-  subtitle: { fontSize: 15, textAlign: 'center', opacity: 0.7, marginBottom: 12 },
-  button: { paddingVertical: 14, borderRadius: 10, alignItems: 'center' },
-  apple: { backgroundColor: '#000' },
-  appleText: { color: '#fff', fontSize: 16, fontWeight: '600' },
-  google: { backgroundColor: '#fff', borderWidth: 1, borderColor: '#ccc' },
-  googleText: { fontSize: 16, fontWeight: '600' },
-  email: { backgroundColor: '#eee' },
+  container: {
+    flex: 1,
+    justifyContent: 'center',
+    padding: 24,
+    gap: 12,
+    backgroundColor: theme.bg,
+  },
+  title: { color: theme.ink, fontSize: 26, fontWeight: '700', textAlign: 'center' },
+  subtitle: { color: theme.muted, fontSize: 15, textAlign: 'center', marginBottom: 12 },
+  button: { paddingVertical: 14, borderRadius: radius.sm, alignItems: 'center' },
+  apple: { backgroundColor: '#fff' },
+  appleText: { color: '#000', fontSize: 16, fontWeight: '600' },
+  google: { backgroundColor: '#fff', borderWidth: 1, borderColor: '#dadce0' },
+  googleText: { color: '#3c4043', fontSize: 16, fontWeight: '600' },
+  email: { backgroundColor: theme.accent },
+  emailText: { color: theme.onAccent, fontSize: 16, fontWeight: '700' },
   disabled: { opacity: 0.5 },
-  divider: { textAlign: 'center', opacity: 0.5, marginVertical: 8 },
-  input: { borderWidth: 1, borderColor: '#ccc', borderRadius: 10, padding: 12, fontSize: 16 },
-  sent: { fontSize: 14, opacity: 0.8, textAlign: 'center' },
-  error: { color: '#b00020', textAlign: 'center', marginTop: 8 },
+  divider: { color: theme.muted, textAlign: 'center', marginVertical: 8 },
+  input: {
+    color: theme.ink,
+    backgroundColor: theme.panel,
+    borderWidth: 1,
+    borderColor: theme.line,
+    borderRadius: radius.sm,
+    padding: 12,
+    fontSize: 16,
+  },
+  sent: { color: theme.muted, fontSize: 14, textAlign: 'center' },
+  error: { color: theme.danger, textAlign: 'center', marginTop: 8 },
 });

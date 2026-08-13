@@ -38,6 +38,7 @@ The most common mistake is re-implementing something two files away.
 | OS clipboard access                                    | `crate::clipboard` — the single owner, process-wide lock (CRASH-1)                                                  | `apps/desktop/src-tauri/src/clipboard.rs`        |
 | Input scope enforcement                                | `InputDispatcher` per-event gate — the injection boundary, not the UI                                               | `apps/desktop/src-tauri/src/input/dispatcher.rs` |
 | Env validation + production safety guard               | `packages/shared/src/env.ts`                                                                                        | same                                             |
+| Any colour, corner radius, or the font stack           | `@lilypad/design` — CSS via `@import`, TS via `import`. Never a hex literal (ADR-0011)                              | `packages/design/src/tokens.ts`                  |
 | Trust/pair semantics incl. revoke ending live sessions | `TrustService` + `hub.endRoomsForDevicePair`                                                                        | `apps/backend/src/services/trust.ts`             |
 | Testable OS boundaries                                 | The trait + mock pattern (`ClipboardReader`, `InputBackend`, `Brain`, `Executor`)                                   | throughout                                       |
 

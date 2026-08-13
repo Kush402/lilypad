@@ -42,6 +42,9 @@ importers:
 
   apps/admin:
     dependencies:
+      '@lilypad/design':
+        specifier: workspace:*
+        version: link:../../packages/design
       react:
         specifier: ^18.3.1
         version: 18.3.1
@@ -125,6 +128,9 @@ importers:
 
   apps/desktop:
     dependencies:
+      '@lilypad/design':
+        specifier: workspace:*
+        version: link:../../packages/design
       '@tauri-apps/api':
         specifier: ^2.2.0
         version: 2.11.1
@@ -183,6 +189,9 @@ importers:
       '@invertase/react-native-apple-authentication':
         specifier: ^2.5.1
         version: 2.5.1
+      '@lilypad/design':
+        specifier: workspace:*
+        version: link:../../packages/design
       '@lilypad/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
@@ -292,6 +301,18 @@ importers:
       typescript:
         specifier: ^5.7.3
         version: 5.9.3
+
+  packages/design:
+    devDependencies:
+      '@types/node':
+        specifier: ^22.10.5
+        version: 22.20.1
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.7
+        version: 3.2.7(@types/node@22.20.1)(jsdom@25.0.1)(terser@5.49.0)(tsx@4.23.0)(yaml@2.9.0)
 
   packages/protocol:
     dependencies:

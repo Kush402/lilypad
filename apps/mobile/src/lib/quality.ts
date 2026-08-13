@@ -3,6 +3,8 @@
  * tunable thresholds, not magic numbers — see `docs/audit/m3/mobile-ux.md`
  * Finding 8.
  */
+import { theme } from '../theme';
+
 export type QualityLevel = 'good' | 'fair' | 'poor';
 
 export interface ConnectionQuality {
@@ -31,8 +33,10 @@ export function classifyQuality(rttMs: number | null, packetLossPct: number | nu
   return 'poor';
 }
 
+/** The same three semantics the rest of the product uses, not a fourth set of
+ * greens and ambers — the desktop's status dots make the identical mapping. */
 export const QUALITY_COLOR: Record<QualityLevel, string> = {
-  good: '#3ecf8e',
-  fair: '#f5a623',
-  poor: '#ff5c5c',
+  good: theme.accent,
+  fair: theme.pending,
+  poor: theme.danger,
 };

@@ -202,6 +202,7 @@ apps/backend/src/
   routes/      pairing, signaling(+/connect/request,/metrics), devices, health
 packages/protocol/  zod wire contracts shared by all tiers (+Rust mirrors by hand)
 packages/shared/    env, logger, redis keys, cross-tier timing constants
+packages/design/    colour tokens (both schemes), radii, font stack — CSS + TS
 ```
 
 ## Documentation index

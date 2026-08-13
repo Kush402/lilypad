@@ -1,46 +1,13 @@
-/* Light is the default palette; dark overrides via `prefers-color-scheme`
- * below — every rule in this file reads these custom properties, so this is
- * the only place that needs to know about theme at all. See
- * docs/audit/m3/desktop-ux.md Finding 13. */
-:root {
-  --bg: #f4faf7;
-  --panel: #ffffff;
-  --ink: #10201a;
-  --muted: #4d6b60;
-  --accent: #1f9f6b;
-  --danger: #d92626;
-  /* Session-active status — deliberately distinct from --danger (Deny/Panic)
-   * even though both are reddish; conflating "being observed" with
-   * "destructive action" was Finding 16's exact complaint. */
-  --live: #ff7847;
-  --pending: #b8720a;
-  --line: #d8e6df;
-  /* A translucent accent tint (`.chip`'s background) — kept as its own
-   * property, not computed from --accent, since the two palettes' accents
-   * differ in lightness enough that one fixed alpha wash doesn't read well
-   * against both. */
-  --accent-wash: rgba(31, 159, 107, 0.12);
-  font-family:
-    system-ui,
-    -apple-system,
-    'Segoe UI',
-    Roboto,
-    sans-serif;
-}
+/* The palette, both schemes, comes from @lilypad/design — the same file the
+ * admin dashboard imports and the same values mobile reads as TypeScript.
+ * Every rule below reads those custom properties, so this file never needs to
+ * know a hex. See docs/audit/m3/desktop-ux.md Finding 13 for why the theming
+ * is centralised, and docs/adr/0011-design-tokens.md for why it now lives in a
+ * package rather than in three stylesheets. */
+@import '@lilypad/design/tokens.css';
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #0e1512;
-    --panel: #16211c;
-    --ink: #e8f5ee;
-    --muted: #8fb3a3;
-    --accent: #3ecf8e;
-    --danger: #ff5c5c;
-    --live: #ff8f5c;
-    --pending: #f5a623;
-    --line: #24352d;
-    --accent-wash: rgba(62, 207, 142, 0.15);
-  }
+:root {
+  font-family: var(--font-sans);
 }
 
 /* Visually hidden but still announced by assistive tech — pairs a text
@@ -75,6 +42,11 @@ body {
 }
 
 /* ── Floating bubble window ─────────────────────────────────────────────── */
+/* The bubble floats over whatever the user has on screen, in a transparent
+ * window, so it is deliberately scheme-independent: its gradient, its dark
+ * outline ring and its pulse halo stay the same in light mode. That is why the
+ * hexes below are literals and not tokens — reading --bg here would turn the
+ * ring near-white on a light desktop and erase the separation it exists for. */
 .bubble-root {
   width: 100vw;
   height: 100vh;
@@ -178,7 +150,7 @@ body {
   position: relative;
   background: #fff;
   padding: 12px;
-  border-radius: 14px;
+  border-radius: var(--radius-lg);
   width: 264px;
   height: 264px;
   display: grid;
@@ -223,7 +195,7 @@ body {
   background: var(--panel);
   color: var(--ink);
   padding: 9px 16px;
-  border-radius: 10px;
+  border-radius: var(--radius-sm);
   font-size: 14px;
   cursor: pointer;
 }
@@ -236,13 +208,13 @@ body {
 }
 .btn--primary {
   background: var(--accent);
-  color: #06231a;
+  color: var(--on-accent);
   border-color: transparent;
   font-weight: 600;
 }
 .btn--danger {
   background: var(--danger);
-  color: #2a0808;
+  color: var(--on-danger);
   border-color: transparent;
   font-weight: 600;
 }
@@ -277,7 +249,7 @@ body {
 .badge {
   font-size: 12px;
   padding: 4px 10px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: var(--panel);
   border: 1px solid var(--line);
 }
@@ -299,7 +271,7 @@ body {
 .control__connecting {
   background: var(--panel);
   border: 1px solid var(--line);
-  border-radius: 12px;
+  border-radius: var(--radius-md);
   padding: 14px;
 }
 .control__approve-title {
@@ -340,7 +312,7 @@ body {
   font-size: 12px;
   font-weight: 600;
   padding: 3px 10px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: var(--accent-wash);
   color: var(--accent);
   border: 1px solid var(--accent);
@@ -363,7 +335,7 @@ body {
   font-size: 12px;
   padding: 6px 8px;
   background: var(--panel);
-  border-radius: 8px;
+  border-radius: var(--radius-xs);
 }
 .ok {
   color: var(--accent);
@@ -393,7 +365,7 @@ body {
 
 .control__devices {
   margin-top: 20px;
-  border-top: 1px solid var(--line, #333);
+  border-top: 1px solid var(--line);
   padding-top: 14px;
 }
 .section-title {
@@ -409,7 +381,7 @@ body {
 }
 .device-row--expanded {
   background: var(--accent-wash);
-  border-radius: 8px;
+  border-radius: var(--radius-xs);
 }
 .device-row__summary {
   display: flex;
@@ -489,9 +461,9 @@ body {
   margin: 2px 0 12px;
 }
 .card {
-  background: var(--panel, rgba(255, 255, 255, 0.03));
-  border: 1px solid var(--line, rgba(255, 255, 255, 0.08));
-  border-radius: 12px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
   padding: 14px 16px;
   margin-bottom: 12px;
 }
@@ -524,18 +496,23 @@ body {
   border-radius: 50%;
   flex: none;
 }
+/* These were Apple's system green and amber — a second green and a second
+ * amber for meanings the palette already had colours for ("healthy" is
+ * --accent, "needs a human" is --pending). The halo is mixed from the dot
+ * rather than tokenised: --accent-wash is hand-tuned for a chip's large flat
+ * area and reads too weak as a 3px ring. */
 .status-dot--ok {
-  background: #34c759;
-  box-shadow: 0 0 0 3px rgba(52, 199, 89, 0.15);
+  background: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 15%, transparent);
 }
 .status-dot--warn {
-  background: #ff9f0a;
-  box-shadow: 0 0 0 3px rgba(255, 159, 10, 0.15);
+  background: var(--pending);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--pending) 15%, transparent);
 }
 .system-toggle {
   margin-top: 10px;
   padding-top: 10px;
-  border-top: 1px solid var(--line, rgba(255, 255, 255, 0.08));
+  border-top: 1px solid var(--line);
 }
 
 /* Software update (M6). The banner is the launch-time non-intrusive prompt;

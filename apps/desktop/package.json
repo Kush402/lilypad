@@ -17,6 +17,7 @@
     "clean": "rm -rf dist src-tauri/target *.tsbuildinfo"
   },
   "dependencies": {
+    "@lilypad/design": "workspace:*",
     "@tauri-apps/api": "^2.2.0",
     "@tauri-apps/plugin-process": "^2.2.0",
     "@tauri-apps/plugin-updater": "^2.3.0",

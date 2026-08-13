@@ -23,7 +23,7 @@ function stateColor(view: AgentStepView): string {
   if (view.toolClass === 'forbidden') return theme.danger;
   switch (view.state) {
     case 'held':
-      return '#e0a83e'; // amber — awaiting the human
+      return theme.pending; // amber — awaiting the human
     case 'running':
       return theme.accent;
     case 'done':
@@ -190,7 +190,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  btnText: { color: '#04140d', fontWeight: '700', fontSize: 14 },
+  btnText: { color: theme.onAccent, fontWeight: '700', fontSize: 14 },
   btnDisabled: { opacity: 0.4 },
   sendBtn: { backgroundColor: theme.accent },
   stopBtn: { backgroundColor: theme.danger },
@@ -199,12 +199,12 @@ const styles = StyleSheet.create({
   holdCard: {
     backgroundColor: theme.bg,
     borderWidth: 1,
-    borderColor: '#e0a83e',
+    borderColor: theme.pending,
     borderRadius: 10,
     padding: 12,
     gap: 8,
   },
-  holdTitle: { color: '#e0a83e', fontWeight: '700', fontSize: 14 },
+  holdTitle: { color: theme.pending, fontWeight: '700', fontSize: 14 },
   holdSummary: { color: theme.ink, fontSize: 14 },
   holdBtns: { flexDirection: 'row', gap: 8 },
   feed: { maxHeight: 130 },

@@ -6,6 +6,48 @@ All notable changes to Lilypad are documented here. The format follows
 
 ## [Unreleased]
 
+### P3 — design system
+
+One source of truth for colour, in a new `@lilypad/design` package
+([ADR-0011](docs/adr/0011-design-tokens.md)).
+
+#### Added
+
+- `@lilypad/design` — colour tokens for both schemes, corner radii and the
+  system font stack. Web surfaces `@import '@lilypad/design/tokens.css'`; mobile
+  imports the TypeScript module. The only colour literals left in the codebase
+  are three documented exemptions: the vendor sign-in buttons, the floating
+  bubble (which overlays an arbitrary desktop and must not follow the theme),
+  and the QR code's white frame (which must stay scannable).
+- A drift test that parses the shipped `tokens.css` and fails if it disagrees
+  with `tokens.ts` — including a custom property the TypeScript does not
+  declare, which is drift arriving from the side mobile cannot see.
+
+#### Changed
+
+- The palette no longer exists three times. `apps/mobile/src/theme.ts` is now a
+  re-export, and both stylesheets import the shared tokens instead of declaring
+  their own `:root`.
+- **`SignInScreen` is on the palette.** It previously set no background colour
+  at all, so the first screen a new user sees rendered white in a product that
+  is dark green everywhere else, with `#ccc` borders and a Material red error.
+  The Apple and Google buttons keep their vendor colours; Apple's switches to
+  its white style, which is the permitted style that stays legible on a dark
+  background.
+- **The admin dashboard follows the OS colour scheme.** It hardcoded dark; every
+  rule already read `var(--*)`, so importing the shared tokens gave it the
+  desktop's light/dark behaviour. Rendered values are unchanged — which set
+  applies is not.
+- Two accidental colours converged: `#04140d` → `onAccent` and `#e0a83e` →
+  `pending`. The desktop's status dots stop using Apple's system green and amber
+  for meanings the palette already had colours for.
+
+#### Not done, deliberately
+
+Font sizes and spacing stay per surface. They are not duplicated; they differ
+because a phone is held at arm's length and a laptop is not, and one shared
+numeric scale would have to re-tune shipped screens.
+
 ### P2 — device management
 
 An authenticated "my devices" surface, built on M9's ownership rule.

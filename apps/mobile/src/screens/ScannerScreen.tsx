@@ -272,7 +272,7 @@ export function ScannerScreen({ navigation }: Props) {
               disabled={connecting || (!!error && !error.retryable)}
             >
               {connecting ? (
-                <ActivityIndicator color="#06231a" />
+                <ActivityIndicator color={theme.onAccent} />
               ) : (
                 <Text style={styles.primaryText}>Add computer</Text>
               )}
@@ -296,7 +296,7 @@ export function ScannerScreen({ navigation }: Props) {
               disabled={connecting || (!!error && !error.retryable)}
             >
               {connecting ? (
-                <ActivityIndicator color="#06231a" />
+                <ActivityIndicator color={theme.onAccent} />
               ) : (
                 <Text style={styles.primaryText}>Connect</Text>
               )}
@@ -375,7 +375,7 @@ const styles = StyleSheet.create({
     paddingVertical: 14,
     alignItems: 'center',
   },
-  primaryText: { color: '#06231a', fontWeight: '700', fontSize: 16 },
+  primaryText: { color: theme.onAccent, fontWeight: '700', fontSize: 16 },
   ghost: {
     backgroundColor: 'transparent',
     borderColor: theme.line,
