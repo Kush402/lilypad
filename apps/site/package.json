@@ -1,7 +1,7 @@
 {
   "name": "@lilypad/site",
   "version": "0.1.0",
-  "description": "lilypad.takedia.com \u2014 the marketing site (P4). Static; no framework.",
+  "description": "lilypadhome.takedia.com \u2014 the marketing site (P4). Static; no framework.",
   "type": "module",
   "scripts": {
     "dev": "vite",

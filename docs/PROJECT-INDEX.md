@@ -310,8 +310,8 @@ in `milestones.md` unchanged.
 | **P1** 🚧 | Account-connected clients — sign-in, enrollment QR, approval screen. Closes PROD-1                            |
 | **P2** 🚧 | Device management — list, rename, revoke, active sessions (phone done; desktop view + session history remain) |
 | **P3** ✅ | Design system — `@lilypad/design`; one palette for all three surfaces ([ADR-0011](adr/0011-design-tokens.md)) |
-| **P4** ✅ | Marketing site — `apps/site`, static, claims-tested. Hosting/DNS still M13's, and the hostname is contended   |
-| P5        | Ask productisation — hide internal tier names, desktop Ask input                                              |
+| **P4** ✅ | `lilypadhome.takedia.com` — `apps/site`, static, claims-tested. Hosting and DNS remain M13's                  |
+| **P5** ⏹️ | **Closed, no change** — Ask is in-app-only by design and its transcripts are correct as they are              |
 | P6        | Entitlements — **blocked** on pricing decisions                                                               |
 
 **Production readiness: not ready.** The session layer is production-grade and

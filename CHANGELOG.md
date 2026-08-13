@@ -36,10 +36,11 @@ light/dark preference and cannot drift from the product it describes.
 
 #### Note
 
-`lilypad.takedia.com` is **already live** as the cloudflared tunnel serving the
-development backend for cellular testing, and `deployment.md` reserves
-`takedia.com` for marketing. P4 therefore builds the site and touches no DNS;
-which hostname it answers on is an M13 decision.
+The site's hostname is **`lilypadhome.takedia.com`**, deliberately not
+`lilypad.takedia.com` — that name is already live as the cloudflared tunnel
+serving the development backend for cellular testing, and pointing it at a
+static site would break off-LAN testing. Two separate names, so nothing has to
+move for the site to ship. P4 touches no DNS; hosting is M13's.
 
 ### P3 — design system
 
@@ -159,7 +160,7 @@ hardening while the product plan had M10 as the auth UI. Rather than renumber
 either, the product work now runs as **P1–P6** on its own axis.
 
 - **P1** account-connected clients · **P2** device management · **P3** design
-  system · **P4** `lilypad.takedia.com` · **P5** Ask productisation ·
+  system · **P4** `lilypadhome.takedia.com` · **P5** Ask productisation ·
   **P6** entitlements (blocked on pricing).
 - **Nothing was deleted or renumbered.** M14 (Consumer UX) and M18's Ask half
   are marked superseded in place and say which P-milestone took them; M13 keeps

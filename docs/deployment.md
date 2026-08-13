@@ -62,14 +62,19 @@ nonce that survives a restart is a replay window, not a recovered value.
 
 ## Domains
 
-| Host                  | Purpose                   | Status                                                                                                                                            |
-| --------------------- | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `lilypad.takedia.com` | Local-development tunnel  | **Live** — preserved, and **contended**: P4 was specified against this name while it serves the dev tunnel. Resolve before pointing DNS anywhere. |
-| `api.takedia.com`     | REST **and** `/ws/signal` | Planned                                                                                                                                           |
-| `turn.takedia.com`    | TURN/STUN relay           | Planned                                                                                                                                           |
-| `takedia.com`         | Marketing site            | Planned                                                                                                                                           |
-| `dl.takedia.com`      | Downloads                 | Planned                                                                                                                                           |
-| `status.takedia.com`  | Status page               | Planned                                                                                                                                           |
+| Host                      | Purpose                   | Status                                                                    |
+| ------------------------- | ------------------------- | ------------------------------------------------------------------------- |
+| `lilypad.takedia.com`     | Local-development tunnel  | **Live** — preserved. Stays the dev tunnel; moving it is M13's, not P4's. |
+| `lilypadhome.takedia.com` | Marketing site (P4)       | Planned — the site is built (`apps/site`); DNS and hosting are M13's      |
+| `api.takedia.com`         | REST **and** `/ws/signal` | Planned                                                                   |
+| `turn.takedia.com`        | TURN/STUN relay           | Planned                                                                   |
+| `dl.takedia.com`          | Downloads                 | Planned                                                                   |
+| `status.takedia.com`      | Status page               | Planned                                                                   |
+
+The site and the development tunnel are **deliberately different hostnames**.
+`lilypad.takedia.com` keeps serving the dev backend that off-LAN and cellular
+testing depends on ([RUNBOOK](RUNBOOK.md)), and the product site answers
+on `lilypadhome.takedia.com`. Nothing has to move for the site to ship.
 
 Signaling shares `api.takedia.com` rather than taking its own host. A separate
 `signal.` subdomain buys independent scaling that matters only once REST and

@@ -16,7 +16,8 @@ import { describe, it, expect } from 'vitest';
  *   P4 therefore says macOS + iOS only.
  * - Prices: no price point, quota or allowance exists anywhere in the repo, and
  *   P4 renders `$XXXX` rather than inventing them.
- * - Ask's internal tier names are internal (P5).
+ * - Ask's internal tier names stay off a public page, whatever the in-app
+ *   surface does.
  */
 
 const html = readFileSync(fileURLToPath(new URL('../index.html', import.meta.url)), 'utf8');
@@ -72,7 +73,9 @@ describe('pricing claims', () => {
 
 describe('what the page must not say', () => {
   // Ask's internal tier vocabulary ("P1 skills", "P2 sandboxed codegen", …) is
-  // an implementation detail; P5 exists to keep it off user-facing surfaces.
+  // an implementation detail. In-app it is fine — that surface is deliberately
+  // unchanged (P5, closed) — but a public page describing the product to
+  // strangers has no business carrying the engine's own vocabulary.
   it('does not leak Ask’s internal tier names', () => {
     expect(html).not.toMatch(/\bP[1-4]\b\s*(skills|codegen|accessibility|vision)/i);
   });

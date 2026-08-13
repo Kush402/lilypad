@@ -547,7 +547,7 @@ mobile and admin surfaces, and it had already drifted in four places
 tokens correctly inlined into the emitted CSS (both schemes intact), and the
 full mobile, desktop and backend suites.
 
-## P4 — `lilypad.takedia.com` ✅ (content and build)
+## P4 — `lilypadhome.takedia.com` ✅ (content and build)
 
 The marketing site: what Lilypad is, which platforms are **actually** supported,
 and the plans. Static, no framework — `apps/site` is one HTML file plus one
@@ -576,19 +576,19 @@ stylesheet, and ships no JavaScript at all.
   that does not exist.
 - 🔜 DNS, TLS and hosting remain M13's — and see the hostname conflict below.
 
-### The hostname is already taken
+### The hostname, and why it is not the tunnel's
 
-`lilypad.takedia.com` is **live today as the named cloudflared tunnel** that
-serves the development backend for off-LAN and cellular testing
-([RUNBOOK](RUNBOOK.md)); `.env` pins `PUBLIC_BASE_URL`/`SIGNALING_URL` to it, and
-[deployment.md](deployment.md) lists it as **preserved**. Pointing it at a static
-site would break cellular testing, and `deployment.md` already reserves
-`takedia.com` for the marketing site.
+The site answers on **`lilypadhome.takedia.com`** (decided 2026-08-13).
 
-So P4 builds the site and does **not** touch DNS. Which hostname it finally
-answers on is an M13 decision, and a real one: the options are `takedia.com` as
-already planned, a new `lilypad.` sub-path arrangement, or moving the dev tunnel
-to another name. Recorded rather than guessed.
+`lilypad.takedia.com` is a different thing and keeps its job: it is the named
+cloudflared tunnel serving the development backend for off-LAN and cellular
+testing ([RUNBOOK](RUNBOOK.md)), with `.env` pinning
+`PUBLIC_BASE_URL`/`SIGNALING_URL` to it. Pointing that name at a static site
+would break cellular testing, so the two are deliberately separate hostnames and
+**nothing has to move for the site to ship**. Relocating the tunnel, if it ever
+happens, belongs to M13 with the rest of the production DNS.
+
+P4 still touches no DNS: the site is built, and hosting is M13's.
 
 ### Not verified
 
@@ -597,11 +597,18 @@ a 390×844 viewport, and the real iPhone did fetch and load it over the LAN — 
 Blink is not WebKit, and confirming it looks right on the phone needs a person
 looking at the phone.
 
-## P5 — Ask productisation 🔜
+## P5 — Ask productisation ⏹️ closed, no change
 
-The Ask feature exists and works; it presents itself in internal terms. Hide raw
-tier names from the transcript surface and give the desktop its own Ask input.
-Supersedes M18's Ask half.
+**Closed 2026-08-13 by product decision, without code changes.** Ask's current
+model is the intended one: it is an **in-app-only input**, and the existing
+transcripts are what the product wants to show. The two changes P5 proposed —
+relabelling the transcript surface and adding a desktop Ask input — were a plan's
+assumption, not a reported defect, and building them would have changed a design
+that is already correct.
+
+The M18 Ask half it superseded stays superseded; there is simply nothing to do
+for either. Ask remains open to bug fixes like any other subsystem — this closes
+the redesign, not the code.
 
 ## P6 — Entitlements 🔜
 
