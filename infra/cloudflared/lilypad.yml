@@ -30,5 +30,12 @@ ingress:
   # WebSockets natively, so signaling needs no extra configuration.
   - hostname: lilypad.takedia.com
     service: http://localhost:8080
+  # The product website (P4), served locally by `pnpm --filter @lilypad/site
+  # preview` on its pinned port. A SEPARATE hostname from the backend on
+  # purpose: pointing lilypad.takedia.com at the site would break the off-LAN
+  # and cellular testing that everything else depends on
+  # (docs/adr/0011 context, docs/deployment.md § Domains).
+  - hostname: lilypadhome.takedia.com
+    service: http://localhost:4173
   # Required terminator. Anything not matched above is refused, not forwarded.
   - service: http_status:404
