@@ -35,9 +35,9 @@ Items marked 🔜 were confirmed absent from the code.
 | `pnpm format:check`             | ✅ clean                                         |
 | `pnpm docs:check`               | ✅ clean — 54 markdown files                     |
 | `pnpm audit --audit-level high` | ✅ clean — blocking in CI (2 documented ignores) |
-| **Total automated tests**       | **995**                                          |
+| **Total automated tests**       | **996**                                          |
 
-Test breakdown: backend 386 · mobile 249 · desktop Rust 298 · desktop UI 44 ·
+Test breakdown: backend 386 · mobile 250 · desktop Rust 298 · desktop UI 44 ·
 shared 18.
 
 A further **11 opt-in end-to-end tests** are skipped by default

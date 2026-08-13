@@ -691,6 +691,48 @@ describe('ViewerConnection', () => {
       expect(cb.onState).toHaveBeenCalledWith('connected');
     });
 
+    // Regression guard for the 2026-08-12 cellular renegotiate loop. An ICE
+    // restart re-uses the peer connection, so getStats() keeps reporting the
+    // PREVIOUS inbound-rtp stream with its bytes frozen, alongside the live
+    // one. Reading a single entry per poll ("last one wins") compared streams
+    // against each other, so the delta read 0 whenever the frozen entry was
+    // the one sampled — video looked dead while it was playing perfectly, and
+    // the phone asked the desktop to ICE-restart every ~25s. Each restart left
+    // behind another stale stream, so every reconnect made it worse.
+    it('treats video as live when a stale stream from a previous ICE restart is still reported', async () => {
+      const cb = makeCallbacks();
+      const { sig, peer } = await startConnected(cb);
+
+      // 'dead' is the leftover from a previous restart: frozen forever, and
+      // deliberately iterated LAST so a last-one-wins reader samples it.
+      let live = 5_000;
+      (peer.getStats as jest.Mock).mockImplementation(async () => {
+        live += 1_000;
+        return new Map<string, unknown>([
+          [
+            'live',
+            { type: 'inbound-rtp', kind: 'video', bytesReceived: live, framesPerSecond: 30 },
+          ],
+          [
+            'dead',
+            { type: 'inbound-rtp', kind: 'video', bytesReceived: 99_000, framesPerSecond: 0 },
+          ],
+        ]);
+      });
+      await jest.advanceTimersByTimeAsync(QUALITY_POLL_MS);
+      await jest.advanceTimersByTimeAsync(QUALITY_POLL_MS);
+
+      peer.setState('failed');
+      cb.onState.mockClear();
+      (sig.renegotiate as jest.Mock).mockClear();
+      await jest.advanceTimersByTimeAsync(60_000);
+
+      // Video never stopped, so the phone must not ask for an ICE restart.
+      expect(sig.renegotiate).not.toHaveBeenCalled();
+      expect(cb.onState).not.toHaveBeenCalledWith('failed');
+      expect(cb.onState).toHaveBeenCalledWith('connected');
+    });
+
     it('reports "connected" (never renegotiates) on repeated grace-window fires while video keeps flowing', async () => {
       // Replaces the old throttled-renegotiate-nudge behavior: now that the
       // desktop declines a renegotiate while video is live, the video-aware

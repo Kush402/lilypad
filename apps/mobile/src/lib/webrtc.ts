@@ -823,6 +823,28 @@ export class ViewerConnection {
     let packetLossPct: number | null = null;
     let bitrateKbps: number | null = null;
 
+    // Aggregate across EVERY inbound video stream, never "last one wins".
+    //
+    // An ICE restart re-uses the peer connection, so `getStats()` keeps
+    // reporting the previous stream — bytes frozen at their final value —
+    // alongside the new one. Reading a single entry per poll compared this
+    // poll's stream against last poll's possibly-DIFFERENT stream, so the
+    // delta swung between huge positives and negatives, and whenever the
+    // frozen stream was read the delta was 0. `lastVideoAdvanceAt` then never
+    // advanced, `isReceivingVideo()` went false after 15s, and the phone
+    // requested a renegotiate for a stream that was playing perfectly — which
+    // added ANOTHER stale entry, so every reconnect made it worse. That is the
+    // ~25s renegotiate cadence observed live on 2026-08-12 (see
+    // docs/audit/m3/reconnect-lifecycle.md Finding 9).
+    //
+    // The sum over all streams is monotonic while any stream advances, which
+    // is exactly the "is video arriving at all" question this must answer.
+    let videoBytes: number | null = null;
+    // fps/loss come from the stream that has actually received the most —
+    // the live one. A frozen leftover otherwise reports 0 fps and drags the
+    // quality classification down while the picture is fine.
+    let liveStreamBytes = -1;
+
     for (const stat of report.values()) {
       if (stat.type === 'candidate-pair' && (stat.nominated || stat.selected)) {
         if (typeof stat.currentRoundTripTime === 'number') {
@@ -830,31 +852,39 @@ export class ViewerConnection {
         }
       }
       if (stat.type === 'inbound-rtp' && stat.kind === 'video') {
-        if (typeof stat.framesPerSecond === 'number') {
-          fps = Math.round(stat.framesPerSecond);
-        }
-        if (typeof stat.packetsLost === 'number' && typeof stat.packetsReceived === 'number') {
-          const total = stat.packetsLost + stat.packetsReceived;
-          packetLossPct = total > 0 ? (stat.packetsLost / total) * 100 : 0;
-        }
+        const bytes = typeof stat.bytesReceived === 'number' ? stat.bytesReceived : 0;
         if (typeof stat.bytesReceived === 'number') {
-          const now = Date.now();
-          if (this.lastInboundBytes !== null && this.lastStatsAt !== null) {
-            const deltaBytes = stat.bytesReceived - this.lastInboundBytes;
-            const deltaSec = (now - this.lastStatsAt) / 1000;
-            if (deltaSec > 0) {
-              bitrateKbps = Math.max(0, Math.round((deltaBytes * 8) / deltaSec / 1000));
-            }
-            // Forward path is provably alive whenever video bytes advance —
-            // the signal that outvotes a false `disconnected`.
-            if (deltaBytes > 0) {
-              this.lastVideoAdvanceAt = now;
-            }
+          videoBytes = (videoBytes ?? 0) + bytes;
+        }
+        if (bytes > liveStreamBytes) {
+          liveStreamBytes = bytes;
+          if (typeof stat.framesPerSecond === 'number') {
+            fps = Math.round(stat.framesPerSecond);
           }
-          this.lastInboundBytes = stat.bytesReceived;
-          this.lastStatsAt = now;
+          if (typeof stat.packetsLost === 'number' && typeof stat.packetsReceived === 'number') {
+            const total = stat.packetsLost + stat.packetsReceived;
+            packetLossPct = total > 0 ? (stat.packetsLost / total) * 100 : 0;
+          }
         }
       }
+    }
+
+    if (videoBytes !== null) {
+      const now = Date.now();
+      if (this.lastInboundBytes !== null && this.lastStatsAt !== null) {
+        const deltaBytes = videoBytes - this.lastInboundBytes;
+        const deltaSec = (now - this.lastStatsAt) / 1000;
+        if (deltaSec > 0) {
+          bitrateKbps = Math.max(0, Math.round((deltaBytes * 8) / deltaSec / 1000));
+        }
+        // Forward path is provably alive whenever video bytes advance —
+        // the signal that outvotes a false `disconnected`.
+        if (deltaBytes > 0) {
+          this.lastVideoAdvanceAt = now;
+        }
+      }
+      this.lastInboundBytes = videoBytes;
+      this.lastStatsAt = now;
     }
 
     this.cb.onStats({

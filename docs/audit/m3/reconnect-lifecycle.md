@@ -1692,6 +1692,50 @@ outage; a storm at ~20s intervals now exhausts the budget and engages the hold
 brake instead of restarting forever. Guarded by four tests in
 `session::tests`, verified to fail against the previous behavior.
 
+### The actual root cause was on the phone (2026-08-12, second capture)
+
+The desktop fix above bounded the storm but made the symptom _worse_, which is
+what identified the real cause: the desktop now refused further restarts while
+the phone kept asking, so the session degraded instead of churning. The new
+`trigger:` logging settled it immediately — **every restart was
+`trigger: phone renegotiate`**, never `ICE reported failed`:
+
+```
+00:03:08  streaming started
+00:03:31  attempting ICE restart 1/2 (trigger: phone renegotiate)
+00:03:56  attempting ICE restart 2/2 (trigger: phone renegotiate)
+00:04:23  ICE restart budget reached — holding
+```
+
+A renegotiate every ~25s, while the desktop's bitrate retargets (driven by the
+phone's own REMB) climbed continuously — the phone was _demonstrably receiving
+video while reporting that video had stopped_.
+
+**Root cause:** `webrtc.ts`'s stats poll read a single `inbound-rtp` video entry
+per poll, last-one-wins. An ICE restart re-uses the peer connection, so
+`getStats()` keeps reporting the previous stream with its bytes frozen at their
+final value alongside the live one. The delta was therefore computed between
+_different streams_ from poll to poll, and read 0 whenever the frozen entry was
+the one sampled. `lastVideoAdvanceAt` stopped advancing, `isReceivingVideo()`
+went false after `VIDEO_LIVENESS_WINDOW_MS` (15s), and the phone requested an
+ICE restart for a stream that was playing perfectly. Each restart left behind
+another stale entry, so **every reconnect made the next one worse** — matching
+the report exactly: smooth at first, unusable after 2-3 reconnect cycles.
+
+**Fix:** sum `bytesReceived` across all inbound video streams. The sum is
+monotonic while any stream advances, which is precisely the "is video arriving"
+question the liveness check asks, and it is immune to stream churn. fps and loss
+now come from the stream with the most bytes (the live one) rather than whatever
+was iterated last, so a frozen leftover no longer reports 0 fps and drags the
+quality classification down. Guarded by a test that fails against the old
+last-one-wins reader (`renegotiate` called once instead of never).
+
+**Note for future readers:** several comments in `webrtc.ts` still claim "the
+desktop DECLINES a renegotiate while its own traffic reads fresh". That is
+false — `session/mod.rs` deliberately honors every renegotiate outside the 8s
+throttle, because a phone receiving 0 kbps spams PLI that would read as
+"traffic". Those comments are stale and should not be reasoned from.
+
 **Still open from this finding:** the budget is still desktop-only and still
 `2`, and the "several restarts needed to find a stable path" case above is
 unaddressed. Only the unbounded-reset half is fixed.
