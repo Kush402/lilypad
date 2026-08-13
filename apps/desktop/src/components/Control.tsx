@@ -4,6 +4,7 @@ import { useAppState } from '../lib/useAppState';
 import { useLiveResource } from '../lib/useLiveResource';
 import { STATUS_LABEL } from '../lib/status';
 import { SoftwareUpdate } from './SoftwareUpdate';
+import { AccountPanel } from './AccountPanel';
 
 const SCOPE_LABEL: Record<string, string> = {
   view: 'View',
@@ -151,6 +152,7 @@ export function Control() {
         </section>
       ) : null}
 
+      <AccountPanel />
       <TrustedDevices />
       <SystemPanel backendUrl={state?.backend_base_url ?? null} />
     </div>

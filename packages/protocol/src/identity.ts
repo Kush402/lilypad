@@ -117,10 +117,17 @@ export const DesktopEnrollmentCodeRequestSchema = z.object({
 });
 export type DesktopEnrollmentCodeRequest = z.infer<typeof DesktopEnrollmentCodeRequestSchema>;
 
-/** What the desktop renders as a QR for the phone to scan. */
+/** What the desktop renders as a QR for the phone to scan.
+ *
+ * `apiBaseUrl` is the address the PHONE should use, which is not necessarily
+ * the one the desktop was configured with — a laptop talking to
+ * `http://localhost:8080` cannot put that in a QR. It comes from the same
+ * `advertisedUrls()` seam `POST /pairing/create` uses, so a dev tunnel that
+ * came up after boot is reflected here too. */
 export const DesktopEnrollmentCodeSchema = z.object({
   code: z.string().min(16).max(128),
   expiresInSeconds: z.number().int().positive(),
+  apiBaseUrl: z.string().url(),
 });
 export type DesktopEnrollmentCode = z.infer<typeof DesktopEnrollmentCodeSchema>;
 

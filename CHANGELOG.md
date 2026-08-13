@@ -6,6 +6,38 @@ All notable changes to Lilypad are documented here. The format follows
 
 ## [Unreleased]
 
+### P1 — the account layer is connected on both ends
+
+Closes PROD-1. A user could previously install Lilypad, grant permissions and
+pair a phone without ever having an account: the desktop had no enrollment UI,
+`SignInScreen.tsx` had no route, and `approveDesktopEnrollment()`'s only caller
+was a test.
+
+- **Desktop "This computer" panel.** Shows `Not linked` until a phone has
+  actually approved this machine, mints an enrollment QR, and polls for the
+  approval — which happens on the phone, so there is nothing local to react to.
+  It distinguishes `unknown` (backend unreachable) from `not linked`: telling a
+  linked user their computer is not linked because the wifi dropped would invite
+  them to redo a ceremony they had already completed.
+- **One camera, two codes.** The phone's scanner now classifies a **pair** code
+  and a **link** code and confirms them in deliberately different words —
+  "Pair with…" versus "Add … to your account?". Pairing starts one session;
+  linking hands a computer to an account permanently, and presenting them
+  identically would be the product's most consequential ambiguity.
+- Linking stores the one-time connect secret, so a linked computer is
+  **reachable**, not merely owned — and it does **not** start a session, because
+  owning a computer and choosing to control it are separate acts.
+- **`POST /devices/enrollment-code` now returns `apiBaseUrl`.** The QR schema
+  already required it and the desktop had no way to obtain it; a laptop talking
+  to `http://localhost:8080` cannot ask a phone to reach that. It comes from the
+  same `advertisedUrls()` seam `/pairing/create` uses.
+- **Sign-in is reached from the act that needs it.** Verified in the repo: the
+  phone ships no default backend address, so "sign in, then find your computer"
+  cannot exist. Scanning a link code without an account routes to sign-in at the
+  address that code named, and returns to the still-mounted card to finish.
+- `SignInScreen`'s subtitle promised "your laptops appear here once you sign in
+  on both devices" — the ADR-0003 behaviour ADR-0010 reversed. Corrected.
+
 ### Roadmap — a separate product completion track (P1–P6)
 
 The consumer-product plan and the platform milestones had begun claiming the

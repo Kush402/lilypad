@@ -8,9 +8,10 @@ import {
 } from 'react-native-vision-camera';
 import { useFocusEffect } from '@react-navigation/native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
-import { decodeQrPayload, type QrPayload } from '@lilypad/protocol';
+import { decodeScannedCode, type ScannedCode } from '@lilypad/protocol';
 import type { RootStackParamList } from '../types';
 import { redeemToken } from '../lib/api';
+import { approveDesktopEnrollment, DeviceAuthError } from '../lib/auth';
 import { upsertPair } from '../lib/pairs';
 import { appError, toAppError, type AppError } from '../lib/errors';
 import { theme } from '../theme';
@@ -26,16 +27,26 @@ const PLATFORM_GLYPH: Record<string, string> = {
 };
 
 /**
- * QR scanner (react-native-vision-camera). On scan it parses the payload with
- * the shared @lilypad/protocol schema, then lets the user Connect — which
- * redeems the single-use token against the backend and moves to the viewer.
+ * QR scanner (react-native-vision-camera).
+ *
+ * One camera, two codes a laptop can show, and the difference matters
+ * ([ADR-0010](../../../../docs/adr/0010-explicit-device-linking.md)):
+ *
+ * - **pair** — start a session with this laptop now. Redeems a single-use
+ *   token and moves to the viewer.
+ * - **link** — add this computer to your account (P1,
+ *   [ADR-0008](../../../../docs/adr/0008-desktop-enrollment-via-phone.md)).
+ *   This is the higher-privilege act and needs a signed-in phone, so the
+ *   screen says which one is about to happen rather than inferring it from
+ *   how the user got here.
  */
 export function ScannerScreen({ navigation }: Props) {
   const [permStatus, setPermStatus] = useState<CameraPermissionStatus>(() =>
     Camera.getCameraPermissionStatus(),
   );
   const device = useCameraDevice('back');
-  const [scanned, setScanned] = useState<QrPayload | null>(null);
+  const [scanned, setScanned] = useState<ScannedCode | null>(null);
+  const [linked, setLinked] = useState<string | null>(null);
   const [error, setError] = useState<AppError | null>(null);
   const [connecting, setConnecting] = useState(false);
   const [showDetails, setShowDetails] = useState(false);
@@ -64,7 +75,7 @@ export function ScannerScreen({ navigation }: Props) {
     (value: string) => {
       if (scanned) return;
       try {
-        setScanned(decodeQrPayload(value));
+        setScanned(decodeScannedCode(value));
         setError(null);
       } catch {
         setError(appError('qr_invalid'));
@@ -82,14 +93,15 @@ export function ScannerScreen({ navigation }: Props) {
   });
 
   const connect = useCallback(async () => {
-    if (!scanned) return;
+    if (scanned?.kind !== 'pair') return;
+    const payload = scanned.payload;
     const myRequest = ++requestSeq.current;
     const controller = new AbortController();
     abortRef.current = controller;
     setConnecting(true);
     setError(null);
     try {
-      const res = await redeemToken(scanned.apiBaseUrl, scanned.token, controller.signal);
+      const res = await redeemToken(payload.apiBaseUrl, payload.token, controller.signal);
       if (myRequest !== requestSeq.current) return; // superseded by Rescan/a later attempt
       // M5.4: remember this desktop so My Devices can ring it without a QR.
       // Fire-and-forget; an old backend without desktopDeviceId just isn't
@@ -97,12 +109,12 @@ export function ScannerScreen({ navigation }: Props) {
       if (res.desktopDeviceId) {
         void upsertPair({
           desktopDeviceId: res.desktopDeviceId,
-          name: res.desktopDeviceName ?? scanned.deviceName ?? null,
-          apiBaseUrl: scanned.apiBaseUrl,
+          name: res.desktopDeviceName ?? payload.deviceName ?? null,
+          apiBaseUrl: payload.apiBaseUrl,
         }).catch(() => {});
       }
       navigation.replace('Viewer', {
-        payload: scanned,
+        payload,
         roomId: res.roomId,
         signalingUrl: res.signalingUrl,
         scopes: res.scopes,
@@ -116,6 +128,50 @@ export function ScannerScreen({ navigation }: Props) {
     }
   }, [scanned, navigation]);
 
+  /**
+   * Add this computer to THIS phone's account (P1).
+   *
+   * The account it joins is the subject of this phone's device token and
+   * nothing in the code — so a phone that is not signed in cannot link
+   * anything, and the error says exactly that instead of failing vaguely.
+   * Linking does not start a session: the laptop is now the user's, and
+   * connecting to it is still a separate, deliberate act.
+   */
+  const link = useCallback(async () => {
+    if (scanned?.kind !== 'link') return;
+    const payload = scanned.payload;
+    const myRequest = ++requestSeq.current;
+    setConnecting(true);
+    setError(null);
+    try {
+      const res = await approveDesktopEnrollment(payload.apiBaseUrl, payload.code);
+      if (myRequest !== requestSeq.current) return;
+      // The connect secret is delivered exactly once and is never stored in
+      // plaintext server-side. Persisting the pair here is what turns "this
+      // laptop is mine" into "and I can reach it without another QR".
+      void upsertPair({
+        desktopDeviceId: res.deviceId,
+        name: res.name ?? payload.deviceName,
+        apiBaseUrl: payload.apiBaseUrl,
+        connectSecret: res.pairSecret,
+      }).catch(() => {});
+      setLinked(res.name ?? payload.deviceName ?? 'That computer');
+      setConnecting(false);
+    } catch (e) {
+      if (myRequest !== requestSeq.current) return;
+      setConnecting(false);
+      // The one failure with a specific remedy: this phone has no account yet.
+      // Sign-in is pushed ON TOP, so coming back finds this card still here
+      // with the same code — the user resumes rather than re-scans. The
+      // address comes from the code itself; the app ships no default backend.
+      if (e instanceof DeviceAuthError) {
+        navigation.navigate('SignIn', { apiBaseUrl: payload.apiBaseUrl });
+        return;
+      }
+      setError(toAppError(e));
+    }
+  }, [scanned, navigation]);
+
   // Shared by "Rescan" (idle) and "Cancel" (mid-connect, same button
   // relabeled): invalidate any in-flight redeem, actually abort its network
   // request, and return to the live scanner.
@@ -125,6 +181,7 @@ export function ScannerScreen({ navigation }: Props) {
     setConnecting(false);
     setScanned(null);
     setError(null);
+    setLinked(null);
   }, []);
 
   if (permStatus === 'not-determined') {
@@ -180,11 +237,56 @@ export function ScannerScreen({ navigation }: Props) {
           <Text style={styles.hintText}>Point at the QR shown on your laptop</Text>
           {error ? <Text style={styles.error}>{error.message}</Text> : null}
         </View>
-      ) : (
-        <View style={styles.card}>
+      ) : linked !== null ? (
+        <View style={styles.card} testID="link-done">
+          <Text style={styles.cardTitle}>{linked} is now on your account</Text>
+          <Text style={styles.cardMeta}>
+            It appears under Your laptops. Connecting to it is still a separate step.
+          </Text>
+          <View style={styles.row}>
+            <Pressable
+              style={[styles.primary, styles.flex]}
+              onPress={() => navigation.navigate('Devices')}
+            >
+              <Text style={styles.primaryText}>Done</Text>
+            </Pressable>
+          </View>
+        </View>
+      ) : scanned.kind === 'link' ? (
+        <View style={styles.card} testID="link-confirm">
+          {/* Named deliberately differently from pairing. Linking hands a
+              computer to an account permanently; pairing starts one session.
+              A user must be able to tell which they just agreed to. */}
           <Text style={styles.cardTitle}>
-            {scanned.platform ? `${PLATFORM_GLYPH[scanned.platform] ?? ''} ` : ''}
-            Pair with {scanned.deviceName ?? 'this laptop'}?
+            {scanned.payload.platform ? `${PLATFORM_GLYPH[scanned.payload.platform] ?? ''} ` : ''}
+            Add {scanned.payload.deviceName ?? 'this computer'} to your account?
+          </Text>
+          <Text style={styles.cardMeta}>
+            It becomes yours: only your account can see, reach or revoke it.
+          </Text>
+          {error ? <Text style={styles.error}>{error.message}</Text> : null}
+          <View style={styles.row}>
+            <Pressable
+              style={[styles.primary, styles.flex]}
+              onPress={() => void link()}
+              disabled={connecting || (!!error && !error.retryable)}
+            >
+              {connecting ? (
+                <ActivityIndicator color="#06231a" />
+              ) : (
+                <Text style={styles.primaryText}>Add computer</Text>
+              )}
+            </Pressable>
+            <Pressable style={[styles.ghost, styles.flex]} onPress={cancelOrRescan}>
+              <Text style={styles.ghostText}>{connecting ? 'Cancel' : 'Rescan'}</Text>
+            </Pressable>
+          </View>
+        </View>
+      ) : (
+        <View style={styles.card} testID="pair-confirm">
+          <Text style={styles.cardTitle}>
+            {scanned.payload.platform ? `${PLATFORM_GLYPH[scanned.payload.platform] ?? ''} ` : ''}
+            Pair with {scanned.payload.deviceName ?? 'this laptop'}?
           </Text>
           {error ? <Text style={styles.error}>{error.message}</Text> : null}
           <View style={styles.row}>
@@ -208,8 +310,8 @@ export function ScannerScreen({ navigation }: Props) {
           </Pressable>
           {showDetails ? (
             <View>
-              <Text style={styles.cardMeta}>room {scanned.roomId.slice(0, 8)}…</Text>
-              <Text style={styles.cardMeta}>{scanned.apiBaseUrl}</Text>
+              <Text style={styles.cardMeta}>room {scanned.payload.roomId.slice(0, 8)}…</Text>
+              <Text style={styles.cardMeta}>{scanned.payload.apiBaseUrl}</Text>
             </View>
           ) : null}
         </View>

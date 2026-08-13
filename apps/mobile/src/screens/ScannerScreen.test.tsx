@@ -22,6 +22,16 @@ jest.mock('react-native-vision-camera', () => {
 });
 
 jest.mock('../lib/api', () => ({ redeemToken: jest.fn() }));
+jest.mock('../lib/auth', () => {
+  class DeviceAuthError extends Error {
+    constructor() {
+      super('This phone is not signed in yet.');
+      this.name = 'DeviceAuthError';
+    }
+  }
+  return { approveDesktopEnrollment: jest.fn(), DeviceAuthError };
+});
+jest.mock('../lib/pairs', () => ({ upsertPair: jest.fn().mockResolvedValue(undefined) }));
 
 const { Camera } = jest.requireMock('react-native-vision-camera') as {
   Camera: { getCameraPermissionStatus: jest.Mock; requestCameraPermission: jest.Mock };
@@ -37,12 +47,24 @@ function ViewerStub() {
   return ReactActual.createElement('Text', null, 'viewer-screen');
 }
 
+function SignInStub() {
+  const ReactActual = jest.requireActual('react');
+  return ReactActual.createElement('Text', null, 'sign-in-screen');
+}
+
+function DevicesStub() {
+  const ReactActual = jest.requireActual('react');
+  return ReactActual.createElement('Text', null, 'devices-screen');
+}
+
 function renderScanner() {
   return render(
     <NavigationContainer>
-      <Stack.Navigator screenOptions={{ headerShown: false }}>
+      <Stack.Navigator screenOptions={{ headerShown: false }} initialRouteName="Scanner">
+        <Stack.Screen name="Devices" component={DevicesStub} />
         <Stack.Screen name="Scanner" component={ScannerScreen} />
         <Stack.Screen name="Viewer" component={ViewerStub} />
+        <Stack.Screen name="SignIn" component={SignInStub} />
       </Stack.Navigator>
     </NavigationContainer>,
   );
@@ -192,5 +214,122 @@ describe('ScannerScreen', () => {
 
       expect(abortedSignals[0]?.aborted).toBe(true);
     });
+  });
+});
+
+/**
+ * P1 — one camera, two codes, and the user must be able to tell which act they
+ * just agreed to ([ADR-0010](../../../../docs/adr/0010-explicit-device-linking.md)).
+ *
+ * Pairing starts one session. Linking hands a computer to an account
+ * permanently. Presenting them identically would be the product's most
+ * consequential ambiguity.
+ */
+describe('ScannerScreen — linking a computer to an account', () => {
+  const LINK_QR = JSON.stringify({
+    v: 1,
+    kind: 'desktop-enrollment',
+    code: 'c'.repeat(24),
+    apiBaseUrl: 'http://192.168.1.50:4000',
+    deviceName: "Kush's MacBook Pro",
+    platform: 'macos',
+  });
+
+  const { approveDesktopEnrollment, DeviceAuthError } = jest.requireMock('../lib/auth') as {
+    approveDesktopEnrollment: jest.Mock;
+    DeviceAuthError: new () => Error;
+  };
+  const { upsertPair } = jest.requireMock('../lib/pairs') as { upsertPair: jest.Mock };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    Camera.getCameraPermissionStatus.mockReturnValue('granted');
+  });
+
+  it('asks to ADD THE COMPUTER, never to pair, for a link code', () => {
+    renderScanner();
+    scan(LINK_QR);
+
+    expect(screen.getByTestId('link-confirm')).toBeTruthy();
+    expect(screen.getByText(/Add Kush's MacBook Pro to your account\?/)).toBeTruthy();
+    expect(screen.queryByTestId('pair-confirm')).toBeNull();
+    expect(screen.queryByText('Connect')).toBeNull();
+  });
+
+  it('still asks to PAIR for a pairing code', () => {
+    renderScanner();
+    scan(VALID_QR);
+
+    expect(screen.getByTestId('pair-confirm')).toBeTruthy();
+    expect(screen.queryByTestId('link-confirm')).toBeNull();
+  });
+
+  it('stores the one-time connect secret so the computer is reachable, not merely owned', async () => {
+    approveDesktopEnrollment.mockResolvedValue({
+      ok: true,
+      deviceId: 'desktop-uuid',
+      name: 'MacBook Pro',
+      platform: 'macos',
+      pairSecret: 'a-one-time-secret',
+    });
+
+    renderScanner();
+    scan(LINK_QR);
+    fireEvent.press(screen.getByText('Add computer'));
+
+    await waitFor(() => expect(screen.getByTestId('link-done')).toBeTruthy());
+    expect(approveDesktopEnrollment).toHaveBeenCalledWith(
+      'http://192.168.1.50:4000',
+      'c'.repeat(24),
+    );
+    expect(upsertPair).toHaveBeenCalledWith(
+      expect.objectContaining({
+        desktopDeviceId: 'desktop-uuid',
+        connectSecret: 'a-one-time-secret',
+      }),
+    );
+  });
+
+  // Linking is not connecting. Owning a computer and choosing to control it
+  // are separate acts, and the success screen must not blur them.
+  it('does not start a session on success', async () => {
+    approveDesktopEnrollment.mockResolvedValue({
+      ok: true,
+      deviceId: 'desktop-uuid',
+      name: 'MacBook Pro',
+      platform: 'macos',
+      pairSecret: 's',
+    });
+
+    renderScanner();
+    scan(LINK_QR);
+    fireEvent.press(screen.getByText('Add computer'));
+
+    await waitFor(() => expect(screen.getByTestId('link-done')).toBeTruthy());
+    expect(screen.queryByText('viewer-screen')).toBeNull();
+    expect(redeemToken).not.toHaveBeenCalled();
+  });
+
+  // The app ships no default backend address, so "sign in first" is not a
+  // path that exists — the code is what tells the phone where Lilypad is.
+  it('sends an unsigned-in phone to sign in, at the address the code named', async () => {
+    approveDesktopEnrollment.mockRejectedValue(new DeviceAuthError());
+
+    renderScanner();
+    scan(LINK_QR);
+    fireEvent.press(screen.getByText('Add computer'));
+
+    await waitFor(() => expect(screen.getByText('sign-in-screen')).toBeTruthy());
+  });
+
+  it('shows a link failure without pretending the computer was added', async () => {
+    approveDesktopEnrollment.mockRejectedValue(new Error('That code has expired.'));
+
+    renderScanner();
+    scan(LINK_QR);
+    fireEvent.press(screen.getByText('Add computer'));
+
+    await waitFor(() => expect(screen.queryByTestId('link-done')).toBeNull());
+    expect(screen.getByTestId('link-confirm')).toBeTruthy();
   });
 });

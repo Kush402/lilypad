@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { QR_PAYLOAD_VERSION } from './constants.js';
 import { PlatformSchema } from './pairing.js';
+import { DesktopEnrollmentQrSchema, type DesktopEnrollmentQr } from './identity.js';
 
 /**
  * The exact JSON encoded into the QR code shown on the desktop.
@@ -38,4 +39,30 @@ export function encodeQrPayload(payload: QrPayload): string {
 /** Parse + validate a scanned QR string. Throws if malformed/incompatible. */
 export function decodeQrPayload(raw: string): QrPayload {
   return QrPayloadSchema.parse(JSON.parse(raw));
+}
+
+/**
+ * A scanned Lilypad code, of either kind.
+ *
+ * The phone's camera is one surface and there are two codes a laptop can show:
+ * **pair** ("let this phone control this laptop now") and **link** ("add this
+ * computer to my account", [ADR-0008](../../../docs/adr/0008-desktop-enrollment-via-phone.md)).
+ * They are genuinely different acts — the second is the higher-privilege one —
+ * so the scanner must be able to tell them apart and say which is about to
+ * happen, rather than guessing from context.
+ */
+export type ScannedCode =
+  { kind: 'pair'; payload: QrPayload } | { kind: 'link'; payload: DesktopEnrollmentQr };
+
+/**
+ * Classify a scanned string. Throws for anything that is not a Lilypad code —
+ * the caller's honest answer is the same either way ("that isn't a Lilypad
+ * code"), and telling a scanner WHICH schema it failed would only help someone
+ * probing what the app accepts.
+ */
+export function decodeScannedCode(raw: string): ScannedCode {
+  const json: unknown = JSON.parse(raw);
+  const link = DesktopEnrollmentQrSchema.safeParse(json);
+  if (link.success) return { kind: 'link', payload: link.data };
+  return { kind: 'pair', payload: QrPayloadSchema.parse(json) };
 }

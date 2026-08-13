@@ -55,6 +55,9 @@ export const api = {
   setPairAutoApprove: (pairId: string, autoApprove: boolean) =>
     invoke<void>('set_pair_auto_approve', { pairId, autoApprove }),
   revokePair: (pairId: string) => invoke<void>('revoke_pair', { pairId }),
+  // Account linking (P1) — see ADR-0008/ADR-0010.
+  getLinkState: () => invoke<LinkStateDto>('get_link_state'),
+  startEnrollment: () => invoke<EnrollmentQrDto>('start_enrollment'),
   getLoginItemEnabled: () => invoke<boolean>('get_login_item_enabled'),
   setLoginItemEnabled: (enabled: boolean) => invoke<void>('set_login_item_enabled', { enabled }),
   // Dashboard system panel — read-only status + an editor affordance.
@@ -95,6 +98,30 @@ export interface AgentConfigDto {
   hasKey: boolean;
   /** "env" | "settings" | "none" — which config source is active. */
   source: string;
+}
+
+/**
+ * Where this computer stands with an account (mirrors the Rust `LinkStateDto`).
+ *
+ * `unlinked` and `unknown` are deliberately different: the first means no
+ * account owns this machine, the second means the backend could not be asked.
+ * Telling a linked user to redo the linking ceremony because their wifi
+ * dropped would be worse than saying nothing.
+ */
+export interface LinkStateDto {
+  state: 'unlinked' | 'linked' | 'revoked' | 'no_identity' | 'unknown';
+  user_id: string | null;
+  device_id: string | null;
+  detail: string | null;
+}
+
+/** What the phone scans to add this computer to its account. */
+export interface EnrollmentQrDto {
+  code: string;
+  expiresInSeconds: number;
+  apiBaseUrl: string;
+  deviceName: string;
+  platform: string;
 }
 
 /** One trusted phone, as the dashboard lists it. */

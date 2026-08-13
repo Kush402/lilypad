@@ -373,6 +373,24 @@ body {
 }
 
 /* ── Trusted devices dashboard (M5.4) ─────────────────────────────────── */
+/* Account linking (P1). The QR reuses `.qr__frame`, sized down to sit inside
+   a dashboard card rather than fill a dedicated window. */
+.control__account {
+  display: grid;
+  gap: 10px;
+}
+.account__enroll {
+  display: grid;
+  gap: 8px;
+  justify-items: center;
+  text-align: center;
+}
+.account__enroll .qr__frame {
+  width: 224px;
+  height: 224px;
+  padding: 10px;
+}
+
 .control__devices {
   margin-top: 20px;
   border-top: 1px solid var(--line, #333);

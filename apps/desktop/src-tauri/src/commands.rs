@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 use tokio::sync::mpsc::unbounded_channel;
 
-use crate::auth::{with_bearer, DesktopAuth};
+use crate::auth::{with_bearer, DesktopAuth, LinkState};
 use crate::session::{run_session, Control, SessionEvent};
 use crate::state::{AppState, AppStateDto, PendingRequest, SessionStatus, SharedState};
 
@@ -806,6 +806,104 @@ pub async fn set_pair_auto_approve(
     }
     log::info!(target: "lilypad::audit", "pair_auto_approve set to {auto_approve}");
     Ok(())
+}
+
+// ── Account linking (P1) ────────────────────────────────────────────────────
+// [ADR-0008](../../../../docs/adr/0008-desktop-enrollment-via-phone.md) — this
+// computer is added to an account by a phone that is already signed in. There
+// is no OAuth client here and no browser round-trip.
+
+/// This computer's relationship with an account, as the dashboard renders it.
+#[derive(Debug, Serialize)]
+pub struct LinkStateDto {
+    /// "unlinked" | "linked" | "revoked" | "no_identity" | "unknown"
+    pub state: &'static str,
+    pub user_id: Option<String>,
+    pub device_id: Option<String>,
+    /// Present only for "unknown" — why the answer could not be obtained.
+    pub detail: Option<String>,
+}
+
+impl From<LinkState> for LinkStateDto {
+    fn from(s: LinkState) -> Self {
+        let base = Self {
+            state: "unlinked",
+            user_id: None,
+            device_id: None,
+            detail: None,
+        };
+        match s {
+            LinkState::Unlinked => base,
+            LinkState::Linked { user_id, device_id } => Self {
+                state: "linked",
+                user_id: Some(user_id),
+                device_id: Some(device_id),
+                ..base
+            },
+            LinkState::Revoked => Self {
+                state: "revoked",
+                ..base
+            },
+            LinkState::NoIdentity => Self {
+                state: "no_identity",
+                ..base
+            },
+            LinkState::Unknown(detail) => Self {
+                state: "unknown",
+                detail: Some(detail),
+                ..base
+            },
+        }
+    }
+}
+
+/// Is this computer linked to an account?
+///
+/// Also the completion signal for linking: it flips to "linked" the moment a
+/// phone approves, so the enrollment screen polls this rather than needing a
+/// push channel or a second endpoint (ADR-0008).
+#[tauri::command]
+pub async fn get_link_state(auth: State<'_, Arc<DesktopAuth>>) -> Result<LinkStateDto, String> {
+    Ok(auth.link_state().await.into())
+}
+
+/// What the phone scans to add this computer to its account.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EnrollmentQrDto {
+    pub code: String,
+    pub expires_in_seconds: u64,
+    pub api_base_url: String,
+    pub device_name: String,
+    pub platform: String,
+}
+
+/// Mint a single-use enrollment code for this computer.
+///
+/// The code is bound server-side to this machine's public key, so intercepting
+/// it does not let an attacker enroll a different machine — it can only ever
+/// enroll THIS one, onto whichever account scans it.
+#[tauri::command]
+pub async fn start_enrollment(
+    state: State<'_, SharedState>,
+    auth: State<'_, Arc<DesktopAuth>>,
+) -> Result<EnrollmentQrDto, String> {
+    let device_id = lock_state(&state).device_id.clone();
+    let device_name = format!("{} desktop", current_platform());
+    // `device_id` and not some other identifier: the backend resolves ownership
+    // by (kind, fingerprint), and enrolling under anything else would link a
+    // second row while every authorization check kept seeing the unlinked one.
+    let minted = auth
+        .request_enrollment_code(&device_id, &device_name, current_platform())
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(EnrollmentQrDto {
+        code: minted.code,
+        expires_in_seconds: minted.expires_in_seconds,
+        api_base_url: minted.api_base_url,
+        device_name,
+        platform: current_platform().to_owned(),
+    })
 }
 
 /// Whether Lilypad relaunches at login (macOS LaunchAgent).

@@ -29,6 +29,11 @@ struct CachedToken {
     /// When to stop using it. Deliberately EARLIER than the server's expiry —
     /// see `RENEW_MARGIN`.
     renew_after: Instant,
+    /// Who the backend says this device belongs to. Kept beside the token so
+    /// the dashboard can answer "is this computer linked?" without a network
+    /// round trip on every render.
+    user_id: String,
+    device_id: String,
 }
 
 /// Renew this far before the server would expire the token. Without a margin a
@@ -48,6 +53,9 @@ struct ChallengeResponse {
 pub struct EnrollmentCode {
     pub code: String,
     pub expires_in_seconds: u64,
+    /// The address the PHONE should use — supplied by the backend, because a
+    /// laptop configured with `http://localhost:8080` cannot put that in a QR.
+    pub api_base_url: String,
 }
 
 #[derive(Deserialize)]
@@ -267,6 +275,15 @@ impl DeviceAuth {
         (Instant::now() < token.renew_after).then(|| token.value.clone())
     }
 
+    /// The account and device this computer last authenticated as, if that
+    /// answer is still fresh. `None` means "ask the backend", never "unlinked".
+    fn cached_identity(&self) -> Option<(String, String)> {
+        let guard = self.cached.lock().ok()?;
+        let token = guard.as_ref()?;
+        (Instant::now() < token.renew_after)
+            .then(|| (token.user_id.clone(), token.device_id.clone()))
+    }
+
     fn cache(&self, session: &DeviceSession) {
         // A TTL at or below the margin would make `renew_after` land in the
         // past and every call re-authenticate. Keep a floor so a
@@ -277,6 +294,8 @@ impl DeviceAuth {
             *guard = Some(CachedToken {
                 value: session.access_token.clone(),
                 renew_after,
+                user_id: session.user_id.clone(),
+                device_id: session.device_id.clone(),
             });
         }
     }
@@ -330,6 +349,51 @@ impl DesktopAuth {
             .as_ref()
     }
 
+    /// Whether an account has linked this computer, for the dashboard to
+    /// render honestly ([ADR-0010](../../../../docs/adr/0010-explicit-device-linking.md)).
+    ///
+    /// Signing in is NOT what makes this `Linked` — a phone approving this
+    /// machine is. The desktop must never imply it is available before that has
+    /// happened, which is the whole reason this is a state and not a boolean.
+    ///
+    /// A network failure answers `Unknown`, deliberately distinct from
+    /// `Unlinked`: telling a linked user their computer is not linked because
+    /// the wifi dropped would invite them to redo a ceremony they already
+    /// completed.
+    pub async fn link_state(&self) -> LinkState {
+        let Some(auth) = self.device_auth() else {
+            return LinkState::NoIdentity;
+        };
+        if let Some((user_id, device_id)) = auth.cached_identity() {
+            return LinkState::Linked { user_id, device_id };
+        }
+        match auth.sign_in().await {
+            Ok(session) => LinkState::Linked {
+                user_id: session.user_id,
+                device_id: session.device_id,
+            },
+            Err(e) => match e.downcast_ref::<AuthError>() {
+                Some(AuthError::NotEnrolled) => LinkState::Unlinked,
+                Some(AuthError::Revoked) => LinkState::Revoked,
+                None => LinkState::Unknown(e.to_string()),
+            },
+        }
+    }
+
+    /// Mint an enrollment code for this computer to show as a QR.
+    pub async fn request_enrollment_code(
+        &self,
+        fingerprint: &str,
+        name: &str,
+        platform: &str,
+    ) -> Result<EnrollmentCode> {
+        let auth = self
+            .device_auth()
+            .ok_or_else(|| anyhow::anyhow!("this computer has no durable identity to link"))?;
+        auth.request_enrollment_code(fingerprint, name, platform)
+            .await
+    }
+
     /// A bearer token for a backend call, or `None` when this computer is not
     /// linked to an account yet.
     ///
@@ -349,6 +413,25 @@ impl DesktopAuth {
             }
         }
     }
+}
+
+/// Where this computer stands with respect to an account.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LinkState {
+    /// No account owns this machine. Signing in does not change this — only a
+    /// phone approving it does.
+    Unlinked,
+    Linked {
+        user_id: String,
+        device_id: String,
+    },
+    /// Ownership was withdrawn. Re-linking is the deliberate way back.
+    Revoked,
+    /// The keychain could not produce a durable identity, so this computer
+    /// cannot be linked at all until that is fixed.
+    NoIdentity,
+    /// The backend could not be reached. NOT `Unlinked` — see `link_state`.
+    Unknown(String),
 }
 
 /// Attach a bearer token to a request when there is one to attach.

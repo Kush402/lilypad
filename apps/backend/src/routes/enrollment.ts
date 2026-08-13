@@ -21,6 +21,7 @@ import {
 } from '../auth/desktopEnrollment.js';
 import { TrustService, createDrizzleTrustStore } from '../services/trust.js';
 import { AuditLogService, createDrizzleAuditLogStore } from '../services/auditLog.js';
+import { advertisedUrls } from '../services/advertisedUrls.js';
 import { log } from '../logging.js';
 
 /**
@@ -175,7 +176,10 @@ export async function enrollmentRoutes(app: FastifyInstance): Promise<void> {
         name: name ?? null,
         platform: platform ?? null,
       });
-      return reply.code(201).send(minted);
+      // The address the PHONE will use, not the one this desktop was
+      // configured with — same seam `/pairing/create` uses, so a laptop
+      // talking to localhost can still put a reachable URL in its QR.
+      return reply.code(201).send({ ...minted, apiBaseUrl: advertisedUrls().apiBaseUrl });
     },
   );
 

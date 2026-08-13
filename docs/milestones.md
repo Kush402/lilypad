@@ -444,20 +444,32 @@ may introduce a flow where signing in makes an unlinked computer appear.
 
 ## P1 — Account-connected clients 🚧
 
-The account layer is built on both ends and connected on neither: the desktop's
-`auth.rs` was dead code until M9 wired its token path, `SignInScreen.tsx` has no
-route, `approveDesktopEnrollment()`'s only caller is a test, and the desktop has
-no enrollment-code UI at all. A user can install Lilypad, grant permissions and
-pair a phone without ever having an account.
+The account layer was built on both ends and connected on neither: the desktop's
+`auth.rs` was dead code until M9 wired its token path, `SignInScreen.tsx` had no
+route, `approveDesktopEnrollment()`'s only caller was a test, and there was no
+desktop enrollment UI at all. A user could install Lilypad, grant permissions
+and pair a phone without ever having an account (gap PROD-1).
 
-- Desktop: sign in, show an enrollment QR, and render **UNLINKED vs LINKED**
-  honestly ([ADR-0008](adr/0008-desktop-enrollment-via-phone.md)).
-- Phone: route the orphaned sign-in screen, and add the approval screen that
-  scans a laptop's enrollment QR.
+- ✅ Desktop **This computer** panel: renders `Not linked` / `Linked` honestly,
+  mints an enrollment QR, and polls for the phone's approval
+  ([ADR-0008](adr/0008-desktop-enrollment-via-phone.md)).
+- ✅ Phone: the scanner classifies **pair** and **link** codes and confirms them
+  in different words, because one starts a session and the other hands over a
+  computer permanently.
+- ✅ Sign-in is routed, reached from the act that needs it, and its copy no
+  longer promises the same-account discovery ADR-0010 reversed.
+- 🔜 Onboarding that walks a first-run user through sign-in → link → pair.
+- 🔜 Real-device run of the whole flow (needs the iOS build).
 - **DoD:** a fresh install completes sign-in → link → pair with no manual steps,
   and the desktop never implies it is available before a phone has approved it.
 
-Closes gap F1. Makes enrolment universal, which is what lets `authorize.ts`'s
+**A constraint that shaped this, verified in the repo rather than assumed:** the
+phone has **no configured backend address**. Every `apiBaseUrl` it uses comes
+from a scanned code or a stored pair. So "sign in, then find your computer" is
+not a flow that can exist — the computer's code is what tells the phone where
+Lilypad lives, and sign-in is reached from the moment it is actually needed.
+
+Closes gap PROD-1. Makes enrolment universal, which is what lets `authorize.ts`'s
 unowned lane be deleted.
 
 ## P2 — Device management 🔜

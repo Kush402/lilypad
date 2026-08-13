@@ -30,6 +30,11 @@ import { isGoogleConfigured } from '../config/oauth';
  * Apple is listed first on iOS. That is App Store policy, not taste — Sign in
  * with Apple must be offered at least as prominently as any other third-party
  * option.
+ *
+ * **Signing in never reveals a computer**
+ * ([ADR-0010](../../../../docs/adr/0010-explicit-device-linking.md)). This
+ * screen's copy has to carry that, because a promise made here that the rest of
+ * the product deliberately does not keep is worse than no copy at all.
  */
 
 export interface SignInScreenProps {
@@ -83,7 +88,8 @@ export function SignInScreen({ apiBaseUrl, onSignedIn }: SignInScreenProps): Rea
     <View style={styles.container} testID="sign-in-screen">
       <Text style={styles.title}>Sign in to Lilypad</Text>
       <Text style={styles.subtitle}>
-        Your laptops appear here once you sign in on both devices.
+        Signing in tells us who you are. You add each computer separately, by scanning the code it
+        shows.
       </Text>
 
       {Platform.OS === 'ios' && (

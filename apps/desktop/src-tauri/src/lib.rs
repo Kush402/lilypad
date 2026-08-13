@@ -304,6 +304,8 @@ pub fn run() {
             commands::list_trusted_devices,
             commands::set_pair_auto_approve,
             commands::revoke_pair,
+            commands::get_link_state,
+            commands::start_enrollment,
             commands::get_login_item_enabled,
             commands::set_login_item_enabled,
             commands::show_setup_window,

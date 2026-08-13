@@ -332,8 +332,15 @@ Rate-limited to **20/minute** per IP.
 { "challenge": "…", "publicKey": "…", "signature": "…",
   "fingerprint": "desktop-…", "name": "Work Mac", "platform": "macos" }
 // 201 Created
-{ "code": "…", "expiresInSeconds": 120 }
+{ "code": "…", "expiresInSeconds": 120,
+  "apiBaseUrl": "https://…" }   // the address the PHONE should use
 ```
+
+`apiBaseUrl` comes from the same `advertisedUrls()` seam `POST /pairing/create`
+uses, and the desktop needs it: it puts the value in the QR, and a laptop
+configured with `http://localhost:8080` cannot ask a phone to reach that. The
+phone has **no default backend address of its own** — the code it scans is what
+tells it where Lilypad lives.
 
 ### `POST /devices/enrollment-code/approve` ✅ 🔒 device token
 

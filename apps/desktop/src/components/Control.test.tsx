@@ -9,6 +9,13 @@ vi.mock('../lib/useAppState', () => ({
   useAppState: vi.fn(),
 }));
 
+// The account panel talks to its own commands and renders a QR canvas; it has
+// dedicated tests in AccountPanel.test.tsx. Stubbing it keeps these tests about
+// the dashboard rather than about linking.
+vi.mock('./AccountPanel', () => ({
+  AccountPanel: () => <section data-testid="account-panel-stub" />,
+}));
+
 vi.mock('../lib/tauri', () => ({
   api: {
     approve: vi.fn(),

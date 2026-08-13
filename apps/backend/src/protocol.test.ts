@@ -4,6 +4,7 @@ import {
   InputBatchSchema,
   QrPayloadSchema,
   decodeQrPayload,
+  decodeScannedCode,
   AgentInboundSchema,
   AgentOutboundSchema,
   AgentMessageSchema,
@@ -130,6 +131,57 @@ describe('QR payload schema', () => {
         signalingUrl: 'ws://x',
       }).success,
     ).toBe(false);
+  });
+});
+
+/**
+ * One camera, two codes (P1). Pairing starts a session; linking hands a
+ * computer to an account permanently. The phone shows different, differently
+ * worded confirmations for each, so misclassifying one as the other is the
+ * failure that matters most here.
+ */
+describe('scanned code classification', () => {
+  const PAIR = JSON.stringify({
+    v: 2,
+    token: 'abcdefabcdefabcdef',
+    roomId: 'room-1',
+    apiBaseUrl: 'http://localhost:8080',
+    signalingUrl: 'ws://localhost:8080/ws/signal',
+    deviceName: 'a laptop',
+    platform: 'macos',
+  });
+  const LINK = JSON.stringify({
+    v: 1,
+    kind: 'desktop-enrollment',
+    code: 'c'.repeat(24),
+    apiBaseUrl: 'http://localhost:8080',
+    deviceName: 'a laptop',
+    platform: 'macos',
+  });
+
+  it('classifies a pairing code as pair', () => {
+    const scanned = decodeScannedCode(PAIR);
+    expect(scanned.kind).toBe('pair');
+  });
+
+  it('classifies an enrollment code as link', () => {
+    const scanned = decodeScannedCode(LINK);
+    expect(scanned.kind).toBe('link');
+    if (scanned.kind !== 'link') throw new Error('unreachable');
+    expect(scanned.payload.code).toBe('c'.repeat(24));
+  });
+
+  // The two share `v` values that would otherwise collide: a pairing payload
+  // is v2 and an enrollment payload is v1, so a version-first classifier would
+  // read an enrollment code as an out-of-date pairing code.
+  it('does not read an enrollment code as an outdated pairing code', () => {
+    expect(() => decodeQrPayload(LINK)).toThrow();
+    expect(decodeScannedCode(LINK).kind).toBe('link');
+  });
+
+  it('rejects anything that is neither', () => {
+    expect(() => decodeScannedCode(JSON.stringify({ v: 1, kind: 'something-else' }))).toThrow();
+    expect(() => decodeScannedCode('not json at all')).toThrow();
   });
 });
 
