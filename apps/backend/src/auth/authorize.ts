@@ -25,14 +25,14 @@ import {
  * - _Managing_ a device or pair (`manageDevice`/`managePair`) — the caller acts
  *   on a resource it owns: listing trusted phones, flipping Always-allow,
  *   revoking. Any device of the owning account qualifies, which is what lets a
- *   phone manage its laptop's pairs in M11.
+ *   phone manage its laptop's pairs in P2.
  *
  * **The unowned lane.** A device row with no `user_id` is a pre-accounts
  * device: it predates M8, or it has simply never been linked. There is no
  * account to protect and no cross-user boundary to cross, so it keeps the
  * behaviour it shipped with. That is not a hole left open — it is the only
  * answer that exists when nothing owns the row, and it closes per-device the
- * moment that device enrols. Once M10 makes enrolment mandatory in both
+ * moment that device enrols. Once P1 makes enrolment mandatory in both
  * clients, `lane: 'unowned'` becomes unreachable and this branch is deleted.
  *
  * A denied caller must never be able to tell "not yours" from "does not

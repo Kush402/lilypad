@@ -89,4 +89,6 @@ account connections still surface a visible session indicator, and the per-devic
 
 ## Status
 
-Accepted (2026-08-12). Implemented in milestone M9.
+**Superseded (2026-08-13) by [ADR-0010](0010-explicit-device-linking.md).**
+Accepted 2026-08-12 and assigned to milestone M9; never implemented. M9 shipped
+the opposite decision — ownership and authorization enforcement.

@@ -31,7 +31,7 @@ The gate is conditional on ownership, not on the route: a device row that **no
 account owns** has nothing to protect and keeps its pre-accounts behaviour, so
 pairing a fresh install still works with no token at all. The moment a device is
 linked, its routes demand a matching token. Clients send one whenever they can
-mint one, so the two halves meet with no flag day. When M10 makes enrolment
+mint one, so the two halves meet with no flag day. When P1 makes enrolment
 mandatory this branch disappears.
 
 **A denial is always `404 { "error": "not_found" }`** — never 403 — so "not

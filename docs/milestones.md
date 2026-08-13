@@ -10,6 +10,13 @@ summary: Milestone status, past and current.
 Internet-first is proven early: signaling + WebRTC over STUN/TURN lands in M2,
 before real capture. Each milestone is independently demoable.
 
+**Two tracks, deliberately distinct numbering.** **M0–M18** build the platform:
+capture, input, signaling, accounts, authorization, scaling, infrastructure.
+**[P1–P6](#product-completion-track-p1p6)** turn that platform into a product
+someone can buy and use. They run on the same codebase along different axes, so
+they do not share a number line — an entry is never both. Where a P-milestone
+refines an M-milestone, the M-entry stays exactly as written and says so.
+
 ## M0 — Design docs ✅
 
 Architecture + technical design + DB schema + API + protocols + plugin interface
@@ -298,11 +305,11 @@ SEC-7.
 - ✅ Table-driven cross-user isolation suite + route-wiring suite (SEC-7)
 - ✅ Purge legacy `connect_secret_hash = NULL` pairs (SEC-5, migration `0005`)
 
-**The unowned lane is deliberate, and it is what M10 closes.** A device row with
+**The unowned lane is deliberate, and it is what P1 closes.** A device row with
 no `user_id` has no owner to protect, so it keeps its pre-accounts behaviour;
 every route demands a matching token the moment a device is linked. Both halves
 meet without a flag day — clients send a token whenever they can mint one, the
-backend requires one whenever the resource is owned. When M10 makes enrolment
+backend requires one whenever the resource is owned. When P1 makes enrolment
 mandatory in both clients, the unowned branch becomes unreachable and is deleted.
 
 ## M9.5 — LAN-direct connectivity (no internet required) 🔜
@@ -351,6 +358,11 @@ limiting, backend Dockerfile, readiness probes, graceful drain. Closes OPS-1.
 
 ## M12 — Security hardening + isolation suite 🔜
 
+> **Partly closed early.** M9 shipped SEC-7's isolation suite
+> (`auth/authorize.test.ts`, `routes/authorization.test.ts`). What remains here
+> is the threat-model refresh, the agent prompt-injection and sandbox-escape
+> tests, and making a missing isolation case fail CI.
+
 Refreshed threat model, agent prompt-injection and sandbox-escape tests, and a
 **release-blocking table-driven multi-user isolation suite** — a new route
 without an isolation case fails CI. Closes SEC-7.
@@ -384,11 +396,120 @@ Closes OPS-2, OPS-3, OPS-4, NET-1, NET-2.
 Onboarding, plain-language errors, device management, marketing site and web
 dashboard; then privacy-preserving metrics and crash reporting across all tiers.
 
+> **M14 is superseded by the product completion track**, which splits it into
+> [P1](#p1--account-connected-clients-) (onboarding and account-connected
+> clients), [P2](#p2--device-management-) (device management) and
+> [P4](#p4--lilypadtakediacom-) (the site). Kept here unchanged for history.
+> M15 is untouched.
+
 ## M16 — Android GA · M17 — Windows GA · M18 — Ask productisation
 
 Android needs a real signing keystore (it currently ships with the committed
 debug keystore) and hardware validation. Windows needs its input path actually
 executed, a real encoder, and a Windows-compatible single-instance guard.
+
+> **M18's Ask half is superseded by [P5](#p5--ask-productisation-).** M16 and
+> M17 are untouched, and they are the reason P4 advertises macOS + iOS only.
+
+---
+
+# Product completion track (P1–P6)
+
+**Added 2026-08-13.** The milestones above take Lilypad from prototype to a
+secure, scalable **platform**. This track is the separate question of turning
+that platform into a **product a stranger can buy and use**: an account you can
+sign into, a computer you can link and manage, a coherent visual language, a
+site that explains it, and an Ask feature that does not leak internal tier
+names.
+
+It is numbered **P1–P6 rather than M19+** deliberately. These are not "the next
+milestones after M18" — they run against the same codebase on a different axis,
+and several of them refine work the M-track already sketched. Reusing M-numbers
+would have made two different plans claim the same labels.
+
+**What it supersedes.** Nothing is deleted; the entries above stay as written.
+
+| Old milestone            | Status under this track                                                                      |
+| ------------------------ | -------------------------------------------------------------------------------------------- |
+| M12 — isolation suite    | **Already closed by M9.** SEC-7 is covered; the release-blocking CI rule remains M12's part. |
+| M14 — Consumer UX        | **Split.** Onboarding + device management + site become P1, P2, P4.                          |
+| M18 — Ask productisation | **Becomes P5.**                                                                              |
+| M13 — production infra   | **Unchanged.** P4 is the site's content and build; M13 still owns DNS, TLS and hosting.      |
+
+**What it does not change.** LAN-first ([ADR-0006](adr/0006-lan-first-connectivity.md)),
+cloud as control plane only ([ADR-0007](adr/0007-cloud-is-control-plane-only.md)),
+and explicit device linking ([ADR-0010](adr/0010-explicit-device-linking.md)) all
+hold. In particular: **an account never discovers devices.** No milestone here
+may introduce a flow where signing in makes an unlinked computer appear.
+
+## P1 — Account-connected clients 🚧
+
+The account layer is built on both ends and connected on neither: the desktop's
+`auth.rs` was dead code until M9 wired its token path, `SignInScreen.tsx` has no
+route, `approveDesktopEnrollment()`'s only caller is a test, and the desktop has
+no enrollment-code UI at all. A user can install Lilypad, grant permissions and
+pair a phone without ever having an account.
+
+- Desktop: sign in, show an enrollment QR, and render **UNLINKED vs LINKED**
+  honestly ([ADR-0008](adr/0008-desktop-enrollment-via-phone.md)).
+- Phone: route the orphaned sign-in screen, and add the approval screen that
+  scans a laptop's enrollment QR.
+- **DoD:** a fresh install completes sign-in → link → pair with no manual steps,
+  and the desktop never implies it is available before a phone has approved it.
+
+Closes gap F1. Makes enrolment universal, which is what lets `authorize.ts`'s
+unowned lane be deleted.
+
+## P2 — Device management 🔜
+
+An authenticated "my devices" surface: list, rename, revoke, and see active
+sessions. Reuses the ownership rule from M9 (`manageDevice`/`managePair`) — this
+is the milestone those helpers' "any of the owner's devices qualifies" rule
+exists for.
+
+## P3 — Design system 🔜
+
+One source of truth for colour, typography, spacing and interaction states. The
+palette is currently triplicated across the desktop, mobile and overlay
+surfaces; a product cannot look coherent while three copies drift.
+
+## P4 — `lilypad.takedia.com` 🔜
+
+The marketing site: what Lilypad is, which platforms are **actually** supported,
+and the plans. Static, deployed on the existing Cloudflare account.
+
+- Advertise **macOS + iOS only** until Windows input and Android have been
+  validated on real hardware — see gap AND-1's history for why claiming
+  otherwise is not acceptable.
+- Tiers are `free`, `pro`, `team` (`users.tier`). **Prices render as `$XXXX`
+  placeholders** — no price point, quota or allowance exists anywhere in the
+  repository, and this track does not invent them.
+- DNS, TLS and hosting remain M13's.
+
+## P5 — Ask productisation 🔜
+
+The Ask feature exists and works; it presents itself in internal terms. Hide raw
+tier names from the transcript surface and give the desktop its own Ask input.
+Supersedes M18's Ask half.
+
+## P6 — Entitlements 🔜
+
+Backend-enforced plan limits. **Blocked**, and deliberately last: `users.tier`
+is read nowhere, and the only pricing facts the repository contains are two
+principles — LAN is never paywalled, and only relay minutes and managed AI are
+metered. Actual limits are a product decision, not an implementation detail.
+
+## Open decisions blocking this track
+
+Recorded rather than guessed. Each blocks only its own dependent.
+
+1. **Pricing numbers** — free-tier relay allowance, `pro`/`team` prices. Blocks
+   P4's real prices and all of P6. Everything else proceeds on `$XXXX`.
+2. **Platform advertising** — macOS is real; Windows input has never executed and
+   Android has no field validation. Until that changes, P4 says macOS + iOS.
+3. **Legal pages** — privacy policy and terms need real answers on data
+   retention and jurisdiction. Compliance claims will not be drafted from
+   inference.
 
 ---
 

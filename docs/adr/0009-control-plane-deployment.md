@@ -95,5 +95,5 @@ guard refuses dev defaults, `/metrics` requires a bearer token, and CORS fails
 closed. **Nothing is deployed to a public host.** Route authorization (SEC-3)
 landed in M9 ([ADR-0010](0010-explicit-device-linking.md)); the remaining
 caveat before opening this to strangers is that unenrolled devices still use
-the pre-accounts lane until M10 makes enrolment mandatory in both clients — see
+the pre-accounts lane until P1 makes enrolment mandatory in both clients — see
 [deployment.md](../deployment.md).

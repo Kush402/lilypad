@@ -210,10 +210,10 @@ Stated explicitly so nothing here reads as more finished than it is.
   pairing and trust route, and the presence `register`, are gated by ownership
   ([ADR-0010](adr/0010-explicit-device-linking.md)). A device an account owns
   demands a matching device token; a device nobody owns keeps its pre-accounts
-  behaviour, and that lane disappears when M10 makes enrolment mandatory in
+  behaviour, and that lane disappears when P1 makes enrolment mandatory in
   both clients. **Until then, a public deployment is reachable by unenrolled
   devices on the legacy lane** — which is the pre-M8 posture, not a regression,
-  but it is the reason to finish M10 before opening this to strangers.
+  but it is the reason to finish P1 before opening this to strangers.
 - ~~Legacy null-secret pairs (SEC-5) are not purged.~~ Migration `0005` revokes
   them and the connect gate refuses a null hash.
 - The `sessions` table is still never written.

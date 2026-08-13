@@ -36,7 +36,7 @@ let inFlight: Promise<DeviceSession> | null = null;
  * already knows the answer to.
  *
  * This matters because pairing now asks for a token on the way past
- * (`api.ts`), and most phones are un-enrolled until M10 lands the sign-in
+ * (`api.ts`), and most phones are un-enrolled until P1 lands the sign-in
  * screen — without the memo, every scan and every reconnect would pay for a
  * challenge and a rejection first. Cleared by `enrollDevice` and
  * `invalidateAccessToken`, so a phone that later signs in starts sending

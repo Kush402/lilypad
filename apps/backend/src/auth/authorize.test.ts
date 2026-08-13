@@ -24,8 +24,8 @@ const revokedAliceLaptop: DeviceOwnership = { ...aliceLaptop, state: 'revoked' }
 
 /** A device token, as `/devices/token` mints it. */
 const asDevice = (userId: string, deviceId: string): Actor => ({ userId, deviceId });
-/** An account session — signed in, but not an enrolled device (the M13 web
- * dashboard). It knows who you are, never which machine you are. */
+/** An account session — signed in, but not an enrolled device (the web
+ * dashboard, P4). It knows who you are, never which machine you are. */
 const asAccount = (userId: string): Actor => ({ userId, deviceId: null });
 
 const allowed = (a: Access) => a.allow;

@@ -9,7 +9,7 @@ jest.mock('./auth', () => ({ accessToken: jest.fn() }));
 
 const accessTokenMock = accessToken as jest.MockedFunction<typeof accessToken>;
 
-/** The default state until M10 lands sign-in: this phone has no account. */
+/** The default state until P1 lands sign-in: this phone has no account. */
 beforeEach(() => {
   accessTokenMock.mockRejectedValue(new Error('This phone is not signed in yet.'));
 });
@@ -194,7 +194,7 @@ describe('device token on the pairing surface', () => {
       expect(headersOf(fetchMock).authorization).toBe('Bearer a-device-token');
     });
 
-    // The un-enrolled majority until M10. A phone with no account has nothing
+    // The un-enrolled majority until P1. A phone with no account has nothing
     // to prove, and pairing one must work exactly as it always has — an auth
     // failure here must never become a pairing failure.
     it(`${name} still works, with no header, when this phone has no account`, async () => {

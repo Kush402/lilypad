@@ -6,6 +6,27 @@ All notable changes to Lilypad are documented here. The format follows
 
 ## [Unreleased]
 
+### Roadmap — a separate product completion track (P1–P6)
+
+The consumer-product plan and the platform milestones had begun claiming the
+same numbers for different work: `milestones.md` had M10 as desktop security
+hardening while the product plan had M10 as the auth UI. Rather than renumber
+either, the product work now runs as **P1–P6** on its own axis.
+
+- **P1** account-connected clients · **P2** device management · **P3** design
+  system · **P4** `lilypad.takedia.com` · **P5** Ask productisation ·
+  **P6** entitlements (blocked on pricing).
+- **Nothing was deleted or renumbered.** M14 (Consumer UX) and M18's Ask half
+  are marked superseded in place and say which P-milestone took them; M13 keeps
+  DNS, TLS and hosting, and P4 is only the site's content and build.
+- New gap **PROD-1** records what P1 closes: the account layer is built on both
+  ends and connected on neither, so a user can install Lilypad, grant
+  permissions and pair a phone without ever having an account.
+- Pricing stays `$XXXX`. The repository contains three tier names and two
+  principles — LAN is never paywalled, only relay minutes and managed AI are
+  metered — and no price point, quota or allowance anywhere. That is a product
+  decision, recorded as an open one rather than guessed.
+
 ### Security — ownership authorization on every route (M9, SEC-3/4/7)
 
 Knowing a device id, a pair id, or a room id is no longer worth anything.
@@ -35,7 +56,7 @@ See [ADR-0010](docs/adr/0010-explicit-device-linking.md).
   works exactly as before.
 - **The gate keys on the resource, not the route.** A device row with no owner
   keeps its pre-accounts behaviour, so nothing breaks for existing installs
-  while the sign-in UI is still M10. Both halves meet per-device with no flag
+  while the sign-in UI is still P1. Both halves meet per-device with no flag
   day; when enrolment becomes mandatory the unowned branch is deleted.
 - **SEC-7 is answered by tests, not by assertion:** a table of every actor Bob
   can be against every resource Alice owns on every gated route

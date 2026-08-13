@@ -88,12 +88,14 @@ device that is sitting next to an already-authenticated phone.
   is the same class of attack as every device-code flow and is **not fully
   eliminated** — it is a known, accepted residual risk that belongs in the
   refreshed threat model (M12).
-- **This is also the mechanism M9 needs.** [ADR-0003](0003-same-account-device-visibility.md)
-  repurposes QR to desktop sign-in; that is exactly this flow, so M9 inherits it
-  rather than building its own.
+- **This is the only linking mechanism.** It was written expecting
+  [ADR-0003](0003-same-account-device-visibility.md) to repurpose QR to desktop
+  sign-in; ADR-0003 has since been superseded by
+  [ADR-0010](0010-explicit-device-linking.md), which makes this flow the
+  ceremony rather than one of two. The UI for it is **P1**.
 - The desktop still needs an account to exist. A user with no phone cannot
   currently create one — acceptable for a phone-first product, and the web
-  dashboard (M14) removes the constraint.
+  dashboard (P4) removes the constraint.
 
 ### Amendment (2026-08-13): approval had to create the trust pair
 

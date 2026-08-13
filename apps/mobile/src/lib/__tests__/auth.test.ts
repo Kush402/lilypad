@@ -112,7 +112,7 @@ describe('device access tokens', () => {
 
 /**
  * M9: pairing now asks for a token on the way past (`api.ts`), and most phones
- * have no account until M10 lands sign-in. Re-running the exchange on every
+ * have no account until P1 lands sign-in. Re-running the exchange on every
  * scan and every reconnect, to be told the same thing each time, would put two
  * pointless round trips in front of the product's core flow.
  */
