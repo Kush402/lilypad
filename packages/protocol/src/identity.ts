@@ -164,6 +164,17 @@ export const DesktopEnrollmentApprovedSchema = z.object({
 });
 export type DesktopEnrollmentApproved = z.infer<typeof DesktopEnrollmentApprovedSchema>;
 
+/**
+ * A device's lifecycle state, as the clients render it.
+ *
+ * The distinction the product rests on: an account never discovers devices.
+ * A desktop that has signed in is still `unlinked` until the explicit linking
+ * ceremony binds it to that account, and both clients must be able to say so
+ * honestly rather than implying availability.
+ */
+export const DeviceStateSchema = z.enum(['unlinked', 'linked', 'revoked']);
+export type DeviceState = z.infer<typeof DeviceStateSchema>;
+
 /** Machine-readable failures for the desktop-enrollment exchange. */
 export type DesktopEnrollmentErrorCode =
   'invalid_signature' | 'invalid_code' | 'device_owned_by_another_account' | 'public_key_in_use';

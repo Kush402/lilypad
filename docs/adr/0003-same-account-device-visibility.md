@@ -1,9 +1,14 @@
 ---
-status: Reference
+status: Superseded
 owner: @kushsharma024
 last-verified: 2026-08-12
 summary: Why QR pairing is replaced by same-account visibility and repurposed to sign-in and sharing.
 ---
+
+> **⚠️ SUPERSEDED by [ADR-0010](0010-explicit-device-linking.md) (2026-08-13).**
+> This decision was never implemented — the concept existed only in `docs/`.
+> An account no longer discovers devices; an explicit linking ceremony
+> establishes ownership. The reasoning below is kept for the record.
 
 # ADR-0003 — Same-account device visibility replaces QR pairing
 

@@ -272,11 +272,25 @@ Ed25519 device enrollment with challenge-response
 ([ADR-0002](adr/0002-device-identity.md)); every route behind `requireAuth` +
 an owner/capability check. Closes SEC-1, SEC-2, SEC-3, SEC-5.
 
-## M9 — Same-account device visibility 🔜
+## M9 — Ownership + authorization 🚧
 
-The phone lists the account's laptops and connects — no pairing ceremony. QR is
-repurposed to desktop sign-in and cross-account sharing
-([ADR-0003](adr/0003-same-account-device-visibility.md)). Closes SEC-4.
+**Rewritten 2026-08-13.** The previous scope (same-account visibility, no
+pairing ceremony) is superseded by
+[ADR-0010](adr/0010-explicit-device-linking.md): an account never discovers
+devices, and the explicit linking ceremony establishes ownership.
+
+A computer belongs to exactly one account, and only its owner may see, reach or
+revoke it. Knowing an identifier is never sufficient. Closes SEC-3, SEC-4 and
+SEC-7.
+
+- ✅ Linking makes a laptop reachable, not merely owned (ADR-0008 amendment)
+- ✅ Device states `unlinked → linked → revoked` (`auth/deviceState.ts`)
+- ✅ Ownership rule + isolation unit tests (`auth/ownership.ts`)
+- 🔜 Authorization applied to every HTTP route
+- 🔜 WebSocket `register` gate keyed on the authenticated device (SEC-4)
+- 🔜 Client token wiring — **must land with the route changes or pairing and
+  reconnect break**
+- 🔜 Table-driven cross-user isolation suite (SEC-7)
 
 ## M9.5 — LAN-direct connectivity (no internet required) 🔜
 
