@@ -12,6 +12,12 @@ export type RootStackParamList = {
    * lives.
    */
   SignIn: { apiBaseUrl: string };
+  /**
+   * The ACCOUNT's devices (P2) — distinct from `Devices`, which lists the
+   * laptops this phone has paired with. `apiBaseUrl` is required for the same
+   * reason as `SignIn`: the app ships no default backend address.
+   */
+  AccountDevices: { apiBaseUrl: string };
   Viewer: {
     /** Present for QR-scanned sessions; absent for trusted no-QR reconnects
      * (the Viewer itself only reads the fields below). */

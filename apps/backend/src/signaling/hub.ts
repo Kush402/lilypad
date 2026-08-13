@@ -291,6 +291,27 @@ export class SignalingHub {
   }
 
   /**
+   * Is this device in a live SESSION right now (P2's device list)?
+   *
+   * Presence rooms are excluded on purpose: a desktop sitting in its presence
+   * room is reachable, not busy, and showing "in a session" for every
+   * launched laptop would make the indicator meaningless.
+   *
+   * The hub is this answer's only source — the `sessions` table is still never
+   * written, and rendering an empty table as "no active sessions" would state
+   * something false rather than omit something missing. Per-process, which is
+   * accurate while the backend is single-instance (OPS-1); M11's scale-out is
+   * where this needs a shared view.
+   */
+  hasLiveSession(role: DeviceKind, deviceId: string): boolean {
+    for (const room of this.registry.all()) {
+      if (presenceRoomDeviceId(room.id) !== null) continue;
+      if (room.deviceIdFor(role) === deviceId) return true;
+    }
+    return false;
+  }
+
+  /**
    * Force-end every live room for this exact desktop↔mobile device pair,
    * reusing the existing `endRoom` (sends `session-end` with `reason` to both
    * seats, then closes both sockets) — the desktop's own session runner
@@ -309,6 +330,33 @@ export class SignalingHub {
         room.deviceIdFor('desktop') === desktopDeviceId &&
         room.deviceIdFor('mobile') === mobileDeviceId
       ) {
+        this.endRoom(room, reason);
+        ended += 1;
+      }
+    }
+    return ended;
+  }
+
+  /**
+   * Force-end every live room this ONE device is in, whoever it is talking to
+   * — the device-revocation counterpart to `endRoomsForDevicePair` (P2).
+   *
+   * Revoking a device withdraws ownership, which is strictly stronger than
+   * severing one pairing, so it must not leave that device mid-session with
+   * anyone. Doing this is what makes revocation immediate: an access token
+   * lives ten minutes, so a revoke that only wrote a column would leave a
+   * stolen laptop controllable for ten more.
+   *
+   * Its presence room goes too. A revoked device must stop being reachable,
+   * not merely stop being connected.
+   */
+  endRoomsForDevice(deviceId: string, reason: string): number {
+    let ended = 0;
+    for (const room of this.registry.all()) {
+      const isPresence = presenceRoomDeviceId(room.id) === deviceId;
+      const inSession =
+        room.deviceIdFor('desktop') === deviceId || room.deviceIdFor('mobile') === deviceId;
+      if (isPresence || inSession) {
         this.endRoom(room, reason);
         ended += 1;
       }

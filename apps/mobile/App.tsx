@@ -10,6 +10,7 @@ import { theme } from './src/theme';
 import { DeviceListScreen } from './src/screens/DeviceListScreen';
 import { ScannerScreen } from './src/screens/ScannerScreen';
 import { SignInRoute } from './src/screens/SignInRoute';
+import { AccountDevicesScreen } from './src/screens/AccountDevicesScreen';
 import { ViewerScreen } from './src/screens/ViewerScreen';
 import { initDeviceIdentity } from './src/lib/device';
 
@@ -46,6 +47,11 @@ export default function App() {
           />
           <Stack.Screen name="Scanner" component={ScannerScreen} options={{ title: 'Scan QR' }} />
           <Stack.Screen name="SignIn" component={SignInRoute} options={{ title: 'Sign in' }} />
+          <Stack.Screen
+            name="AccountDevices"
+            component={AccountDevicesScreen}
+            options={{ title: 'Your devices' }}
+          />
           <Stack.Screen name="Viewer" component={ViewerScreen} options={{ title: 'Session' }} />
         </Stack.Navigator>
       </NavigationContainer>

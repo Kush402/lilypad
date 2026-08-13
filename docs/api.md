@@ -111,6 +111,59 @@ thing between an attacker and it was knowing two device ids and a secret.
 // 503 desktop_offline — the desktop has no live presence channel
 ```
 
+## Account devices ✅ 🔒 device token (P2)
+
+**A different list from the trusted pairs below, answering a different
+question** ([ADR-0010](adr/0010-explicit-device-linking.md)): these are the
+machines the account **owns**, not which phone may reach which laptop. Revoking
+here is strictly stronger than severing a pairing — the device can no longer
+authenticate at all, so it loses every pairing at once.
+
+`requireDevice`, not the conditional gate the pairing routes use: there is no
+unowned lane, because the resource _is_ an account's device list. Without an
+account there is nothing to list, so an anonymous caller gets **401**, not an
+empty array. Handlers:
+[`routes/devices.ts`](../apps/backend/src/routes/devices.ts).
+
+| Route                       | Purpose                                                                                                           |
+| --------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `GET /devices`              | Every device on the caller's account → `{ devices: AccountDevice[] }`.                                            |
+| `PATCH /devices/:deviceId`  | Rename — body `{ "name": "Work MacBook" }` → `{ ok: true }`. A label; nothing authorizes on it.                   |
+| `DELETE /devices/:deviceId` | Revoke. Ends the device's live rooms **and its presence room** immediately, then fails its next `/devices/token`. |
+
+```jsonc
+// GET /devices → 200
+{
+  "devices": [
+    {
+      "id": "uuid",
+      "kind": "desktop",
+      "platform": "macos",
+      "name": "Work MacBook",
+      "fingerprint": "…445685", // masked; the full value is a pairing input
+      "state": "linked", // unlinked | linked | revoked
+      "lastSeenAt": "2026-08-13T…",
+      "createdAt": "2026-08-13T…",
+      "activeSession": false, // from the signaling hub, not a table — see below
+      "isCurrentDevice": false,
+    }, // true for the device making the request
+  ],
+}
+```
+
+**`activeSession` comes from the signaling hub, not the `sessions` table.** That
+table is still never written, and rendering an empty table as "no active
+sessions" would state something false rather than omit something missing. A
+device's _presence_ room does not count — a laptop sitting in one is reachable,
+not busy. Per-process truth while the backend is single-instance (OPS-1); M11's
+scale-out is where this needs a shared view.
+
+**Revoking a device does not delete its pairs**, deliberately. Revocation is
+enforced at the identity layer — a revoked device cannot obtain a token and
+cannot claim its presence room — so its pair rows are inert. Re-enrolling the
+device (a deliberate act) un-revokes it and its trust relationships come back
+intact, which is the recovery a user expects after "I found my laptop".
+
 ## Trusted-pair management ✅ (M5.4)
 
 Consumed by the desktop's **Trusted Devices** dashboard and the phone's

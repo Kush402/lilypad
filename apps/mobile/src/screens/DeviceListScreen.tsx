@@ -31,6 +31,8 @@ export function DeviceListScreen({ navigation }: Props) {
   const insets = useSafeAreaInsets();
   const [pairs, setPairs] = useState<PairedDesktop[]>([]);
   const [connecting, setConnecting] = useState<string | null>(null);
+  // Any paired laptop's address will do: they are all this account's Lilypad.
+  const accountApiBaseUrl = pairs[0]?.apiBaseUrl ?? null;
 
   const refresh = useCallback(() => {
     void loadPairs().then(setPairs);
@@ -148,11 +150,26 @@ export function DeviceListScreen({ navigation }: Props) {
         />
       )}
 
-      <Pressable style={styles.primary} onPress={() => navigation.navigate('Scanner')}>
-        <Text style={styles.primaryText}>
-          {pairs.length === 0 ? "Scan a laptop's QR" : 'Add another laptop'}
-        </Text>
-      </Pressable>
+      <View style={styles.footer}>
+        {/* Account management needs a backend address and the app ships no
+            default — every one it knows came from a scanned code. So this
+            appears once there is a pair to take one from, rather than as a
+            button that cannot work. */}
+        {accountApiBaseUrl !== null ? (
+          <Pressable
+            style={styles.secondary}
+            testID="open-account-devices"
+            onPress={() => navigation.navigate('AccountDevices', { apiBaseUrl: accountApiBaseUrl })}
+          >
+            <Text style={styles.secondaryText}>Your devices</Text>
+          </Pressable>
+        ) : null}
+        <Pressable style={styles.primary} onPress={() => navigation.navigate('Scanner')}>
+          <Text style={styles.primaryText}>
+            {pairs.length === 0 ? "Scan a laptop's QR" : 'Add another laptop'}
+          </Text>
+        </Pressable>
+      </View>
     </View>
   );
 }
@@ -184,6 +201,7 @@ const styles = StyleSheet.create({
   connectText: { color: '#06231a', fontWeight: '700', fontSize: 15 },
   forget: { paddingVertical: 10, paddingHorizontal: 6 },
   forgetText: { color: theme.muted, fontSize: 14 },
+  footer: { gap: 10 },
   primary: {
     backgroundColor: theme.accent,
     borderRadius: 12,
@@ -191,4 +209,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   primaryText: { color: '#06231a', fontWeight: '700', fontSize: 16 },
+  secondary: {
+    borderColor: theme.line,
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingVertical: 14,
+    alignItems: 'center',
+  },
+  secondaryText: { color: theme.ink, fontWeight: '600', fontSize: 15 },
 });

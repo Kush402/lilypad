@@ -9,6 +9,7 @@ export * from './auth.js';
 export * from './identity.js';
 export * from './pairing.js';
 export * from './connect.js';
+export * from './devices.js';
 export * from './signaling.js';
 export * from './input.js';
 export * from './agent.js';

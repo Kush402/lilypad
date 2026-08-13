@@ -303,14 +303,14 @@ in `milestones.md` unchanged.
 
 ### Product completion track
 
-| Milestone | Objective                                                                          |
-| --------- | ---------------------------------------------------------------------------------- |
-| **P1** 🚧 | Account-connected clients — sign-in, enrollment QR, approval screen. Closes PROD-1 |
-| P2        | Device management — list, rename, revoke, active sessions                          |
-| P3        | Design system — one palette, typography and interaction vocabulary                 |
-| P4        | `lilypad.takedia.com` — macOS + iOS only; tiers priced `$XXXX` until numbers exist |
-| P5        | Ask productisation — hide internal tier names, desktop Ask input                   |
-| P6        | Entitlements — **blocked** on pricing decisions                                    |
+| Milestone | Objective                                                                                                     |
+| --------- | ------------------------------------------------------------------------------------------------------------- |
+| **P1** 🚧 | Account-connected clients — sign-in, enrollment QR, approval screen. Closes PROD-1                            |
+| **P2** 🚧 | Device management — list, rename, revoke, active sessions (phone done; desktop view + session history remain) |
+| P3        | Design system — one palette, typography and interaction vocabulary                                            |
+| P4        | `lilypad.takedia.com` — macOS + iOS only; tiers priced `$XXXX` until numbers exist                            |
+| P5        | Ask productisation — hide internal tier names, desktop Ask input                                              |
+| P6        | Entitlements — **blocked** on pricing decisions                                                               |
 
 **Production readiness: not ready.** The session layer is production-grade and
 its authentication and authorization now are too. What remains is the service

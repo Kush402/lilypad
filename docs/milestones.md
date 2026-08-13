@@ -472,12 +472,48 @@ Lilypad lives, and sign-in is reached from the moment it is actually needed.
 Closes gap PROD-1. Makes enrolment universal, which is what lets `authorize.ts`'s
 unowned lane be deleted.
 
-## P2 — Device management 🔜
+## P2 — Device management 🚧
 
-An authenticated "my devices" surface: list, rename, revoke, and see active
-sessions. Reuses the ownership rule from M9 (`manageDevice`/`managePair`) — this
-is the milestone those helpers' "any of the owner's devices qualifies" rule
+An authenticated "my devices" surface. Built on M9's ownership rule — this is
+the milestone `manageDevice`'s "any of the owner's devices qualifies" rule
 exists for.
+
+- ✅ `GET /devices`, `PATCH /devices/:id` (rename), `DELETE /devices/:id`
+  (revoke), all `requireDevice` and ownership-gated.
+- ✅ Revocation is **immediate**: the backend ends the device's live rooms and
+  its presence room, then its next `/devices/token` fails. Without that, a
+  ten-minute access token would leave a stolen laptop controllable for ten more.
+- ✅ Active-session state comes from the signaling hub, because the `sessions`
+  table is still never written and an empty table rendered as "no active
+  sessions" would state something false rather than omit something missing.
+- ✅ Phone **Your devices** screen: list, rename, remove, with copy that keeps
+  it apart from "Your laptops" — forgetting a laptop ends one pairing, removing
+  a device withdraws ownership.
+- 🔜 Desktop-side view of the same list. The phone is where the account lives
+  ([ADR-0008](adr/0008-desktop-enrollment-via-phone.md): the desktop has no
+  OAuth client), so the phone gets it first; the desktop already manages its own
+  pairs and its own link state.
+- 🔜 Session history. Needs the `sessions` table to actually be written.
+
+**Verified against a live backend** (Postgres + Redis): two accounts, real
+Ed25519 enrolment, and 20 assertions including that one account cannot rename or
+revoke another's device (404 both), that a revoked device genuinely stops
+authenticating, and that fingerprints are masked in listings.
+
+**Verified on a real iPhone 13** (Xcode 26.6, `devicectl`): the app builds for
+arm64, installs, launches and stays running, and every P1/P2 screen and its copy
+is present in the shipped Hermes bundle. **Not verified: the tap-through flow**
+— driving the touchscreen needs a person, so sign-in → link → rename → revoke
+has been exercised against the live backend by script, not by hand on the phone.
+
+**Tooling blocker, unchanged since M8.** The repo's real bundle id
+(`com.takedia.lilypad`) carries the Sign in with Apple entitlement, and Xcode
+refuses to provision it: _"Personal development teams … do not support the Sign
+In with Apple capability."_ The device build above used a throwaway bundle id and
+empty entitlements **on the command line only** — the repository is untouched. So
+Apple and Google sign-in cannot be exercised on this hardware; magic-link
+sign-in is the path that works. Clearing this needs a paid Apple Developer
+Program membership, not a code change.
 
 ## P3 — Design system 🔜
 

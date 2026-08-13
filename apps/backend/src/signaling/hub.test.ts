@@ -1192,3 +1192,82 @@ describe('SignalingHub#endRoomsForDevicePair (revoke force-ends a live session)'
     expect(mobile.find('session-end')?.payload).toEqual({ reason: 'unpaired' });
   });
 });
+
+/**
+ * P2 — "is this device busy right now?" and "make it stop", both answered by
+ * the hub because the `sessions` table is still never written. An empty table
+ * rendered as "no active sessions" would state something false rather than
+ * omit something missing.
+ */
+describe('SignalingHub — device liveness and device revocation (P2)', () => {
+  const presenceReg = (deviceId: string) => ({
+    type: 'register',
+    roomId: `presence:${deviceId}`,
+    from: 'desktop' as const,
+    ts: 0,
+    payload: { role: 'desktop', deviceId },
+  });
+
+  it('reports both seats of a live session as busy', () => {
+    const { hub } = connectedRoom();
+    expect(hub.hasLiveSession('desktop', 'desktop-01')).toBe(true);
+    expect(hub.hasLiveSession('mobile', 'mobile-01')).toBe(true);
+  });
+
+  it('reports a device in no room as not busy', () => {
+    const { hub } = connectedRoom();
+    expect(hub.hasLiveSession('desktop', 'desktop-99')).toBe(false);
+    expect(hub.hasLiveSession('mobile', 'mobile-99')).toBe(false);
+  });
+
+  // The distinction that makes the indicator mean anything: a laptop sitting
+  // in its presence room is REACHABLE, not busy. Counting presence would show
+  // "in a session" for every launched laptop.
+  it('does not count a presence seat as a session', () => {
+    const hub = makeHub();
+    hub.handleMessage(new FakePeer(), presenceReg('desktop-01'));
+    expect(hub.isDesktopPresent('desktop-01')).toBe(true);
+    expect(hub.hasLiveSession('desktop', 'desktop-01')).toBe(false);
+  });
+
+  // The role matters: a desktop id must not match on the mobile seat.
+  it('does not confuse the two seats', () => {
+    const { hub } = connectedRoom();
+    expect(hub.hasLiveSession('mobile', 'desktop-01')).toBe(false);
+    expect(hub.hasLiveSession('desktop', 'mobile-01')).toBe(false);
+  });
+
+  it("ends a revoked device's live session immediately, for both seats", () => {
+    const { hub, desktop, mobile } = connectedRoom();
+
+    expect(hub.endRoomsForDevice('desktop-01', 'revoked')).toBe(1);
+
+    expect(desktop.find('session-end')?.payload.reason).toBe('revoked');
+    expect(mobile.find('session-end')?.payload.reason).toBe('revoked');
+    expect(hub.hasLiveSession('desktop', 'desktop-01')).toBe(false);
+  });
+
+  // Revocation withdraws ownership, so the machine must stop being REACHABLE,
+  // not merely stop being connected — otherwise a revoked laptop keeps its
+  // presence seat and a phone can still ring it.
+  it("ends the revoked device's presence room too", () => {
+    const hub = makeHub();
+    hub.handleMessage(new FakePeer(), presenceReg('desktop-01'));
+
+    expect(hub.endRoomsForDevice('desktop-01', 'revoked')).toBe(1);
+    expect(hub.isDesktopPresent('desktop-01')).toBe(false);
+  });
+
+  it('leaves other devices alone', () => {
+    const { hub } = connectedRoom();
+    expect(hub.endRoomsForDevice('desktop-99', 'revoked')).toBe(0);
+    expect(hub.hasLiveSession('desktop', 'desktop-01')).toBe(true);
+  });
+
+  // Revoking the phone must end the same session, from the other side.
+  it('ends the session when the MOBILE side is the one revoked', () => {
+    const { hub, desktop } = connectedRoom();
+    expect(hub.endRoomsForDevice('mobile-01', 'revoked')).toBe(1);
+    expect(desktop.find('session-end')?.payload.reason).toBe('revoked');
+  });
+});

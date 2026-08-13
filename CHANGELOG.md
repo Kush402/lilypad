@@ -6,6 +6,42 @@ All notable changes to Lilypad are documented here. The format follows
 
 ## [Unreleased]
 
+### P2 — device management
+
+An authenticated "my devices" surface, built on M9's ownership rule.
+
+- **`GET /devices`, `PATCH /devices/:id`, `DELETE /devices/:id`**, all
+  `requireDevice` and ownership-gated. Unlike the pairing routes there is no
+  unowned lane: the resource _is_ an account's device list, so an anonymous
+  caller gets 401 rather than an empty array — "we do not know who you are" and
+  "you own nothing" are different claims.
+- **Revocation is immediate.** The backend ends the device's live rooms _and its
+  presence room_, then its next `/devices/token` fails. Without that, a
+  ten-minute access token would leave a stolen laptop controllable for ten more
+  minutes — the exact window revocation exists to close. Killing presence too
+  matters: a revoked machine must stop being reachable, not merely stop being
+  connected.
+- **Active-session state comes from the signaling hub, not the `sessions`
+  table** — that table is still never written, and rendering it as "no active
+  sessions" would state something false rather than omit something missing. A
+  presence seat deliberately does not count: a laptop sitting in one is
+  reachable, not busy.
+- **Revoking a device does not delete its pairs**, deliberately. Revocation is
+  enforced at the identity layer, so the pair rows are inert; re-enrolling the
+  device un-revokes it and its trust relationships come back intact, which is
+  the recovery a user expects after "I found my laptop".
+- **Phone "Your devices" screen** — list, rename, remove — with copy that keeps
+  it apart from "Your laptops": forgetting a laptop ends one pairing, removing a
+  device withdraws ownership. Removing the phone in your hand warns that it
+  signs you out.
+- Fingerprints are masked in listings, the same treatment pair listings already
+  get: a full fingerprint is an input to the pairing surface.
+- **Fixed before it shipped, by live testing:** the mobile client set
+  `content-type: application/json` on every request including bodiless ones, and
+  Fastify rejects that with `FST_ERR_CTP_EMPTY_JSON_BODY` before the route runs
+  — so every device removal would have failed with a 400 the UI reported as
+  "Could not remove that device". Tests that mock `fetch` cannot catch this.
+
 ### P1 — the account layer is connected on both ends
 
 Closes PROD-1. A user could previously install Lilypad, grant permissions and

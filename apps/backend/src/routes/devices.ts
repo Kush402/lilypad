@@ -4,12 +4,28 @@ import {
   PairIdParamsSchema as PairParamsSchema,
   PairAutoApprovePatchSchema as PatchBodySchema,
   UnpairRequestSchema,
+  DeviceIdParamsSchema,
+  DeviceRenameSchema,
 } from '@lilypad/protocol';
 import { TrustService, createDrizzleTrustStore } from '../services/trust.js';
 import { AuditLogService, createDrizzleAuditLogStore } from '../services/auditLog.js';
-import { optionalAuth, optionalActorOf } from '../auth/requireAuth.js';
+import {
+  optionalAuth,
+  optionalActorOf,
+  requireDevice,
+  actorOf,
+  deviceActorOf,
+} from '../auth/requireAuth.js';
 import { actAsDevice, manageDevice, managePair } from '../auth/authorize.js';
-import { deviceOwnershipByFingerprint, pairOwnership } from '../auth/ownership.js';
+import {
+  deviceOwnershipByFingerprint,
+  deviceOwnershipById,
+  pairOwnership,
+} from '../auth/ownership.js';
+import {
+  AccountDeviceService,
+  createDrizzleAccountDeviceStore,
+} from '../services/accountDevices.js';
 import type { SignalingHub } from '../signaling/hub.js';
 import { log } from '../logging.js';
 
@@ -33,10 +49,84 @@ export async function deviceRoutes(
   const { hub } = deps;
   const trust = new TrustService(createDrizzleTrustStore());
   const auditLog = new AuditLogService(createDrizzleAuditLogStore());
+  const accountDevices = new AccountDeviceService(createDrizzleAccountDeviceStore());
 
   /** One answer for "not yours" and "never existed" alike — a caller that can
    * tell them apart can enumerate other accounts' devices. */
   const notFound = (reply: FastifyReply) => reply.code(404).send({ error: 'not_found' });
+
+  // ── Account devices (P2) ──────────────────────────────────────────────────
+  // A DIFFERENT list from the pairs below, answering a different question:
+  // these are the machines the account owns, not which phone may reach which
+  // laptop. Revoking here withdraws ownership, so the device loses every
+  // pairing at once and can no longer authenticate at all.
+  //
+  // `requireDevice`, not `optionalAuth`: there is no unowned lane here, because
+  // the resource IS an account's device list. Without an account there is
+  // nothing to list.
+
+  /** Every device on the caller's account. */
+  app.get('/devices', { preHandler: requireDevice }, async (req, reply) => {
+    const actor = deviceActorOf(req);
+    const list = await accountDevices.list(actor.userId, actor.deviceId, (kind, fingerprint) =>
+      hub.hasLiveSession(kind, fingerprint),
+    );
+    return reply.code(200).send({ devices: list });
+  });
+
+  /** Rename a device. A label for a human; nothing authorizes on it. */
+  app.patch(
+    '/devices/:deviceId',
+    { preHandler: requireDevice, config: { rateLimit: { max: 30, timeWindow: '1 minute' } } },
+    async (req, reply) => {
+      const params = DeviceIdParamsSchema.safeParse(req.params);
+      const body = DeviceRenameSchema.safeParse(req.body);
+      if (!params.success || !body.success) {
+        return reply.code(400).send({ error: 'invalid_request' });
+      }
+      const device = await deviceOwnershipById(params.data.deviceId);
+      if (!manageDevice(actorOf(req), device).allow) return notFound(reply);
+      await accountDevices.rename(params.data.deviceId, body.data.name);
+      return reply.code(200).send({ ok: true });
+    },
+  );
+
+  /**
+   * Revoke a device — "I lost my laptop" / "sign this phone out".
+   *
+   * Ends its live rooms immediately, including its presence room. Without
+   * that, a ten-minute access token would keep a stolen machine controllable
+   * for ten more minutes, which is exactly the window revocation exists to
+   * close.
+   */
+  app.delete(
+    '/devices/:deviceId',
+    { preHandler: requireDevice, config: { rateLimit: { max: 30, timeWindow: '1 minute' } } },
+    async (req, reply) => {
+      const params = DeviceIdParamsSchema.safeParse(req.params);
+      if (!params.success) return reply.code(400).send({ error: 'invalid_request' });
+      const device = await deviceOwnershipById(params.data.deviceId);
+      if (!manageDevice(actorOf(req), device).allow) return notFound(reply);
+
+      const revoked = await accountDevices.revoke(params.data.deviceId);
+      if (revoked) {
+        const ended = hub.endRoomsForDevice(revoked.fingerprint, 'revoked');
+        if (ended > 0) {
+          log.signaling.info(
+            { deviceId: params.data.deviceId, ended },
+            'device revoke ended live rooms',
+          );
+        }
+      }
+      void auditLog
+        .sessionEnd({
+          userId: deviceActorOf(req).userId,
+          metadata: { event: 'device_revoked', deviceId: params.data.deviceId },
+        })
+        .catch((err) => log.audit.error({ err }, 'failed to write device_revoked audit log'));
+      return reply.code(200).send({ ok: true });
+    },
+  );
 
   /** Every pair for a desktop, for its Trusted Devices list. */
   app.get('/devices/pairs', { preHandler: optionalAuth }, async (req, reply) => {

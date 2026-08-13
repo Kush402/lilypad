@@ -13,7 +13,8 @@ vi.mock('../auth/ownership.js', () => ({
   canManagePair: vi.fn(),
 }));
 
-const { deviceOwnershipByFingerprint, pairOwnership } = await import('../auth/ownership.js');
+const { deviceOwnershipByFingerprint, deviceOwnershipById, pairOwnership } =
+  await import('../auth/ownership.js');
 const { deviceRoutes } = await import('./devices.js');
 const { pairingRoutes } = await import('./pairing.js');
 const { signalingRoutes } = await import('./signaling.js');
@@ -205,5 +206,71 @@ describe('M9 route authorization wiring', () => {
       'POST /pairing/create',
       'POST /pairing/redeem',
     ]);
+  });
+});
+
+/**
+ * The account-device routes (P2) are gated differently on purpose, and the
+ * difference is the point: `/devices/pairs` has an unowned lane because a
+ * pre-accounts laptop has no owner to protect, but `/devices` IS an account's
+ * device list — without an account there is nothing to list, so an anonymous
+ * caller gets 401 rather than an empty array.
+ */
+describe('P2 account-device route authorization', () => {
+  let app: FastifyInstance;
+
+  const DEVICE_ID = '22222222-3333-4444-8555-666666666666';
+  const accountRoutes = [
+    { name: 'GET /devices', request: { method: 'GET' as const, url: '/devices' } },
+    {
+      name: 'PATCH /devices/:deviceId',
+      request: {
+        method: 'PATCH' as const,
+        url: `/devices/${DEVICE_ID}`,
+        payload: { name: 'Work phone' },
+      },
+    },
+    {
+      name: 'DELETE /devices/:deviceId',
+      request: { method: 'DELETE' as const, url: `/devices/${DEVICE_ID}` },
+    },
+  ];
+
+  beforeEach(async () => {
+    vi.mocked(deviceOwnershipById).mockReset();
+    app = await buildApp();
+  });
+
+  for (const route of accountRoutes) {
+    it(`${route.name} refuses an anonymous caller outright`, async () => {
+      const res = await app.inject(route.request);
+      expect(res.statusCode).toBe(401);
+    });
+
+    it(`${route.name} refuses a bad token`, async () => {
+      const res = await app.inject({
+        ...route.request,
+        headers: { authorization: 'Bearer not-a-real-token' },
+      });
+      expect(res.statusCode).toBe(401);
+    });
+  }
+
+  // The trap this asserts against: `/devices/pairs/:pairId` and
+  // `/devices/:deviceId` are both two-segment-plus-param routes on the same
+  // prefix. If the parametric route ever won, a pair id would be routed into
+  // device revocation — revoking a DEVICE when the user asked to revoke a
+  // PAIR, which is a far stronger act than they consented to.
+  it('routes /devices/pairs/:pairId to pair management, never to device revocation', async () => {
+    vi.mocked(pairOwnership).mockResolvedValue(ALICES_PAIR);
+    vi.mocked(deviceOwnershipById).mockResolvedValue(LINKED_PHONE);
+
+    const res = await app.inject({ method: 'DELETE', url: `/devices/pairs/${PAIR_ID}` });
+
+    // 404 is the pair route denying an anonymous caller; the device route
+    // would have answered 401, and a 401 here would mean it matched.
+    expect(res.statusCode).toBe(404);
+    expect(pairOwnership).toHaveBeenCalledWith(PAIR_ID);
+    expect(deviceOwnershipById).not.toHaveBeenCalled();
   });
 });
