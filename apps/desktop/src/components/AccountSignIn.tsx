@@ -22,7 +22,13 @@ import { api, type AccountStateDto } from '../lib/tauri';
 
 type Mode = 'signin' | 'signup' | 'reset';
 
-export function AccountSignIn() {
+export interface AccountSignInProps {
+  /** Told whenever the signed-in state changes, so the dashboard can order the
+   * steps that follow this one. */
+  onChange?: (account: AccountStateDto) => void;
+}
+
+export function AccountSignIn({ onChange }: AccountSignInProps = {}) {
   const [account, setAccount] = useState<AccountStateDto | null>(null);
   const [mode, setMode] = useState<Mode>('signin');
   const [name, setName] = useState('');
@@ -34,29 +40,40 @@ export function AccountSignIn() {
   const [reveal, setReveal] = useState(false);
   const [error, setError] = useState('');
 
+  const apply = useCallback(
+    (next: AccountStateDto) => {
+      setAccount(next);
+      onChange?.(next);
+    },
+    [onChange],
+  );
+
   useEffect(() => {
     api
       .getAccountState()
-      .then(setAccount)
+      .then(apply)
       .catch(() => {
         /* not running inside Tauri */
       });
-  }, []);
+  }, [apply]);
 
-  const run = useCallback(async (action: () => Promise<AccountStateDto | void>) => {
-    setBusy(true);
-    setError('');
-    try {
-      const next = await action();
-      if (next) setAccount(next);
-      return true;
-    } catch (err) {
-      setError(String(err));
-      return false;
-    } finally {
-      setBusy(false);
-    }
-  }, []);
+  const run = useCallback(
+    async (action: () => Promise<AccountStateDto | void>) => {
+      setBusy(true);
+      setError('');
+      try {
+        const next = await action();
+        if (next) apply(next);
+        return true;
+      } catch (err) {
+        setError(String(err));
+        return false;
+      } finally {
+        setBusy(false);
+      }
+    },
+    [apply],
+  );
 
   const switchTo = (next: Mode) => {
     setMode(next);
@@ -86,7 +103,7 @@ export function AccountSignIn() {
             onClick={() =>
               void run(async () => {
                 await api.accountSignOut();
-                setAccount({ signedIn: false, email: null, userId: null });
+                apply({ signedIn: false, email: null, userId: null });
               })
             }
           >

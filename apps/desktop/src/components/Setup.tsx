@@ -3,9 +3,9 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { AgentProviderCard } from './AgentProviderCard';
-import { AccountPanel } from './AccountPanel';
 import { AccountSignIn } from './AccountSignIn';
-import { api, type LinkStateDto } from '../lib/tauri';
+import { LinkStep } from './LinkStep';
+import { api, type AccountStateDto, type LinkStateDto } from '../lib/tauri';
 import { useLiveResource } from '../lib/useLiveResource';
 
 type PermissionKind = 'screen_capture' | 'accessibility';
@@ -85,6 +85,7 @@ export function Setup() {
     accessibility: false,
   });
   const [needsRestart, setNeedsRestart] = useState(false);
+  const [account, setAccount] = useState<AccountStateDto | null>(null);
   const [restarting, setRestarting] = useState(false);
   // Read here as well as inside AccountPanel: the final card has to say which
   // of two true things is true, and it cannot ask the panel.
@@ -188,7 +189,7 @@ export function Setup() {
           model of what Lilypad is. Same component as the dashboard's: one
           sign-in form, two places it is reachable. */}
       <h2 className="section-title">1 · Your account</h2>
-      <AccountSignIn />
+      <AccountSignIn onChange={setAccount} />
 
       <h2 className="section-title">2 · Permissions</h2>
       <p className="muted">Two are needed before this Mac can be controlled at all.</p>
@@ -243,7 +244,7 @@ export function Setup() {
             Optional, and worth doing: linking is what puts this Mac on your account, so you can see
             and remove it from your phone. Pairing works without it.
           </p>
-          <AccountPanel />
+          <LinkStep signedIn={account?.signedIn ?? false} />
 
           <h2 className="section-title">4 · Pair a phone</h2>
           <p className="muted">

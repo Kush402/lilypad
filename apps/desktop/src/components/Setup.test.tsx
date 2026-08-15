@@ -140,13 +140,51 @@ describe('Setup', () => {
     render(<Setup />);
     await waitFor(() => expect(listen).toHaveBeenCalled());
 
-    expect(screen.queryByTestId('account-panel')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('link-step-locked')).not.toBeInTheDocument();
     expect(screen.queryByText('Show pairing code')).not.toBeInTheDocument();
 
     grantAll(eventHandler);
 
-    expect(await screen.findByTestId('account-panel')).toBeInTheDocument();
+    expect(await screen.findByTestId('link-step-locked')).toBeInTheDocument();
     expect(screen.getByText('Show pairing code')).toBeInTheDocument();
+  });
+
+  /**
+   * Ordering, reported from the running app: signed out, the dashboard offered
+   * "Sign in to Lilypad" and directly beneath it a live enrollment QR counting
+   * down — the last step of a flow whose first step had not happened, with
+   * nothing relating the two. Linking does not technically need the desktop to
+   * be signed in (a phone adopts the machine), which is exactly why it has to
+   * be ORDERED rather than left to sit there looking like a second way to log
+   * in.
+   */
+  it('does not offer to link this computer until somebody has signed in on it', async () => {
+    render(<Setup />);
+    await waitFor(() => expect(listen).toHaveBeenCalled());
+    grantAll(eventHandler);
+
+    expect(await screen.findByTestId('link-step-locked')).toHaveTextContent(/sign in above first/i);
+    expect(screen.queryByTestId('account-panel')).not.toBeInTheDocument();
+    // Pairing stays offered: it genuinely needs no account, and hiding it
+    // would be the opposite mistake.
+    expect(screen.getByText('Show pairing code')).toBeInTheDocument();
+  });
+
+  it('offers linking once signed in', async () => {
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === 'get_permission_status') return status();
+      if (cmd === 'get_link_state') return { state: 'unlinked' };
+      if (cmd === 'get_account_state')
+        return { signedIn: true, email: 'ada@example.com', userId: 'user-1' };
+      return undefined;
+    });
+
+    render(<Setup />);
+    await waitFor(() => expect(listen).toHaveBeenCalled());
+    grantAll(eventHandler);
+
+    expect(await screen.findByTestId('account-panel')).toBeInTheDocument();
+    expect(screen.queryByTestId('link-step-locked')).not.toBeInTheDocument();
   });
 
   /**

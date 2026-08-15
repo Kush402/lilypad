@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { api, type TrustedPairDto } from '../lib/tauri';
+import { api, type AccountStateDto, type TrustedPairDto } from '../lib/tauri';
 import { useAppState } from '../lib/useAppState';
 import { useLiveResource } from '../lib/useLiveResource';
 import { STATUS_LABEL } from '../lib/status';
 import { SoftwareUpdate } from './SoftwareUpdate';
-import { AccountPanel } from './AccountPanel';
 import { AccountSignIn } from './AccountSignIn';
+import { LinkStep } from './LinkStep';
 
 const SCOPE_LABEL: Record<string, string> = {
   view: 'View',
@@ -56,6 +56,8 @@ export function Control() {
   // explicit approve) IS the trust decision; unchecking covers one-off
   // sessions on devices you don't own.
   const [trust, setTrust] = useState(true);
+  // Owned here, not inside the panels: it is what orders them.
+  const [account, setAccount] = useState<AccountStateDto | null>(null);
 
   return (
     <div className="page control dashboard">
@@ -155,9 +157,11 @@ export function Control() {
 
       {/* Order is the product's own: who you are, then which computer is
           yours, then which phones may reach it. Signing in does not link
-          (ADR-0010), so the two account panels are separate and adjacent. */}
-      <AccountSignIn />
-      <AccountPanel />
+          (ADR-0010), so the two account panels are separate — and the second
+          waits for the first, because offering a live enrollment QR to someone
+          who has not said who they are puts the last step before the first. */}
+      <AccountSignIn onChange={setAccount} />
+      <LinkStep signedIn={account?.signedIn ?? false} />
       <TrustedDevices />
       <SystemPanel backendUrl={state?.backend_base_url ?? null} />
     </div>
