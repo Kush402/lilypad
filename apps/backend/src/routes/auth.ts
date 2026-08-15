@@ -234,14 +234,25 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       if (!parsed.success) {
         return reply.code(400).send({ error: 'invalid_request', issues: parsed.error.issues });
       }
-      const userId = await accounts.verifyPasswordSignIn(parsed.data.email, parsed.data.password);
-      if (!userId) {
+      const result = await accounts.verifyPasswordSignIn(parsed.data.email, parsed.data.password);
+      if (!result.ok) {
+        // The audit log records WHICH of the three it was, and the address it
+        // was tried against. The response does not — that is the oracle rule.
+        // Recording only "password_invalid" made a failed sign-in impossible to
+        // investigate: nothing in the system could say whether the account had
+        // even been found, which is the first question any support case asks.
         void auditLog
-          .loginFailed({ ip: req.ip, metadata: { reason: 'password_invalid' } })
+          .loginFailed({
+            ip: req.ip,
+            metadata: {
+              reason: `password_${result.reason}`,
+              email: parsed.data.email.trim().toLowerCase(),
+            },
+          })
           .catch((err) => log.audit.error({ err }, 'failed to write login_failed audit log'));
         return reply.code(401).send({ error: 'invalid_credentials' });
       }
-      return reply.code(200).send(await issueSession(userId, req.ip));
+      return reply.code(200).send(await issueSession(result.userId, req.ip));
     },
   );
 

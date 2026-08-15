@@ -103,6 +103,26 @@ describe('AccountSignIn', () => {
     );
   });
 
+  /**
+   * Reproduces the support case this control exists for: an account was created
+   * on the desktop, and sign-in on the phone failed with `invalid_credentials`
+   * every time. The two passwords were never both visible to the person typing
+   * them, so nothing on either device could show that they differed.
+   */
+  it('can reveal the password that is about to be submitted', async () => {
+    render(<AccountSignIn />);
+    await screen.findByTestId('account-sign-in');
+
+    const field = screen.getByTestId('account-password');
+    type('account-password', 'correct horse battery staple');
+    expect(field).toHaveAttribute('type', 'password');
+
+    fireEvent.click(screen.getByTestId('account-password-reveal'));
+
+    expect(field).toHaveAttribute('type', 'text');
+    expect(field).toHaveValue('correct horse battery staple');
+  });
+
   it('surfaces a rejected credential instead of failing silently', async () => {
     vi.mocked(api.accountSignIn).mockRejectedValue(
       'That email and password do not match an account.',

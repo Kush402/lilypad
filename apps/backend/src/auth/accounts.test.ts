@@ -194,7 +194,7 @@ describe('AccountService password credentials', () => {
     expect(created.ok).toBe(true);
     expect(
       await accounts.verifyPasswordSignIn('ada@example.com', 'correct horse battery staple'),
-    ).toBe(created.ok && created.userId);
+    ).toEqual({ ok: true, userId: created.ok && created.userId });
   });
 
   it('stores a hash, never the password', async () => {
@@ -210,8 +210,8 @@ describe('AccountService password credentials', () => {
     const accounts = new AccountService(fakeStore());
     await signUp(accounts, { email: '  Ada@Example.COM ' });
     expect(
-      await accounts.verifyPasswordSignIn('ada@example.com', 'correct horse battery staple'),
-    ).not.toBeNull();
+      (await accounts.verifyPasswordSignIn('ada@example.com', 'correct horse battery staple')).ok,
+    ).toBe(true);
   });
 
   it('refuses a second account for the same address', async () => {
@@ -223,7 +223,10 @@ describe('AccountService password credentials', () => {
   it('rejects a wrong password', async () => {
     const accounts = new AccountService(fakeStore());
     await signUp(accounts);
-    expect(await accounts.verifyPasswordSignIn('ada@example.com', 'wrong')).toBeNull();
+    expect(await accounts.verifyPasswordSignIn('ada@example.com', 'wrong')).toEqual({
+      ok: false,
+      reason: 'wrong_password',
+    });
   });
 
   /**
@@ -235,12 +238,18 @@ describe('AccountService password credentials', () => {
     const store = fakeStore();
     const accounts = new AccountService(store);
     await accounts.resolveEmail('ada@example.com');
-    expect(await accounts.verifyPasswordSignIn('ada@example.com', 'anything')).toBeNull();
+    expect(await accounts.verifyPasswordSignIn('ada@example.com', 'anything')).toEqual({
+      ok: false,
+      reason: 'no_password',
+    });
   });
 
   it('rejects an unknown address', async () => {
     const accounts = new AccountService(fakeStore());
-    expect(await accounts.verifyPasswordSignIn('nobody@example.com', 'anything')).toBeNull();
+    expect(await accounts.verifyPasswordSignIn('nobody@example.com', 'anything')).toEqual({
+      ok: false,
+      reason: 'no_account',
+    });
   });
 
   it('resets a password for an existing account, and the old one stops working', async () => {
@@ -250,11 +259,11 @@ describe('AccountService password credentials', () => {
       created.ok && created.userId,
     );
     expect(
-      await accounts.verifyPasswordSignIn('ada@example.com', 'correct horse battery staple'),
-    ).toBeNull();
+      (await accounts.verifyPasswordSignIn('ada@example.com', 'correct horse battery staple')).ok,
+    ).toBe(false);
     expect(
-      await accounts.verifyPasswordSignIn('ada@example.com', 'a whole new passphrase'),
-    ).not.toBeNull();
+      (await accounts.verifyPasswordSignIn('ada@example.com', 'a whole new passphrase')).ok,
+    ).toBe(true);
   });
 
   /** A reset token proves inbox possession for an account that exists. It must

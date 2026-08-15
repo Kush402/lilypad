@@ -363,6 +363,17 @@ body {
   color: var(--ink);
   font: inherit;
 }
+.field-row {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+}
+.field-row .field {
+  flex: 1;
+}
+.field-row .btn {
+  flex: 0 0 auto;
+}
 .field::placeholder {
   color: var(--muted);
 }

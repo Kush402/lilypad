@@ -31,6 +31,7 @@ export function AccountSignIn() {
   const [code, setCode] = useState('');
   const [codeSent, setCodeSent] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [reveal, setReveal] = useState(false);
   const [error, setError] = useState('');
 
   useEffect(() => {
@@ -63,6 +64,7 @@ export function AccountSignIn() {
     setCodeSent(false);
     setCode('');
     setPassword('');
+    setReveal(false);
   };
 
   if (account?.signedIn) {
@@ -143,16 +145,33 @@ export function AccountSignIn() {
       ) : null}
 
       {mode !== 'reset' || codeSent ? (
-        <input
-          className="field"
-          data-testid="account-password"
-          type="password"
-          placeholder={mode === 'signin' ? 'Password' : 'Password (at least 12 characters)'}
-          autoComplete={mode === 'signin' ? 'current-password' : 'new-password'}
-          value={password}
-          disabled={busy}
-          onChange={(e) => setPassword(e.target.value)}
-        />
+        <div className="field-row">
+          <input
+            className="field"
+            data-testid="account-password"
+            type={reveal ? 'text' : 'password'}
+            placeholder={mode === 'signin' ? 'Password' : 'Password (at least 12 characters)'}
+            autoComplete={mode === 'signin' ? 'current-password' : 'new-password'}
+            value={password}
+            disabled={busy}
+            onChange={(e) => setPassword(e.target.value)}
+          />
+          {/* A masked field with no reveal means the password you SET and the
+              password you later type are never both visible to you — so if the
+              two differ (a typo, or macOS AutoFill substituting a generated
+              strong password into an `autocomplete="new-password"` field, which
+              this is), the only symptom is a sign-in that fails on another
+              device with no way to find out why. */}
+          <button
+            type="button"
+            className="btn btn--small"
+            data-testid="account-password-reveal"
+            aria-pressed={reveal}
+            onClick={() => setReveal((v) => !v)}
+          >
+            {reveal ? 'Hide' : 'Show'}
+          </button>
+        </div>
       ) : null}
 
       {mode === 'signup' ? (

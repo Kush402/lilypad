@@ -7,6 +7,7 @@ import {
   StyleSheet,
   Text,
   TextInput,
+  View,
 } from 'react-native';
 import type { DeviceSession } from '@lilypad/protocol';
 import {
@@ -373,6 +374,15 @@ function EmailField({
   );
 }
 
+/**
+ * A password field you can actually read.
+ *
+ * The reveal is not a nicety. A masked field on both ends means the password
+ * you SET and the password you later type are never both visible to you, so if
+ * the two differ — a typo, or platform AutoFill substituting a saved or
+ * generated credential — the only symptom is a sign-in that fails on the other
+ * device with nothing anywhere to say why.
+ */
 function PasswordField({
   testID,
   placeholder,
@@ -390,24 +400,37 @@ function PasswordField({
   onChange: (v: string) => void;
   editable: boolean;
 }): React.JSX.Element {
+  const [reveal, setReveal] = useState(false);
   return (
-    <TextInput
-      testID={testID}
-      style={styles.input}
-      placeholder={placeholder}
-      placeholderTextColor={theme.muted}
-      autoCapitalize="none"
-      autoCorrect={false}
-      secureTextEntry
-      // Both are needed: iOS uses `textContentType` for the Passwords keychain
-      // suggestion, Android uses `autoComplete`. Setting one leaves the other
-      // platform without autofill, which is where password UX actually fails.
-      autoComplete={autoComplete}
-      textContentType={textContentType}
-      value={value}
-      onChangeText={onChange}
-      editable={editable}
-    />
+    <View style={styles.fieldRow}>
+      <TextInput
+        testID={testID}
+        style={[styles.input, styles.fieldRowInput]}
+        placeholder={placeholder}
+        placeholderTextColor={theme.muted}
+        autoCapitalize="none"
+        autoCorrect={false}
+        secureTextEntry={!reveal}
+        // Both are needed: iOS uses `textContentType` for the Passwords keychain
+        // suggestion, Android uses `autoComplete`. Setting one leaves the other
+        // platform without autofill, which is where password UX actually fails.
+        autoComplete={autoComplete}
+        textContentType={textContentType}
+        value={value}
+        onChangeText={onChange}
+        editable={editable}
+      />
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={reveal ? 'Hide password' : 'Show password'}
+        accessibilityState={{ selected: reveal }}
+        testID={`${testID}-reveal`}
+        style={styles.reveal}
+        onPress={() => setReveal((v) => !v)}
+      >
+        <Text style={styles.revealText}>{reveal ? 'Hide' : 'Show'}</Text>
+      </Pressable>
+    </View>
   );
 }
 
@@ -516,6 +539,11 @@ const styles = StyleSheet.create({
     fontSize: 16,
   },
   hint: { color: theme.muted, fontSize: 13 },
+  fieldRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  fieldRowInput: { flex: 1 },
+  // 44pt is Apple's minimum touch target.
+  reveal: { minHeight: 44, minWidth: 56, alignItems: 'center', justifyContent: 'center' },
+  revealText: { color: theme.accent, fontSize: 15, fontWeight: '600' },
   sent: { color: theme.muted, fontSize: 14, textAlign: 'center' },
   // 44pt is Apple's minimum touch target; a text link that only covers its
   // glyphs is the most commonly missed one.

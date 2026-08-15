@@ -25,6 +25,18 @@ import { hashPassword, verifyPassword, verifyAgainstDummy } from './password.js'
 
 export type LinkFailure = 'email_required' | 'email_unverified';
 
+/**
+ * Why a password sign-in failed
+ * ([ADR-0012](../../../../docs/adr/0012-password-authentication.md)).
+ *
+ * `no_password` is an account that has only ever used Apple, Google, or a magic
+ * link — a normal state, not a missing value. All three reasons answer the
+ * client identically; the distinction is for the audit log alone.
+ */
+export type PasswordSignInResult =
+  | { ok: true; userId: string }
+  | { ok: false; reason: 'no_account' | 'no_password' | 'wrong_password' };
+
 export type LinkResult = { ok: true; userId: string } | { ok: false; reason: LinkFailure };
 
 export interface AccountStore {
@@ -101,18 +113,33 @@ export class AccountService {
   }
 
   /**
-   * Check email + password. Returns null for an unknown address, a wrong
-   * password, and an account with no password alike — the caller must not be
-   * able to tell those apart, so this signature cannot express the difference.
+   * Check email + password.
    *
-   * Both null branches still pay for a real hash comparison. Returning early
-   * would make "no such account" measurably faster than "wrong password",
-   * which is an account-existence oracle on the one route worth automating.
+   * **The three failures are distinguished HERE and nowhere the caller can
+   * reach.** The route answers `invalid_credentials` for all of them, and must
+   * keep doing so; what `reason` exists for is the audit log, which is the only
+   * place an operator can find out whether a user typed the wrong address or
+   * the wrong password. Without it a failed sign-in is undiagnosable — the
+   * question "did the account even match?" had no answer anywhere in the
+   * system, which is exactly the wall a real support case hits.
+   *
+   * Every branch still pays for a real hash comparison. Returning early would
+   * make "no such account" measurably faster than "wrong password", which is an
+   * account-existence oracle on the one route worth automating.
    */
-  async verifyPasswordSignIn(email: string, password: string): Promise<string | null> {
+  async verifyPasswordSignIn(email: string, password: string): Promise<PasswordSignInResult> {
     const found = await this.store.findCredentialsByEmail(email.trim().toLowerCase());
-    if (!found?.passwordHash) return verifyAgainstDummy(password).then(() => null);
-    return (await verifyPassword(password, found.passwordHash)) ? found.userId : null;
+    if (!found) {
+      await verifyAgainstDummy(password);
+      return { ok: false, reason: 'no_account' };
+    }
+    if (!found.passwordHash) {
+      await verifyAgainstDummy(password);
+      return { ok: false, reason: 'no_password' };
+    }
+    return (await verifyPassword(password, found.passwordHash))
+      ? { ok: true, userId: found.userId }
+      : { ok: false, reason: 'wrong_password' };
   }
 
   /**
