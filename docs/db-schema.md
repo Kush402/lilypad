@@ -79,6 +79,19 @@ Two uniqueness rules, both added in `0003`:
   not an identity. Postgres treats NULLs as distinct, so unenrolled rows are
   unaffected.
 
+`DeviceRegistry.enroll` is a select-then-insert against both of them, so it
+inserts with `ON CONFLICT DO NOTHING` and, on losing the race, resolves again
+against the row that won and re-applies the ownership rules. Two overlapping
+enrollments of one device converge on one row; two devices racing for one key
+still get `public_key_in_use`, which is the same answer the sequential case
+gives. The ordinary way in is a retry — the phone abandons a request after 8
+seconds and the user taps Sign in again — and the loser used to raise a
+constraint violation the route reported as a 500, on the first thing a new
+account does. Verified against a live Postgres: 8 concurrent enrollments of one
+device → one row, one id; two devices racing for one key → one row and one
+`public_key_in_use`. Before the fix the same script raised
+`23505 … devices_public_key_idx` out of the route.
+
 A device is **enrolled** exactly when `public_key` and `user_id` are both
 non-NULL ([ADR-0002](adr/0002-device-identity.md)).
 
@@ -133,6 +146,19 @@ deleting**, so the row remains the audit trail.
 | revoked_at                           | timestamptz nullable      | set by Forget/Revoke; gate fails closed |
 | connect_secret_hash                  | text nullable             | SHA-256 of the per-pair connect secret  |
 | created_at                           | timestamptz               |                                         |
+
+**The `UNIQUE (desktop_device_id, mobile_device_id)` index is a correctness
+control, not a tidiness one**, and the write is shaped around it. Trust is
+established from two entry points with no lock between them — a phone approving
+a laptop's enrollment code, and a QR approval carrying `trust: true` — so
+reading the pair and then choosing between an insert and an update is a
+check-then-act that both paths can lose. `establishTrustForDeviceIds` therefore
+issues one `INSERT … ON CONFLICT (desktop, mobile) DO UPDATE`, which re-arms
+`connect_secret_hash`, clears `revoked_at`, and deliberately leaves
+`auto_approve` alone so a user who turned "Always allow" back off keeps it
+through a re-pair. Verified against a live Postgres: 8 concurrent ceremonies for
+one pair → one row, nothing raised, and exactly one of the eight issued secrets
+authorizes it. Before the fix, 7 of the 8 raised.
 
 A **NULL `connect_secret_hash`** is a pair created before per-pair secrets
 existed. It used to authorize with no secret at all — SEC-5. Migration `0005`

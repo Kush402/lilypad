@@ -216,6 +216,84 @@ describe('SignalingHub — trust-on-approve (M5.4)', () => {
   });
 });
 
+/**
+ * Approval is single-shot per room.
+ *
+ * The desktop client already refuses to send a second `pair-approved`, and the
+ * comment where it does so states the consequence exactly: "the backend mints a
+ * fresh sessionId per approval, and the second session-start tears down the peer
+ * still negotiating the first" (`apps/desktop/src-tauri/src/session/mod.rs`).
+ * That guard was written after the handshake was observed failing off-LAN,
+ * where a phone on a lossy link re-sends `pair-request` and the desktop
+ * re-prompts.
+ *
+ * The rule belongs to the room, not to one client. Held only client-side, every
+ * consequence returns for any build that predates the guard, any second surface
+ * that can approve, and any client that is not ours: a duplicate session record
+ * nothing ever ends, an inflated `sessionsStarted`, and — with `trust` — a
+ * second trust write racing the first to decide which connect secret the pair
+ * actually has.
+ */
+describe('SignalingHub — approval is idempotent', () => {
+  function approvedRoom(trust: boolean) {
+    const starts: string[] = [];
+    const trusted: Array<{ roomId: string }> = [];
+    const hub = new SignalingHub({
+      buildIceServers: () => ICE,
+      now: () => 0,
+      onSessionStart: (info) => starts.push(info.sessionId),
+      onTrustEstablished: (info) => trusted.push(info),
+    });
+    const desktop = new FakePeer();
+    const mobile = new FakePeer();
+    hub.handleMessage(desktop, reg('desktop', 'desktop-01'));
+    hub.handleMessage(mobile, reg('mobile', 'mobile-01'));
+    hub.handleMessage(
+      mobile,
+      frame('pair-request', 'mobile', {
+        deviceId: 'mobile-01',
+        deviceName: 'phone',
+        requestedScopes: ['view', 'control'],
+      }),
+    );
+    const approve = () =>
+      hub.handleMessage(
+        desktop,
+        frame('pair-approved', 'desktop', { grantedScopes: ['view', 'control'], trust }),
+      );
+    approve();
+    return { hub, desktop, mobile, starts, trusted, approve };
+  }
+
+  it('a second pair-approved does not mint a second session', () => {
+    const { starts, approve, hub } = approvedRoom(false);
+    approve();
+    expect(starts).toHaveLength(1);
+    expect(hub.metricsSnapshot().sessionsStarted).toBe(1);
+  });
+
+  it('a second pair-approved does not re-send session-start to either peer', () => {
+    const { desktop, mobile, approve } = approvedRoom(false);
+    const before = mobile.find('session-start');
+    approve();
+    expect(mobile.sent.filter((m) => m.type === 'session-start')).toHaveLength(1);
+    expect(desktop.sent.filter((m) => m.type === 'session-start')).toHaveLength(1);
+    // The first session's credentials are still the live ones.
+    expect(mobile.find('session-start')).toBe(before);
+  });
+
+  /** The one with a durable consequence: two trust writes issue two connect
+   * secrets for one pair, and the phone keeps whichever `pair-secret` frame
+   * arrives last while the row keeps whichever UPDATE lands last. Nothing
+   * guarantees those agree, and when they disagree the phone can never
+   * reconnect without scanning another QR. */
+  it('a second pair-approved does not establish trust twice', () => {
+    const { trusted, approve } = approvedRoom(true);
+    approve();
+    expect(trusted).toHaveLength(1);
+  });
+});
+
 describe('SignalingHub — session-start replay for a rejoining seat (M5.4)', () => {
   function approvedNotEstablished() {
     const hub = makeHub();

@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { TrustService, type PairListing, type TrustStore, type TrustedPair } from './trust.js';
+import { drizzle } from 'drizzle-orm/pg-proxy';
+import {
+  TrustService,
+  createDrizzleTrustStore,
+  type PairListing,
+  type TrustStore,
+  type TrustedPair,
+} from './trust.js';
 import type { DeviceKind } from '@lilypad/protocol';
 
 /** In-memory TrustStore, mirroring the FakeRedis pattern of sibling tests. */
@@ -21,24 +28,42 @@ class FakeTrustStore implements TrustStore {
     return id;
   }
 
-  async getPairByDeviceIds(desktopId: string, mobileId: string): Promise<TrustedPair | null> {
+  private findPairRow(desktopId: string, mobileId: string) {
     for (const pair of this.pairs.values()) {
       if (pair.desktopDeviceId === desktopId && pair.mobileDeviceId === mobileId) return pair;
     }
     return null;
   }
 
-  async insertPair(
+  async getPairByDeviceIds(desktopId: string, mobileId: string): Promise<TrustedPair | null> {
+    return this.findPairRow(desktopId, mobileId);
+  }
+
+  /**
+   * Models the real `INSERT … ON CONFLICT (desktop, mobile) DO UPDATE` against
+   * `trusted_devices_pair_idx` (db/schema.ts).
+   *
+   * Deliberately reaches its decision with NO `await` in the middle: one
+   * statement offers no interleaving point, which is the property being
+   * modelled. The statement itself is pinned at the bottom of this file, where
+   * the adapter's real SQL is captured.
+   */
+  async upsertPair(
     desktopId: string,
     mobileId: string,
-    autoApprove: boolean,
     connectSecretHash: string,
   ): Promise<TrustedPair> {
+    const existing = this.findPairRow(desktopId, mobileId);
+    if (existing) {
+      existing.connectSecretHash = connectSecretHash;
+      existing.revoked = false; // autoApprove deliberately untouched
+      return existing;
+    }
     const pair = {
       pairId: `pair-${this.nextId++}`,
       desktopDeviceId: desktopId,
       mobileDeviceId: mobileId,
-      autoApprove,
+      autoApprove: true,
       revoked: false,
       displayName: null,
       connectSecretHash,
@@ -278,7 +303,7 @@ describe('TrustService', () => {
       const trust = new TrustService(store);
       const desktopId = await store.upsertDevice('desktop', 'desktop-01');
       const mobileId = await store.upsertDevice('mobile', 'mobile-01');
-      await store.insertPair(desktopId, mobileId, true, '');
+      await store.upsertPair(desktopId, mobileId, '');
       // Force the hash null (the '' above is a placeholder the fake stored).
       const pair = (await trust.findPair('desktop-01', 'mobile-01'))!;
       store.pairs.get(pair.pairId)!.connectSecretHash = null as unknown as string;
@@ -301,7 +326,7 @@ describe('TrustService', () => {
       const trust = new TrustService(store);
       const desktopId = await store.upsertDevice('desktop', 'desktop-01');
       const mobileId = await store.upsertDevice('mobile', 'mobile-01');
-      await store.insertPair(desktopId, mobileId, true, '');
+      await store.upsertPair(desktopId, mobileId, '');
       const pair = (await trust.findPair('desktop-01', 'mobile-01'))!;
       store.pairs.get(pair.pairId)!.connectSecretHash = null as unknown as string;
       await trust.revoke(pair.pairId); // what migration 0005 does
@@ -370,5 +395,60 @@ describe('TrustService', () => {
     await trust.touchConnected(pair.pairId);
 
     expect(store.pairs.get(pair.pairId)!.lastConnectedAt).toBeInstanceOf(Date);
+  });
+});
+
+/**
+ * The Drizzle adapter's actual SQL, captured through `pg-proxy` — no Postgres
+ * needed, and no chance of the assertion drifting from what really runs.
+ *
+ * This is a concurrency guard that a service-level test cannot be. Trust is
+ * established from two entry points with no lock between them: linking a laptop
+ * (`/devices/enrollment-code/approve`) and approving its QR pairing with "Trust
+ * this device" both write the same pair. Read-the-pair-then-insert-or-update
+ * saw no row on both paths and inserted twice, and `trusted_devices_pair_idx`
+ * (db/schema.ts) failed the loser — a 500 out of the HTTP route, and on the
+ * signaling path (where the write is fire-and-forget) a logged error plus a
+ * phone that never received its connect secret and therefore could never
+ * reconnect without another QR.
+ *
+ * One statement has no interleaving point, which is why the decision belongs in
+ * the database rather than between two round trips.
+ */
+describe('createDrizzleTrustStore — upsertPair', () => {
+  async function captureSql(): Promise<string> {
+    const seen: string[] = [];
+    const db = drizzle(async (sql: string) => {
+      seen.push(sql);
+      return { rows: [] };
+    });
+    const store = createDrizzleTrustStore(db as never);
+    // The empty `rows` above makes the adapter throw its own "returned no row";
+    // the SQL it emitted first is the whole subject of this test.
+    await store.upsertPair('desktop-uuid', 'mobile-uuid', 'hash').catch(() => {});
+    expect(seen).toHaveLength(1);
+    return seen[0]!;
+  }
+
+  it('writes the pair in ONE conflict-tolerant statement', async () => {
+    const sql = await captureSql();
+    expect(sql).toMatch(/insert into "trusted_devices"/);
+    expect(sql).toMatch(/on conflict \("desktop_device_id","mobile_device_id"\) do update/);
+  });
+
+  it('re-arms the secret and lifts a revocation on conflict', async () => {
+    const sql = await captureSql();
+    const update = sql.slice(sql.indexOf('do update'));
+    expect(update).toMatch(/"connect_secret_hash" = /);
+    // Re-running the ceremony un-revokes: the user just re-passed the bar that
+    // established trust the first time.
+    expect(update).toMatch(/"revoked_at" = /);
+  });
+
+  /** A user who turned "Always allow" back off keeps it through a re-pair —
+   * the setting is theirs, and the ceremony is not a consent to change it. */
+  it('never overwrites an existing pair’s autoApprove', async () => {
+    const update = (await captureSql()).slice(-200);
+    expect(update).not.toMatch(/"auto_approve" = /);
   });
 });

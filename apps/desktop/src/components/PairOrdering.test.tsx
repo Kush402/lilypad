@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import { Control } from './Control';
-import { api } from '../lib/tauri';
+import { api, type LinkStateDto } from '../lib/tauri';
 
 vi.mock('../lib/tauri', () => ({
   api: {
@@ -50,13 +50,20 @@ vi.mock('./AccountPanel', () => ({ AccountPanel: () => <div data-testid="account
  * `create_pairing` refuses for real — this covers the surface a user actually
  * looks at.
  */
+const linkState = (state: LinkStateDto['state']): LinkStateDto => ({
+  state,
+  user_id: null,
+  device_id: null,
+  detail: null,
+});
+
 describe('the dashboard’s pair button', () => {
   beforeEach(() => vi.clearAllMocks());
 
   const pairButton = () => screen.getByTestId('pair-new-device');
 
   it('is disabled while this computer is on no account', async () => {
-    vi.mocked(api.getLinkState).mockResolvedValue({ state: 'unlinked' });
+    vi.mocked(api.getLinkState).mockResolvedValue(linkState('unlinked'));
     render(<Control />);
 
     await waitFor(() => expect(pairButton()).toBeDisabled());
@@ -64,13 +71,13 @@ describe('the dashboard’s pair button', () => {
   });
 
   it('is disabled after ownership is revoked', async () => {
-    vi.mocked(api.getLinkState).mockResolvedValue({ state: 'revoked' });
+    vi.mocked(api.getLinkState).mockResolvedValue(linkState('revoked'));
     render(<Control />);
     await waitFor(() => expect(pairButton()).toBeDisabled());
   });
 
   it('is enabled once linked', async () => {
-    vi.mocked(api.getLinkState).mockResolvedValue({ state: 'linked' });
+    vi.mocked(api.getLinkState).mockResolvedValue(linkState('linked'));
     render(<Control />);
     await waitFor(() => expect(pairButton()).toBeEnabled());
   });
@@ -83,7 +90,7 @@ describe('the dashboard’s pair button', () => {
    * being wrong in this direction is an honest error instead of a false claim.
    */
   it('stays enabled when the backend cannot be asked', async () => {
-    vi.mocked(api.getLinkState).mockResolvedValue({ state: 'unknown' });
+    vi.mocked(api.getLinkState).mockResolvedValue(linkState('unknown'));
     render(<Control />);
     await waitFor(() => expect(pairButton()).toBeEnabled());
   });

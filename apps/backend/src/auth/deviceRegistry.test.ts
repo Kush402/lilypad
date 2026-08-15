@@ -29,7 +29,15 @@ function fakeStore(): DeviceIdentityStore & { rows: Map<string, StoredDevice> } 
       }
       return Promise.resolve(null);
     },
+    /** Models the two unique indexes on `devices` (`devices_kind_fingerprint_idx`
+     * and `devices_public_key_idx`, db/schema.ts) and the adapter's
+     * `onConflictDoNothing`: a conflicting insert creates nothing and says so,
+     * rather than raising. */
     create(row) {
+      for (const existing of rows.values()) {
+        const sameDevice = existing.kind === row.kind && existing.fingerprint === row.fingerprint;
+        if (sameDevice || existing.publicKey === row.publicKey) return Promise.resolve(null);
+      }
       const id = randomUUID();
       rows.set(id, { id, revokedAt: null, lastSeenAt: null, ...row });
       return Promise.resolve(id);
@@ -175,6 +183,42 @@ describe('DeviceRegistry.enroll', () => {
     if (!first.ok) throw new Error('unreachable');
     await registry.enroll(enrollment);
     expect(store.rows.get(first.deviceId)).toMatchObject({ name: 'Work Mac', platform: 'macos' });
+  });
+
+  /**
+   * Two enrollments of the same device, in flight at once.
+   *
+   * `enroll` looks a device up and then inserts it, and the two unique indexes
+   * on `devices` are what stop that from creating a second row. Reached in
+   * practice by a retry: the phone abandons a request after 8 seconds
+   * (`apps/mobile/src/lib/auth.ts`) while the server is still working, the user
+   * taps Sign in again, and two enrollments for one fingerprint overlap. Both
+   * lookups miss, both insert, and the loser used to raise a constraint
+   * violation the route reported as a 500 — on the very first thing a new
+   * account does.
+   *
+   * Both callers must end up on the SAME device row, because there is only one
+   * device.
+   */
+  it('two concurrent enrollments of one device converge on a single row', async () => {
+    const [a, b] = await Promise.all([registry.enroll(enrollment), registry.enroll(enrollment)]);
+    if (!a.ok || !b.ok) throw new Error('both enrollments must succeed');
+    expect(a.deviceId).toBe(b.deviceId);
+    expect(store.rows.size).toBe(1);
+  });
+
+  /** The same interleaving, but the racers are genuinely different devices
+   * claiming one key. Losing the insert must not turn into a 500 either — it
+   * has an honest answer, and it is the one the sequential case already gives. */
+  it('reports public_key_in_use when a concurrent insert took the key first', async () => {
+    const [a, b] = await Promise.all([
+      registry.enroll(enrollment),
+      registry.enroll({ ...enrollment, fingerprint: 'desktop-other' }),
+    ]);
+    const outcomes = [a, b];
+    expect(outcomes.filter((r) => r.ok)).toHaveLength(1);
+    expect(outcomes.filter((r) => !r.ok)).toEqual([{ ok: false, reason: 'public_key_in_use' }]);
+    expect(store.rows.size).toBe(1);
   });
 });
 

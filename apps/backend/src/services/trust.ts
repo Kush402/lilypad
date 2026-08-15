@@ -80,12 +80,10 @@ export interface TrustStore {
   upsertDevice(kind: DeviceKind, fingerprint: string): Promise<string>;
   /** The pair row for two device UUIDs, if one exists. */
   getPairByDeviceIds(desktopId: string, mobileId: string): Promise<TrustedPair | null>;
-  insertPair(
-    desktopId: string,
-    mobileId: string,
-    autoApprove: boolean,
-    connectSecretHash: string,
-  ): Promise<TrustedPair>;
+  /** Create the pair, or re-arm the existing one, in ONE statement — see
+   * `establishTrustForDeviceIds` for why this must not be a read followed by a
+   * write. Implementations must leave `autoApprove` alone on an existing row. */
+  upsertPair(desktopId: string, mobileId: string, connectSecretHash: string): Promise<TrustedPair>;
   /** Every pair for one desktop, joined with each mobile device row. */
   listPairsForDesktop(desktopId: string): Promise<PairListing[]>;
   /** Patch mutable pair fields. Absent fields are left untouched. */
@@ -157,15 +155,15 @@ export class TrustService {
     // un-revoke re-issues, and the phone stores whatever it's handed. Only the
     // hash is persisted; the plaintext is returned for one-time delivery.
     const { secret, hash } = newConnectSecret();
-    const existing = await this.store.getPairByDeviceIds(desktopId, mobileId);
-    if (!existing) {
-      await this.store.insertPair(desktopId, mobileId, true, hash);
-    } else {
-      await this.store.updatePair(existing.pairId, {
-        connectSecretHash: hash,
-        ...(existing.revoked ? { revoked: false } : {}),
-      });
-    }
+    // ONE statement, deliberately. This used to read the pair and then decide
+    // between an insert and an update, which is a check-then-act across two
+    // round trips: two ceremonies for the same two devices — a laptop being
+    // linked while its QR pairing is approved — both saw no row and both
+    // inserted, and `trusted_devices_pair_idx` (db/schema.ts) failed the
+    // loser. That surfaced as a 500 from `/devices/enrollment-code/approve`,
+    // or, on the signaling path where the write is fire-and-forget, as a
+    // logged error and a phone that never received its connect secret.
+    await this.store.upsertPair(desktopId, mobileId, hash);
     return { pairSecret: secret };
   }
 
@@ -299,18 +297,26 @@ export function createDrizzleTrustStore(database: typeof defaultDb = defaultDb):
         .limit(1);
       return rows[0] ? toPair(rows[0]) : null;
     },
-    async insertPair(desktopId, mobileId, autoApprove, connectSecretHash) {
+    async upsertPair(desktopId, mobileId, connectSecretHash) {
       const inserted = await database
         .insert(trustedDevices)
         .values({
           desktopDeviceId: desktopId,
           mobileDeviceId: mobileId,
-          autoApprove,
+          autoApprove: true,
           connectSecretHash,
+        })
+        .onConflictDoUpdate({
+          target: [trustedDevices.desktopDeviceId, trustedDevices.mobileDeviceId],
+          // `autoApprove` is deliberately NOT in this set: a user who turned
+          // approval back on keeps it through a re-pair. `revokedAt: null` is
+          // the un-revoke re-running the ceremony has always performed — the
+          // user just re-passed the bar that established trust the first time.
+          set: { connectSecretHash, revokedAt: null },
         })
         .returning();
       const row = inserted[0];
-      if (!row) throw new Error('trusted_devices insert returned no row');
+      if (!row) throw new Error('trusted_devices upsert returned no row');
       return toPair(row);
     },
     async listPairsForDesktop(desktopId) {

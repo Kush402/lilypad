@@ -191,6 +191,16 @@ Handlers: [`routes/devices.ts`](../apps/backend/src/routes/devices.ts).
 A `TrustedPairListing` is
 `{ pairId, mobileFingerprint, displayName, autoApprove, revoked, lastConnectedAt, createdAt }`.
 
+> **Known gap, bounded and deliberate: revoking does not reach a connect that is
+> already in flight.** Revocation ends the pair's **live** rooms, and a room
+> minted by `/connect/request` is not live until the desktop registers into it.
+> A revoke landing in that gap leaves one session running. Closing it properly
+> means re-checking the pair when a seat is claimed, which would put Postgres on
+> the session-register path — today a session room is authorized entirely by the
+> record the backend minted itself, so signaling reconnects survive a database
+> outage. That trade deserves its own pass, not a rider here. Mitigation
+> meanwhile: revoking again ends the now-live session, as does Disconnect.
+
 ## `GET /ws/signal` ✅
 
 WebSocket signaling — **fully implemented**: room-routed relay, session state

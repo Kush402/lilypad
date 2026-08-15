@@ -66,6 +66,18 @@ export class MessageRouter {
             },
           ];
         }
+        // Approval is single-shot per room. A second `pair-approved` — a
+        // double-tapped Approve, a second surface offering it, or a re-prompt
+        // caused by a phone re-sending `pair-request` on a lossy link — mints a
+        // fresh session id, and its `session-start` tears down the peer still
+        // negotiating the first. The desktop client refuses to send one
+        // (`apps/desktop/src-tauri/src/session/mod.rs`, which names this exact
+        // consequence), but the rule belongs to the room: held only in one
+        // client, it is absent for every build predating that guard and for
+        // anything else that speaks this protocol. Ignored rather than
+        // rejected, matching the duplicate `register` above — the caller asked
+        // for a state the room is already in.
+        if (room.sessionId) return [];
         if (!room.hasSeat('desktop') || !room.hasSeat('mobile')) {
           return [
             {

@@ -72,6 +72,14 @@ Trickle ICE: candidates are sent as they are gathered via `ice-candidate`.
 - A room has exactly two seats (desktop + mobile). Extra `register`s are rejected.
 - Messages are only relayed to the **other** seat in the same room.
 - The desktop's explicit `pair-approved` is the gate — no media flows before it.
+- **`pair-approved` is single-shot per room, and a repeat is ignored.** Once a
+  room has a session id it is approved; a second approval would mint a second
+  one, and its `session-start` tears down the peer still negotiating the first.
+  The desktop client refuses to send one (a phone that re-sends `pair-request`
+  on a lossy link used to make it re-prompt), but the rule is enforced by the
+  room, because a client-side guard is absent for every other client — and with
+  `trust: true` a second approval also fires a second trust write, racing the
+  first to decide which connect secret the pair ends up with.
 
 ## Status
 

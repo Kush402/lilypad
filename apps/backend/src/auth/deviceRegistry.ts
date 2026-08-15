@@ -38,6 +38,10 @@ export interface DeviceRow {
 export interface DeviceIdentityStore {
   findByPublicKey(publicKey: string): Promise<DeviceRow | null>;
   findByFingerprint(kind: DeviceKind, fingerprint: string): Promise<DeviceRow | null>;
+  /** Insert a new device row. Returns `null` — rather than raising — when a
+   * concurrent request already created a row with this (kind, fingerprint) or
+   * this public key; the unique indexes are what make that outcome possible,
+   * and `enroll` resolves against the row that won. */
   create(row: {
     userId: string;
     kind: DeviceKind;
@@ -45,7 +49,7 @@ export interface DeviceIdentityStore {
     publicKey: string;
     name: string | null;
     platform: DevicePlatform | null;
-  }): Promise<string>;
+  }): Promise<string | null>;
   /** Attach an owner and a key to an existing row, clearing any revocation —
    * re-enrolling a device is how a user un-revokes it deliberately. */
   claim(
@@ -79,9 +83,32 @@ export type DeviceAuthResult =
 export class DeviceRegistry {
   constructor(private readonly store: DeviceIdentityStore) {}
 
-  /** Bind a verified keypair to an account. Idempotent for the same device and
-   * the same owner, so a client that re-enrolls after a reinstall succeeds. */
+  /**
+   * Bind a verified keypair to an account. Idempotent for the same device and
+   * the same owner, so a client that re-enrolls after a reinstall succeeds.
+   *
+   * Looking a device up and then inserting it is a check-then-act, and the
+   * unique indexes on `devices` are what keep it honest — a concurrent
+   * enrollment (a phone that timed out and was retried by hand is the ordinary
+   * way in) can create the row in between. When that happens the insert
+   * conflicts, and the answer is to resolve again against the row that won: the
+   * second pass finds it and applies the same ownership rules, which is how
+   * two racers converge on one device instead of one of them getting a 500.
+   */
   async enroll(input: EnrollInput): Promise<EnrollResult> {
+    const first = await this.attempt(input);
+    if (first) return first;
+    const second = await this.attempt(input);
+    if (second) return second;
+    // Unreachable: a conflict means a row exists, and the pass above looks for
+    // it by both of the columns that could have conflicted. Raising beats
+    // looping — the same reasoning as `TrustStore.upsertDevice`.
+    throw new Error('device insert conflicted but no row exists');
+  }
+
+  /** One resolve-then-write pass. `null` means the write lost a race and the
+   * caller should resolve again. */
+  private async attempt(input: EnrollInput): Promise<EnrollResult | null> {
     const byKey = await this.store.findByPublicKey(input.publicKey);
     const byFingerprint = await this.store.findByFingerprint(input.kind, input.fingerprint);
 
@@ -107,7 +134,7 @@ export class DeviceRegistry {
       kind: input.kind,
       fingerprint: input.fingerprint,
     });
-    return { ok: true, deviceId: id };
+    return id === null ? null : { ok: true, deviceId: id };
   }
 
   /**
@@ -156,10 +183,16 @@ export function createDrizzleDeviceIdentityStore(
       return rows[0] ?? null;
     },
     async create(row) {
-      const inserted = await database.insert(devices).values(row).returning({ id: devices.id });
-      const created = inserted[0];
-      if (!created) throw new Error('device insert returned no row');
-      return created.id;
+      // Conflict-tolerant on BOTH unique indexes: a concurrent enrollment may
+      // have taken this (kind, fingerprint) or this public key since the
+      // lookups above. No row back means the race was lost, which `enroll`
+      // handles by resolving again — not an error.
+      const inserted = await database
+        .insert(devices)
+        .values(row)
+        .onConflictDoNothing()
+        .returning({ id: devices.id });
+      return inserted[0]?.id ?? null;
     },
     async claim(id, patch) {
       // A re-enrolling client need not resend its label. Writing the null

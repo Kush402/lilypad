@@ -38,6 +38,34 @@ can sign in ([ADR-0012](docs/adr/0012-password-authentication.md), which amends
 
 #### Fixed
 
+- **A second `pair-approved` minted a second session.** Nothing in the room
+  refused a repeat approval: it minted a fresh session id, re-sent
+  `session-start` to both peers — which tears down the peer still negotiating
+  the first — persisted a second session record that nothing would ever end, and
+  with `trust: true` fired a second trust write racing the first to decide which
+  connect secret the pair actually keeps. When those two disagree the phone can
+  never reconnect without another QR. The desktop client already refused to send
+  one, after the handshake was observed failing off-LAN where a phone re-sends
+  `pair-request` on a lossy link and the desktop re-prompts; the rule now lives
+  in the room, where every client inherits it.
+- **Trust could be established twice at once, and the loser hit the unique
+  index.** `establishTrustForDeviceIds` read the pair and then chose between an
+  insert and an update, but two entry points write the same pair with no lock
+  between them — linking a laptop (`/devices/enrollment-code/approve`) and
+  approving its QR pairing with "Trust this device". Both saw no row, both
+  inserted, and `trusted_devices_pair_idx` failed one: a 500 out of the HTTP
+  route, and on the signaling path (fire-and-forget) a logged error plus a phone
+  that never received its connect secret. Now one
+  `INSERT … ON CONFLICT DO UPDATE`, which also still leaves `auto_approve` alone
+  so a user who turned "Always allow" back off keeps it through a re-pair.
+- **Two overlapping enrollments of one device returned a 500.** `enroll` looks a
+  device up and then inserts it; the unique indexes on `devices` are what stop a
+  second row, so a concurrent enrollment made the loser raise a constraint
+  violation — on the first thing a new account does, and reached by nothing more
+  exotic than a retry (the phone abandons a request after 8s, the user taps Sign
+  in again). The insert is conflict-tolerant now and resolves again against the
+  row that won. Two racers converge on one device; two devices racing for one
+  key still get `public_key_in_use`.
 - **Pairing was offered on a computer no account owned.** The tray's "Show QR /
   Pair", the dashboard's "+", and the wizard's last step all worked on a Mac
   nobody had signed into or linked. A pair made in that state belongs to no

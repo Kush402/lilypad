@@ -140,6 +140,37 @@ describe('MessageRouter — pair-approved', () => {
       },
     ]);
   });
+
+  /** A room that already carries a session id has been approved. Approving it
+   * again mints a second session whose `session-start` tears down the peer
+   * still negotiating the first — see the hub's "approval is idempotent" suite
+   * for the durable half (a second trust write racing the first for the pair
+   * secret). Ignored, not rejected: nothing is wrong, the room is simply
+   * already in the state the caller asked for. */
+  it('ignores a second approval once the room has a session', () => {
+    const router = new MessageRouter();
+    const room = connectedSeatsRoom();
+    room.sessionId = 'session-01';
+    const actions = router.route(
+      room,
+      'desktop',
+      msg('pair-approved', 'desktop', { grantedScopes: ['view'] }),
+    );
+    expect(actions).toEqual([]);
+  });
+
+  /** Ignoring outranks `peer_missing`: a phone that dropped after approval
+   * leaves an established session running peer-to-peer, and answering an
+   * already-approved room with an error would be false. */
+  it('ignores a second approval even if a seat has since emptied', () => {
+    const router = new MessageRouter();
+    const room = connectedSeatsRoom();
+    room.sessionId = 'session-01';
+    room.clearSeat('mobile');
+    expect(
+      router.route(room, 'desktop', msg('pair-approved', 'desktop', { grantedScopes: ['view'] })),
+    ).toEqual([]);
+  });
 });
 
 describe('MessageRouter — pair-denied', () => {
