@@ -1,0 +1,56 @@
+# Marketing site → Cloudflare Pages.
+#
+# Separate from `deploy.yml` on purpose: the site is static, carries no secrets,
+# and cannot break a live session. It has no reason to wait behind the control
+# plane's gate, and the control plane has no reason to wait behind it.
+#
+# Cloudflare Pages is the chosen host because its free tier does not meter
+# bandwidth (docs/deployment.md, "Options considered") — a marketing page that
+# gets attention should not produce a bill.
+#
+# INERT UNTIL A SECRET EXISTS. `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`
+# are not set, so the deploy step skips and the build still runs. That way this
+# file is a working artifact rather than a red X: adding the secrets turns it on
+# with no edit. The token needs `Cloudflare Pages: Edit` and nothing else.
+
+name: site
+
+on:
+  push:
+    branches: [main]
+    paths: ['apps/site/**', 'packages/design/**', '.github/workflows/site.yml']
+  workflow_dispatch:
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # The site asserts its own claims in tests (P4) — a marketing page that
+      # promises a feature the product lacks is a bug, so this gates the deploy.
+      - run: pnpm --filter @lilypad/site test
+      - run: pnpm --filter @lilypad/site build
+
+      - name: Check for Cloudflare credentials
+        id: creds
+        run: |
+          if [ -n "${{ secrets.CLOUDFLARE_API_TOKEN }}" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::CLOUDFLARE_API_TOKEN is not set — built but not deployed."
+          fi
+
+      - name: Deploy to Cloudflare Pages
+        if: steps.creds.outputs.present == 'true'
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy apps/site/dist --project-name=lilypad-site

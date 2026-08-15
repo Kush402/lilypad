@@ -12,6 +12,7 @@
     "doctor": "node scripts/doctor.mjs",
     "bootstrap": "node scripts/bootstrap.mjs",
     "docs:check": "node scripts/docs-check.mjs",
+    "e2e:audit": "node scripts/e2e-audit.mjs",
     "dev": "turbo run dev",
     "build": "turbo run build",
     "lint": "turbo run lint",

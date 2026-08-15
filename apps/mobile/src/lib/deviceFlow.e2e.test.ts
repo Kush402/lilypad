@@ -96,8 +96,28 @@ async function signInByEmail(email: string): Promise<string> {
 
   let token: string | undefined;
   for (let attempt = 0; attempt < 40 && !token; attempt++) {
-    const fresh = readFileSync(LOG_PATH!).subarray(offset).toString('utf8');
-    token = [...fresh.matchAll(/token=([A-Za-z0-9_-]{20,})/g)].pop()?.[1];
+    // Strip ANSI colour first: pino's pretty transport writes
+    // `\x1b[35mtoken\x1b[39m: "…"`, so the character immediately before the
+    // field name is a letter from the escape sequence, not a delimiter.
+    const fresh = readFileSync(LOG_PATH!)
+      .subarray(offset)
+      .toString('utf8')
+      // eslint-disable-next-line no-control-regex
+      .replace(/\x1b\[[0-9;]*m/g, '');
+    // The dev sender logs the code as a structured `token` FIELD. This used to
+    // match `token=…` instead, which was the query string of the
+    // `${PUBLIC_BASE_URL}/auth/magic-link?token=…` link the sender also
+    // received — and that link was deleted when it turned out to point at a
+    // route nobody had built (docs/api.md, "a code, not a clickable link").
+    // Nothing failed at the time, because this suite is opt-in: the scraper
+    // simply stopped finding anything, and every test here has been unrunnable
+    // since. Both log renderings are matched, since pino writes `token: "…"`
+    // through the pretty transport and `"token":"…"` as JSON, and which one a
+    // backend uses depends on how it was started. The leading boundary keeps
+    // `accessToken`/`refreshToken` from matching.
+    token = [
+      ...fresh.matchAll(/(?:^|[^A-Za-z])token"?\s*[:=]\s*"?([A-Za-z0-9_-]{20,})/g),
+    ].pop()?.[1];
     if (!token) await new Promise<void>((resolve) => setTimeout(() => resolve(), 50));
   }
   if (!token) throw new Error('the backend never logged a magic-link token');

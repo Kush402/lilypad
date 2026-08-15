@@ -18,11 +18,17 @@ export default tseslint.config(
   eslint.configs.recommended,
   ...tseslint.configs.recommended,
   {
-    // Node CLI scripts (doctor/bootstrap/run-tauri/clean) — plain ESM run by
-    // node, so the Node globals are real there.
+    // Node CLI scripts (doctor/bootstrap/run-tauri/clean/e2e-audit) — plain ESM
+    // run by node, so the Node globals are real there. `fetch` and `Buffer` are
+    // globals in Node 20+, which `engines` already requires.
     files: ['scripts/**/*.mjs'],
     languageOptions: {
-      globals: { process: 'readonly', console: 'readonly' },
+      globals: {
+        process: 'readonly',
+        console: 'readonly',
+        fetch: 'readonly',
+        Buffer: 'readonly',
+      },
     },
   },
   {

@@ -1,7 +1,7 @@
 ---
 status: In Progress
 owner: @kushsharma024
-last-verified: 2026-08-13
+last-verified: 2026-08-15
 summary: How the control plane is deployed, what it costs, how it scales, and how to recover it.
 ---
 
@@ -81,27 +81,49 @@ Signaling shares `api.takedia.com` rather than taking its own host. A separate
 WebSocket need separate machines — which is Stage 3, not now. Splitting later is
 a DNS record and a config value, not a rewrite.
 
-## Options considered (August 2026)
+## Options considered (re-verified 2026-08-15)
 
-| Need     | Chosen                          | Rejected                                                                                                                                                                   |
-| -------- | ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Compute  | Oracle Always Free → Hetzner CX | **Fly.io / Railway: no free tier** (removed 2024/2023). **Render free sleeps** — a sleeping backend drops every WebSocket, so presence and signaling break. Disqualifying. |
-| Postgres | On the VM (Neon as fallback)    | Neon free is 0.5 GB / 100 CU-hours and scale-to-zero adds cold starts; fine as a fallback, unnecessary when the VM already exists.                                         |
-| Redis    | On the VM                       | Upstash/managed: pure cost for data that is deliberately non-durable.                                                                                                      |
-| TLS/CDN  | Cloudflare free                 | Caddy/Let's Encrypt: works, but needs open ports and renewal that can fail.                                                                                                |
-| TURN     | coturn on a cheap VPS           | Managed TURN (Twilio/Metered): per-GB pricing is the one thing that scales badly.                                                                                          |
+Every component, priced against its alternatives rather than chosen by
+popularity. Figures are list prices as published on the dates shown; the
+**ratios** are the durable part, not the absolute numbers.
+
+| Need                   | Chosen                                   | Free tier / price                             | Rejected, and why                                                                                                                                                                         |
+| ---------------------- | ---------------------------------------- | --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Static website**     | Cloudflare Pages                         | **Unlimited bandwidth**, 500 builds/mo, $0    | Netlify/Vercel meter bandwidth on the free tier; a marketing page that goes viral should not produce a bill.                                                                              |
+| **API/auth/signaling** | Oracle Always Free → Hetzner CX          | $0 → ~€4–5/mo                                 | **Fly.io / Railway: no free tier.** **Render free sleeps** — a sleeping backend drops every WebSocket, so presence and signaling break outright. Disqualifying, not merely slow.          |
+| **PostgreSQL**         | On the VM (Neon as fallback)             | $0 on the VM · Neon free 0.5 GB, 100 CU-hours | Neon scales to zero after 5 min and resumes in ~1s — a cold start on sign-in. Supabase free **pauses entirely after 1 week idle** (tightened Feb 2026) and needs a manual unpause.        |
+| **Redis**              | On the VM                                | $0                                            | Upstash/managed: paying for durability we deliberately do not want. Every key here is single-use and short-TTL; a nonce that survives a restart is a replay window.                       |
+| **TURN/coturn**        | Self-hosted on a bandwidth-inclusive VPS | 20 TB included on Hetzner CX22, €1/TB over    | **Cloudflare Realtime TURN: $0.05/GB after 1,000 GB free** — the free grant is real and useful, but at 14.7 TB/mo that is ~$735 against ~€9 self-hosted. Twilio ~$0.40/GB is worse again. |
+| **DNS/TLS**            | Cloudflare free + Tunnel                 | $0                                            | Caddy/Let's Encrypt works but needs open inbound ports and a renewal that can fail at 3am. The tunnel opens no ports at all.                                                              |
+| **Email**              | Resend (SES as the scale path)           | Resend 3,000/mo free · SES $0.10 per 1,000    | Self-hosted SMTP: deliverability is a reputation problem that cannot be self-hosted cheaply. SES is ~10× cheaper per message but costs setup time that only pays off past ~50k/mo.        |
+| **Monitoring**         | Sentry free tier                         | 5,000 errors/mo, 1 user, 30-day retention, $0 | Self-hosting Sentry costs far more in ops than the subscription. Paid starts ~$26/mo and is not needed until error volume justifies it.                                                   |
+| **CI/CD**              | GitHub Actions                           | Free for public repos; 2,000 min/mo private   | Already wired (`.github/workflows/deploy.yml`); no second vendor earns its place.                                                                                                         |
 
 Egress is the deciding number, because TURN is the only bandwidth-heavy piece:
 
-| Provider           | Egress cost    | 1 TB of relay |
-| ------------------ | -------------- | ------------- |
-| Hetzner CX22       | 20 TB included | **€0**        |
-| Oracle Always Free | 10 TB/mo free  | **$0**        |
-| Fly.io             | $0.02/GB       | $20           |
-| AWS                | ~$0.09/GB      | ~$90          |
+| Provider                 | Egress cost                | 1 TB of relay | 14.7 TB (10k users) |
+| ------------------------ | -------------------------- | ------------- | ------------------- |
+| Hetzner CX22             | 20 TB included, then €1/TB | **€0**        | **€0**              |
+| Oracle Always Free       | 10 TB/mo free              | **$0**        | ~$0 + overage       |
+| Cloudflare Realtime TURN | 1 TB free, then $0.05/GB   | $0            | ~$685               |
+| Fly.io                   | $0.02/GB                   | $20           | ~$294               |
+| AWS                      | ~$0.09/GB                  | ~$90          | ~$1,323             |
 
-That single column is why TURN belongs on a fixed-price VPS and not on a
-per-GB cloud.
+That single column is why TURN belongs on a fixed-price VPS and not on a per-GB
+cloud — a ~100× difference at 10k users, on the one line item that scales with
+usage.
+
+> **Two 2026 changes worth knowing before provisioning.**
+>
+> - **Oracle halved Always Free ARM** from 4 OCPU/24 GB to **2 OCPU/12 GB**,
+>   effective 15 June 2026, and began terminating oversized instances from
+>   **18 August 2026** — three days from this writing. Provision within the new
+>   limit or the instance will be reclaimed. Capacity is also frequently
+>   unavailable in popular regions; Frankfurt and Singapore provision more
+>   reliably than US East.
+> - **Hetzner raised cloud prices in April 2026.** Published figures for CX22
+>   now range roughly **€4–5/mo** depending on source and location surcharge.
+>   Confirm at checkout rather than trusting any number here.
 
 ## Stages
 
@@ -205,12 +227,41 @@ Backups: `pg_dump` to `infra/production/backups` on a cron, retained 7 days.
 **An untested backup is not a backup** — restore into a scratch database and
 confirm row counts before believing it.
 
+## What the owner must provide (2026-08-15)
+
+Deployment is blocked on accounts, not on work. Everything below needs a human
+with a payment method and an identity; none of it can be created from this repo.
+
+| #   | What to create                                                                               | Why it is needed                                                                                                                    | Cost        | What to hand over                                         |
+| --- | -------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- | ----------- | --------------------------------------------------------- |
+| 1   | **A VM** — Oracle Always Free (2 OCPU/12 GB ARM, Frankfurt or Singapore) **or** Hetzner CX22 | Runs backend + Postgres + Redis. Nothing else can be deployed until this exists.                                                    | $0 / ~€4–5  | SSH host + key                                            |
+| 2   | **A second VM for coturn** (skip at Stage 0 — co-locate)                                     | TURN needs UDP on a public IP; a tunnel cannot carry it. Separate so a relay flood cannot starve the API.                           | ~€4–5       | SSH host + key, public IP                                 |
+| 3   | **Cloudflare API token** (Pages: Edit; DNS: Edit on `takedia.com`)                           | Deploy `apps/site`; create `api.` / `turn.` / `dl.` records. The tunnel credential already on this machine authorizes tunnels only. | $0          | `CLOUDFLARE_API_TOKEN`                                    |
+| 4   | **Resend account + verified sending domain**                                                 | `POST /auth/magic-link/request` answers **503 in production** without a sender. Password reset is equally undeliverable.            | $0 to 3k/mo | `RESEND_API_KEY`, from-address                            |
+| 5   | **Sentry project (optional)**                                                                | Nothing reports crashes today.                                                                                                      | $0          | DSN                                                       |
+| 6   | **GitHub Actions secrets**                                                                   | `deploy.yml` exists and has never run.                                                                                              | $0          | `SSH_HOST`, `SSH_KEY`, `GHCR` scope on the existing token |
+| 7   | **Stripe account**                                                                           | Only for [ADR-0013](adr/0013-connectivity-is-the-paid-boundary.md)'s paid tier. Not needed to launch the free tier.                 | —           | Publishable + secret keys                                 |
+| 8   | **Prices for `pro` / `team`**                                                                | Not an account — a decision. `$XXXX` everywhere until it is made.                                                                   | —           | Two numbers                                               |
+
+Items 1, 3 and 4 are the minimum for a public deployment. Items 7–8 are only for
+charging money, which [ADR-0013](adr/0013-connectivity-is-the-paid-boundary.md)
+does not require before the free tier ships.
+
 ## What is not done
 
 Stated explicitly so nothing here reads as more finished than it is.
 
 - **Nothing is deployed.** No VM, no `api.takedia.com`, no TURN host. Every
-  artifact below was verified locally only.
+  artifact below was verified locally only. The blocker is accounts, not work —
+  see [What the owner must provide](#what-the-owner-must-provide-2026-08-15).
+- **A free tier of "LAN only" cannot ship yet.**
+  [ADR-0013](adr/0013-connectivity-is-the-paid-boundary.md) makes LAN the free
+  product, but a LAN session still needs the control plane to _establish_ (its
+  media is already direct). Until the laptop can act as its own control plane
+  ([NETWORKING.md §2](NETWORKING.md)), a free user cut off from the cloud is cut
+  off from their laptop too.
+- **No entitlement enforcement.** `users.tier` is read nowhere, there is no
+  trial state, and no billing. Remote is currently available to everyone.
 - **Route authorization (SEC-3, SEC-4, SEC-7) is closed** as of M9. Every
   pairing and trust route, and the presence `register`, are gated by ownership
   ([ADR-0010](adr/0010-explicit-device-linking.md)). A device an account owns

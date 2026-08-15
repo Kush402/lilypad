@@ -189,20 +189,39 @@ largest cost.
 
 ## 9. Free-tier strategy
 
-The architecture makes a generous free tier sustainable because **the expensive
-path is the rare path**.
+**Superseded by [ADR-0013](adr/0013-connectivity-is-the-paid-boundary.md)
+(2026-08-15): connectivity is the paid boundary.**
 
-| Tier             | Includes                                                                                                                                                                                               |
-| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **Free**         | Unlimited **LAN** sessions. Unlimited **direct P2P** remote sessions. A generous monthly allowance of **relayed** (TURN) minutes. Core remote control, input, clipboard, multiple devices, BYO-key AI. |
-| **Paid (later)** | Higher or unmetered relay allowance; managed AI (we hold the key and pay inference); premium models; team/business features; extended history; priority support.                                       |
+| Tier                      | Includes                                                                                       |
+| ------------------------- | ---------------------------------------------------------------------------------------------- |
+| **Free**                  | **LAN sessions, unlimited, forever.** Never metered, never counted.                            |
+| **Paid** (`pro` / `team`) | LAN **plus remote** connectivity — P2P first, TURN only when needed. Prices are still `$XXXX`. |
+| **Trial**                 | One month of remote on every new account, then payment is required for remote.                 |
 
-Two rules:
+Two rules, one of them rewritten:
 
-1. **LAN is never paywalled.** It costs us nothing, it is the best experience,
-   and restricting it would be user-hostile for no gain.
-2. **Meter only what actually costs money** — relayed minutes and managed AI
-   inference. Everything else is free because it is genuinely free to serve.
+1. **LAN is never paywalled.** Unchanged, and now structural rather than
+   generous: a LAN session's media never reaches us, so there is nothing to
+   meter. It is free by construction.
+2. ~~Meter only what actually costs money.~~ **Charge for remote connectivity,
+   whether or not it is relayed.** Direct P2P costs us nothing and is still
+   paid, because the value bought is reaching the laptop from anywhere, not the
+   transport that happened to carry it. The cost rule still governs the
+   architecture — P2P first, TURN last — it no longer governs the price list.
+   See the ADR for why this tension is deliberate.
+
+**The effect on this whole document is favourable and large: free users cannot
+generate relay spend at all.** Every TURN gigabyte below is bought by a trial or
+paying user, so §3's egress table should be read against the paid+trial
+population, not the registered one. At a 10% paid conversion with a one-month
+trial, relay demand is roughly an order of magnitude below the figures in §3.
+
+**One prerequisite is not built.** A LAN session still needs the control plane to
+_establish_ (media is already direct — see
+[NETWORKING.md §1](NETWORKING.md#1-what-the-code-does-today-verified-2026-08-12)),
+so a free tier defined as LAN-only cannot ship until the laptop can act as its
+own control plane. That is NETWORKING §2's existing target design, and it is now
+on the critical path for launch.
 
 ---
 

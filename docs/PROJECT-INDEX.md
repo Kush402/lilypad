@@ -245,7 +245,7 @@ These are the reason the product is not yet consumer-ready. Each is verified.
 
 | Item                 | Rationale                                                            |
 | -------------------- | -------------------------------------------------------------------- |
-| Stripe billing       | Entitlement tables only in V1; no pricing signal yet                 |
+| Stripe billing       | Needed only for ADR-0013's paid remote tier; prices still `$XXXX`    |
 | Voice control (M5.5) | Not started                                                          |
 | Passkeys             | Post-GA upgrade — see [ADR-0001](adr/0001-account-authentication.md) |
 | Audio streaming      | Out of scope; video + input only                                     |
@@ -305,15 +305,15 @@ in `milestones.md` unchanged.
 
 ### Product completion track
 
-| Milestone | Objective                                                                                                                                                      |
-| --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **P1** 🚧 | Account-connected clients — sign-in, enrollment QR, approval screen, first-run wizard. Human tap-through left                                                  |
-| **P2** 🚧 | Device management — list, rename, revoke, active sessions (phone done; desktop view + session history remain)                                                  |
-| **P3** ✅ | Design system — `@lilypad/design`; one palette for all three surfaces ([ADR-0011](adr/0011-design-tokens.md))                                                  |
-| **P4** ✅ | `lilypadhome.takedia.com` — `apps/site`, static, claims-tested. Hosting and DNS remain M13's                                                                   |
-| **P5** ⏹️ | **Closed, no change** — Ask is in-app-only by design and its transcripts are correct as they are                                                               |
-| **P7** ✅ | Consumer onboarding — email + password sign-in, an auth gate on the phone, a dashboard front door on the Mac ([ADR-0012](adr/0012-password-authentication.md)) |
-| P6        | Entitlements — **blocked** on pricing decisions                                                                                                                |
+| Milestone | Objective                                                                                                                                                                             |
+| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **P1** 🚧 | Account-connected clients — sign-in, enrollment QR, approval screen, first-run wizard. Human tap-through left                                                                         |
+| **P2** 🚧 | Device management — list, rename, revoke, active sessions (phone done; desktop view + session history remain)                                                                         |
+| **P3** ✅ | Design system — `@lilypad/design`; one palette for all three surfaces ([ADR-0011](adr/0011-design-tokens.md))                                                                         |
+| **P4** ✅ | `lilypadhome.takedia.com` — `apps/site`, static, claims-tested. Hosting and DNS remain M13's                                                                                          |
+| **P5** ⏹️ | **Closed, no change** — Ask is in-app-only by design and its transcripts are correct as they are                                                                                      |
+| **P7** ✅ | Consumer onboarding — email + password sign-in, an auth gate on the phone, a dashboard front door on the Mac ([ADR-0012](adr/0012-password-authentication.md))                        |
+| P6        | Entitlements — boundary decided ([ADR-0013](adr/0013-connectivity-is-the-paid-boundary.md): LAN free, remote paid, 1-month trial); blocked on prices + LAN control-plane independence |
 
 **Production readiness: not ready.** The session layer is production-grade and
 its authentication and authorization now are too. What remains is the service

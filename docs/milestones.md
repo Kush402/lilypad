@@ -701,17 +701,29 @@ account management rather than sign-in, and no screen has a place for it yet.
 
 ## P6 — Entitlements 🔜
 
-Backend-enforced plan limits. **Blocked**, and deliberately last: `users.tier`
-is read nowhere, and the only pricing facts the repository contains are two
-principles — LAN is never paywalled, and only relay minutes and managed AI are
-metered. Actual limits are a product decision, not an implementation detail.
+Backend-enforced plan limits. `users.tier` is still read nowhere, but **what** is
+gated is now decided: [ADR-0013](adr/0013-connectivity-is-the-paid-boundary.md)
+makes **connectivity** the boundary — LAN free forever, remote paid after a
+one-month trial. One gate on remote session establishment
+(`/connect/request`, presence, the signaling room), not a meter on traffic; LAN
+needs no gate because its media never reaches us.
+
+Still blocked on **prices** (`$XXXX`), and it now has a prerequisite that is not
+a pricing question: **a LAN session still depends on the control plane to
+establish**, so "free = LAN" is not yet a shippable product. See
+[NETWORKING.md §2](NETWORKING.md) — the laptop acting as its own control plane
+is the existing target design, and it is now on the launch critical path.
 
 ## Open decisions blocking this track
 
 Recorded rather than guessed. Each blocks only its own dependent.
 
-1. **Pricing numbers** — free-tier relay allowance, `pro`/`team` prices. Blocks
-   P4's real prices and all of P6. Everything else proceeds on `$XXXX`.
+1. **Pricing numbers** — `pro`/`team` prices. Blocks P4's real prices and all of
+   P6. Everything else proceeds on `$XXXX`. _(Partly answered 2026-08-15: the
+   free/paid **boundary** is decided — see
+   [ADR-0013](adr/0013-connectivity-is-the-paid-boundary.md) — so only the two
+   numbers remain. The free-tier relay allowance is no longer a question: free
+   has no relay, because free has no remote.)_
 2. **Platform advertising** — macOS is real; Windows input has never executed and
    Android has no field validation. Until that changes, P4 says macOS + iOS.
 3. **Legal pages** — privacy policy and terms need real answers on data
