@@ -146,6 +146,31 @@ describe('Setup', () => {
     expect(screen.queryByTestId('setup-done-linked')).not.toBeInTheDocument();
   });
 
+  /**
+   * Regression: the final card derived "not on an account" from
+   * `state !== 'linked'`, which lumps in `unknown` — the state that means the
+   * backend could not be asked, not that nobody owns this machine. A linked
+   * user whose wifi dropped mid-setup was told their computer was on no
+   * account and pointed at step 2 to fix it, i.e. invited to redo a ceremony
+   * they had already completed. `LinkStateDto` calls the two out as
+   * deliberately different for exactly this reason.
+   */
+  it('does not claim the computer is unlinked when the backend cannot be asked', async () => {
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === 'get_permission_status') return status();
+      if (cmd === 'get_link_state') return { state: 'unknown' };
+      return undefined;
+    });
+
+    render(<Setup />);
+    await waitFor(() => expect(listen).toHaveBeenCalled());
+    grantAll(eventHandler);
+
+    expect(await screen.findByTestId('setup-done-unknown')).toHaveTextContent(/could not check/i);
+    expect(screen.queryByTestId('setup-done-unlinked')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('setup-done-linked')).not.toBeInTheDocument();
+  });
+
   it('says the computer belongs to the account once a phone has adopted it', async () => {
     vi.mocked(invoke).mockImplementation(async (cmd: string) => {
       if (cmd === 'get_permission_status') return status();

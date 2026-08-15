@@ -34,15 +34,15 @@ export interface MagicLinkRedis {
  * `createMailSender()` returns null in production so the route answers an
  * honest 503 instead of accepting sign-ins whose email never arrives. */
 export interface MailSender {
-  sendMagicLink(to: string, link: string, token: string): Promise<void>;
+  sendMagicLink(to: string, token: string): Promise<void>;
 }
 
-/** Dev sender: writes the link to the server log. Not a stub standing in for
- * a real sender — it is the intended developer experience, the same way the
- * QR pairing flow is driven from the terminal in headless runs. */
+/** Dev sender: writes the sign-in code to the server log. Not a stub standing
+ * in for a real sender — it is the intended developer experience, the same way
+ * the QR pairing flow is driven from the terminal in headless runs. */
 export const consoleMailSender: MailSender = {
-  sendMagicLink(to, link, token) {
-    log.server.info({ to, link, token }, 'magic-link sign-in (dev sender — no email was sent)');
+  sendMagicLink(to, token) {
+    log.server.info({ to, token }, 'magic-link sign-in (dev sender — no email was sent)');
     return Promise.resolve();
   },
 };
@@ -55,7 +55,7 @@ export function createMailSender(): MailSender | null {
 export async function createMagicLink(
   email: string,
   client: MagicLinkRedis = redis,
-): Promise<{ token: string; link: string; expiresInSeconds: number }> {
+): Promise<{ token: string; expiresInSeconds: number }> {
   const token = randomBytes(24).toString('base64url');
   await client.set(
     redisKeys.magicLink(token),
@@ -63,10 +63,21 @@ export async function createMagicLink(
     'EX',
     MAGIC_LINK_TTL_SECONDS,
   );
-  // Points at the API because there is no web dashboard or deep-link handler
-  // yet; both land in M14, at which point only this line changes.
-  const link = `${config.env.PUBLIC_BASE_URL}/auth/magic-link?token=${token}`;
-  return { token, link, expiresInSeconds: MAGIC_LINK_TTL_SECONDS };
+  // Deliberately a CODE and not a URL.
+  //
+  // This used to also build `${PUBLIC_BASE_URL}/auth/magic-link?token=…` and
+  // hand it to the sender, deferring a landing page to M14. M14 was later split
+  // into P1/P2/P4 and that page was never part of any of them, so the URL kept
+  // being generated for a route that does not exist — following it returns a
+  // raw Fastify 404, verified against the running server. Nothing could have
+  // consumed it either: the app registers no URL scheme and no associated
+  // domain, so there is no deep-link handler for it to reach.
+  //
+  // What the product actually asks for is the code: `SignInScreen` shows a
+  // "Sign-in code" field and tells the user to paste it from the email. A
+  // second, dead path next to the working one is worse than no second path.
+  // If a landing page or deep link is ever built, a URL comes back here then.
+  return { token, expiresInSeconds: MAGIC_LINK_TTL_SECONDS };
 }
 
 /** Burn a magic-link token and return the address it proves, or null if it is

@@ -145,8 +145,8 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
           message: 'email sign-in is not available on this server yet',
         });
       }
-      const { token, link } = await createMagicLink(parsed.data.email);
-      await mailer.sendMagicLink(parsed.data.email, link, token);
+      const { token } = await createMagicLink(parsed.data.email);
+      await mailer.sendMagicLink(parsed.data.email, token);
       return reply.code(202).send({ ok: true });
     },
   );

@@ -57,8 +57,22 @@ describe('magic link', () => {
     expect(await redeemMagicLink(second.token, redis)).toBe('ada@example.com');
   });
 
-  it('embeds the token in the link it hands the sender', async () => {
-    const { token, link } = await createMagicLink('ada@example.com', fakeRedis());
-    expect(link).toContain(`token=${token}`);
+  /**
+   * Regression: this used to also return
+   * `${PUBLIC_BASE_URL}/auth/magic-link?token=…`, a URL no route serves — a
+   * user who followed it got a raw Fastify 404, and no deep-link handler
+   * existed to catch it either (no URL scheme, no associated domain). The
+   * product signs in by pasting the CODE, so the code is all the sender gets.
+   *
+   * If a landing page or deep link is ever built, this test is the place that
+   * says so — and until then it fails the moment a dead URL comes back.
+   */
+  it('hands the sender a code, never a URL', async () => {
+    const result = await createMagicLink('ada@example.com', fakeRedis());
+    expect(result.token).toEqual(expect.any(String));
+    const urlish = Object.values(result).filter(
+      (v) => typeof v === 'string' && /https?:\/\//.test(v),
+    );
+    expect(urlish).toEqual([]);
   });
 });

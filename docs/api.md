@@ -254,7 +254,7 @@ and a pinned algorithm list. Rate-limited to **20/minute** per IP.
 
 ### `POST /auth/magic-link/request` ✅
 
-Ask for a sign-in link. Answers **202 whether or not the address has an
+Ask for a sign-in **code**. Answers **202 whether or not the address has an
 account**, deliberately: a response that differed would be an
 account-enumeration oracle. Rate-limited to **5/minute** per IP.
 
@@ -265,11 +265,20 @@ account-enumeration oracle. Rate-limited to **5/minute** per IP.
 ```
 
 > **Delivery is dev-only today.** The token flow is complete and tested, but the
-> only sender that exists writes the link to the server log. A production sender
-> (SES/Resend/SMTP) is chosen with the rest of the hosting in **M13**, and the
-> clickable-link/deep-link UX lands in **M14**. Until then this endpoint answers
-> 503 outside development rather than accepting sign-ins whose email never
-> arrives.
+> only sender that exists writes the code to the server log. A production sender
+> (SES/Resend/SMTP) is chosen with the rest of the hosting in **M13**. Until
+> then this endpoint answers 503 outside development rather than accepting
+> sign-ins whose email never arrives.
+>
+> **What is sent is a code, not a clickable link.** The sender used to also
+> receive `${PUBLIC_BASE_URL}/auth/magic-link?token=…`, deferring a landing page
+> to M14 — but M14 was split into P1/P2/P4 and that page belonged to none of
+> them, so the URL was being generated for a route that does not exist
+> (following it returns a raw 404). Nothing could have handled it client-side
+> either: the app registers no URL scheme and no associated domain. The phone's
+> `SignInScreen` asks the user to paste the code, which is what the email
+> carries. A clickable link comes back only if a landing page or deep-link
+> handler is actually built.
 
 ### `POST /auth/magic-link/verify` ✅
 

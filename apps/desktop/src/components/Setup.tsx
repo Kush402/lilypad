@@ -140,6 +140,10 @@ export function Setup() {
 
   const allGranted = status.screen_capture && status.accessibility;
   const linked = linkState?.state === 'linked';
+  // `unknown` means the backend could not be asked; a null value means the
+  // first read has not landed yet. Neither is evidence that nobody owns this
+  // machine, so neither may be reported as such.
+  const linkUnknown = linkState === null || linkState.state === 'unknown';
 
   // Approval happens on the phone, so there is nothing local to react to. Poll
   // only while the answer can still change: once linked, the final card is
@@ -248,11 +252,18 @@ export function Setup() {
 
       {allGranted ? (
         <section className="control__active" data-testid="setup-done">
-          {/* Two different true statements. Claiming the first while the second
-              is the case is exactly what P1's DoD rules out. */}
+          {/* Three states, not two. "Not on an account" and "we could not ask"
+              are different facts, and `LinkStateDto` separates them on purpose:
+              telling a linked user to redo the linking ceremony because their
+              wifi dropped is worse than admitting we do not know. */}
           {linked ? (
             <p data-testid="setup-done-linked">
               ✓ This computer is set up and belongs to your account.
+            </p>
+          ) : linkUnknown ? (
+            <p data-testid="setup-done-unknown">
+              ✓ Permissions are done, so you can pair a phone. We could not check whether this
+              computer is on an account — if you have already linked it, it stays linked.
             </p>
           ) : (
             <p data-testid="setup-done-unlinked">
