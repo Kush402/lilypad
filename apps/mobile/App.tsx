@@ -59,10 +59,14 @@ function Routes(): React.JSX.Element {
   }
 
   return (
-    <Stack.Navigator initialRouteName={session ? 'Devices' : 'SignIn'}>
+    <Stack.Navigator initialRouteName={session ? 'Devices' : 'SignInGate'}>
       {session === null ? (
+        // `SignInGate`, not `SignIn` — see `RootStackParamList.SignInGate`. The
+        // signed-in stack keeps its own `SignIn`, and a name shared across the
+        // swap is a route that survives it, which means signing in changes
+        // nothing on screen.
         <Stack.Screen
-          name="SignIn"
+          name="SignInGate"
           component={SignInRoute}
           options={{ title: 'Sign in', headerShown: false }}
         />

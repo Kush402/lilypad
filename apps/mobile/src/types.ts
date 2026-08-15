@@ -13,6 +13,19 @@ export type RootStackParamList = {
    */
   SignIn: { apiBaseUrl?: string } | undefined;
   /**
+   * The signed-out gate. Renders the same screen as `SignIn`, under a name that
+   * **must not exist in the signed-in stack** — that is the whole point of it.
+   *
+   * React Navigation keeps a focused route across a conditional-screen swap
+   * whenever its name still exists in the new configuration. While the gate was
+   * also called `SignIn`, and `SignIn` legitimately stayed in the signed-in
+   * stack (the scanner pushes it when a QR names a different backend), signing
+   * in did nothing visible: the session flipped, the stack swapped, and the
+   * navigator went on showing the very same route. A distinct name is what lets
+   * the route disappear, which is what moves the user to `Devices`.
+   */
+  SignInGate: undefined;
+  /**
    * The ACCOUNT's devices (P2) — distinct from `Devices`, which lists the
    * laptops this phone has paired with. Optional for the same reason as
    * `SignIn`.

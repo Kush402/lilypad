@@ -4,7 +4,7 @@ import type { RootStackParamList } from '../types';
 import { SignInScreen } from './SignInScreen';
 import { useSession } from '../lib/sessionContext';
 
-type Props = NativeStackScreenProps<RootStackParamList, 'SignIn'>;
+type Props = NativeStackScreenProps<RootStackParamList, 'SignIn' | 'SignInGate'>;
 
 /**
  * Navigation wrapper for the presentational `SignInScreen`.
@@ -30,5 +30,7 @@ export function SignInRoute({ route, navigation }: Props): React.JSX.Element {
     });
   }, [navigation, refresh]);
 
-  return <SignInScreen apiBaseUrl={route.params?.apiBaseUrl} onSignedIn={onSignedIn} />;
+  // The gate carries no params; only the pushed `SignIn` names a backend.
+  const apiBaseUrl = route.name === 'SignIn' ? route.params?.apiBaseUrl : undefined;
+  return <SignInScreen apiBaseUrl={apiBaseUrl} onSignedIn={onSignedIn} />;
 }
