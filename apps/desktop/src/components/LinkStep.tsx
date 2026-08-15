@@ -18,10 +18,17 @@ import { AccountPanel } from './AccountPanel';
  * it expecting to be logged in on the Mac, and instead put the machine on
  * whichever account their phone happened to be holding.
  *
- * So: identity first, then the computer. The copy says the order plainly and
- * does not claim a dependency that is not there — and it keeps pairing
- * visible, because pairing genuinely needs no account at all and hiding it
- * would be the opposite mistake.
+ * So: identity first, then the computer, then the phone.
+ *
+ * This panel's first version told the user "you can still pair a phone without
+ * any of this", which was true of the code and wrong about the product: a pair
+ * made on an unlinked machine belongs to no account, appears in nobody's "Your
+ * devices", and can be revoked from nowhere — the state
+ * [ADR-0010](../../../../docs/adr/0010-explicit-device-linking.md) rejected in
+ * so many words ("without an owner there is nothing to authorize against, no
+ * revocation story across devices"). `docs/api.md` already recorded the
+ * backend's unowned lane as a migration allowance that ends "when P1 makes
+ * enrolment mandatory". Pairing now waits for linking, and the copy says so.
  */
 export function LinkStep({ signedIn }: { signedIn: boolean }) {
   if (signedIn) return <AccountPanel />;
@@ -34,8 +41,8 @@ export function LinkStep({ signedIn }: { signedIn: boolean }) {
         account on this Mac to put it on.
       </p>
       <p className="muted">
-        You can still pair a phone without any of this — pairing and linking are different things,
-        and only linking needs an account.
+        Pairing a phone comes after this. A phone paired with a computer that is on no account can’t
+        be seen or removed from anywhere, so linking goes first.
       </p>
     </section>
   );

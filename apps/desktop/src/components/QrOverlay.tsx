@@ -55,10 +55,13 @@ export function QrOverlay() {
       });
       setDataUrl(url);
     } catch (err) {
-      // `permissions_required` is expected and already handled: the Rust
-      // command opens/focuses the Setup window itself (this used to be
-      // filtered in Bubble.tsx when it was the caller).
-      if (String(err) !== 'permissions_required') setError(String(err));
+      // Both of these are expected and already handled by the Rust command,
+      // which opens the window carrying the step that is actually missing —
+      // Setup for permissions, the dashboard for linking. Rendering them as
+      // errors here would put a red string on top of the screen that already
+      // says what to do.
+      const handled = ['permissions_required', 'link_required'];
+      if (!handled.includes(String(err))) setError(String(err));
     } finally {
       inFlightRef.current = false;
     }

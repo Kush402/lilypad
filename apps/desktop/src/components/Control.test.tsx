@@ -42,6 +42,9 @@ vi.mock('../lib/tauri', () => ({
     // Account sign-in (ADR-0012) — signed out, which is the state the
     // dashboard's other assertions were all written against.
     getAccountState: vi.fn().mockResolvedValue({ signedIn: false, email: null, userId: null }),
+    // Linked, so the dashboard's other assertions run against a computer that
+    // can actually pair. `link-ordering.test.tsx` covers the unlinked case.
+    getLinkState: vi.fn().mockResolvedValue({ state: 'linked' }),
     accountSignUp: vi.fn(),
     accountSignIn: vi.fn(),
     accountRequestPasswordReset: vi.fn(),

@@ -241,23 +241,36 @@ export function Setup() {
         <>
           <h2 className="section-title">3 · Link this computer</h2>
           <p className="muted">
-            Optional, and worth doing: linking is what puts this Mac on your account, so you can see
-            and remove it from your phone. Pairing works without it.
+            Linking is what puts this Mac on your account, so you can see it — and remove it — from
+            your phone. Pairing comes after it.
           </p>
           <LinkStep signedIn={account?.signedIn ?? false} />
 
           <h2 className="section-title">4 · Pair a phone</h2>
-          <p className="muted">
-            Show the pairing code and scan it with Lilypad on your phone. Pair once — after that the
-            phone reconnects on its own.
-          </p>
-          <section className="control__approve">
-            <div className="row">
-              <button className="btn btn--primary" onClick={() => void api.showQrWindow()}>
-                Show pairing code
-              </button>
-            </div>
-          </section>
+          {linked ? (
+            <>
+              <p className="muted">
+                Show the pairing code and scan it with Lilypad on your phone. Pair once — after that
+                the phone reconnects on its own.
+              </p>
+              <section className="control__approve">
+                <div className="row">
+                  <button className="btn btn--primary" onClick={() => void api.showQrWindow()}>
+                    Show pairing code
+                  </button>
+                </div>
+              </section>
+            </>
+          ) : (
+            /* Pairing an unowned computer writes a trust relationship that
+               belongs to no account: it cannot appear in anyone's "Your
+               devices" and nobody can revoke it. ADR-0010 rejected that state,
+               so this waits for step 3 rather than producing one. */
+            <p className="muted" data-testid="pair-step-locked">
+              Finish step 3 first. A phone paired with a computer that is on no account can’t be
+              managed or removed from anywhere, so pairing waits until this Mac is yours.
+            </p>
+          )}
         </>
       ) : null}
 

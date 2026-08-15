@@ -38,6 +38,25 @@ can sign in ([ADR-0012](docs/adr/0012-password-authentication.md), which amends
 
 #### Fixed
 
+- **Pairing was offered on a computer no account owned.** The tray's "Show QR /
+  Pair", the dashboard's "+", and the wizard's last step all worked on a Mac
+  nobody had signed into or linked. A pair made in that state belongs to no
+  account — it appears in no "Your devices" list and can be revoked from
+  nowhere, which [ADR-0010](docs/adr/0010-explicit-device-linking.md) rejected
+  outright and which `docs/api.md` recorded as ending "when P1 makes enrolment
+  mandatory". `create_pairing` now refuses, and every surface that could reach
+  it disables itself with the reason. `unknown` link state deliberately still
+  passes: it means the backend could not be **asked**, not that the machine is
+  unowned. The backend's unowned lane is still open and still needs its own pass.
+- **The linking QR was offered before anyone had signed in**, directly beneath
+  the sign-in form, with nothing relating the two panels. Linking waits for
+  sign-in now.
+- **Signing in on the phone did nothing visible.** The signed-out gate and the
+  signed-in stack both had a screen named `SignIn`; React Navigation keeps a
+  focused route across a conditional-screen swap when its name survives, so the
+  session flipped, the stack swapped, and the navigator went on rendering the
+  same route. Sign-in itself had been succeeding the whole time — 200 on
+  `/auth/password` and 200 on `/devices/enroll`, six times over.
 - **A pairing QR was the desktop's front door.** Clicking the bubble minted a
   pairing code and put a QR on screen as the app's first act, before any account
   existed and before the user had seen a screen explaining what Lilypad is. It

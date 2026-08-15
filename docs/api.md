@@ -31,8 +31,16 @@ The gate is conditional on ownership, not on the route: a device row that **no
 account owns** has nothing to protect and keeps its pre-accounts behaviour, so
 pairing a fresh install still works with no token at all. The moment a device is
 linked, its routes demand a matching token. Clients send one whenever they can
-mint one, so the two halves meet with no flag day. When P1 makes enrolment
-mandatory this branch disappears.
+mint one, so the two halves meet with no flag day.
+
+**The desktop no longer uses that lane.** As of P7 it refuses to mint a pairing
+for a computer it knows to be `unlinked`, `revoked`, or without an identity, and
+neither the tray, the dashboard, nor the setup wizard offers the action —
+because a pair made on an unowned computer belongs to no account, appears in no
+"Your devices" list, and can be revoked from nowhere, which is the state
+[ADR-0010](adr/0010-explicit-device-linking.md) rejected. The server-side
+allowance is still open, deliberately: closing it is a contract change that
+would strand any install predating linking, and it needs its own pass.
 
 **A denial is always `404 { "error": "not_found" }`** — never 403 — so "not
 yours" cannot be told apart from "does not exist". A present-but-invalid token

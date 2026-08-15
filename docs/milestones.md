@@ -672,7 +672,28 @@ matched timing, an OAuth account refusing password sign-in, reset request/confir
 reset-token single-use, a reset token refused at `/auth/magic-link/verify`, and a
 signed-in desktop refused at `/devices/enroll`).
 
-**Open:** password reset is implemented and tested but not deliverable until M13
+**Ordering, after real use.** Three follow-up fixes came out of driving the
+built app rather than the tests:
+
+1. The mobile gate and the signed-in stack both had a screen named `SignIn`.
+   React Navigation keeps a focused route across a conditional-screen swap when
+   the name survives, so signing in succeeded end to end — `/auth/password` 200,
+   `/devices/enroll` 200, six times — and the screen never changed. The gate is
+   `SignInGate` now, a name the signed-in stack does not use.
+2. The desktop dashboard offered a live enrollment QR to a signed-out user,
+   directly beneath the sign-in form, with nothing relating the two. Linking now
+   waits for sign-in.
+3. **Pairing now waits for linking**, on every surface — the tray item, the
+   dashboard's "+", the wizard's step 4, and `create_pairing` itself. A pair
+   made on an unowned computer belongs to no account: it appears in no "Your
+   devices" list and can be revoked from nowhere, which
+   [ADR-0010](adr/0010-explicit-device-linking.md) rejected and which
+   `docs/api.md` said would end "when P1 makes enrolment mandatory". This is the
+   client half of that; the backend's unowned lane is still open and still needs
+   its own pass.
+
+**Open:** the backend still accepts pairing from an unowned device (above).
+Password reset is implemented and tested but not deliverable until M13
 provides a mail sender — it answers 503 in production, exactly as magic link
 does. `DEFAULT_API_BASE_URL` points at the existing tunnel and moves with M13.
 Setting a password on an account created by OAuth is not offered anywhere; it is

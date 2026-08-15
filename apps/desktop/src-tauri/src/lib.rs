@@ -79,7 +79,7 @@ impl TrayHandles {
     /// the same `SessionStatus` the bubble/Control window already key off —
     /// one source of truth for "what can I do right now," not three UIs each
     /// guessing independently.
-    fn apply(&self, status: SessionStatus) {
+    fn apply(&self, status: SessionStatus, pairable: bool) {
         let idle = status == SessionStatus::Idle;
         let awaiting = status == SessionStatus::AwaitingApproval;
         let active = status == SessionStatus::Active;
@@ -88,7 +88,13 @@ impl TrayHandles {
         // disconnect/panic are already covered by `!idle` since Connecting
         // isn't Idle. Approve/deny stay disabled: approval already happened.
         let connecting = status == SessionStatus::Connecting;
-        let _ = self.show_qr.set_enabled(!(active || connecting));
+        // …and only when this computer is on an account. Pairing an unowned
+        // machine writes a trust relationship nobody can see or revoke
+        // (ADR-0010), so "Show QR / Pair" is not an action that exists yet —
+        // the same reasoning that already disables Approve while idle. The
+        // dashboard is where the missing step lives, and clicking through the
+        // bubble or the "+" leads there.
+        let _ = self.show_qr.set_enabled(!(active || connecting) && pairable);
         let _ = self.approve.set_enabled(awaiting);
         let _ = self.deny.set_enabled(awaiting);
         let _ = self.disconnect.set_enabled(!idle);
@@ -110,15 +116,41 @@ pub(crate) fn sync_tray_menu(app: &AppHandle) {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let status = guard.session;
+    let pairable = pairing_is_meaningful(&guard.link_state);
     drop(guard);
-    tray.apply(status);
+    tray.apply(status, pairable);
+}
+
+/// Whether offering to pair is meaningful right now.
+///
+/// Pairing writes a trust relationship — which phone may reach this Mac — and
+/// on a computer no account owns, that relationship belongs to nobody: it
+/// appears in no "Your devices" list and can be revoked from nowhere.
+/// [ADR-0010](../../../../docs/adr/0010-explicit-device-linking.md) rejected
+/// that state outright, and `docs/api.md` recorded the backend's unowned lane
+/// as a migration allowance ending "when P1 makes enrolment mandatory".
+///
+/// `Unknown` is deliberately pairable. It means the backend could not be
+/// **asked**, not that this machine is unowned — the whole reason `LinkState`
+/// keeps them apart. Disabling on it would tell a linked user their computer is
+/// on no account because their wifi blipped. `create_pairing` re-checks for
+/// real at click time, so being wrong in this direction costs an honest error
+/// rather than a false claim.
+fn pairing_is_meaningful(link: &auth::LinkState) -> bool {
+    !matches!(
+        link,
+        auth::LinkState::Unlinked | auth::LinkState::Revoked | auth::LinkState::NoIdentity
+    )
 }
 
 fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     let open_dashboard =
         MenuItem::with_id(app, "open_dashboard", "Open Dashboard", true, None::<&str>)?;
     let sep0 = PredefinedMenuItem::separator(app)?;
-    let show_qr = MenuItem::with_id(app, "show_qr", "Show QR / Pair", true, None::<&str>)?;
+    // Starts DISABLED and is enabled by the first `sync_tray_menu` once the
+    // link state is known. A fresh install is unlinked, and offering to pair it
+    // before anyone has signed in is the ordering this whole change fixes.
+    let show_qr = MenuItem::with_id(app, "show_qr", "Show QR / Pair", false, None::<&str>)?;
     let approve = MenuItem::with_id(app, "approve", "Approve", false, None::<&str>)?;
     let deny = MenuItem::with_id(app, "deny", "Deny", false, None::<&str>)?;
     let disconnect = MenuItem::with_id(app, "disconnect", "Disconnect", false, None::<&str>)?;
@@ -285,6 +317,23 @@ pub fn run() {
                 let _ = commands::show_setup(app.handle());
             }
 
+            // Ask once, at launch, so the tray settles on the truth without
+            // waiting for someone to open the dashboard. One request, not a
+            // poller: every surface that cares already polls `get_link_state`
+            // while it is open, and that call keeps this cache current.
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let link = handle.state::<std::sync::Arc<auth::DesktopAuth>>().link_state().await;
+                {
+                    let state = handle.state::<state::SharedState>();
+                    let mut guard = state
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    guard.link_state = link;
+                }
+                sync_tray_menu(&handle);
+            });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -320,4 +369,38 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running Lilypad desktop");
+}
+
+#[cfg(test)]
+mod pairing_order_tests {
+    use super::*;
+    use crate::auth::LinkState;
+
+    /// Reported from the running app: "Show QR / Pair" sat enabled in the tray,
+    /// and the dashboard's "+" alongside it, on a computer nobody had signed
+    /// into or linked. The dashboard mirrors this exact rule
+    /// (`PairOrdering.test.tsx`); this is the tray's half.
+    #[test]
+    fn an_unowned_computer_is_not_offered_for_pairing() {
+        assert!(!pairing_is_meaningful(&LinkState::Unlinked));
+        assert!(!pairing_is_meaningful(&LinkState::Revoked));
+        assert!(!pairing_is_meaningful(&LinkState::NoIdentity));
+    }
+
+    #[test]
+    fn a_linked_computer_is() {
+        assert!(pairing_is_meaningful(&LinkState::Linked {
+            user_id: "u".to_owned(),
+            device_id: "d".to_owned(),
+        }));
+    }
+
+    /// "Could not ask" is not "nobody owns it". Refusing here would repeat the
+    /// exact mistake `LinkState::Unknown` was introduced to prevent.
+    #[test]
+    fn an_unreachable_backend_does_not_revoke_the_offer() {
+        assert!(pairing_is_meaningful(&LinkState::Unknown(
+            "connection refused".to_owned()
+        )));
+    }
 }

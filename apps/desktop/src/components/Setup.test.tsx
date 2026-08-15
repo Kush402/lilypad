@@ -141,12 +141,13 @@ describe('Setup', () => {
     await waitFor(() => expect(listen).toHaveBeenCalled());
 
     expect(screen.queryByTestId('link-step-locked')).not.toBeInTheDocument();
-    expect(screen.queryByText('Show pairing code')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('pair-step-locked')).not.toBeInTheDocument();
 
     grantAll(eventHandler);
 
+    // Both steps appear, both still waiting on the one before them.
     expect(await screen.findByTestId('link-step-locked')).toBeInTheDocument();
-    expect(screen.getByText('Show pairing code')).toBeInTheDocument();
+    expect(screen.getByTestId('pair-step-locked')).toBeInTheDocument();
   });
 
   /**
@@ -165,9 +166,39 @@ describe('Setup', () => {
 
     expect(await screen.findByTestId('link-step-locked')).toHaveTextContent(/sign in above first/i);
     expect(screen.queryByTestId('account-panel')).not.toBeInTheDocument();
-    // Pairing stays offered: it genuinely needs no account, and hiding it
-    // would be the opposite mistake.
-    expect(screen.getByText('Show pairing code')).toBeInTheDocument();
+  });
+
+  /**
+   * The defect this ordering exists for, reported from the running app: the
+   * pairing QR was reachable — from the tray, the dashboard's "+", and here —
+   * on a computer nobody had signed into or linked. A pair made in that state
+   * belongs to no account: it appears in nobody's "Your devices" and can be
+   * revoked from nowhere, which is the state
+   * [ADR-0010](../../../docs/adr/0010-explicit-device-linking.md) rejected and
+   * `docs/api.md` said would end "when P1 makes enrolment mandatory".
+   */
+  it('does not offer to pair a phone until this computer is linked', async () => {
+    render(<Setup />);
+    await waitFor(() => expect(listen).toHaveBeenCalled());
+    grantAll(eventHandler);
+
+    expect(await screen.findByTestId('pair-step-locked')).toHaveTextContent(/finish step 3 first/i);
+    expect(screen.queryByText('Show pairing code')).not.toBeInTheDocument();
+  });
+
+  it('offers pairing once this computer is linked', async () => {
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === 'get_permission_status') return status();
+      if (cmd === 'get_link_state') return { state: 'linked' };
+      return undefined;
+    });
+
+    render(<Setup />);
+    await waitFor(() => expect(listen).toHaveBeenCalled());
+    grantAll(eventHandler);
+
+    expect(await screen.findByText('Show pairing code')).toBeInTheDocument();
+    expect(screen.queryByTestId('pair-step-locked')).not.toBeInTheDocument();
   });
 
   it('offers linking once signed in', async () => {
@@ -247,6 +278,12 @@ describe('Setup', () => {
   });
 
   it('opens the pairing code window from the last step', async () => {
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === 'get_permission_status') return status();
+      if (cmd === 'get_link_state') return { state: 'linked' };
+      return undefined;
+    });
+
     render(<Setup />);
     await waitFor(() => expect(listen).toHaveBeenCalled());
     grantAll(eventHandler);

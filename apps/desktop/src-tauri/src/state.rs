@@ -82,6 +82,11 @@ pub struct AppState {
     /// capture thread — before it starts, so screen capture is never
     /// double-opened while the previous session is still closing.
     pub session_task: Option<tauri::async_runtime::JoinHandle<()>>,
+    /// The last answer `get_link_state` gave, so the tray — which is rebuilt
+    /// synchronously — can decide whether pairing is meaningful without an
+    /// await. Starts `Unknown`, which is honest: nothing has asked yet, and
+    /// `Unknown` is deliberately NOT treated as "not linked" anywhere.
+    pub link_state: crate::auth::LinkState,
 }
 
 impl AppState {
@@ -96,6 +101,7 @@ impl AppState {
             pending_request: None,
             auto_approve_room: None,
             session_task: None,
+            link_state: crate::auth::LinkState::Unknown("not checked yet".to_owned()),
         }
     }
 }

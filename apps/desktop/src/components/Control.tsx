@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { api, type AccountStateDto, type TrustedPairDto } from '../lib/tauri';
+import { api, type AccountStateDto, type LinkStateDto, type TrustedPairDto } from '../lib/tauri';
 import { useAppState } from '../lib/useAppState';
 import { useLiveResource } from '../lib/useLiveResource';
 import { STATUS_LABEL } from '../lib/status';
@@ -58,6 +58,24 @@ export function Control() {
   const [trust, setTrust] = useState(true);
   // Owned here, not inside the panels: it is what orders them.
   const [account, setAccount] = useState<AccountStateDto | null>(null);
+  const link = useLiveResource<LinkStateDto>(() => api.getLinkState());
+  const busySession = session === 'active' || session === 'connecting';
+  // `unknown` passes: it means the backend could not be ASKED, not that this
+  // machine is unowned, and `create_pairing` re-checks for real on click.
+  const pairable =
+    link.value === null || !['unlinked', 'revoked', 'no_identity'].includes(link.value.state);
+
+  // Re-ask while this computer is not yet on an account: linking is approved
+  // on the PHONE, so there is nothing local to react to, and the "+" has to
+  // come alive on its own the moment it does. Matches `AccountPanel`'s cadence
+  // against endpoints budgeted at 60/minute.
+  const refreshLink = link.refresh;
+  useEffect(() => {
+    refreshLink();
+    if (pairable) return;
+    const id = setInterval(refreshLink, 3_000);
+    return () => clearInterval(id);
+  }, [refreshLink, pairable]);
 
   return (
     <div className="page control dashboard">
@@ -65,17 +83,20 @@ export function Control() {
         <h1>Lilypad</h1>
         <div className="control__header-actions">
           <span className={`badge badge--${session}`}>{STATUS_LABEL[session]}</span>
-          {/* Mirrors the tray's `show_qr.set_enabled(!(active || connecting))`
-           * — enabled whenever a session isn't already in progress (idle,
-           * pairing, and awaiting_approval all still allow pairing a new
-           * device; connecting is a session already underway). */}
+          {/* Mirrors the tray's `show_qr` rule exactly, and for the same two
+           * reasons: not while a session is already underway, and not before
+           * this computer is on an account — pairing an unowned machine writes
+           * a trust relationship nobody can see or revoke (ADR-0010). */}
           <button
             className="btn btn--primary btn--icon"
-            disabled={session === 'active' || session === 'connecting'}
+            data-testid="pair-new-device"
+            disabled={busySession || !pairable}
             title={
-              session === 'active' || session === 'connecting'
+              busySession
                 ? 'Disconnect the current session to pair a new device'
-                : 'Pair a new device'
+                : !pairable
+                  ? 'Link this computer to your account first — pairing comes after'
+                  : 'Pair a new device'
             }
             aria-label="Pair a new device"
             onClick={() => void api.showQrWindow()}

@@ -114,6 +114,30 @@ pub async fn create_pairing(
         return Err("permissions_required".to_owned());
     }
 
+    // A computer nobody owns may not hand itself to a phone.
+    //
+    // Pairing writes a TRUST relationship — which phone may reach this Mac —
+    // and on an unlinked machine that relationship belongs to no account: it
+    // cannot appear in anyone's "Your devices", and nobody can revoke it.
+    // [ADR-0010](../../../../docs/adr/0010-explicit-device-linking.md) rejected
+    // exactly that state ("without an owner there is nothing to authorize
+    // against, no revocation story across devices"), and `docs/api.md` records
+    // the backend's unowned lane as a migration allowance that goes away "when
+    // P1 makes enrolment mandatory". This is the client half of that.
+    //
+    // `Unknown` deliberately passes. It means the backend could not be asked,
+    // not that nobody owns this machine, and refusing on it would block a
+    // linked user whose wifi blipped — the same mistake `LinkState` exists to
+    // prevent. The pairing call that follows needs the backend anyway, so an
+    // unreachable one fails honestly a moment later.
+    match auth.link_state().await {
+        LinkState::Linked { .. } | LinkState::Unknown(_) => {}
+        LinkState::Unlinked | LinkState::Revoked | LinkState::NoIdentity => {
+            let _ = show_control(&app);
+            return Err("link_required".to_owned());
+        }
+    }
+
     // Snapshot what we need, then drop the lock before awaiting.
     let (device_id, base_url, offered_scopes) = {
         let s = lock_state(&state);
@@ -864,8 +888,19 @@ impl From<LinkState> for LinkStateDto {
 /// phone approves, so the enrollment screen polls this rather than needing a
 /// push channel or a second endpoint (ADR-0008).
 #[tauri::command]
-pub async fn get_link_state(auth: State<'_, Arc<DesktopAuth>>) -> Result<LinkStateDto, String> {
-    Ok(auth.link_state().await.into())
+pub async fn get_link_state(
+    app: AppHandle,
+    state: State<'_, SharedState>,
+    auth: State<'_, Arc<DesktopAuth>>,
+) -> Result<LinkStateDto, String> {
+    let link = auth.link_state().await;
+    // Remember it for the tray, which is rebuilt synchronously and cannot
+    // await. The dashboard and the setup wizard both poll this every 3s while
+    // open, and the bubble now opens the dashboard, so a real session settles
+    // this within seconds of launch.
+    lock_state(&state).link_state = link.clone();
+    crate::sync_tray_menu(&app);
+    Ok(link.into())
 }
 
 /// What the phone scans to add this computer to its account.
