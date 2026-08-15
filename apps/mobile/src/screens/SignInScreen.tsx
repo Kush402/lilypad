@@ -3,30 +3,44 @@ import {
   ActivityIndicator,
   Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
-  View,
 } from 'react-native';
 import type { DeviceSession } from '@lilypad/protocol';
 import {
   signInWithGoogle,
   signInWithApple,
+  signInWithPassword,
+  signUpWithPassword,
   requestMagicLink,
   verifyMagicLink,
+  requestPasswordReset,
+  confirmPasswordReset,
   SignInError,
 } from '../lib/signIn';
 import { isGoogleConfigured } from '../config/oauth';
+import { defaultApiBaseUrl } from '../config/backend';
 import { theme, radius } from '../theme';
 
 /**
- * Sign in, then enroll this phone ([ADR-0001](../../../../docs/adr/0001-account-authentication.md)).
+ * Sign in, then enroll this phone ([ADR-0001](../../../../docs/adr/0001-account-authentication.md),
+ * [ADR-0012](../../../../docs/adr/0012-password-authentication.md)).
+ *
+ * This is now the app's FIRST screen, not a detour reachable from the scanner,
+ * so it has to work with nothing already set up: no paired laptop, no scanned
+ * code, no backend address in hand. `apiBaseUrl` therefore defaults to the
+ * shipped one (`config/backend.ts`) and is only passed explicitly when the user
+ * arrived from a QR that named a different server.
  *
  * Providers are only offered when they can actually work: Google's button is
  * hidden unless a web client id is compiled in, and Apple's only appears on
  * iOS. Offering a button that fails after the user taps it is worse than not
  * offering it, because the failure looks like the product is broken rather than
- * unconfigured.
+ * unconfigured. Email + password is offered unconditionally — it is the one
+ * method that depends on neither a provider nor a delivered email, which is
+ * exactly why ADR-0012 added it.
  *
  * Apple is listed first on iOS. That is App Store policy, not taste — Sign in
  * with Apple must be offered at least as prominently as any other third-party
@@ -39,18 +53,27 @@ import { theme, radius } from '../theme';
  */
 
 export interface SignInScreenProps {
-  apiBaseUrl: string;
+  /** Defaults to the shipped backend. Passed explicitly only when a scanned QR
+   * named a different one — self-hosting keeps working that way. */
+  apiBaseUrl?: string;
   onSignedIn: (session: DeviceSession) => void;
 }
 
-type Busy = 'google' | 'apple' | 'email' | null;
+type Busy = 'google' | 'apple' | 'password' | 'email' | null;
+/** Which of the email-based flows the form is currently showing. */
+type Mode = 'signin' | 'signup' | 'reset' | 'magic-link';
 
 export function SignInScreen({ apiBaseUrl, onSignedIn }: SignInScreenProps): React.JSX.Element {
+  const baseUrl = apiBaseUrl ?? defaultApiBaseUrl();
+  const [mode, setMode] = useState<Mode>('signin');
   const [busy, setBusy] = useState<Busy>(null);
   const [error, setError] = useState<string | null>(null);
+  const [name, setName] = useState('');
   const [email, setEmail] = useState('');
-  const [linkSent, setLinkSent] = useState(false);
-  const [linkToken, setLinkToken] = useState('');
+  const [password, setPassword] = useState('');
+  /** True once a code has been mailed, for whichever of the two flows asked. */
+  const [codeSent, setCodeSent] = useState(false);
+  const [code, setCode] = useState('');
 
   const run = useCallback(
     async (which: Busy, action: () => Promise<DeviceSession>) => {
@@ -70,24 +93,46 @@ export function SignInScreen({ apiBaseUrl, onSignedIn }: SignInScreenProps): Rea
     [onSignedIn],
   );
 
-  const sendLink = useCallback(async () => {
+  /** Both "email me a code" flows: same shape, same deliberate silence about
+   * whether the address exists. */
+  const sendCode = useCallback(async (send: () => Promise<void>) => {
     setBusy('email');
     setError(null);
     try {
-      await requestMagicLink(apiBaseUrl, email.trim());
-      // Deliberately unconditional: the backend answers identically whether or
-      // not the address has an account, and the UI must not leak more than it.
-      setLinkSent(true);
+      await send();
+      // Deliberately unconditional: the backend answers identically whether
+      // or not the address has an account, and the UI must not leak more.
+      setCodeSent(true);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not send a sign-in link.');
+      setError(err instanceof Error ? err.message : 'Could not send an email.');
     } finally {
       setBusy(null);
     }
-  }, [apiBaseUrl, email]);
+  }, []);
+
+  /** Leaving a flow must not carry its half-finished state into the next one. */
+  const switchTo = useCallback((next: Mode) => {
+    setMode(next);
+    setError(null);
+    setCodeSent(false);
+    setCode('');
+    setPassword('');
+  }, []);
+
+  const disabled = busy !== null;
+  const emailReady = email.trim().length > 0;
+  const passwordReady = password.length > 0;
 
   return (
-    <View style={styles.container} testID="sign-in-screen">
-      <Text style={styles.title}>Sign in to Lilypad</Text>
+    <ScrollView
+      style={styles.scroll}
+      contentContainerStyle={styles.container}
+      keyboardShouldPersistTaps="handled"
+      testID="sign-in-screen"
+    >
+      <Text style={styles.title}>
+        {mode === 'signup' ? 'Create your Lilypad account' : 'Sign in to Lilypad'}
+      </Text>
       <Text style={styles.subtitle}>
         Signing in tells us who you are. You add each computer separately, by scanning the code it
         shows.
@@ -97,9 +142,9 @@ export function SignInScreen({ apiBaseUrl, onSignedIn }: SignInScreenProps): Rea
         <Pressable
           accessibilityRole="button"
           testID="sign-in-apple"
-          disabled={busy !== null}
-          style={[styles.button, styles.apple, busy !== null && styles.disabled]}
-          onPress={() => void run('apple', () => signInWithApple(apiBaseUrl))}
+          disabled={disabled}
+          style={[styles.button, styles.apple, disabled && styles.faded]}
+          onPress={() => void run('apple', () => signInWithApple(baseUrl))}
         >
           {busy === 'apple' ? (
             <ActivityIndicator color="#000" />
@@ -113,9 +158,9 @@ export function SignInScreen({ apiBaseUrl, onSignedIn }: SignInScreenProps): Rea
         <Pressable
           accessibilityRole="button"
           testID="sign-in-google"
-          disabled={busy !== null}
-          style={[styles.button, styles.google, busy !== null && styles.disabled]}
-          onPress={() => void run('google', () => signInWithGoogle(apiBaseUrl))}
+          disabled={disabled}
+          style={[styles.button, styles.google, disabled && styles.faded]}
+          onPress={() => void run('google', () => signInWithGoogle(baseUrl))}
         >
           {busy === 'google' ? (
             <ActivityIndicator />
@@ -127,73 +172,163 @@ export function SignInScreen({ apiBaseUrl, onSignedIn }: SignInScreenProps): Rea
 
       <Text style={styles.divider}>or use your email</Text>
 
-      {!linkSent ? (
+      {mode === 'signup' && (
         <>
           <TextInput
-            testID="sign-in-email"
+            testID="sign-up-name"
             style={styles.input}
-            placeholder="you@example.com"
+            placeholder="Your name"
             placeholderTextColor={theme.muted}
-            autoCapitalize="none"
-            autoCorrect={false}
-            keyboardType="email-address"
-            textContentType="emailAddress"
-            value={email}
-            onChangeText={setEmail}
-            editable={busy === null}
+            autoCapitalize="words"
+            autoComplete="name"
+            textContentType="name"
+            value={name}
+            onChangeText={setName}
+            editable={!disabled}
           />
-          <Pressable
-            accessibilityRole="button"
-            testID="sign-in-email-submit"
-            disabled={busy !== null || email.trim().length === 0}
-            style={[
-              styles.button,
-              styles.email,
-              (busy !== null || email.trim().length === 0) && styles.disabled,
-            ]}
-            onPress={() => void sendLink()}
-          >
-            {busy === 'email' ? (
-              <ActivityIndicator color={theme.onAccent} />
-            ) : (
-              <Text style={styles.emailText}>Email me a sign-in link</Text>
-            )}
-          </Pressable>
+          <EmailField value={email} onChange={setEmail} editable={!disabled} />
+          <PasswordField
+            testID="sign-up-password"
+            placeholder="Password (at least 12 characters)"
+            autoComplete="new-password"
+            textContentType="newPassword"
+            value={password}
+            onChange={setPassword}
+            editable={!disabled}
+          />
+          <Text style={styles.hint}>
+            At least 12 characters. Length is the only rule — a phrase you can remember beats a
+            short password with symbols in it.
+          </Text>
+          <Primary
+            testID="sign-up-submit"
+            label="Create account"
+            busy={busy === 'password'}
+            disabled={disabled || name.trim().length === 0 || !emailReady || password.length < 12}
+            onPress={() =>
+              void run('password', () =>
+                signUpWithPassword(baseUrl, { name, email: email.trim(), password }),
+              )
+            }
+          />
+          <Link
+            testID="go-sign-in"
+            label="Already have an account? Sign in"
+            onPress={() => switchTo('signin')}
+          />
         </>
-      ) : (
+      )}
+
+      {mode === 'signin' && (
+        <>
+          <EmailField value={email} onChange={setEmail} editable={!disabled} />
+          <PasswordField
+            testID="sign-in-password"
+            placeholder="Password"
+            autoComplete="current-password"
+            textContentType="password"
+            value={password}
+            onChange={setPassword}
+            editable={!disabled}
+          />
+          <Primary
+            testID="sign-in-password-submit"
+            label="Sign in"
+            busy={busy === 'password'}
+            disabled={disabled || !emailReady || !passwordReady}
+            onPress={() =>
+              void run('password', () =>
+                signInWithPassword(baseUrl, { email: email.trim(), password }),
+              )
+            }
+          />
+          <Link testID="go-sign-up" label="Create an account" onPress={() => switchTo('signup')} />
+          <Link testID="go-reset" label="Forgot your password?" onPress={() => switchTo('reset')} />
+          <Link
+            testID="go-magic-link"
+            label="Email me a sign-in link instead"
+            onPress={() => switchTo('magic-link')}
+          />
+        </>
+      )}
+
+      {mode === 'magic-link' && !codeSent && (
+        <>
+          <EmailField value={email} onChange={setEmail} editable={!disabled} />
+          <Primary
+            testID="sign-in-email-submit"
+            label="Email me a sign-in link"
+            busy={busy === 'email'}
+            disabled={disabled || !emailReady}
+            onPress={() => void sendCode(() => requestMagicLink(baseUrl, email.trim()))}
+          />
+          <Link
+            testID="go-sign-in"
+            label="Use a password instead"
+            onPress={() => switchTo('signin')}
+          />
+        </>
+      )}
+
+      {mode === 'magic-link' && codeSent && (
         <>
           <Text style={styles.sent}>
             If that address has an account, a sign-in link is on its way. Paste the code from the
             email below.
           </Text>
-          <TextInput
-            testID="sign-in-token"
-            style={styles.input}
-            placeholder="Sign-in code"
-            placeholderTextColor={theme.muted}
-            autoCapitalize="none"
-            autoCorrect={false}
-            value={linkToken}
-            onChangeText={setLinkToken}
-            editable={busy === null}
-          />
-          <Pressable
-            accessibilityRole="button"
+          <CodeField value={code} onChange={setCode} editable={!disabled} />
+          <Primary
             testID="sign-in-token-submit"
-            disabled={busy !== null || linkToken.trim().length === 0}
-            style={[
-              styles.button,
-              styles.email,
-              (busy !== null || linkToken.trim().length === 0) && styles.disabled,
-            ]}
-            onPress={() => void run('email', () => verifyMagicLink(apiBaseUrl, linkToken.trim()))}
-          >
-            {busy === 'email' ? (
-              <ActivityIndicator color={theme.onAccent} />
-            ) : (
-              <Text style={styles.emailText}>Sign in</Text>
-            )}
-          </Pressable>
+            label="Sign in"
+            busy={busy === 'email'}
+            disabled={disabled || code.trim().length === 0}
+            onPress={() => void run('email', () => verifyMagicLink(baseUrl, code.trim()))}
+          />
+        </>
+      )}
+
+      {mode === 'reset' && !codeSent && (
+        <>
+          <Text style={styles.sent}>
+            We’ll email you a code. Entering it lets you set a new password.
+          </Text>
+          <EmailField value={email} onChange={setEmail} editable={!disabled} />
+          <Primary
+            testID="reset-request-submit"
+            label="Email me a reset code"
+            busy={busy === 'email'}
+            disabled={disabled || !emailReady}
+            onPress={() => void sendCode(() => requestPasswordReset(baseUrl, email.trim()))}
+          />
+          <Link testID="go-sign-in" label="Back to sign in" onPress={() => switchTo('signin')} />
+        </>
+      )}
+
+      {mode === 'reset' && codeSent && (
+        <>
+          <Text style={styles.sent}>
+            If that address has an account, a reset code is on its way. Paste it below with your new
+            password.
+          </Text>
+          <CodeField value={code} onChange={setCode} editable={!disabled} />
+          <PasswordField
+            testID="reset-password"
+            placeholder="New password (at least 12 characters)"
+            autoComplete="new-password"
+            textContentType="newPassword"
+            value={password}
+            onChange={setPassword}
+            editable={!disabled}
+          />
+          <Primary
+            testID="reset-confirm-submit"
+            label="Set new password and sign in"
+            busy={busy === 'password'}
+            disabled={disabled || code.trim().length === 0 || password.length < 12}
+            onPress={() =>
+              void run('password', () => confirmPasswordReset(baseUrl, code.trim(), password))
+            }
+          />
         </>
       )}
 
@@ -202,7 +337,147 @@ export function SignInScreen({ apiBaseUrl, onSignedIn }: SignInScreenProps): Rea
           {error}
         </Text>
       )}
-    </View>
+    </ScrollView>
+  );
+}
+
+// ── field primitives ────────────────────────────────────────────────────────
+// Local, not a shared component library: they exist so this one screen's four
+// flows cannot drift in their keyboard, autofill, and capitalisation settings —
+// the details that make a sign-in form feel broken when they are wrong.
+
+function EmailField({
+  value,
+  onChange,
+  editable,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  editable: boolean;
+}): React.JSX.Element {
+  return (
+    <TextInput
+      testID="sign-in-email"
+      style={styles.input}
+      placeholder="you@example.com"
+      placeholderTextColor={theme.muted}
+      autoCapitalize="none"
+      autoCorrect={false}
+      autoComplete="email"
+      keyboardType="email-address"
+      textContentType="emailAddress"
+      value={value}
+      onChangeText={onChange}
+      editable={editable}
+    />
+  );
+}
+
+function PasswordField({
+  testID,
+  placeholder,
+  autoComplete,
+  textContentType,
+  value,
+  onChange,
+  editable,
+}: {
+  testID: string;
+  placeholder: string;
+  autoComplete: 'new-password' | 'current-password';
+  textContentType: 'newPassword' | 'password';
+  value: string;
+  onChange: (v: string) => void;
+  editable: boolean;
+}): React.JSX.Element {
+  return (
+    <TextInput
+      testID={testID}
+      style={styles.input}
+      placeholder={placeholder}
+      placeholderTextColor={theme.muted}
+      autoCapitalize="none"
+      autoCorrect={false}
+      secureTextEntry
+      // Both are needed: iOS uses `textContentType` for the Passwords keychain
+      // suggestion, Android uses `autoComplete`. Setting one leaves the other
+      // platform without autofill, which is where password UX actually fails.
+      autoComplete={autoComplete}
+      textContentType={textContentType}
+      value={value}
+      onChangeText={onChange}
+      editable={editable}
+    />
+  );
+}
+
+function CodeField({
+  value,
+  onChange,
+  editable,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  editable: boolean;
+}): React.JSX.Element {
+  return (
+    <TextInput
+      testID="sign-in-token"
+      style={styles.input}
+      placeholder="Code from the email"
+      placeholderTextColor={theme.muted}
+      autoCapitalize="none"
+      autoCorrect={false}
+      value={value}
+      onChangeText={onChange}
+      editable={editable}
+    />
+  );
+}
+
+function Primary({
+  testID,
+  label,
+  busy,
+  disabled,
+  onPress,
+}: {
+  testID: string;
+  label: string;
+  busy: boolean;
+  disabled: boolean;
+  onPress: () => void;
+}): React.JSX.Element {
+  return (
+    <Pressable
+      accessibilityRole="button"
+      testID={testID}
+      disabled={disabled}
+      style={[styles.button, styles.email, disabled && styles.faded]}
+      onPress={onPress}
+    >
+      {busy ? (
+        <ActivityIndicator color={theme.onAccent} />
+      ) : (
+        <Text style={styles.emailText}>{label}</Text>
+      )}
+    </Pressable>
+  );
+}
+
+function Link({
+  testID,
+  label,
+  onPress,
+}: {
+  testID: string;
+  label: string;
+  onPress: () => void;
+}): React.JSX.Element {
+  return (
+    <Pressable accessibilityRole="button" testID={testID} onPress={onPress} style={styles.linkHit}>
+      <Text style={styles.link}>{label}</Text>
+    </Pressable>
   );
 }
 
@@ -218,13 +493,8 @@ export function SignInScreen({ apiBaseUrl, onSignedIn }: SignInScreenProps): Rea
  * of its permitted styles that stays legible on a dark background.
  */
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    justifyContent: 'center',
-    padding: 24,
-    gap: 12,
-    backgroundColor: theme.bg,
-  },
+  scroll: { flex: 1, backgroundColor: theme.bg },
+  container: { flexGrow: 1, justifyContent: 'center', padding: 24, gap: 12 },
   title: { color: theme.ink, fontSize: 26, fontWeight: '700', textAlign: 'center' },
   subtitle: { color: theme.muted, fontSize: 15, textAlign: 'center', marginBottom: 12 },
   button: { paddingVertical: 14, borderRadius: radius.sm, alignItems: 'center' },
@@ -234,7 +504,7 @@ const styles = StyleSheet.create({
   googleText: { color: '#3c4043', fontSize: 16, fontWeight: '600' },
   email: { backgroundColor: theme.accent },
   emailText: { color: theme.onAccent, fontSize: 16, fontWeight: '700' },
-  disabled: { opacity: 0.5 },
+  faded: { opacity: 0.5 },
   divider: { color: theme.muted, textAlign: 'center', marginVertical: 8 },
   input: {
     color: theme.ink,
@@ -245,6 +515,11 @@ const styles = StyleSheet.create({
     padding: 12,
     fontSize: 16,
   },
+  hint: { color: theme.muted, fontSize: 13 },
   sent: { color: theme.muted, fontSize: 14, textAlign: 'center' },
+  // 44pt is Apple's minimum touch target; a text link that only covers its
+  // glyphs is the most commonly missed one.
+  linkHit: { minHeight: 44, justifyContent: 'center' },
+  link: { color: theme.accent, fontSize: 15, textAlign: 'center' },
   error: { color: theme.danger, textAlign: 'center', marginTop: 8 },
 });

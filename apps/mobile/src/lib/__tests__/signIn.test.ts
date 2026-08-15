@@ -4,22 +4,46 @@ import * as keychainModule from 'react-native-keychain';
 import {
   signInWithGoogle,
   signInWithApple,
+  signInWithPassword,
+  signUpWithPassword,
   requestMagicLink,
+  requestPasswordReset,
+  confirmPasswordReset,
   verifyMagicLink,
   SignInError,
 } from '../signIn';
+import { loadSession, resetSessionCacheForTests } from '../session';
 import { resetDeviceKeyCache } from '../identity';
 import { resetAuthState } from '../auth';
 
+/**
+ * Keyed by `service`, because the real module is.
+ *
+ * A single-slot mock was accurate enough while only `identity.ts` used the
+ * Keychain. It stopped being accurate the moment sign-in also wrote a session
+ * record (`session.ts`) and pairs (`pairs.ts`): the session overwrote the
+ * device key, and the next signature attempt failed parsing JSON as base64url —
+ * a failure that could only ever happen in the mock.
+ */
 jest.mock('react-native-keychain', () => {
-  let stored: { username: string; password: string } | null = null;
+  const store = new Map<string, { username: string; password: string }>();
+  const key = (options?: { service?: string }) => options?.service ?? 'default';
   return {
     ACCESSIBLE: { WHEN_UNLOCKED_THIS_DEVICE_ONLY: 'WhenUnlockedThisDeviceOnly' },
-    getGenericPassword: jest.fn(() => Promise.resolve(stored ?? false)),
-    setGenericPassword: jest.fn((username: string, password: string) => {
-      stored = { username, password };
+    getGenericPassword: jest.fn((options?: { service?: string }) =>
+      Promise.resolve(store.get(key(options)) ?? false),
+    ),
+    setGenericPassword: jest.fn(
+      (username: string, password: string, options?: { service?: string }) => {
+        store.set(key(options), { username, password });
+        return Promise.resolve(true);
+      },
+    ),
+    resetGenericPassword: jest.fn((options?: { service?: string }) => {
+      store.delete(key(options));
       return Promise.resolve(true);
     }),
+    __reset: () => store.clear(),
   };
 });
 
@@ -62,7 +86,10 @@ const appleAuth = appleAuthModule as unknown as {
   performRequest: jest.Mock;
   Error: { CANCELED: string };
 };
-const keychain = keychainModule as unknown as { setGenericPassword: jest.Mock };
+const keychain = keychainModule as unknown as {
+  setGenericPassword: jest.Mock;
+  __reset: () => void;
+};
 
 const API = 'http://localhost:8080';
 
@@ -74,7 +101,9 @@ function mockBackend(options: { oauthStatus?: number; oauthBody?: string } = {})
     seen.push(url.replace(API, ''));
     if (url.includes('/auth/')) {
       return Promise.resolve({
-        status: options.oauthStatus ?? 200,
+        status:
+          options.oauthStatus ??
+          (url.includes('/reset/request') ? 202 : url.includes('/auth/signup') ? 201 : 200),
         text: () =>
           Promise.resolve(
             options.oauthBody ??
@@ -115,6 +144,11 @@ function mockBackend(options: { oauthStatus?: number; oauthBody?: string } = {})
 beforeEach(() => {
   resetAuthState();
   resetDeviceKeyCache();
+  resetSessionCacheForTests();
+  // The store outlives a `clearAllMocks`, and this file now writes THREE
+  // namespaces (device key, session, pairs). Without this, one test's session
+  // record is still readable in the next one.
+  keychain.__reset();
   jest.clearAllMocks();
   appleAuth.isSupported = true;
 });
@@ -262,5 +296,113 @@ describe('SignInError', () => {
     const error = new SignInError('cancelled', 'Sign-in cancelled.');
     expect(error.code).toBe('cancelled');
     expect(error.name).toBe('SignInError');
+  });
+});
+
+// ── email + password (ADR-0012) ─────────────────────────────────────────────
+describe('password sign-in', () => {
+  it('creates an account, enrolls this phone, and records the session', async () => {
+    const seen = mockBackend();
+
+    const session = await signUpWithPassword(API, {
+      name: 'Ada Lovelace',
+      email: 'Ada@Example.com',
+      password: 'correct horse battery staple',
+    });
+
+    expect(session.deviceId).toBe('device-uuid');
+    expect(seen).toContain('/auth/signup');
+    expect(seen).toContain('/devices/enroll');
+    const stored = await loadSession();
+    expect(stored?.userId).toBe('user-uuid');
+    // Normalised on the way in, so the UI shows what the backend actually keyed
+    // the account on rather than what the user happened to type.
+    expect(stored?.email).toBe('ada@example.com');
+    expect(stored?.name).toBe('Ada Lovelace');
+  });
+
+  it('signs in with a password and records the session', async () => {
+    mockBackend();
+    await signInWithPassword(API, { email: 'ada@example.com', password: 'correct horse battery' });
+    expect((await loadSession())?.userId).toBe('user-uuid');
+  });
+
+  it('reports a taken address on signup', async () => {
+    mockBackend({ oauthStatus: 409, oauthBody: JSON.stringify({ error: 'email_in_use' }) });
+    await expect(
+      signUpWithPassword(API, {
+        name: 'Ada',
+        email: 'ada@example.com',
+        password: 'correct horse battery staple',
+      }),
+    ).rejects.toThrow(/already exists/i);
+  });
+
+  /**
+   * The backend answers `invalid_credentials` for an unknown address, a wrong
+   * password, and an account with no password alike. A UI that guessed between
+   * them would rebuild the account-existence oracle the backend refuses to be,
+   * so there is exactly one message.
+   */
+  it('says the same thing for every rejected credential', async () => {
+    mockBackend({ oauthStatus: 401, oauthBody: JSON.stringify({ error: 'invalid_credentials' }) });
+    await expect(
+      signInWithPassword(API, { email: 'ada@example.com', password: 'wrong' }),
+    ).rejects.toThrow('That email and password do not match an account.');
+  });
+
+  /**
+   * The launch gate reads the session record. Writing it before enrollment
+   * succeeds would put the app past its own gate with no enrolled device
+   * behind it — a home screen whose every call fails.
+   */
+  it('records NO session when enrollment fails', async () => {
+    globalThis.fetch = jest.fn((url: string) => {
+      if (url.includes('/auth/')) {
+        return Promise.resolve({
+          status: 200,
+          text: () =>
+            Promise.resolve(
+              JSON.stringify({
+                accessToken: 'account-token',
+                expiresInSeconds: 600,
+                refreshToken: 'account-refresh',
+                userId: 'user-uuid',
+              }),
+            ),
+        });
+      }
+      if (url.endsWith('/devices/challenge')) {
+        return Promise.resolve({
+          status: 201,
+          text: () => Promise.resolve(JSON.stringify({ challenge: 'a-nonce' })),
+        });
+      }
+      return Promise.resolve({ status: 409, text: () => Promise.resolve('{"error":"conflict"}') });
+    }) as unknown as typeof fetch;
+
+    await expect(
+      signInWithPassword(API, { email: 'ada@example.com', password: 'correct horse battery' }),
+    ).rejects.toThrow();
+    expect(await loadSession()).toBeNull();
+  });
+
+  it('asks for a reset code and never says whether the address exists', async () => {
+    const seen = mockBackend();
+    await expect(requestPasswordReset(API, 'nobody@example.com')).resolves.toBeUndefined();
+    expect(seen).toContain('/auth/password/reset/request');
+  });
+
+  it('reports an unavailable reset service rather than pretending', async () => {
+    mockBackend({ oauthStatus: 503 });
+    await expect(requestPasswordReset(API, 'ada@example.com')).rejects.toThrow(/not available/i);
+  });
+
+  it('spends a reset code on a new password and signs in', async () => {
+    const seen = mockBackend();
+    const session = await confirmPasswordReset(API, 'reset-code', 'a whole new passphrase');
+    expect(session.deviceId).toBe('device-uuid');
+    expect(seen).toContain('/auth/password/reset/confirm');
+    expect((await loadSession())?.userId).toBe('user-uuid');
   });
 });

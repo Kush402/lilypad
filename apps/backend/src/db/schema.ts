@@ -32,8 +32,15 @@ export const authProviderEnum = pgEnum('auth_provider', ['apple', 'google']);
 export const users = pgTable('users', {
   id: uuid('id').primaryKey().defaultRandom(),
   email: text('email').notNull().unique(),
-  /** Deliberately unused — ADR-0001 chose OAuth + magic link, no passwords.
-   * Kept nullable so the column's existence is never mistaken for a plan. */
+  /** What the user is called. Set by password signup, which asks for it;
+   * NULL for accounts created by OAuth or magic link, neither of which does.
+   * Nothing authenticates on this. */
+  name: text('name'),
+  /** scrypt hash, `scheme$N$r$p$salt$hash` — see `auth/password.ts`.
+   * NULL for an account that has only ever signed in with Apple, Google, or a
+   * magic link, which is a normal state and not a missing value: those accounts
+   * simply cannot use the password route
+   * ([ADR-0012](../../../../docs/adr/0012-password-authentication.md)). */
   passwordHash: text('password_hash'),
   tier: tierEnum('tier').notNull().default('free'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),

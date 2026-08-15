@@ -132,43 +132,12 @@ impl DeviceAuth {
 
     /// Bind this device to a signed-in account. Requires an ACCOUNT access
     /// token, because enrollment is the moment the device gains an owner.
-    pub async fn enroll(
-        &self,
-        account_access_token: &str,
-        fingerprint: &str,
-        name: &str,
-        platform: &str,
-    ) -> Result<DeviceSession> {
-        let (challenge, public_key, signature) = self.signed_proof().await?;
-        let response = self
-            .http
-            .post(self.url("/devices/enroll"))
-            .bearer_auth(account_access_token)
-            .json(&serde_json::json!({
-                "challenge": challenge,
-                "publicKey": public_key,
-                "signature": signature,
-                "kind": "desktop",
-                "fingerprint": fingerprint,
-                "name": name,
-                "platform": platform,
-            }))
-            .send()
-            .await
-            .context("could not reach the backend to enroll this device")?;
-
-        let status = response.status();
-        if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
-            bail!("enrollment failed (HTTP {status}): {body}");
-        }
-        let session: DeviceSession = response
-            .json()
-            .await
-            .context("the backend's enrollment response was not valid JSON")?;
-        self.cache(&session);
-        Ok(session)
-    }
+    // `enroll()` used to live here: a desktop enrolling ITSELF with an account
+    // access token. It had no callers, and as of ADR-0012 it could not work —
+    // `/devices/enroll` refuses `kind: "desktop"`, because a computer must be
+    // adopted by a phone approving its enrollment code (ADR-0010) rather than
+    // by whoever happens to be signed in on it. Removed rather than left as a
+    // method that compiles and 403s.
 
     /// Ask for an enrollment code to show as a QR.
     ///

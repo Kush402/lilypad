@@ -8,6 +8,13 @@ export const redisKeys = {
    * (M8). Ephemeral and single-use, exactly like a pairing token, which is
    * why it lives in Redis rather than Postgres. */
   magicLink: (token: string) => `lilypad:magic-link:${token}`,
+  /** Single-use password-reset token → the email address it authorizes a reset
+   * for ([ADR-0012](../../../docs/adr/0012-password-authentication.md)).
+   *
+   * A DIFFERENT namespace from `magicLink` on purpose, not for tidiness: the
+   * two tokens authorize different things, and one key space would make a
+   * reset token spendable at `/auth/magic-link/verify` as a full sign-in. */
+  passwordReset: (token: string) => `lilypad:password-reset:${token}`,
   /** Single-use device-enrollment / login challenge → the JSON challenge
    * record the signature is checked against (M8). Redis for the same reason:
    * a nonce that survives a restart is a replay window. */

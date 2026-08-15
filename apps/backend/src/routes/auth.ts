@@ -4,6 +4,10 @@ import {
   MagicLinkRequestSchema,
   MagicLinkVerifyRequestSchema,
   RefreshRequestSchema,
+  SignUpRequestSchema,
+  PasswordSignInRequestSchema,
+  PasswordResetRequestSchema,
+  PasswordResetConfirmSchema,
   type AuthSession,
 } from '@lilypad/protocol';
 import { signAccessToken, ACCESS_TOKEN_TTL_SECONDS } from '../auth/tokens.js';
@@ -14,7 +18,13 @@ import {
 } from '../auth/refreshTokens.js';
 import { AccountService, createDrizzleAccountStore } from '../auth/accounts.js';
 import { verifyProviderToken, isProviderConfigured } from '../auth/providers.js';
-import { createMagicLink, redeemMagicLink, createMailSender } from '../auth/magicLink.js';
+import {
+  createMagicLink,
+  redeemMagicLink,
+  createPasswordReset,
+  redeemPasswordReset,
+  createMailSender,
+} from '../auth/magicLink.js';
 import { AuditLogService, createDrizzleAuditLogStore } from '../services/auditLog.js';
 import { log } from '../logging.js';
 
@@ -165,6 +175,129 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       const email = await redeemMagicLink(parsed.data.token);
       if (!email) return denySignIn(reply, req.ip, 'magic_link_invalid');
       const userId = await accounts.resolveEmail(email);
+      return reply.code(200).send(await issueSession(userId, req.ip));
+    },
+  );
+
+  // ── password ([ADR-0012](../../../../docs/adr/0012-password-authentication.md)) ──
+  //
+  // The one sign-in method that needs no third-party availability, no client
+  // secret, and no mail delivery — which is why the desktop, which can have
+  // none of the three, gets an account identity at all.
+
+  /**
+   * Create an account from name + email + password.
+   *
+   * **The one route here that is not enumeration-safe.** A taken address gets
+   * `409 email_in_use`, because the alternative — answer identically and mail
+   * the existing owner — needs the sender M13 still owes. The tradeoff is
+   * bounded: it is signup, not sign-in, and it is rate-limited to 5/minute, so
+   * it is a far worse oracle than the sign-in route it deliberately does not
+   * apply to. Revisit when mail delivery exists.
+   */
+  app.post(
+    '/auth/signup',
+    { config: { rateLimit: { max: 5, timeWindow: '1 minute' } } },
+    async (req, reply) => {
+      const parsed = SignUpRequestSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return reply.code(400).send({ error: 'invalid_request', issues: parsed.error.issues });
+      }
+      const created = await accounts.signUpWithPassword(parsed.data);
+      if (!created.ok) {
+        return reply.code(409).send({
+          error: created.reason,
+          message: 'an account already exists for that email address',
+        });
+      }
+      return reply.code(201).send(await issueSession(created.userId, req.ip));
+    },
+  );
+
+  /**
+   * Sign in with email + password.
+   *
+   * Unknown address, wrong password, and an account with no password set all
+   * answer `invalid_credentials`, and all three cost the same wall-clock time
+   * (`AccountService.verifyPasswordSignIn` verifies against a dummy hash on the
+   * branches that have nothing to verify). Both halves are needed: a caller who
+   * can tell them apart by status OR by timing has an account-existence oracle.
+   *
+   * Rate-limited harder than the OAuth route: this is the endpoint a
+   * credential-stuffing run actually targets, and each attempt costs a scrypt.
+   */
+  app.post(
+    '/auth/password',
+    { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } },
+    async (req, reply) => {
+      const parsed = PasswordSignInRequestSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return reply.code(400).send({ error: 'invalid_request', issues: parsed.error.issues });
+      }
+      const userId = await accounts.verifyPasswordSignIn(parsed.data.email, parsed.data.password);
+      if (!userId) {
+        void auditLog
+          .loginFailed({ ip: req.ip, metadata: { reason: 'password_invalid' } })
+          .catch((err) => log.audit.error({ err }, 'failed to write login_failed audit log'));
+        return reply.code(401).send({ error: 'invalid_credentials' });
+      }
+      return reply.code(200).send(await issueSession(userId, req.ip));
+    },
+  );
+
+  /**
+   * Ask for a password-reset token. Answers 202 whether or not the address has
+   * an account, for the same reason `/auth/magic-link/request` does.
+   *
+   * The token is minted without checking that the account exists — deliberately.
+   * Looking first would make the two cases cost different work for no benefit:
+   * the response is identical either way, and `/reset/confirm` already refuses
+   * a token whose address has no account, so a stray 15-minute Redis key is the
+   * entire downside.
+   */
+  app.post(
+    '/auth/password/reset/request',
+    { config: { rateLimit: { max: 5, timeWindow: '1 minute' } } },
+    async (req, reply) => {
+      const parsed = PasswordResetRequestSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return reply.code(400).send({ error: 'invalid_request', issues: parsed.error.issues });
+      }
+      if (!mailer) {
+        return reply.code(503).send({
+          error: 'magic_link_unavailable',
+          message: 'password reset by email is not available on this server yet',
+        });
+      }
+      const { token } = await createPasswordReset(parsed.data.email);
+      await mailer.sendPasswordReset(parsed.data.email, token);
+      return reply.code(202).send({ ok: true });
+    },
+  );
+
+  /**
+   * Spend a reset token on a new password, and sign in.
+   *
+   * Signing in here is not a shortcut: redeeming the token has just proved
+   * inbox possession, which is exactly the proof `/auth/magic-link/verify`
+   * accepts on its own. Demanding a second sign-in immediately afterwards would
+   * prove nothing and strand a user who has just changed the credential.
+   *
+   * A token for an address with no account still burns and still fails — it
+   * creates nothing, so this cannot become a nameless second signup route.
+   */
+  app.post(
+    '/auth/password/reset/confirm',
+    { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } },
+    async (req, reply) => {
+      const parsed = PasswordResetConfirmSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return reply.code(400).send({ error: 'invalid_request', issues: parsed.error.issues });
+      }
+      const email = await redeemPasswordReset(parsed.data.token);
+      if (!email) return denySignIn(reply, req.ip, 'password_reset_invalid');
+      const userId = await accounts.setPasswordForEmail(email, parsed.data.password);
+      if (!userId) return denySignIn(reply, req.ip, 'password_reset_no_account');
       return reply.code(200).send(await issueSession(userId, req.ip));
     },
   );

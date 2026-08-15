@@ -351,6 +351,29 @@ body {
   display: grid;
   gap: 10px;
 }
+/* Text inputs (ADR-0012 sign-in). One rule for every field in the app —
+   there were none before, because nothing asked the user to type. */
+.field {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--ink);
+  font: inherit;
+}
+.field::placeholder {
+  color: var(--muted);
+}
+.field:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.field:disabled {
+  opacity: 0.6;
+}
+
 .account__enroll {
   display: grid;
   gap: 8px;

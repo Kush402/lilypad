@@ -2,6 +2,7 @@ import { and, eq } from 'drizzle-orm';
 import { db as defaultDb } from '../db/client.js';
 import { oauthIdentities, users } from '../db/schema.js';
 import type { OAuthProvider, ProviderIdentity } from './providers.js';
+import { hashPassword, verifyPassword, verifyAgainstDummy } from './password.js';
 
 /**
  * Turning a verified provider identity (or a proven email) into an account.
@@ -33,6 +34,21 @@ export interface AccountStore {
   createUser(email: string): Promise<string>;
   /** Link an identity to a user, or do nothing if it is already linked. */
   linkIdentity(userId: string, provider: OAuthProvider, subject: string): Promise<void>;
+  /** The credential row behind an address, or null if the address is unknown.
+   * `passwordHash` is null for an account that has only ever used OAuth or a
+   * magic link — a normal state, not a missing value (ADR-0012). */
+  findCredentialsByEmail(
+    email: string,
+  ): Promise<{ userId: string; passwordHash: string | null } | null>;
+  /** Insert a password account. Returns null if the address is already taken —
+   * the unique index decides, not a prior read, so two concurrent signups
+   * cannot both succeed. */
+  createPasswordUser(input: {
+    email: string;
+    name: string;
+    passwordHash: string;
+  }): Promise<string | null>;
+  setPasswordHash(userId: string, passwordHash: string): Promise<void>;
 }
 
 export class AccountService {
@@ -61,6 +77,55 @@ export class AccountService {
     const normalized = email.trim().toLowerCase();
     const existing = await this.store.findUserIdByEmail(normalized);
     return existing ?? this.store.createUser(normalized);
+  }
+
+  /**
+   * Create an account from name + email + password
+   * ([ADR-0012](../../../../docs/adr/0012-password-authentication.md)).
+   *
+   * The taken-address answer is authoritative because the unique index
+   * produces it, not a read-then-write: checking first and inserting second
+   * would let two concurrent signups for one address both pass the check.
+   */
+  async signUpWithPassword(input: {
+    name: string;
+    email: string;
+    password: string;
+  }): Promise<{ ok: true; userId: string } | { ok: false; reason: 'email_in_use' }> {
+    const userId = await this.store.createPasswordUser({
+      email: input.email.trim().toLowerCase(),
+      name: input.name.trim(),
+      passwordHash: await hashPassword(input.password),
+    });
+    return userId ? { ok: true, userId } : { ok: false, reason: 'email_in_use' };
+  }
+
+  /**
+   * Check email + password. Returns null for an unknown address, a wrong
+   * password, and an account with no password alike — the caller must not be
+   * able to tell those apart, so this signature cannot express the difference.
+   *
+   * Both null branches still pay for a real hash comparison. Returning early
+   * would make "no such account" measurably faster than "wrong password",
+   * which is an account-existence oracle on the one route worth automating.
+   */
+  async verifyPasswordSignIn(email: string, password: string): Promise<string | null> {
+    const found = await this.store.findCredentialsByEmail(email.trim().toLowerCase());
+    if (!found?.passwordHash) return verifyAgainstDummy(password).then(() => null);
+    return (await verifyPassword(password, found.passwordHash)) ? found.userId : null;
+  }
+
+  /**
+   * Set a new password for a proven address. Creates nothing: a reset token is
+   * proof of inbox possession for an account that already exists, and minting
+   * an account here would turn "reset your password" into a second signup route
+   * with no name and weaker enumeration properties.
+   */
+  async setPasswordForEmail(email: string, password: string): Promise<string | null> {
+    const found = await this.store.findCredentialsByEmail(email.trim().toLowerCase());
+    if (!found) return null;
+    await this.store.setPasswordHash(found.userId, await hashPassword(password));
+    return found.userId;
   }
 }
 
@@ -101,6 +166,29 @@ export function createDrizzleAccountStore(database: typeof defaultDb = defaultDb
       const row = raced[0];
       if (!row) throw new Error('user insert conflicted but no row exists');
       return row.id;
+    },
+    async findCredentialsByEmail(email) {
+      const rows = await database
+        .select({ userId: users.id, passwordHash: users.passwordHash })
+        .from(users)
+        .where(eq(users.email, email))
+        .limit(1);
+      return rows[0] ?? null;
+    },
+    async createPasswordUser({ email, name, passwordHash }) {
+      // `onConflictDoNothing` + an empty `returning` IS the taken-address
+      // answer: the unique index on `users.email` is what decides, so a
+      // concurrent signup for the same address loses here rather than
+      // overwriting the winner's credentials.
+      const inserted = await database
+        .insert(users)
+        .values({ email, name, passwordHash })
+        .onConflictDoNothing({ target: users.email })
+        .returning({ id: users.id });
+      return inserted[0]?.id ?? null;
+    },
+    async setPasswordHash(userId, passwordHash) {
+      await database.update(users).set({ passwordHash }).where(eq(users.id, userId));
     },
     async linkIdentity(userId, provider, subject) {
       // Idempotent: re-linking an identity that already exists is a no-op, and

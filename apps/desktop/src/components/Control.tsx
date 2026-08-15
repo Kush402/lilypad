@@ -5,6 +5,7 @@ import { useLiveResource } from '../lib/useLiveResource';
 import { STATUS_LABEL } from '../lib/status';
 import { SoftwareUpdate } from './SoftwareUpdate';
 import { AccountPanel } from './AccountPanel';
+import { AccountSignIn } from './AccountSignIn';
 
 const SCOPE_LABEL: Record<string, string> = {
   view: 'View',
@@ -152,6 +153,10 @@ export function Control() {
         </section>
       ) : null}
 
+      {/* Order is the product's own: who you are, then which computer is
+          yours, then which phones may reach it. Signing in does not link
+          (ADR-0010), so the two account panels are separate and adjacent. */}
+      <AccountSignIn />
       <AccountPanel />
       <TrustedDevices />
       <SystemPanel backendUrl={state?.backend_base_url ?? null} />

@@ -104,3 +104,16 @@ export async function forgetPair(desktopDeviceId: string): Promise<void> {
   const pairs = await loadPairs();
   await persist(pairs.filter((p) => p.desktopDeviceId !== desktopDeviceId));
 }
+
+/**
+ * Forget every pair. Sign-out only — a phone that is no longer on the account
+ * must not keep a list of that account's laptops, complete with the connect
+ * secrets that ring them.
+ *
+ * Phone-side only, exactly like `forgetPair`: the backend rows survive until
+ * the desktop or the account revokes them, so signing back in and re-scanning
+ * restores the pair without a fresh trust ceremony.
+ */
+export async function forgetAllPairs(): Promise<void> {
+  await persist([]);
+}

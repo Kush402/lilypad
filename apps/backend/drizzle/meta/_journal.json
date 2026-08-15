@@ -43,6 +43,13 @@
       "when": 1786587608455,
       "tag": "0005_purge_legacy_null_secret_pairs",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1786821716536,
+      "tag": "0006_lyrical_mandrill",
+      "breakpoints": true
     }
   ]
 }

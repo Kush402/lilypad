@@ -7,6 +7,7 @@ import { theme } from '../theme';
 import { loadPairs, forgetPair, touchPair, type PairedDesktop } from '../lib/pairs';
 import { requestConnect, requestUnpair } from '../lib/api';
 import { toAppError } from '../lib/errors';
+import { useSession } from '../lib/sessionContext';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Devices'>;
 
@@ -31,8 +32,11 @@ export function DeviceListScreen({ navigation }: Props) {
   const insets = useSafeAreaInsets();
   const [pairs, setPairs] = useState<PairedDesktop[]>([]);
   const [connecting, setConnecting] = useState<string | null>(null);
-  // Any paired laptop's address will do: they are all this account's Lilypad.
-  const accountApiBaseUrl = pairs[0]?.apiBaseUrl ?? null;
+  const { session, signOut } = useSession();
+  // A paired laptop's address wins — it is the server that laptop actually
+  // lives on, which is what makes self-hosting work. The session's address is
+  // the fallback for a phone that is signed in but has paired nothing yet.
+  const accountApiBaseUrl = pairs[0]?.apiBaseUrl ?? session?.apiBaseUrl;
 
   const refresh = useCallback(() => {
     void loadPairs().then(setPairs);
@@ -99,6 +103,17 @@ export function DeviceListScreen({ navigation }: Props) {
     [refresh],
   );
 
+  const confirmSignOut = useCallback(() => {
+    Alert.alert(
+      'Sign out?',
+      'Your paired laptops are removed from this phone. This phone stays on your account until you remove it from "Your devices".',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Sign out', style: 'destructive', onPress: () => void signOut() },
+      ],
+    );
+  }, [signOut]);
+
   return (
     <View
       style={[
@@ -151,22 +166,29 @@ export function DeviceListScreen({ navigation }: Props) {
       )}
 
       <View style={styles.footer}>
-        {/* Account management needs a backend address and the app ships no
-            default — every one it knows came from a scanned code. So this
-            appears once there is a pair to take one from, rather than as a
-            button that cannot work. */}
-        {accountApiBaseUrl !== null ? (
-          <Pressable
-            style={styles.secondary}
-            testID="open-account-devices"
-            onPress={() => navigation.navigate('AccountDevices', { apiBaseUrl: accountApiBaseUrl })}
-          >
-            <Text style={styles.secondaryText}>Your devices</Text>
-          </Pressable>
-        ) : null}
+        {/* Always offered now (P3). This used to appear only once a laptop was
+            paired, because the app shipped no backend address and had to
+            borrow one from a scanned code. The phone is signed in before it
+            ever reaches this screen, so the account's own backend is known. */}
+        <Pressable
+          style={styles.secondary}
+          testID="open-account-devices"
+          onPress={() => navigation.navigate('AccountDevices', { apiBaseUrl: accountApiBaseUrl })}
+        >
+          <Text style={styles.secondaryText}>Your devices</Text>
+        </Pressable>
         <Pressable style={styles.primary} onPress={() => navigation.navigate('Scanner')}>
           <Text style={styles.primaryText}>
             {pairs.length === 0 ? "Scan a laptop's QR" : 'Add another laptop'}
+          </Text>
+        </Pressable>
+
+        {/* Signing out is phone-side: the session record and the saved pairs go,
+            the device stays on the account until it is revoked from "Your
+            devices". Confirmed because the paired laptops go with it. */}
+        <Pressable style={styles.signOut} testID="sign-out" onPress={confirmSignOut}>
+          <Text style={styles.signOutText}>
+            {session?.email ? `Sign out (${session.email})` : 'Sign out'}
           </Text>
         </Pressable>
       </View>
@@ -217,4 +239,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   secondaryText: { color: theme.ink, fontWeight: '600', fontSize: 15 },
+  signOut: { alignItems: 'center', minHeight: 44, justifyContent: 'center' },
+  signOutText: { color: theme.muted, fontSize: 14 },
 });

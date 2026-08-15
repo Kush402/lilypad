@@ -37,6 +37,56 @@ export const MagicLinkVerifyRequestSchema = z.object({
 });
 export type MagicLinkVerifyRequest = z.infer<typeof MagicLinkVerifyRequestSchema>;
 
+/**
+ * A memorized secret, per NIST SP 800-63B §5.1.1.2 and
+ * [ADR-0012](../../../docs/adr/0012-password-authentication.md).
+ *
+ * Length is the ONLY rule. No required character classes: the evidence is that
+ * composition rules push users toward predictable substitutions rather than
+ * toward entropy. The maximum exists so an unbounded string cannot be used to
+ * make the server do arbitrary scrypt work, and is generous enough that a
+ * passphrase or a password manager's output always fits.
+ */
+export const PasswordSchema = z.string().min(12).max(200);
+
+/** A display name. Consumer signup asks for one; nothing authenticates on it. */
+export const DisplayNameSchema = z.string().trim().min(1).max(80);
+
+/** Create an account with name + email + password. */
+export const SignUpRequestSchema = z.object({
+  name: DisplayNameSchema,
+  email: z.string().email().max(320),
+  password: PasswordSchema,
+});
+export type SignUpRequest = z.infer<typeof SignUpRequestSchema>;
+
+/** Sign in with email + password. Answered identically for an unknown address
+ * and a wrong password — see the route's doc comment. */
+export const PasswordSignInRequestSchema = z.object({
+  email: z.string().email().max(320),
+  /** Deliberately NOT `PasswordSchema`: rejecting a short password at sign-in
+   * would tell a caller that the stored one is longer, and would lock out any
+   * account whose password predates a future policy change. Bounded only. */
+  password: z.string().min(1).max(200),
+});
+export type PasswordSignInRequest = z.infer<typeof PasswordSignInRequestSchema>;
+
+/** Ask for a password-reset token. Always answered identically whether or not
+ * the address has an account. */
+export const PasswordResetRequestSchema = z.object({
+  email: z.string().email().max(320),
+});
+export type PasswordResetRequest = z.infer<typeof PasswordResetRequestSchema>;
+
+/** Spend a reset token on a new password. Signs the user in on success: they
+ * have just proved inbox possession, which is the same proof magic link
+ * accepts, so making them sign in again immediately proves nothing. */
+export const PasswordResetConfirmSchema = z.object({
+  token: z.string().min(16).max(256),
+  password: PasswordSchema,
+});
+export type PasswordResetConfirm = z.infer<typeof PasswordResetConfirmSchema>;
+
 /** Exchange a refresh token for a fresh pair. Single-use: the presented token
  * is retired by the exchange. */
 export const RefreshRequestSchema = z.object({
@@ -66,4 +116,11 @@ export type AuthErrorCode =
   | 'provider_not_configured'
   | 'email_required'
   | 'email_unverified'
-  | 'magic_link_unavailable';
+  | 'magic_link_unavailable'
+  /** Password sign-in failed. Covers unknown address, wrong password, and an
+   * account that has no password set, for the same oracle reason as
+   * `invalid_token` (ADR-0012). */
+  | 'invalid_credentials'
+  /** Signup only. The one place the API does distinguish — see ADR-0012's
+   * Consequences for why that tradeoff is taken here and nowhere else. */
+  | 'email_in_use';

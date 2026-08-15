@@ -252,6 +252,89 @@ and a pinned algorithm list. Rate-limited to **20/minute** per IP.
 { "error": "provider_not_configured", "message": "…" }
 ```
 
+### `POST /auth/signup` ✅
+
+Create an account from name + email + password
+([ADR-0012](adr/0012-password-authentication.md)). Rate-limited to **5/minute**
+per IP.
+
+Password policy is NIST SP 800-63B: **12–200 characters, NFKC-normalised, no
+composition rules**. Hashing is scrypt (`N=32768, r=8, p=1`, 16-byte salt),
+stored as `scrypt$N$r$p$salt$hash` so the parameters travel with the hash.
+
+```jsonc
+// request
+{ "name": "Ada Lovelace", "email": "ada@example.com", "password": "…" }
+// 201 Created — same session shape as /auth/oauth
+{ "accessToken": "eyJ…", "expiresInSeconds": 600, "refreshToken": "…", "userId": "uuid" }
+// 400 — password too short, or the email is not an address
+{ "error": "invalid_request", "issues": [ … ] }
+// 409 — that address already has an account
+{ "error": "email_in_use", "message": "…" }
+```
+
+> **This is the one auth route that is not enumeration-safe**, deliberately. The
+> alternative — answer identically and mail the existing owner — needs the
+> sender M13 still owes. The tradeoff is bounded: signup, not sign-in, at
+> 5/minute. Revisit when mail delivery exists.
+
+### `POST /auth/password` ✅
+
+Sign in with email + password. Rate-limited to **10/minute** per IP — tighter
+than `/auth/oauth`, because this is the endpoint credential stuffing targets and
+each attempt costs a scrypt.
+
+```jsonc
+{ "email": "ada@example.com", "password": "…" } // → 200 (same session shape)
+// 401 — unknown address, wrong password, or an account with no password set
+{ "error": "invalid_credentials" }
+```
+
+> **All three failures are the same answer AND the same wall-clock time.** The
+> branches with nothing to verify still verify against a dummy hash, because a
+> caller who can tell them apart by status _or_ by timing has an
+> account-existence oracle. An account created by Apple, Google, or a magic link
+> has `password_hash = NULL` and therefore cannot use this route — a normal
+> state, not a missing value.
+
+### `POST /auth/password/reset/request` ✅
+
+Ask for a reset code. Answers **202 whether or not the address has an account**.
+Rate-limited to **5/minute** per IP.
+
+```jsonc
+{ "email": "ada@example.com" }   // → 202 { "ok": true }
+// 503 — no email sender is configured on this server
+{ "error": "magic_link_unavailable", "message": "…" }
+```
+
+> The token is minted without first checking that the account exists: looking
+> would make the two cases cost different work for no benefit, since the
+> response is identical either way and `/reset/confirm` already refuses a token
+> whose address has no account.
+>
+> **Reset tokens live in their own Redis namespace** (`lilypad:password-reset:`),
+> separate from magic-link tokens. Same entropy, same TTL, same `GETDEL` — but
+> one key space would make a reset token redeemable at
+> `/auth/magic-link/verify`, so an email saying "reset your password" would
+> silently be a full sign-in.
+
+### `POST /auth/password/reset/confirm` ✅
+
+Spend a reset code on a new password, and sign in. Single-use. Rate-limited to
+**10/minute** per IP.
+
+```jsonc
+{ "token": "…", "password": "…" } // → 200 (same session shape)
+// 400 — new password too short · 401 — code unknown, expired, already used,
+// or its address has no account (which creates nothing)
+```
+
+> Signing in here is not a shortcut: redeeming the token has just proved inbox
+> possession, which is exactly the proof `/auth/magic-link/verify` accepts on
+> its own. Demanding a second sign-in immediately afterwards would prove nothing
+> and strand a user who has just changed the credential.
+
 ### `POST /auth/magic-link/request` ✅
 
 Ask for a sign-in **code**. Answers **202 whether or not the address has an
@@ -343,17 +426,28 @@ machine gains an owner, so an owner must be present to gain: it requires an
 Also **claims a pre-account row with the same fingerprint** if one exists, so
 trust relationships created before accounts survive rather than being orphaned.
 
+**`kind: "desktop"` is refused — 403, before the signature is even checked.** A
+computer may never put itself on an account, however well it proves who is
+signed in: linking costs a phone approving an enrollment code
+([ADR-0010](adr/0010-explicit-device-linking.md)), which is the
+physical-possession second factor on the highest-privilege action in the
+product. Nothing could reach this branch while the desktop had no way to hold an
+account token; [ADR-0012](adr/0012-password-authentication.md) gives it one, so
+the rule is enforced here rather than by client convention.
+
 ```jsonc
 // request
 { "challenge": "…", "publicKey": "…", "signature": "…",
-  "kind": "desktop", "fingerprint": "desktop-…",
-  "name": "Work Mac", "platform": "macos" }     // name/platform optional
+  "kind": "mobile", "fingerprint": "phone-…",
+  "name": "Ada’s iPhone", "platform": "ios" }   // name/platform optional
 // 200 OK
 { "accessToken": "eyJ…", "expiresInSeconds": 600,
   "deviceId": "uuid",       // devices.id — a real server-side uuid
   "userId": "uuid" }
 // 401 — unknown, expired, already-spent, or wrongly-signed challenge
 { "error": "invalid_signature" }
+// 403 — kind was "desktop"; use /devices/enrollment-code instead
+{ "error": "desktop_enrollment_requires_approval", "message": "…" }
 // 409
 { "error": "device_owned_by_another_account" }  // or "public_key_in_use"
 ```

@@ -6,6 +6,73 @@ All notable changes to Lilypad are documented here. The format follows
 
 ## [Unreleased]
 
+### P7 — consumer onboarding
+
+Both clients now present the product in the order it is actually used, and both
+can sign in ([ADR-0012](docs/adr/0012-password-authentication.md), which amends
+[ADR-0001](docs/adr/0001-account-authentication.md)).
+
+#### Added
+
+- **Email + password sign-in** — `POST /auth/signup`, `POST /auth/password`, and
+  `POST /auth/password/reset/{request,confirm}`. scrypt from the standard
+  library (`N=32768, r=8, p=1`), stored as `scrypt$N$r$p$salt$hash` so the cost
+  can be raised later without invalidating a row. Policy is NIST SP 800-63B:
+  12–200 characters, NFKC-normalised, no composition rules. `users.name` is a
+  new column; `users.password_hash`, nullable and unused since M1, is now
+  load-bearing.
+- **The desktop can sign in.** It never could: ADR-0008 gives it no OAuth client
+  and production has no mail sender, so every method in ADR-0001 was unreachable
+  there. `src-tauri/src/account.rs` plus six Tauri commands, and an account panel
+  on the dashboard and the first-run wizard.
+- **The phone remembers who is signed in** (`src/lib/session.ts`) — a record,
+  not a credential: nothing there authenticates anything, and the Ed25519 key in
+  the Keychain remains the only durable credential. It exists so the launch gate
+  can answer "is somebody signed in?" without a network round trip.
+- **The app ships a backend address** (`src/config/backend.ts`). It shipped none
+  before, which is precisely why sign-in could only be reached _from_ the
+  scanner and "Your devices" stayed hidden until a laptop was paired.
+- **Sign out**, on both clients. Phone-side it forgets the session and the saved
+  pairs; desktop-side it forgets the account session. Neither revokes a device —
+  that is an account-level act, done from "Your devices".
+
+#### Fixed
+
+- **A pairing QR was the desktop's front door.** Clicking the bubble minted a
+  pairing code and put a QR on screen as the app's first act, before any account
+  existed and before the user had seen a screen explaining what Lilypad is. It
+  opens the dashboard now, which carries its own "Pair a new device" button.
+- **The phone had no authentication gate.** It opened on the paired-laptop list,
+  pairing worked entirely signed out, and sign-in appeared only when the scanner
+  happened to hit a `DeviceAuthError`. Signed out, `SignIn` is now the only
+  route in the stack — expressed as which screens exist, so there is no
+  protected route left to reach by mistake.
+- **`POST /devices/enroll` accepted `kind: "desktop"`.** Unreachable while no
+  desktop could hold an account token — and about to stop being unreachable.
+  A computer must be adopted by a phone approving its enrollment code
+  ([ADR-0010](docs/adr/0010-explicit-device-linking.md)); it may never put itself
+  on an account however well it proves who is signed in. Now a 403, checked
+  before the signature is. The desktop's unused self-enrol method was removed
+  rather than left to compile and fail.
+- **A test's Keychain mock ignored `service`.** One slot for three namespaces,
+  so writing a session destroyed the device key — a failure that could only
+  happen in the mock, and one that would have hidden real ones.
+
+#### Security
+
+- Password sign-in is **constant-answer and constant-time**: unknown address,
+  wrong password, and an account with no password all return
+  `401 invalid_credentials`, and the branches with nothing to verify still
+  verify against a dummy hash. Either half alone leaves an account-existence
+  oracle.
+- **Reset tokens live in their own Redis namespace.** Same entropy, TTL, and
+  single-use `GETDEL` as a magic link — but one key space would make a reset
+  token redeemable at `/auth/magic-link/verify`, so an email saying "reset your
+  password" would silently be a full sign-in.
+- Signup is the **one** auth route that reveals whether an address is taken, and
+  says so in the docs. The enumeration-safe alternative needs the mail sender
+  M13 still owes.
+
 ### P1 — first-run onboarding
 
 The **Setup** window now carries the whole first run in order — **permissions →

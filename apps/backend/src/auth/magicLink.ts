@@ -35,6 +35,10 @@ export interface MagicLinkRedis {
  * honest 503 instead of accepting sign-ins whose email never arrives. */
 export interface MailSender {
   sendMagicLink(to: string, token: string): Promise<void>;
+  /** Password recovery ([ADR-0012](../../../../docs/adr/0012-password-authentication.md)).
+   * Same delivery seam and the same production gap: until M13 provides a
+   * sender, the route answers 503 rather than pretending. */
+  sendPasswordReset(to: string, token: string): Promise<void>;
 }
 
 /** Dev sender: writes the sign-in code to the server log. Not a stub standing
@@ -43,6 +47,10 @@ export interface MailSender {
 export const consoleMailSender: MailSender = {
   sendMagicLink(to, token) {
     log.server.info({ to, token }, 'magic-link sign-in (dev sender — no email was sent)');
+    return Promise.resolve();
+  },
+  sendPasswordReset(to, token) {
+    log.server.info({ to, token }, 'password reset (dev sender — no email was sent)');
     return Promise.resolve();
   },
 };
@@ -88,4 +96,37 @@ export async function redeemMagicLink(
   client: MagicLinkRedis = redis,
 ): Promise<string | null> {
   return client.getdel(redisKeys.magicLink(token));
+}
+
+/**
+ * Mint a single-use password-reset token
+ * ([ADR-0012](../../../../docs/adr/0012-password-authentication.md)).
+ *
+ * Identical machinery to a magic link — same entropy, same TTL, same `GETDEL`
+ * single-use — under a **different Redis key**. That difference is the whole
+ * point and not a naming preference: sharing one key space would make a reset
+ * token redeemable at `/auth/magic-link/verify`, so a link mailed to prove
+ * "you want a new password" would also silently be a full sign-in.
+ */
+export async function createPasswordReset(
+  email: string,
+  client: MagicLinkRedis = redis,
+): Promise<{ token: string; expiresInSeconds: number }> {
+  const token = randomBytes(24).toString('base64url');
+  await client.set(
+    redisKeys.passwordReset(token),
+    email.trim().toLowerCase(),
+    'EX',
+    MAGIC_LINK_TTL_SECONDS,
+  );
+  return { token, expiresInSeconds: MAGIC_LINK_TTL_SECONDS };
+}
+
+/** Burn a password-reset token and return the address it authorizes a reset
+ * for, or null if it is unknown, already used, or expired. */
+export async function redeemPasswordReset(
+  token: string,
+  client: MagicLinkRedis = redis,
+): Promise<string | null> {
+  return client.getdel(redisKeys.passwordReset(token));
 }

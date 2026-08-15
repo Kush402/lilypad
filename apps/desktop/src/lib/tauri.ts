@@ -65,7 +65,27 @@ export const api = {
   getAgentConfig: () => invoke<AgentConfigDto>('get_agent_config'),
   showSetup: () => invoke<void>('show_setup_window'),
   showControl: () => invoke<void>('show_control_window'),
+  // Account sign-in (ADR-0012). Identity only: signing in here does NOT link
+  // this computer — that still costs a phone approving an enrollment code, and
+  // the backend refuses `kind: "desktop"` at `/devices/enroll` to enforce it.
+  getAccountState: () => invoke<AccountStateDto>('get_account_state'),
+  accountSignUp: (name: string, email: string, password: string) =>
+    invoke<AccountStateDto>('account_sign_up', { name, email, password }),
+  accountSignIn: (email: string, password: string) =>
+    invoke<AccountStateDto>('account_sign_in', { email, password }),
+  accountRequestPasswordReset: (email: string) =>
+    invoke<void>('account_request_password_reset', { email }),
+  accountConfirmPasswordReset: (email: string, code: string, password: string) =>
+    invoke<AccountStateDto>('account_confirm_password_reset', { email, code, password }),
+  accountSignOut: () => invoke<void>('account_sign_out'),
 };
+
+/** Mirrors the Rust `AccountState`. */
+export interface AccountStateDto {
+  signedIn: boolean;
+  email: string | null;
+  userId: string | null;
+}
 
 /**
  * Automatic binary updates (M6) — a thin wrapper over

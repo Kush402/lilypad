@@ -39,6 +39,14 @@ vi.mock('../lib/tauri', () => ({
       source: 'none',
     }),
     showSetup: vi.fn(),
+    // Account sign-in (ADR-0012) — signed out, which is the state the
+    // dashboard's other assertions were all written against.
+    getAccountState: vi.fn().mockResolvedValue({ signedIn: false, email: null, userId: null }),
+    accountSignUp: vi.fn(),
+    accountSignIn: vi.fn(),
+    accountRequestPasswordReset: vi.fn(),
+    accountConfirmPasswordReset: vi.fn(),
+    accountSignOut: vi.fn(),
   },
   // The launch-time update banner runs a silent check on mount — stub it so
   // Control tests exercise the dashboard, not the updater (covered separately

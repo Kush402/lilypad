@@ -47,12 +47,21 @@ export function Bubble() {
       case 'idle': {
         setBusy(true);
         try {
-          // Open the overlay only — the overlay's mount effect is the single
-          // caller of `create_pairing` (previously both fired, minting two
-          // rooms per click and risking a QR for an already-dead room).
-          await api.showQrWindow();
+          // The dashboard, NOT the pairing QR.
+          //
+          // Clicking the bubble used to mint a pairing code and put a QR on
+          // screen as the app's very first act — before any account existed,
+          // before the user had seen a single screen explaining what Lilypad
+          // is, and before there was anywhere to find out. A QR is the LAST
+          // step of setup, not the front door.
+          //
+          // The dashboard leads with who you are, then which computer is
+          // yours, and carries its own "Pair a new device" button, so pairing
+          // is one click further away and one click after the two things that
+          // give it meaning.
+          await api.showControl();
         } catch (err) {
-          console.error('showQrWindow failed', err);
+          console.error('showControl failed', err);
         } finally {
           setBusy(false);
         }

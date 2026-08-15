@@ -631,6 +631,53 @@ The M18 Ask half it superseded stays superseded; there is simply nothing to do
 for either. Ask remains open to bug fixes like any other subsystem — this closes
 the redesign, not the code.
 
+## P7 — Consumer onboarding ✅
+
+**The order the product is used in, made the order it is presented in**, plus
+the sign-in method that makes that order possible on both clients
+([ADR-0012](adr/0012-password-authentication.md)).
+
+Three things were wrong, all of them ordering rather than capability:
+
+1. **The desktop's front door was a pairing QR.** Clicking the bubble minted a
+   pairing code and put a QR on screen as the app's first act — before any
+   account existed and before the user had seen a screen explaining what Lilypad
+   is. It now opens the dashboard, which leads with the account and carries its
+   own "Pair a new device" button.
+2. **The phone had no auth gate.** It opened on the paired-laptop list, pairing
+   worked entirely signed out, and sign-in appeared only when the scanner hit a
+   `DeviceAuthError`. Sign-in is now the only route in the stack while signed
+   out — expressed as which screens exist, so there is no protected route to
+   reach by mistake.
+3. **The desktop could not sign in at all.** ADR-0008 gives it no OAuth client
+   and production has no mail sender, so every method in ADR-0001 was
+   unreachable there. Email + password needs neither.
+
+**What did not change, and is now enforced rather than assumed:** an account
+never discovers devices. Signing in on a Mac does not link it — a phone
+approving its enrollment code does — and `/devices/enroll` refuses
+`kind: "desktop"` outright so that rule survives a client that forgets it. That
+guard is what made desktop sign-in safe to add.
+
+**Shipped:** `users.name` + scrypt hashing (`auth/password.ts`), four routes
+(`/auth/signup`, `/auth/password`, `/auth/password/reset/{request,confirm}`),
+password-reset tokens in their own Redis namespace, a mobile session record and
+auth gate, a mobile sign-out, `apps/mobile/src/config/backend.ts` (the app ships
+a backend address for the first time), desktop `account.rs` + six Tauri commands,
+and an account panel on both the dashboard and the first-run wizard.
+
+**Verified:** 19/19 live assertions against the running backend (signup,
+duplicate-address, weak password, sign-in, wrong password, unknown address at
+matched timing, an OAuth account refusing password sign-in, reset request/confirm,
+reset-token single-use, a reset token refused at `/auth/magic-link/verify`, and a
+signed-in desktop refused at `/devices/enroll`).
+
+**Open:** password reset is implemented and tested but not deliverable until M13
+provides a mail sender — it answers 503 in production, exactly as magic link
+does. `DEFAULT_API_BASE_URL` points at the existing tunnel and moves with M13.
+Setting a password on an account created by OAuth is not offered anywhere; it is
+account management rather than sign-in, and no screen has a place for it yet.
+
 ## P6 — Entitlements 🔜
 
 Backend-enforced plan limits. **Blocked**, and deliberately last: `users.tier`

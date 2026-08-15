@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 use tokio::sync::mpsc::unbounded_channel;
 
+use crate::account;
 use crate::auth::{with_bearer, DesktopAuth, LinkState};
 use crate::session::{run_session, Control, SessionEvent};
 use crate::state::{AppState, AppStateDto, PendingRequest, SessionStatus, SharedState};
@@ -940,4 +941,82 @@ pub async fn revoke_pair(
     }
     log::info!(target: "lilypad::audit", "device_revoked — pair {pair_id}");
     Ok(())
+}
+
+// ── account ([ADR-0012](../../../../docs/adr/0012-password-authentication.md)) ──
+//
+// The desktop had no way to sign in at all: ADR-0008 gives it no OAuth client,
+// and magic link needs a mail sender that production does not have. Email +
+// password is the one method that needs neither, which is what makes an
+// account identity possible on this machine.
+//
+// **Signing in here never links this machine.** That still costs a phone
+// approving an enrollment code, and the backend enforces it rather than
+// trusting this client to — `/devices/enroll` refuses `kind: "desktop"`.
+
+/// The account this laptop is signed in to, read from the keychain only.
+#[tauri::command]
+pub fn get_account_state() -> account::AccountState {
+    account::Account::state()
+}
+
+fn account_client(state: &State<'_, SharedState>) -> account::Account {
+    account::Account::new(lock_state(state).backend_base_url.clone())
+}
+
+#[tauri::command]
+pub async fn account_sign_up(
+    state: State<'_, SharedState>,
+    name: String,
+    email: String,
+    password: String,
+) -> Result<account::AccountState, String> {
+    account_client(&state)
+        .sign_up(&name, &email, &password)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn account_sign_in(
+    state: State<'_, SharedState>,
+    email: String,
+    password: String,
+) -> Result<account::AccountState, String> {
+    account_client(&state)
+        .sign_in(&email, &password)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn account_request_password_reset(
+    state: State<'_, SharedState>,
+    email: String,
+) -> Result<(), String> {
+    account_client(&state)
+        .request_password_reset(&email)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn account_confirm_password_reset(
+    state: State<'_, SharedState>,
+    email: String,
+    code: String,
+    password: String,
+) -> Result<account::AccountState, String> {
+    account_client(&state)
+        .confirm_password_reset(&email, &code, &password)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Forget the account session on this machine. Leaves the device key and every
+/// pairing alone — removing this computer from the account is done from a
+/// phone, and is a different act.
+#[tauri::command]
+pub fn account_sign_out() -> Result<(), String> {
+    account::Account::sign_out().map_err(|e| e.to_string())
 }

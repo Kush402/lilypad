@@ -4,6 +4,7 @@ import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { AgentProviderCard } from './AgentProviderCard';
 import { AccountPanel } from './AccountPanel';
+import { AccountSignIn } from './AccountSignIn';
 import { api, type LinkStateDto } from '../lib/tauri';
 import { useLiveResource } from '../lib/useLiveResource';
 
@@ -38,8 +39,8 @@ const RELAUNCH_THRESHOLD = 3;
 const LINK_POLL_MS = 3_000;
 
 /**
- * First run, end to end (P1): **permissions → link this computer → pair a
- * phone**, in that order, in one window.
+ * First run, end to end: **your account → permissions → link this computer →
+ * pair a phone**, in that order, in one window.
  *
  * It used to stop after the permissions and say "All set — you can start
  * pairing now", which was the one thing P1's definition of done forbids: the
@@ -48,14 +49,19 @@ const LINK_POLL_MS = 3_000;
  *
  * **Linking is offered, not demanded.** Pairing genuinely works on an unlinked
  * computer, so a wizard that blocked on linking would be lying in the other
- * direction. Step 2 is therefore skippable and the final card tells the truth
+ * direction. Step 3 is therefore skippable and the final card tells the truth
  * either way — set up and owned, or set up and on no account yet
  * ([ADR-0010](../../../../docs/adr/0010-explicit-device-linking.md)).
  *
- * Sign-in itself has no step here, deliberately: the desktop has no OAuth
- * client of its own ([ADR-0008](../../../../docs/adr/0008-desktop-enrollment-via-phone.md)),
- * so it happens on the phone, inside step 2, where the QR tells the phone which
- * backend to sign in to.
+ * Sign-in used to have no step here at all, because the desktop had no way to
+ * perform one: [ADR-0008](../../../../docs/adr/0008-desktop-enrollment-via-phone.md)
+ * gives it no OAuth client, and magic link needs a mail sender production does
+ * not have. [ADR-0012](../../../../docs/adr/0012-password-authentication.md)
+ * adds email + password, which needs neither — so step 1 exists now.
+ *
+ * It is still true that the LINKING half happens on the phone: the QR in step 3
+ * tells the phone which backend to sign in to, and that phone's approval is
+ * what adopts this machine. Signing in here changes nothing about that.
  *
  * The permission half is unchanged from the original wizard. Previously the
  * ONLY signal a permission problem existed was a passive TCC preflight
@@ -173,9 +179,18 @@ export function Setup() {
   return (
     <div className="page setup">
       <h1>Set up Lilypad</h1>
-      <p className="muted">Three steps, and the third takes a phone.</p>
+      <p className="muted">Four steps, and the last two take a phone.</p>
 
-      <h2 className="section-title">1 · Permissions</h2>
+      {/* Step 1 because it is step 1 of the product, not because anything
+          below needs it. Linking is approved by a signed-in PHONE, so this Mac
+          can complete every remaining step signed out — but a first run that
+          never mentions an account, and ends at a QR code, teaches the wrong
+          model of what Lilypad is. Same component as the dashboard's: one
+          sign-in form, two places it is reachable. */}
+      <h2 className="section-title">1 · Your account</h2>
+      <AccountSignIn />
+
+      <h2 className="section-title">2 · Permissions</h2>
       <p className="muted">Two are needed before this Mac can be controlled at all.</p>
 
       {needsRestart ? (
@@ -219,18 +234,18 @@ export function Setup() {
         );
       })}
 
-      {/* Step 2 only once the Mac can actually do anything — offering to put an
-          unusable computer on an account is a step out of order. */}
+      {/* Steps 3 and 4 only once the Mac can actually do anything — offering to
+          put an unusable computer on an account is a step out of order. */}
       {allGranted ? (
         <>
-          <h2 className="section-title">2 · Link this computer</h2>
+          <h2 className="section-title">3 · Link this computer</h2>
           <p className="muted">
             Optional, and worth doing: linking is what puts this Mac on your account, so you can see
             and remove it from your phone. Pairing works without it.
           </p>
           <AccountPanel />
 
-          <h2 className="section-title">3 · Pair a phone</h2>
+          <h2 className="section-title">4 · Pair a phone</h2>
           <p className="muted">
             Show the pairing code and scan it with Lilypad on your phone. Pair once — after that the
             phone reconnects on its own.
@@ -268,7 +283,7 @@ export function Setup() {
           ) : (
             <p data-testid="setup-done-unlinked">
               ✓ Permissions are done, so you can pair a phone. This computer is not on an account
-              yet — step 2 is what changes that.
+              yet — step 3 is what changes that.
             </p>
           )}
           <div className="row">

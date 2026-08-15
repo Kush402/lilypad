@@ -59,6 +59,26 @@ describe('Setup', () => {
     }) as unknown as typeof listen);
   });
 
+  /**
+   * Ordering regression. First run used to be permissions → link → pair, with
+   * no mention of an account anywhere and a QR code as its last screen, which
+   * taught the wrong model of what Lilypad is. The account comes first now
+   * (ADR-0012) — not because anything below needs it, but because it is step 1
+   * of the product.
+   */
+  it('puts the account step before the permissions step', async () => {
+    render(<Setup />);
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('get_permission_status'));
+
+    // `AccountSignIn` renders its own h2, so filter to the numbered steps.
+    const steps = screen
+      .getAllByRole('heading', { level: 2 })
+      .map((h) => h.textContent ?? '')
+      .filter((text) => /^\d+ · /.test(text));
+    expect(steps[0]).toBe('1 · Your account');
+    expect(steps[1]).toBe('2 · Permissions');
+  });
+
   it('fetches initial status and shows both permission rows', async () => {
     render(<Setup />);
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('get_permission_status'));

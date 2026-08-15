@@ -5,19 +5,19 @@ export type RootStackParamList = {
   Devices: undefined;
   Scanner: undefined;
   /**
-   * Sign in (P1). `apiBaseUrl` is REQUIRED and always comes from something the
-   * phone has already seen — a scanned code or a stored pair. The app ships no
-   * default backend address, so there is no "sign in first, then find your
-   * computer" path: the computer's code is what tells the phone where Lilypad
-   * lives.
+   * Sign in (P1, reordered in P3). `apiBaseUrl` is now OPTIONAL: the app ships
+   * a default backend (`config/backend.ts`), which is what lets sign-in be the
+   * first screen rather than something the scanner pushes on failure. It is
+   * still passed explicitly when a scanned code named a different server, so
+   * self-hosting keeps working exactly as before.
    */
-  SignIn: { apiBaseUrl: string };
+  SignIn: { apiBaseUrl?: string } | undefined;
   /**
    * The ACCOUNT's devices (P2) — distinct from `Devices`, which lists the
-   * laptops this phone has paired with. `apiBaseUrl` is required for the same
-   * reason as `SignIn`: the app ships no default backend address.
+   * laptops this phone has paired with. Optional for the same reason as
+   * `SignIn`.
    */
-  AccountDevices: { apiBaseUrl: string };
+  AccountDevices: { apiBaseUrl?: string } | undefined;
   Viewer: {
     /** Present for QR-scanned sessions; absent for trusted no-QR reconnects
      * (the Viewer itself only reads the fields below). */

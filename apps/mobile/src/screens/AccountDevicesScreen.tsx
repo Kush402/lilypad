@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { defaultApiBaseUrl } from '../config/backend';
 import type { AccountDevice } from '@lilypad/protocol';
 import type { RootStackParamList } from '../types';
 import { theme } from '../theme';
@@ -50,7 +51,10 @@ function lastSeenLabel(device: AccountDevice): string {
 }
 
 export function AccountDevicesScreen({ route, navigation }: Props): React.JSX.Element {
-  const { apiBaseUrl } = route.params;
+  // Optional since P3. The caller passes the account's backend (a paired
+  // laptop's, or the session's); the shipped default is the answer for a phone
+  // that has paired nothing yet.
+  const apiBaseUrl = route.params?.apiBaseUrl ?? defaultApiBaseUrl();
   const insets = useSafeAreaInsets();
   const [devices, setDevices] = useState<AccountDevice[] | null>(null);
   const [error, setError] = useState<string | null>(null);

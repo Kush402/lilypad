@@ -39,16 +39,25 @@ describe('Bubble', () => {
     vi.clearAllMocks();
   });
 
-  it('idle: click opens the QR window (which is the sole pairing creator)', async () => {
+  /**
+   * Regression: an idle click used to open the pairing QR directly, making a
+   * QR code the app's front door — shown before any account existed and before
+   * the user had seen a screen explaining what Lilypad is. The dashboard is
+   * the front door; it carries its own "Pair a new device" button, so pairing
+   * is one click further away and one click after the two things that give it
+   * meaning (who you are, and which computer is yours).
+   */
+  it('idle: click opens the DASHBOARD, not the pairing QR', async () => {
     mockState('idle');
     render(<Bubble />);
 
     fireEvent.click(screen.getByRole('button'));
 
-    // The bubble no longer mints a pairing itself — that caused a double
-    // pairing per click (see commit 9490187). It opens the overlay, whose
-    // mount effect is the single `createPairing` caller.
-    await waitFor(() => expect(api.showQrWindow).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(api.showControl).toHaveBeenCalledTimes(1));
+    expect(api.showQrWindow).not.toHaveBeenCalled();
+    // The bubble still mints no pairing itself — that caused a double pairing
+    // per click (see commit 9490187). The QR overlay's mount effect remains
+    // the single `createPairing` caller.
     expect(api.createPairing).not.toHaveBeenCalled();
     expect(WebviewWindow.getByLabel).not.toHaveBeenCalled();
   });

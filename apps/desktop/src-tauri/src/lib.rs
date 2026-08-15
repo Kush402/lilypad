@@ -15,6 +15,7 @@ mod presence;
 mod single_instance;
 // Public so a headless example / integration test can drive a real session
 // without the Tauri GUI.
+pub mod account;
 pub mod auth;
 pub mod clipboard;
 pub mod identity;
@@ -310,6 +311,12 @@ pub fn run() {
             commands::set_login_item_enabled,
             commands::show_setup_window,
             commands::show_control_window,
+            commands::get_account_state,
+            commands::account_sign_up,
+            commands::account_sign_in,
+            commands::account_request_password_reset,
+            commands::account_confirm_password_reset,
+            commands::account_sign_out,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Lilypad desktop");

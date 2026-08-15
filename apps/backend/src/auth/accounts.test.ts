@@ -6,12 +6,35 @@ import type { OAuthProvider, ProviderIdentity } from './providers.js';
 function fakeStore(): AccountStore & {
   users: Map<string, string>;
   identities: Map<string, string>;
+  hashes: Map<string, string>;
 } {
   const users = new Map<string, string>(); // userId → email
   const identities = new Map<string, string>(); // "provider:subject" → userId
+  const hashes = new Map<string, string>(); // userId → password hash
+  const idByEmail = (email: string) => {
+    for (const [id, mail] of users) if (mail === email) return id;
+    return null;
+  };
   return {
     users,
     identities,
+    hashes,
+    findCredentialsByEmail(email) {
+      const userId = idByEmail(email);
+      return Promise.resolve(userId ? { userId, passwordHash: hashes.get(userId) ?? null } : null);
+    },
+    createPasswordUser({ email, name, passwordHash }) {
+      void name;
+      if (idByEmail(email)) return Promise.resolve(null);
+      const id = randomUUID();
+      users.set(id, email);
+      hashes.set(id, passwordHash);
+      return Promise.resolve(id);
+    },
+    setPasswordHash(userId, passwordHash) {
+      hashes.set(userId, passwordHash);
+      return Promise.resolve();
+    },
     findUserIdByIdentity(provider, subject) {
       return Promise.resolve(identities.get(`${provider}:${subject}`) ?? null);
     },
@@ -153,5 +176,95 @@ describe('AccountService.resolveEmail', () => {
     const store = fakeStore();
     await new AccountService(store).resolveEmail('ada@example.com');
     expect(store.identities.size).toBe(0);
+  });
+});
+
+// ── password sign-in (ADR-0012) ──────────────────────────────────────────────
+describe('AccountService password credentials', () => {
+  const signUp = (accounts: AccountService, over: Partial<{ email: string }> = {}) =>
+    accounts.signUpWithPassword({
+      name: 'Ada Lovelace',
+      email: over.email ?? 'ada@example.com',
+      password: 'correct horse battery staple',
+    });
+
+  it('creates an account and verifies the password it was given', async () => {
+    const accounts = new AccountService(fakeStore());
+    const created = await signUp(accounts);
+    expect(created.ok).toBe(true);
+    expect(
+      await accounts.verifyPasswordSignIn('ada@example.com', 'correct horse battery staple'),
+    ).toBe(created.ok && created.userId);
+  });
+
+  it('stores a hash, never the password', async () => {
+    const store = fakeStore();
+    await signUp(new AccountService(store));
+    const stored = [...store.hashes.values()][0];
+    expect(stored).toBeDefined();
+    expect(stored).not.toContain('correct horse battery staple');
+    expect(stored).toMatch(/^scrypt\$/);
+  });
+
+  it('normalizes the address, so signup and sign-in agree on case', async () => {
+    const accounts = new AccountService(fakeStore());
+    await signUp(accounts, { email: '  Ada@Example.COM ' });
+    expect(
+      await accounts.verifyPasswordSignIn('ada@example.com', 'correct horse battery staple'),
+    ).not.toBeNull();
+  });
+
+  it('refuses a second account for the same address', async () => {
+    const accounts = new AccountService(fakeStore());
+    await signUp(accounts);
+    expect(await signUp(accounts)).toEqual({ ok: false, reason: 'email_in_use' });
+  });
+
+  it('rejects a wrong password', async () => {
+    const accounts = new AccountService(fakeStore());
+    await signUp(accounts);
+    expect(await accounts.verifyPasswordSignIn('ada@example.com', 'wrong')).toBeNull();
+  });
+
+  /**
+   * An account created by Apple, Google, or a magic link has no password hash.
+   * That must fail like any other bad credential — not throw, and not somehow
+   * succeed against a null.
+   */
+  it('rejects password sign-in for an account that has no password', async () => {
+    const store = fakeStore();
+    const accounts = new AccountService(store);
+    await accounts.resolveEmail('ada@example.com');
+    expect(await accounts.verifyPasswordSignIn('ada@example.com', 'anything')).toBeNull();
+  });
+
+  it('rejects an unknown address', async () => {
+    const accounts = new AccountService(fakeStore());
+    expect(await accounts.verifyPasswordSignIn('nobody@example.com', 'anything')).toBeNull();
+  });
+
+  it('resets a password for an existing account, and the old one stops working', async () => {
+    const accounts = new AccountService(fakeStore());
+    const created = await signUp(accounts);
+    expect(await accounts.setPasswordForEmail('ada@example.com', 'a whole new passphrase')).toBe(
+      created.ok && created.userId,
+    );
+    expect(
+      await accounts.verifyPasswordSignIn('ada@example.com', 'correct horse battery staple'),
+    ).toBeNull();
+    expect(
+      await accounts.verifyPasswordSignIn('ada@example.com', 'a whole new passphrase'),
+    ).not.toBeNull();
+  });
+
+  /** A reset token proves inbox possession for an account that exists. It must
+   * not be a back door into creating one — that would be a signup route with no
+   * name and weaker enumeration properties. */
+  it('creates no account when resetting an address that has none', async () => {
+    const store = fakeStore();
+    expect(
+      await new AccountService(store).setPasswordForEmail('nobody@example.com', 'passphrase here'),
+    ).toBeNull();
+    expect(store.users.size).toBe(0);
   });
 });

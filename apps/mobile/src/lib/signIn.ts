@@ -4,6 +4,7 @@ import appleAuth from '@invertase/react-native-apple-authentication';
 import type { AuthSession, DeviceSession, OAuthProviderName } from '@lilypad/protocol';
 import { GOOGLE_WEB_CLIENT_ID, GOOGLE_IOS_CLIENT_ID, isGoogleConfigured } from '../config/oauth';
 import { enrollDevice } from './auth';
+import { saveSession } from './session';
 
 /**
  * Sign-in: prove who the human is, then bind this phone to them.
@@ -179,16 +180,102 @@ export async function verifyMagicLink(apiBaseUrl: string, token: string): Promis
   return completeSignIn(apiBaseUrl, JSON.parse(text) as AuthSession);
 }
 
+// ── email + password ([ADR-0012](../../../../docs/adr/0012-password-authentication.md)) ──
+//
+// The only method that needs no provider availability and no delivered email,
+// which is what makes it the one that always works on a first launch.
+
+/** Create an account and enroll this phone. */
+export async function signUpWithPassword(
+  apiBaseUrl: string,
+  input: { name: string; email: string; password: string },
+): Promise<DeviceSession> {
+  const { status, text } = await postJson(`${apiBaseUrl.replace(/\/$/, '')}/auth/signup`, input);
+  if (status === 409) {
+    throw new SignInError(
+      'rejected',
+      'An account already exists for that email. Sign in instead, or reset your password.',
+    );
+  }
+  if (status === 400) {
+    // The only field the backend can reject on shape is the password, and the
+    // rule is a length the form already states.
+    throw new SignInError('rejected', 'Use at least 12 characters, and a valid email address.');
+  }
+  if (status !== 201) throw new SignInError('rejected', 'That account could not be created.');
+  return completeSignIn(apiBaseUrl, JSON.parse(text) as AuthSession, {
+    email: input.email.trim().toLowerCase(),
+    name: input.name.trim(),
+  });
+}
+
+/** Sign in with email + password and enroll this phone. */
+export async function signInWithPassword(
+  apiBaseUrl: string,
+  input: { email: string; password: string },
+): Promise<DeviceSession> {
+  const { status, text } = await postJson(`${apiBaseUrl.replace(/\/$/, '')}/auth/password`, input);
+  if (status !== 200) {
+    // Deliberately one message for every failure. The backend answers
+    // `invalid_credentials` for an unknown address, a wrong password, and an
+    // account with no password alike; a UI that guessed between them would
+    // rebuild the enumeration oracle the backend just refused to be.
+    throw new SignInError('rejected', 'That email and password do not match an account.');
+  }
+  return completeSignIn(apiBaseUrl, JSON.parse(text) as AuthSession, {
+    email: input.email.trim().toLowerCase(),
+  });
+}
+
+/** Ask for a password-reset email. Resolves identically whether or not the
+ * address has an account, for the same reason `requestMagicLink` does. */
+export async function requestPasswordReset(apiBaseUrl: string, email: string): Promise<void> {
+  const { status } = await postJson(
+    `${apiBaseUrl.replace(/\/$/, '')}/auth/password/reset/request`,
+    { email },
+  );
+  if (status === 503) {
+    throw new SignInError('not_configured', 'Password reset is not available on this server.');
+  }
+  if (status !== 202) throw new SignInError('rejected', 'That address could not be used.');
+}
+
+/** Spend a reset code on a new password, and enroll this phone. */
+export async function confirmPasswordReset(
+  apiBaseUrl: string,
+  token: string,
+  password: string,
+): Promise<DeviceSession> {
+  const { status, text } = await postJson(
+    `${apiBaseUrl.replace(/\/$/, '')}/auth/password/reset/confirm`,
+    { token, password },
+  );
+  if (status === 400) {
+    throw new SignInError('rejected', 'Use at least 12 characters for the new password.');
+  }
+  if (status !== 200) {
+    throw new SignInError('rejected', 'That reset code has expired or was already used.');
+  }
+  return completeSignIn(apiBaseUrl, JSON.parse(text) as AuthSession);
+}
+
 /**
  * Spend an account session on enrollment, then let it go.
  *
- * Exported so the magic-link and OAuth paths share one definition of "signed
- * in" — which, for this app, means "this phone is enrolled", not "a token is
- * stored somewhere".
+ * Exported so every sign-in path shares one definition of "signed in" — which,
+ * for this app, means "this phone is enrolled", not "a token is stored
+ * somewhere".
+ *
+ * The session record is written only AFTER enrollment returns. Writing it
+ * earlier would put the app past its own launch gate with no enrolled device
+ * behind it — a home screen whose every call fails.
  */
 export async function completeSignIn(
   apiBaseUrl: string,
   session: AuthSession,
+  profile: { email?: string; name?: string } = {},
 ): Promise<DeviceSession> {
-  return enrollDevice(apiBaseUrl, session.accessToken);
+  const enrolled = await enrollDevice(apiBaseUrl, session.accessToken);
+  await saveSession({ userId: session.userId, apiBaseUrl, ...profile });
+  return enrolled;
 }

@@ -1,6 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import { redisKeys } from '@lilypad/shared';
-import { createMagicLink, redeemMagicLink, type MagicLinkRedis } from './magicLink.js';
+import {
+  createMagicLink,
+  redeemMagicLink,
+  createPasswordReset,
+  redeemPasswordReset,
+  MAGIC_LINK_TTL_SECONDS,
+  type MagicLinkRedis,
+} from './magicLink.js';
 
 /** Fake Redis modelling the one behaviour that matters: `getdel` is atomic, so
  * a second read of the same key finds nothing. */
@@ -74,5 +81,38 @@ describe('magic link', () => {
       (v) => typeof v === 'string' && /https?:\/\//.test(v),
     );
     expect(urlish).toEqual([]);
+  });
+});
+
+/**
+ * The separation ADR-0012 turns on. A reset token and a sign-in token are the
+ * same shape and the same TTL, so nothing but the key space stops one being
+ * spent as the other — and spending a reset token as a sign-in would mean an
+ * email that says "reset your password" silently signs the reader in.
+ */
+describe('password reset tokens', () => {
+  it('stores the address under a single-use token with a TTL', async () => {
+    const redis = fakeRedis();
+    const { token, expiresInSeconds } = await createPasswordReset('ada@example.com', redis);
+    expect(await redeemPasswordReset(token, redis)).toBe('ada@example.com');
+    expect(expiresInSeconds).toBe(MAGIC_LINK_TTL_SECONDS);
+  });
+
+  it('burns the token on redemption', async () => {
+    const redis = fakeRedis();
+    const { token } = await createPasswordReset('ada@example.com', redis);
+    expect(await redeemPasswordReset(token, redis)).toBe('ada@example.com');
+    expect(await redeemPasswordReset(token, redis)).toBeNull();
+  });
+
+  it('cannot be redeemed as a magic link, and a magic link cannot be redeemed as a reset', async () => {
+    const redis = fakeRedis();
+    const reset = await createPasswordReset('ada@example.com', redis);
+    const signIn = await createMagicLink('ada@example.com', redis);
+    expect(await redeemMagicLink(reset.token, redis)).toBeNull();
+    expect(await redeemPasswordReset(signIn.token, redis)).toBeNull();
+    // …and neither was consumed by the other's failed attempt.
+    expect(await redeemPasswordReset(reset.token, redis)).toBe('ada@example.com');
+    expect(await redeemMagicLink(signIn.token, redis)).toBe('ada@example.com');
   });
 });

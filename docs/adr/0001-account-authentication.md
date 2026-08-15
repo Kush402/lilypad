@@ -72,3 +72,9 @@ nor Google.
 ## Status
 
 Accepted (2026-08-12). Implemented in milestone M8.
+
+**Amended by [ADR-0012](0012-password-authentication.md) (2026-08-15):** email +
+password is now a first-class method alongside OAuth and magic link, and
+`users.password_hash` is load-bearing. Everything else here still holds — the
+"Email + password" alternative below records the cost that decision knowingly
+takes on, and ADR-0012's Context records what changed to make it worth taking.

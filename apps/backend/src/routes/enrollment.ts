@@ -74,6 +74,21 @@ export async function enrollmentRoutes(app: FastifyInstance): Promise<void> {
       const { challenge, publicKey, signature, kind, fingerprint, name, platform } = parsed.data;
       const actor = actorOf(req);
 
+      // A computer may NEVER put itself on an account, however well it proves
+      // who is signed in ([ADR-0010](../../../../docs/adr/0010-explicit-device-linking.md)):
+      // linking requires a phone to approve an enrollment code, which is the
+      // physical-possession second factor on the highest-privilege action in
+      // the product. Before ADR-0012 nothing could reach this branch, because
+      // no desktop client could hold an account token; giving the desktop a
+      // password sign-in is exactly what makes the guard load-bearing.
+      if (kind === 'desktop') {
+        return reply.code(403).send({
+          error: 'desktop_enrollment_requires_approval',
+          message:
+            'a computer is linked by a phone approving its enrollment code, not by signing in on it',
+        });
+      }
+
       if (!(await proofHolds(challenge, publicKey, signature))) {
         return invalidSignature(reply, req.ip, { userId: actor.userId, step: 'enroll' });
       }
