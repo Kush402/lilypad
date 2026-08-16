@@ -51,8 +51,17 @@ export interface IssuedRefreshToken {
 export interface RefreshTokenStore {
   insert(row: { userId: string; tokenHash: string; expiresAt: Date }): Promise<string>;
   findByHash(tokenHash: string): Promise<RefreshTokenRow | null>;
-  /** Retire `id` in favour of `replacedById`, in one write. */
-  markRotated(id: string, replacedById: string): Promise<void>;
+  /**
+   * Retire `id` in favour of `replacedById` — but ONLY if it is still live.
+   *
+   * Returns whether this caller was the one that retired it. That answer is
+   * the concurrency control for the whole rotation: `rotate` used to read the
+   * row, check `revokedAt`, and write, which leaves an interleaving point wide
+   * enough for two requests presenting the SAME token to both pass the check
+   * and both mint a successor — defeating reuse detection entirely. Deciding
+   * it in the WHERE clause instead means exactly one writer can win.
+   */
+  markRotatedIfLive(id: string, replacedById: string): Promise<boolean>;
   /** Revoke every live token for a user — "sign out everywhere", and the
    * response to detected reuse. */
   revokeAllForUser(userId: string): Promise<void>;
@@ -108,7 +117,14 @@ export class RefreshTokenService {
     }
 
     const next = await this.issue(row.userId);
-    await this.store.markRotated(row.id, next.id);
+    // The read above is advisory; THIS is the decision. Losing means another
+    // request retired the same token while we were minting — which is reuse,
+    // whether it came from an attacker or from a client that fired twice, and
+    // those are not distinguishable from here. Same response either way.
+    if (!(await this.store.markRotatedIfLive(row.id, next.id))) {
+      await this.store.revokeAllForUser(row.userId);
+      return { ok: false, reason: 'reused' };
+    }
     return { ok: true, token: next.token, userId: row.userId };
   }
 
@@ -144,11 +160,17 @@ export function createDrizzleRefreshTokenStore(
         .limit(1);
       return rows[0] ?? null;
     },
-    async markRotated(id, replacedById) {
-      await database
+    async markRotatedIfLive(id, replacedById) {
+      // `revokedAt IS NULL` in the WHERE, not in a preceding SELECT: Postgres
+      // evaluates it under the row lock this UPDATE takes, so of two concurrent
+      // rotations of one token exactly one matches a row and the other matches
+      // none. `returning` is how we learn which we were.
+      const rotated = await database
         .update(refreshTokens)
         .set({ revokedAt: new Date(), replacedById })
-        .where(eq(refreshTokens.id, id));
+        .where(and(eq(refreshTokens.id, id), isNull(refreshTokens.revokedAt)))
+        .returning({ id: refreshTokens.id });
+      return rotated.length > 0;
     },
     async revokeAllForUser(userId) {
       await database

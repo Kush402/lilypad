@@ -61,6 +61,28 @@ server   ── session-start ──▶ both
 either   ── session-end ──▶ other   (disconnect / panic)
 ```
 
+## What `register` answers with
+
+**An accepted `register` is acknowledged with silence.** The router returns no
+frames for it ([messageRouter.ts](../apps/backend/src/signaling/messageRouter.ts)),
+so a seated peer sees nothing at all until the room has something to say.
+
+A **rejected** one is not silent. The server sends an `error` frame and then
+closes the socket:
+
+| Situation                               | `error.code`        | Close                 |
+| --------------------------------------- | ------------------- | --------------------- |
+| Room not authorized for this device     | `unauthorized_room` | `4403`                |
+| Any other frame sent before registering | `not_registered`    | — (socket stays open) |
+
+The consequence for clients: **`register` having been _sent_ is not evidence it
+was accepted, and neither is the socket staying open.** The first non-`error`
+inbound frame is — a `pong`, a `connect-request`, anything the room routes. A
+client that treats a successful write as "registered" will treat a permanently
+rejected socket as a healthy one; the desktop presence loop did exactly that and
+reconnected ~2×/second until its own rate limit stopped it
+([presence.rs](../apps/desktop/src-tauri/src/presence.rs), fixed 2026-08-15).
+
 ## ICE servers
 
 `pair-approved.iceServers` carries STUN first, then TURN (with time-limited

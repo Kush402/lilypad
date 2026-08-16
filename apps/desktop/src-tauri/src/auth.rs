@@ -22,6 +22,19 @@ pub struct DeviceAuth {
     base_url: String,
     http: reqwest::Client,
     cached: Mutex<Option<CachedToken>>,
+    /// Serialises the challenge+token exchange so concurrent callers share one.
+    ///
+    /// Two independent callers race at every launch — the tray's one-shot
+    /// `link_state` (`lib.rs`) and the presence loop's `bearer` — and both used
+    /// to miss the empty cache and run a full exchange, burning two challenges
+    /// and racing to overwrite the cache with whichever finished last (observed
+    /// live 2026-08-15 as a steady 2:1 `/devices/challenge` to `/devices/token`
+    /// ratio). Whoever loses this lock re-reads the cache the winner just
+    /// filled. `apps/mobile/src/lib/auth.ts` solves the same race with an
+    /// `inFlight` promise; this is the same fix in the idiom Rust has.
+    ///
+    /// Async, not `std::sync` — it is held across an `.await`.
+    signing_in: tokio::sync::Mutex<()>,
 }
 
 struct CachedToken {
@@ -96,6 +109,7 @@ impl DeviceAuth {
             base_url,
             http: reqwest::Client::new(),
             cached: Mutex::new(None),
+            signing_in: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -192,6 +206,12 @@ impl DeviceAuth {
     /// A valid access token, re-authenticating if the cached one is missing or
     /// close to expiry.
     pub async fn access_token(&self) -> Result<String> {
+        if let Some(token) = self.cached_token() {
+            return Ok(token);
+        }
+        // Re-check after waiting: the caller that held `signing_in` may have
+        // just cached exactly what we were about to ask for. See the field.
+        let _exchange = self.signing_in.lock().await;
         if let Some(token) = self.cached_token() {
             return Ok(token);
         }
@@ -336,6 +356,14 @@ impl DesktopAuth {
         if let Some((user_id, device_id)) = auth.cached_identity() {
             return LinkState::Linked { user_id, device_id };
         }
+        // The second racer at launch (the first is the presence loop's
+        // `bearer`). Same gate, same re-check: `cached_identity` is exactly
+        // what this needs, so a caller that waited answers from the winner's
+        // exchange instead of running its own. See `DeviceAuth::signing_in`.
+        let _exchange = auth.signing_in.lock().await;
+        if let Some((user_id, device_id)) = auth.cached_identity() {
+            return LinkState::Linked { user_id, device_id };
+        }
         match auth.sign_in().await {
             Ok(session) => LinkState::Linked {
                 user_id: session.user_id,
@@ -414,6 +442,95 @@ pub fn with_bearer(req: reqwest::RequestBuilder, token: Option<String>) -> reqwe
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    /// A stub backend that counts challenges and answers the two endpoints
+    /// `sign_in` uses. Real HTTP on a real socket, because the race being
+    /// tested lives between the cache check and the network call — a fake that
+    /// replaced `sign_in` itself would pass with or without the fix.
+    async fn stub_backend(challenges: Arc<AtomicUsize>) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    return;
+                };
+                let challenges = challenges.clone();
+                tokio::spawn(async move {
+                    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                    let mut buf = vec![0u8; 4096];
+                    let n = socket.read(&mut buf).await.unwrap_or(0);
+                    let req = String::from_utf8_lossy(&buf[..n]).to_string();
+                    let body = if req.contains("/devices/challenge") {
+                        challenges.fetch_add(1, Ordering::SeqCst);
+                        // Long enough that a second caller reaches the gate
+                        // while this exchange is still in flight.
+                        tokio::time::sleep(Duration::from_millis(80)).await;
+                        r#"{"challenge":"nonce-abcdefgh"}"#.to_owned()
+                    } else {
+                        r#"{"accessToken":"tok","expiresInSeconds":600,"deviceId":"d-1","userId":"u-1"}"#.to_owned()
+                    };
+                    let res = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    let _ = socket.write_all(res.as_bytes()).await;
+                    let _ = socket.shutdown().await;
+                });
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    /// The regression for `DeviceAuth::signing_in`.
+    ///
+    /// Every launch races the tray's `link_state` against the presence loop's
+    /// `bearer`. Unguarded, both miss the empty cache and run a full
+    /// challenge+token exchange — the 2:1 challenge-to-token ratio observed
+    /// live on 2026-08-15. Remove the lock from `access_token` and this asserts
+    /// 8 instead of 1.
+    #[tokio::test]
+    async fn concurrent_callers_share_one_challenge_exchange() {
+        let challenges = Arc::new(AtomicUsize::new(0));
+        let base = stub_backend(challenges.clone()).await;
+        let auth = Arc::new(DeviceAuth::new(
+            DeviceIdentity::generate_ephemeral().unwrap(),
+            base,
+        ));
+
+        let mut tasks = Vec::new();
+        for _ in 0..8 {
+            let auth = auth.clone();
+            tasks.push(tokio::spawn(async move { auth.access_token().await }));
+        }
+        for t in tasks {
+            assert_eq!(t.await.unwrap().unwrap(), "tok");
+        }
+
+        assert_eq!(
+            challenges.load(Ordering::SeqCst),
+            1,
+            "8 concurrent callers must burn ONE challenge, not one each"
+        );
+    }
+
+    /// The gate must not outlive its purpose: once the token is cached, callers
+    /// take the fast path and never queue behind the mutex at all.
+    #[tokio::test]
+    async fn a_cached_token_is_served_without_touching_the_network() {
+        let challenges = Arc::new(AtomicUsize::new(0));
+        let base = stub_backend(challenges.clone()).await;
+        let auth = DeviceAuth::new(DeviceIdentity::generate_ephemeral().unwrap(), base);
+
+        assert_eq!(auth.access_token().await.unwrap(), "tok");
+        assert_eq!(challenges.load(Ordering::SeqCst), 1);
+        // Second call: cache hit, no exchange.
+        assert_eq!(auth.access_token().await.unwrap(), "tok");
+        assert_eq!(challenges.load(Ordering::SeqCst), 1);
+    }
 
     fn session(expires_in_seconds: u64) -> DeviceSession {
         DeviceSession {

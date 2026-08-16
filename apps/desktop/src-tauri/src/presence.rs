@@ -40,6 +40,30 @@ const PRESENCE_STALE_AFTER: Duration = Duration::from_secs(16);
 const BACKOFF_MS: [u64; 4] = [500, 1000, 2000, 4000];
 const BACKOFF_CAP_MS: u64 = 15_000;
 
+/// Does this inbound frame prove the backend ACCEPTED our `register`?
+///
+/// It has to be asked, because a successful register is acknowledged with
+/// **silence**: the hub's router treats it as a no-op ack and sends nothing
+/// back (`apps/backend/src/signaling/messageRouter.ts`, `case 'register'`).
+/// A rejected one is answered with an `error` frame (`unauthorized_room` /
+/// `not_registered`) and then close 4403.
+///
+/// So the only positive evidence available is a NON-error frame: the `pong`
+/// our own heartbeat draws, or a `connect-request`. Both require a seated
+/// peer. That is what may reset the reconnect backoff.
+///
+/// Getting this wrong is not cosmetic — it was the bug. The loop used to reset
+/// the backoff as soon as `handle.send(register)` returned `Ok`, which only
+/// means the frame reached an in-process channel (`SignalingHandle::send`
+/// pushes into an unbounded mpsc and cannot know what the backend decided).
+/// A laptop the user had revoked from their phone therefore reconnected at the
+/// 500ms floor forever: observed live 2026-08-15 at ~2 sockets/sec, holding its
+/// own `/devices/challenge` rate limit permanently exceeded (543 × HTTP 429),
+/// so it could never recover even after re-linking.
+fn proves_registered(msg_type: &str) -> bool {
+    msg_type != "error"
+}
+
 /// Mirrors `@lilypad/protocol`'s `presenceRoomId` (`presence:<deviceId>`).
 fn presence_room_id(device_id: &str) -> String {
     format!("presence:{device_id}")
@@ -90,9 +114,12 @@ async fn run(app: AppHandle) {
         match connect(&url, token.as_deref()).await {
             Ok((handle, mut inbound)) => {
                 if handle.send(Envelope::register(&room, &device_id)).is_ok() {
-                    log::info!(target: "lilypad::presence", "presence online ({room})");
-                    attempt = 0;
+                    // NOT "online" yet, and NOT grounds to reset the backoff —
+                    // see `proves_registered`. Both wait for the hub to answer.
+                    log::debug!(target: "lilypad::presence", "presence registering ({room})");
                     let mut hb = tokio::time::interval(HEARTBEAT_INTERVAL);
+                    // Flips once, on the hub's first non-error frame.
+                    let mut registered = false;
                     // Any inbound frame (the register ack path, a pong, a
                     // connect-request) proves the socket is alive; the register
                     // just went out, so seed liveness at "now".
@@ -118,11 +145,29 @@ async fn run(app: AppHandle) {
                             env = inbound.recv() => {
                                 let Some(env) = env else { break };
                                 last_inbound = tokio::time::Instant::now();
+                                if !registered && proves_registered(&env.msg_type) {
+                                    registered = true;
+                                    attempt = 0;
+                                    log::info!(target: "lilypad::presence", "presence online ({room})");
+                                }
                                 handle_inbound(&app, &url, env);
                             }
                         }
                     }
-                    log::info!(target: "lilypad::presence", "presence socket closed — reconnecting");
+                    if registered {
+                        log::info!(target: "lilypad::presence", "presence socket closed — reconnecting");
+                    } else {
+                        // The hub never seated us. Distinguished in the log
+                        // because the two cases have different causes: a closed
+                        // socket is the network, an unseated one is almost
+                        // always this computer not being (or no longer being)
+                        // authorized for its own presence room.
+                        log::warn!(
+                            target: "lilypad::presence",
+                            "presence socket closed before the hub accepted the register — \
+                             backing off (attempt {attempt})"
+                        );
+                    }
                 }
             }
             Err(e) => {
@@ -149,10 +194,20 @@ fn handle_inbound(app: &AppHandle, signaling_url: &str, env: Envelope) {
             };
             on_connect_request(app, signaling_url, payload);
         }
+        // Why this device was refused its own presence room is the single most
+        // useful line in a "my laptop is offline in the app" report, and it was
+        // being dropped on the floor. `LinkState` (polled by the dashboard) is
+        // what TELLS the user; this is what tells us.
+        "error" => {
+            log::warn!(
+                target: "lilypad::presence",
+                "hub refused the presence channel: {}", env.payload
+            );
+        }
         // `session-end` here means the hub closed the presence room (e.g.
         // graceful shutdown) — the socket close that follows drives the
         // reconnect loop; nothing to do per-message.
-        "session-end" | "error" | "pong" => {}
+        "session-end" | "pong" => {}
         other => {
             log::debug!(target: "lilypad::presence", "ignoring '{other}' on presence channel");
         }
@@ -234,5 +289,70 @@ mod tests {
             presence_room_id("desktop-abc123"),
             "presence:desktop-abc123"
         );
+    }
+
+    /// The regression this module's `proves_registered` exists for.
+    ///
+    /// A rejected register arrives as an `error` frame, which must NOT count as
+    /// proof that the hub seated us — otherwise the backoff resets and the loop
+    /// hammers the backend at its 500ms floor forever (observed live
+    /// 2026-08-15: ~2 sockets/sec after the laptop was revoked from the phone).
+    #[test]
+    fn an_error_frame_is_not_proof_of_registration() {
+        assert!(!proves_registered("error"));
+    }
+
+    /// The other half: a successful register is acked with silence, so the only
+    /// positive evidence is a non-error frame. Both of these require a seated
+    /// peer — a `pong` answers our heartbeat, a `connect-request` is routed to
+    /// the room's desktop seat.
+    #[test]
+    fn a_pong_or_a_ring_proves_registration() {
+        assert!(proves_registered("pong"));
+        assert!(proves_registered("connect-request"));
+    }
+
+    /// The livelock itself, as arithmetic on the backoff schedule.
+    ///
+    /// Replays "every attempt is rejected" through both policies. The old one
+    /// reset `attempt` the moment the register was ENQUEUED, so every delay was
+    /// `BACKOFF_MS[0]`; the fixed one only resets on proof, so the schedule
+    /// escalates to the cap. Over a 60s outage that is the difference between
+    /// ~120 reconnects and single digits.
+    #[test]
+    fn a_permanently_rejected_presence_backs_off_instead_of_hammering() {
+        fn delay(attempt: usize) -> u64 {
+            BACKOFF_MS.get(attempt).copied().unwrap_or(BACKOFF_CAP_MS)
+        }
+        // Sockets opened within 60s when every register is refused.
+        fn sockets_in_60s(reset_on_enqueue: bool) -> usize {
+            let (mut elapsed, mut attempt, mut sockets) = (0u64, 0usize, 0usize);
+            while elapsed < 60_000 {
+                sockets += 1;
+                elapsed += delay(attempt);
+                // The bug: an enqueued register was taken as success.
+                attempt = if reset_on_enqueue { 0 } else { attempt + 1 };
+            }
+            sockets
+        }
+        let old = sockets_in_60s(true);
+        let fixed = sockets_in_60s(false);
+        assert_eq!(old, 120, "the old policy pinned the 500ms floor");
+        assert!(
+            fixed <= 8,
+            "a refused presence must escalate to the cap, got {fixed} sockets in 60s"
+        );
+    }
+
+    /// Recovery must not be sacrificed to fix the storm. A laptop that IS
+    /// seated, then drops (wifi blip, sleep/wake), has had `attempt` reset by
+    /// the hub's frames, so it reconnects at the 500ms floor — not at the cap.
+    #[test]
+    fn a_healthy_socket_that_drops_still_reconnects_immediately() {
+        let mut attempt = 3usize; // took a while to come up
+        if proves_registered("pong") {
+            attempt = 0;
+        }
+        assert_eq!(BACKOFF_MS.get(attempt).copied().unwrap(), 500);
     }
 }

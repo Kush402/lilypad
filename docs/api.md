@@ -400,6 +400,15 @@ hands are indistinguishable from the server, so the safe response is to force a
 re-sign-in. Clients MUST replace their stored copy with the returned one.
 Rate-limited to **60/minute** per IP.
 
+**Single-use is enforced concurrently, not just sequentially.** Two requests
+presenting the same token at the same time do not both succeed: the retirement
+is decided in one `UPDATE … WHERE revoked_at IS NULL`, exactly one caller wins,
+and the loser is treated as reuse — which revokes the family, including the
+successor the winner just received. So a client that fires two refreshes in
+parallel signs the user out. Serialise refresh on the client (one in-flight
+exchange, shared by all waiters) rather than relying on the server to merge them.
+Rotating the _successor_ afterwards is normal and unaffected.
+
 ```jsonc
 { "refreshToken": "…" } // → 200 (same session shape) · 401 invalid_token
 ```

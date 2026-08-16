@@ -65,6 +65,7 @@ const SKIP_DIRS = new Set([
   'build',
   '.turbo',
   'Pods',
+  'vendor', // apps/mobile/vendor/bundle — gems, same category as node_modules
   '.gradle',
   '.codegraph',
   '.code-review-graph',

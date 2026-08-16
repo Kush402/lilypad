@@ -11,9 +11,9 @@ import {
  * and audit-log suites already use. Models the one behaviour that matters:
  * rows are retired, never deleted. */
 function fakeStore(): RefreshTokenStore & {
-  rows: Map<string, RefreshTokenRow & { hash: string }>;
+  rows: Map<string, RefreshTokenRow & { hash: string; replacedById?: string }>;
 } {
-  const rows = new Map<string, RefreshTokenRow & { hash: string }>();
+  const rows = new Map<string, RefreshTokenRow & { hash: string; replacedById?: string }>();
   return {
     rows,
     insert(row) {
@@ -31,10 +31,17 @@ function fakeStore(): RefreshTokenStore & {
       for (const row of rows.values()) if (row.hash === tokenHash) return Promise.resolve(row);
       return Promise.resolve(null);
     },
-    markRotated(id) {
+    // Deliberately atomic — no `await` between reading `revokedAt` and writing
+    // it — because the real implementation is ONE `UPDATE … WHERE revoked_at
+    // IS NULL RETURNING id`. A fake that yielded in the middle would invent an
+    // interleaving Postgres does not have, and would let a broken `rotate`
+    // pass.
+    markRotatedIfLive(id, replacedById) {
       const row = rows.get(id);
-      if (row) row.revokedAt = new Date();
-      return Promise.resolve();
+      if (!row || row.revokedAt !== null) return Promise.resolve(false);
+      row.revokedAt = new Date();
+      row.replacedById = replacedById;
+      return Promise.resolve(true);
     },
     revokeAllForUser(userId) {
       for (const row of rows.values()) {
@@ -116,5 +123,57 @@ describe('RefreshTokenService', () => {
 
     expect((await service.rotate(one.token)).ok).toBe(false);
     expect((await service.rotate(two.token)).ok).toBe(false);
+  });
+
+  describe('concurrent rotation of one token', () => {
+    /** The race this file's `markRotatedIfLive` exists for.
+     *
+     * `rotate` used to read the row, check `revokedAt`, then write. Two
+     * requests presenting the SAME token interleave inside that gap: both read
+     * a live row, both pass the reuse check, and both mint a successor. The
+     * effect is worse than a duplicate — it is reuse detection silently not
+     * working, which is the one thing rotation is for. */
+    it('lets exactly one caller win, and treats the other as reuse', async () => {
+      const issued = await service.issue('user-1');
+
+      const [a, b] = await Promise.all([
+        service.rotate(issued.token),
+        service.rotate(issued.token),
+      ]);
+
+      const winners = [a, b].filter((r) => r.ok);
+      expect(winners).toHaveLength(1);
+      const loser = [a, b].find((r) => !r.ok);
+      expect(loser).toEqual({ ok: false, reason: 'reused' });
+    });
+
+    it('leaves the account with no usable refresh token at all', async () => {
+      // Concurrent use is indistinguishable from theft, so the family dies —
+      // including the successor the winner had already minted. Re-authenticating
+      // is the only way back, which is the intended posture for reuse.
+      const issued = await service.issue('user-1');
+
+      const results = await Promise.all([
+        service.rotate(issued.token),
+        service.rotate(issued.token),
+      ]);
+
+      const minted = results.find((r) => r.ok);
+      expect(minted?.ok).toBe(true);
+      if (minted?.ok) {
+        expect((await service.rotate(minted.token)).ok).toBe(false);
+      }
+      expect([...store.rows.values()].every((r) => r.revokedAt !== null)).toBe(true);
+    });
+
+    it('does not punish a second, sequential rotation of the SUCCESSOR', async () => {
+      // The guard must not turn normal serial refreshing into a logout.
+      const first = await service.issue('user-1');
+      const second = await service.rotate(first.token);
+      expect(second.ok).toBe(true);
+      if (second.ok) {
+        expect((await service.rotate(second.token)).ok).toBe(true);
+      }
+    });
   });
 });

@@ -16,6 +16,10 @@ apps/desktop/src-tauri/gen/
 
 # React Native
 apps/mobile/ios/Pods/
+# Where the versioned apps/mobile/.bundle/config sends `bundle install` — the
+# CocoaPods gem tree the README's `bundle exec pod install` needs locally, and
+# never something to commit.
+apps/mobile/vendor/
 apps/mobile/ios/build/
 apps/mobile/ios/build-device/
 apps/mobile/ios/build-release/
