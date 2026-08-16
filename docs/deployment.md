@@ -9,7 +9,7 @@ summary: How the control plane is deployed, what it costs, how it scales, and ho
 
 **Status: the control plane is DEPLOYED and publicly verified** at
 `https://api.takedia.com` (Oracle Always Free, 2026-08-16). **TURN is not
-deployed** — it is blocked on two console-level actions, below. See
+deployed, and deliberately will not run on this VM.** See
 [What is deployed](#what-is-deployed-2026-08-16) and
 [What is not done](#what-is-not-done) before treating any of this as finished.
 
@@ -68,7 +68,7 @@ nonce that survives a restart is a replay window, not a recovered value.
 | `lilypad.takedia.com`     | Local-development tunnel  | **Live** — preserved. Stays the dev tunnel; moving it is M13's, not P4's. |
 | `lilypadhome.takedia.com` | Marketing site (P4)       | Planned — the site is built (`apps/site`); DNS and hosting are M13's      |
 | `api.takedia.com`         | REST **and** `/ws/signal` | **Live** — Oracle Always Free, tunnel `lilypad-prod` (2026-08-16)         |
-| `turn.takedia.com`        | TURN/STUN relay           | Blocked — needs an A record + an OCI ingress rule (see What is deployed)  |
+| `turn.takedia.com`        | TURN/STUN relay           | Awaiting a host — deliberately NOT the Oracle VM (see What is deployed)   |
 | `dl.takedia.com`          | Downloads                 | Planned                                                                   |
 | `status.takedia.com`      | Status page               | Planned                                                                   |
 
@@ -258,8 +258,60 @@ everything else in the app is unaffected.
 
 ## What is deployed (2026-08-16)
 
-Stage 0, on an Oracle Always Free VM (`158.101.22.146`, Ubuntu 20.04, 2 vCPU /
-952 MB / 45 GB, x86_64). **Recurring cost: $0.**
+Stage 0, on an Oracle Always Free VM (`158.101.22.146`). **Recurring cost: $0.**
+
+**The shape is not the one Stage 0 above assumes.** That text specifies
+"2 OCPU / 12 GB ARM"; what exists is `VM.Standard.E2.1.Micro` — **1 OCPU
+(2 threads, AMD EPYC 7551), 1 GB RAM, 0.48 Gbps, 45 GB, Phoenix AD-3**. Twelve
+times less memory, so it was audited under the live workload before being
+trusted (2026-08-16):
+
+| Measure              | Result                                         |
+| -------------------- | ---------------------------------------------- |
+| All four containers  | **175 MiB** of 952 MB — 464 MB still available |
+| Swap (added, 2 GB)   | 3 MB used                                      |
+| OOM kills / restarts | **0 / 0**, across two hours and a reboot       |
+| CPU steal            | **0.0%** — this shape is not throttled         |
+| Disk                 | 13% used, 51.9 MB/s write                      |
+| Reboot recovery      | unattended, ~90 s, full audit re-passed        |
+
+**CPU is the binding resource, not memory.** `scrypt` (N=32768, r=8) costs
+**321 ms and 32 MiB per hash**, measured in the container — so sign-ins
+serialise at roughly **3 per second per core**, confirmed end-to-end: five
+concurrent sign-ins took 2081 ms, exactly five times the single-request 416 ms.
+Memory is bounded by construction, because libuv's default 4-thread pool caps
+concurrent scrypt at 4 (**128 MiB peak**) however heavy the load; a 20-request
+burst never moved backend memory off ~90 MiB, since the **rate limiter binds
+first** (16 of 20 got HTTP 429). A sign-in storm therefore queues rather than
+exhausts the box.
+
+### The risk that is structural, not a misconfiguration
+
+[Oracle reclaims idle Always Free compute](https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm):
+over any **7-day period**, CPU 95th-percentile below 20% **and** network below
+20% marks an instance idle and eligible to be reclaimed. (The memory criterion
+applies to A1 shapes only, so it does not help an E2.) This instance measures
+**~3% CPU, load 0.08**, near-zero network.
+
+That is the architecture working exactly as designed. A session is a few KB of
+signaling and then zero server bandwidth ([ADR-0009](adr/0009-control-plane-deployment.md)) —
+so **the control plane's defining virtue is precisely what makes it look
+abandoned to Oracle's reclaimer.** No tuning resolves it; it is a conflict
+between this workload and the free tier's terms. Accepted deliberately for the
+$0 launch, with deployment scripted so re-provisioning is cheap. The documented
+escape is Stage 1's Hetzner CX22 (~€4.35, 4 GB, no idle policy).
+
+**TURN must not be co-located here** (owner's decision, 2026-08-16, and the
+measurements agree): 1 GB and 0.48 Gbps shared with the API is precisely the
+relay-starves-the-API scenario ADR-0009 separated TURN to avoid.
+
+### Operating system
+
+Ubuntu **20.04.6 LTS**, past its April 2025 standard-support end. The 19
+security updates pending at audit time **were applied 2026-08-16** and 0 remain;
+`unattended-upgrades` is active. Future CVE fixes for 20.04 need **Ubuntu Pro
+`esm-infra`**, which is available on this machine but **not attached** — it
+needs a token from the owner's Ubuntu One account (free for up to 5 machines).
 
 | Piece       | State                                                               |
 | ----------- | ------------------------------------------------------------------- |
@@ -267,7 +319,7 @@ Stage 0, on an Oracle Always Free VM (`158.101.22.146`, Ubuntu 20.04, 2 vCPU /
 | postgres    | ✅ 7 tables, migrated by `deploy.yml`'s own command                 |
 | redis       | ✅ password-required, persistence off                               |
 | cloudflared | ✅ tunnel `lilypad-prod`, serving `api.takedia.com`                 |
-| coturn      | ❌ **blocked** — see below                                          |
+| coturn      | ❌ **not on this VM, by decision** — see below                      |
 | backups     | ✅ nightly 03:17 UTC `pg_dump`, 7-day retention, **restore-tested** |
 
 Two deviations from the text above, both deliberate and neither architectural:
