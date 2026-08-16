@@ -34,8 +34,18 @@ pub struct DeviceAuth {
     /// `inFlight` promise; this is the same fix in the idiom Rust has.
     ///
     /// Async, not `std::sync` — it is held across an `.await`.
+    ///
+    /// Serialising makes the client's timeout load-bearing: one request that
+    /// never completes would now hold every other caller, where before each
+    /// hung alone. `http` is built with one for that reason.
     signing_in: tokio::sync::Mutex<()>,
 }
+
+/// Bound on any single backend call. Matches `account.rs`, and exists here for
+/// a sharper reason: the exchange runs under `signing_in`, so an unbounded
+/// request would be an unbounded wait for the dashboard's `link_state` poll and
+/// the presence loop's `bearer` alike.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 
 struct CachedToken {
     value: String,
@@ -107,7 +117,10 @@ impl DeviceAuth {
         Self {
             identity,
             base_url,
-            http: reqwest::Client::new(),
+            http: reqwest::Client::builder()
+                .timeout(REQUEST_TIMEOUT)
+                .build()
+                .unwrap_or_default(),
             cached: Mutex::new(None),
             signing_in: tokio::sync::Mutex::new(()),
         }
