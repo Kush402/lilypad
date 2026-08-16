@@ -1,16 +1,17 @@
 ---
 status: In Progress
 owner: @kushsharma024
-last-verified: 2026-08-15
+last-verified: 2026-08-16
 summary: How the control plane is deployed, what it costs, how it scales, and how to recover it.
 ---
 
 # Deploying the Lilypad control plane
 
-**Status: the artifacts exist and are verified locally. Nothing is deployed to a
-public host yet** — provisioning needs cloud accounts that only the owner can
-create. See [What is not done](#what-is-not-done) before treating any of this as
-production.
+**Status: the control plane is DEPLOYED and publicly verified** at
+`https://api.takedia.com` (Oracle Always Free, 2026-08-16). **TURN is not
+deployed** — it is blocked on two console-level actions, below. See
+[What is deployed](#what-is-deployed-2026-08-16) and
+[What is not done](#what-is-not-done) before treating any of this as finished.
 
 ## The one idea that determines every cost in this document
 
@@ -66,8 +67,8 @@ nonce that survives a restart is a replay window, not a recovered value.
 | ------------------------- | ------------------------- | ------------------------------------------------------------------------- |
 | `lilypad.takedia.com`     | Local-development tunnel  | **Live** — preserved. Stays the dev tunnel; moving it is M13's, not P4's. |
 | `lilypadhome.takedia.com` | Marketing site (P4)       | Planned — the site is built (`apps/site`); DNS and hosting are M13's      |
-| `api.takedia.com`         | REST **and** `/ws/signal` | Planned                                                                   |
-| `turn.takedia.com`        | TURN/STUN relay           | Planned                                                                   |
+| `api.takedia.com`         | REST **and** `/ws/signal` | **Live** — Oracle Always Free, tunnel `lilypad-prod` (2026-08-16)         |
+| `turn.takedia.com`        | TURN/STUN relay           | Blocked — needs an A record + an OCI ingress rule (see What is deployed)  |
 | `dl.takedia.com`          | Downloads                 | Planned                                                                   |
 | `status.takedia.com`      | Status page               | Planned                                                                   |
 
@@ -254,6 +255,65 @@ capability"_, so the on-device builds made for testing so far have had to drop
 [`LilypadMobile.entitlements`](../apps/mobile/ios/LilypadMobile/LilypadMobile.entitlements)
 at the command line. Apple sign-in is therefore **unverified on hardware**;
 everything else in the app is unaffected.
+
+## What is deployed (2026-08-16)
+
+Stage 0, on an Oracle Always Free VM (`158.101.22.146`, Ubuntu 20.04, 2 vCPU /
+952 MB / 45 GB, x86_64). **Recurring cost: $0.**
+
+| Piece       | State                                                               |
+| ----------- | ------------------------------------------------------------------- |
+| backend     | ✅ `lilypad-backend:prod`, healthy                                  |
+| postgres    | ✅ 7 tables, migrated by `deploy.yml`'s own command                 |
+| redis       | ✅ password-required, persistence off                               |
+| cloudflared | ✅ tunnel `lilypad-prod`, serving `api.takedia.com`                 |
+| coturn      | ❌ **blocked** — see below                                          |
+| backups     | ✅ nightly 03:17 UTC `pg_dump`, 7-day retention, **restore-tested** |
+
+Two deviations from the text above, both deliberate and neither architectural:
+
+1. **The image was cross-built and shipped over SSH**, not pulled from GHCR.
+   `deploy.yml` has never run, so `ghcr.io/kushsharma024/lilypad-backend` does
+   not exist yet, and the repo is private. `docker buildx --platform linux/amd64`
+   → `docker save | ssh docker load` puts no credential on the box.
+2. **The tunnel is locally-managed**, not token-managed. The compose file
+   expects a dashboard-issued `CLOUDFLARE_TUNNEL_TOKEN`; this tunnel was created
+   from the CLI with the existing origin certificate, so its ingress lives in
+   `/opt/lilypad/cloudflared/config.yml`. A compose **override** supplies that —
+   `infra/production/docker-compose.yml` itself is untouched. Same container,
+   same hostname, same architecture.
+
+### Verified against the live public endpoint
+
+- `https://api.takedia.com/health` → 200, valid TLS, HTTP/2, both dependencies up.
+- **`pnpm e2e:audit` against production: all checks pass** — signup, duplicate
+  refusal, wrong-password parity, enrollment, the desktop's inability to enroll
+  itself, linking by phone approval, single-use codes, the device list and its
+  401 for anonymous callers, pairing, single-use QR tokens, connect
+  authorization, revocation, and re-linking.
+- `wss://api.takedia.com/ws/signal` upgrades through the tunnel and refuses an
+  unauthorized `register` with `unauthorized_room` then close `4403`.
+- `/metrics` 401 without a token, 200 with it. CORS closed to an unlisted origin.
+- **Postgres, Redis and the backend have no public port at all** — only 22 is
+  reachable. Confirmed by probing from off-host.
+- **Reboot-tested:** `sudo reboot` → the full stack, tunnel included, returned
+  unattended in ~90s and re-passed the whole audit.
+
+### What blocks TURN
+
+Measured, not assumed: with host `iptables` opened on TCP 80 and a listener
+running, an external connection still **timed out**. So the block is Oracle's
+**VCN security list**, which is console-level and cannot be changed over SSH.
+
+1. **OCI console** → VCN → Security List → ingress for UDP `3478`,
+   UDP `49160-49260`, TCP `443`, and TCP `80` (Let's Encrypt ACME only).
+2. **`turn.takedia.com` A record → `158.101.22.146`, DNS-only (grey cloud).**
+   TURN is UDP; it can traverse neither the tunnel nor Cloudflare's proxy.
+   `cloudflared tunnel route dns` creates CNAMEs to a tunnel and cannot do this.
+
+Until both exist, `infra/coturn-prod` cannot obtain its certificate or serve a
+relay, and the backend's `TURN_URL` points at a name that does not resolve.
+**LAN and direct P2P are unaffected** — they never touch TURN.
 
 ## What is not done
 
