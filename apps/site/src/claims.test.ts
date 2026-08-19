@@ -42,9 +42,10 @@ describe('platform claims', () => {
     expect(row![0]).not.toContain('tag--yes');
   });
 
-  it('never calls itself available for download while no release exists', () => {
-    // Reworded only when a release genuinely exists; `gh release list` is empty.
-    expect(html).toMatch(/no public release yet/i);
+  // v0.1.0 was published 2026-08-19, so the page may now offer a download. What
+  // it must NOT do is imply the download is signed — see the distribution suite.
+  it('links the release that actually exists', () => {
+    expect(html).toMatch(/releases\/latest/);
   });
 });
 
