@@ -22,6 +22,10 @@ import { describe, it, expect } from 'vitest';
 
 const html = readFileSync(fileURLToPath(new URL('../index.html', import.meta.url)), 'utf8');
 
+/** The same HTML with runs of whitespace collapsed. Prettier line-wraps prose,
+ * so a phrase-level assertion must not depend on where the wrap landed. */
+const flat = html.replace(/\s+/g, ' ');
+
 describe('platform claims', () => {
   it('presents macOS and iOS as supported', () => {
     for (const row of [/macOS[\s\S]{0,200}?tag--yes/, /iOS[\s\S]{0,200}?tag--yes/]) {
@@ -68,6 +72,37 @@ describe('pricing claims', () => {
   // "LAN is never paywalled."
   it('keeps the promise that local use is free', () => {
     expect(html).toMatch(/on your own network is always free/i);
+  });
+});
+
+describe('distribution and relay claims match reality', () => {
+  // Added 2026-08-19 after an audit found three claims the repository could not
+  // support. Each assertion pins a fact that was VERIFIED, and must be relaxed
+  // only when the underlying fact changes — not when the copy is reworded.
+
+  // Verified: `security find-identity -v -p codesigning` offers only an "Apple
+  // Development" certificate. Developer ID signing and notarization both
+  // require a paid Apple Developer Program membership, which does not exist.
+  it('does not claim the macOS build is signed or notarized', () => {
+    const row = /<th scope="row">macOS<\/th>[\s\S]{0,300}?<\/tr>/.exec(html);
+    expect(row).not.toBeNull();
+    expect(row![0].replace(/\s+/g, ' ')).not.toMatch(/\bsigned and notarized\b/i);
+    expect(flat).toMatch(/macOS[\s\S]{0,200}?not yet signed or notarized/i);
+  });
+
+  // Verified: the same missing membership means no TestFlight, so a customer
+  // has no way to install the iPhone app at all.
+  it('admits the iPhone app has no public install path', () => {
+    const row = /<th scope="row">iOS<\/th>[\s\S]{0,300}?<\/tr>/.exec(html);
+    expect(row).not.toBeNull();
+    expect(row![0].replace(/\s+/g, ' ')).toMatch(/no public install path/i);
+  });
+
+  // Verified: no TURN host is deployed (docs/deployment.md, "What is deployed").
+  // Promising a fallback that cannot happen is the worst kind of copy: the user
+  // only discovers it when they are away from home and it matters.
+  it('does not promise relay fallback while no relay is running', () => {
+    expect(flat).toMatch(/no relay is running yet/i);
   });
 });
 

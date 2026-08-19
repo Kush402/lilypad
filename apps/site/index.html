@@ -30,9 +30,7 @@
           Pair once with a QR code, then reconnect forever. At home, Lilypad connects
           <strong>directly over your own network</strong> — no internet required.
         </p>
-        <p class="hero__platforms">
-          <span class="chip">macOS</span> <span class="chip">iOS</span>
-        </p>
+        <p class="hero__platforms"><span class="chip">macOS</span> <span class="chip">iOS</span></p>
         <p class="hero__note">
           Not yet released publicly. See <a href="#get">Get it</a> for where builds will appear.
         </p>
@@ -49,22 +47,25 @@
             <li>
               <h3>On your network</h3>
               <p>
-                Your phone talks to your Mac directly. Nothing leaves your home, and it works with the
-                internet down.
+                Your phone talks to your Mac directly. Nothing leaves your home, and it works with
+                the internet down.
               </p>
             </li>
             <li>
               <h3>Peer to peer</h3>
               <p>
-                Away from home, your phone and Mac connect straight to each other across the internet
-                wherever the network allows it.
+                Away from home, your phone and Mac connect straight to each other across the
+                internet wherever the network allows it.
               </p>
             </li>
             <li>
               <h3>Relayed, only if it must</h3>
               <p>
-                When a network blocks a direct connection, traffic is relayed — and it stays
+                When a network blocks a direct connection, traffic is meant to be relayed, staying
                 end-to-end encrypted in transit (DTLS-SRTP) the whole way.
+                <strong>No relay is running yet</strong>, so today a session that cannot connect
+                directly will fail rather than fall back. The first two paths are the ones that
+                work.
               </p>
             </li>
           </ol>
@@ -116,15 +117,15 @@
         <div class="band__inner">
           <h2>Ask it to do things</h2>
           <p class="lede">
-            Ask is an assistant that drives your Mac. It runs <strong>on the Mac itself</strong> — not
-            in our cloud.
+            Ask is an assistant that drives your Mac. It runs <strong>on the Mac itself</strong> —
+            not in our cloud.
           </p>
           <ul class="ticks">
             <li>It asks your phone before it does anything consequential.</li>
             <li>You can take over at any moment.</li>
             <li>
-              Bring your own API key — Anthropic, or any OpenAI-compatible endpoint. Your key stays in
-              your Mac's keychain.
+              Bring your own API key — Anthropic, or any OpenAI-compatible endpoint. Your key stays
+              in your Mac's keychain.
             </li>
           </ul>
         </div>
@@ -146,11 +147,17 @@
             <tbody>
               <tr>
                 <th scope="row">macOS</th>
-                <td><span class="tag tag--yes">Supported</span> Universal build, signed and notarized</td>
+                <td>
+                  <span class="tag tag--yes">Supported</span> Universal build. Not yet signed or
+                  notarized — macOS will warn on first open
+                </td>
               </tr>
               <tr>
                 <th scope="row">iOS</th>
-                <td><span class="tag tag--yes">Supported</span> iPhone</td>
+                <td>
+                  <span class="tag tag--yes">Supported</span> iPhone. No public install path yet —
+                  TestFlight needs a paid Apple developer account
+                </td>
               </tr>
               <tr>
                 <th scope="row">Windows</th>
@@ -173,9 +180,9 @@
         <div class="band__inner">
           <h2>Plans</h2>
           <p class="lede">
-            <strong>Using Lilypad on your own network is always free.</strong> It costs us nothing to
-            run, so there is nothing to charge for. We only meter the two things that genuinely cost
-            money: relayed minutes, and AI we pay for on your behalf.
+            <strong>Using Lilypad on your own network is always free.</strong> It costs us nothing
+            to run, so there is nothing to charge for. We only meter the two things that genuinely
+            cost money: relayed minutes, and AI we pay for on your behalf.
           </p>
 
           <div class="plans">
@@ -225,9 +232,17 @@
           <h2>Get it</h2>
           <p class="lede">There is no public release yet.</p>
           <p>
-            When there is, macOS will ship as a signed and notarized universal build through GitHub
-            Releases, and installed copies will update themselves from it. The iPhone app is
-            distributed through TestFlight.
+            macOS ships as a universal build through GitHub Releases, and installed copies update
+            themselves from it. It is <strong>not signed or notarized yet</strong>: on first open
+            macOS says it &ldquo;cannot verify Lilypad is free of malware&rdquo; and offers only
+            <em>Move to Trash</em> or <em>Done</em>. To run it anyway, open
+            <strong>System&nbsp;Settings &rarr; Privacy &amp; Security</strong> and choose
+            <strong>Open Anyway</strong>. A paid Apple developer account is what removes this step.
+          </p>
+          <p>
+            <strong>The iPhone app has no public install path today.</strong> TestFlight also
+            requires that paid account, so the phone side currently has to be built from source with
+            Xcode.
           </p>
           <p class="cta">
             <a class="btn btn--primary" href="https://github.com/Kush402/lilypad/releases"

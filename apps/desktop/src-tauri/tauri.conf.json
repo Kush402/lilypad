@@ -36,7 +36,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDU1RTVBMDBDNTA5MTFBNwpSV1NuRVFuRkFGcGVCY2doSkFvTEhJNEpGWWhHWDE2NmxqbFpTYjZIYjlJVE5HbUlXV2lObGV5cAo=",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDkzM0UyQjM2OUMyODRFMDAKUldRQVRpaWNOaXMra3k2dkY4dDBvYlZHOUhCYTJ6ZVRjUC9HYldMQjE3ZVlzWUxJVkFnRmlDQzUK",
       "endpoints": ["https://github.com/Kush402/lilypad/releases/latest/download/latest.json"]
     }
   },
