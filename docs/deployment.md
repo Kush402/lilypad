@@ -258,7 +258,7 @@ everything else in the app is unaffected.
 
 ## What is deployed (2026-08-16)
 
-Stage 0, on an Oracle Always Free VM (`158.101.22.146`). **Recurring cost: $0.**
+Stage 0, on an Oracle Always Free VM (IP recorded in the Oracle console, deliberately not in this public repo). **Recurring cost: $0.**
 
 **The shape is not the one Stage 0 above assumes.** That text specifies
 "2 OCPU / 12 GB ARM"; what exists is `VM.Standard.E2.1.Micro` — **1 OCPU
@@ -359,7 +359,7 @@ running, an external connection still **timed out**. So the block is Oracle's
 
 1. **OCI console** → VCN → Security List → ingress for UDP `3478`,
    UDP `49160-49260`, TCP `443`, and TCP `80` (Let's Encrypt ACME only).
-2. **`turn.takedia.com` A record → `158.101.22.146`, DNS-only (grey cloud).**
+2. **`turn.takedia.com` A record → the VM’s public IP, DNS-only (grey cloud).**
    TURN is UDP; it can traverse neither the tunnel nor Cloudflare's proxy.
    `cloudflared tunnel route dns` creates CNAMEs to a tunnel and cannot do this.
 
