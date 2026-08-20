@@ -46,6 +46,24 @@ export async function buildServer(): Promise<FastifyInstance> {
   // JSON.parse that stalls the event loop (DoS).
   await app.register(websocket, { options: { maxPayload: 64 * 1024 } });
 
+  // Transport and content-type hardening on every response.
+  //
+  // Not helmet: this is four headers on a JSON-only API, and a dependency for
+  // four headers is a dependency to keep patched forever. What is here is what
+  // applies — an API that serves no HTML needs no CSP for its own sake, but it
+  // does need browsers to refuse to sniff its JSON as something executable,
+  // and it does need the first plaintext request a client ever makes to be the
+  // last one.
+  app.addHook('onSend', async (_req, reply, payload) => {
+    reply.header('strict-transport-security', 'max-age=31536000; includeSubDomains');
+    reply.header('x-content-type-options', 'nosniff');
+    reply.header('referrer-policy', 'no-referrer');
+    // Nothing here is meant to be embedded, and a JSON error body rendered in
+    // a frame is a phishing surface for free.
+    reply.header('x-frame-options', 'DENY');
+    return payload;
+  });
+
   // Every finished request, counted. `onResponse` and not `onSend` so the
   // duration includes serialisation, and so a request the router never matched
   // (a 404, a probe) still lands in the totals — those are exactly the ones an

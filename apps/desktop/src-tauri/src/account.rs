@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
 /// This laptop's ACCOUNT session — who is signed in
@@ -239,7 +239,10 @@ mod tests {
         // developer machine with one must never report a session with no email.
         let state = Account::state();
         if state.signed_in {
-            assert!(state.email.is_some(), "a stored session must know its email");
+            assert!(
+                state.email.is_some(),
+                "a stored session must know its email"
+            );
             assert!(state.user_id.is_some());
         } else {
             assert!(state.email.is_none());
@@ -249,6 +252,9 @@ mod tests {
     #[test]
     fn urls_join_without_doubling_the_slash() {
         let account = Account::new("https://example.com/".to_owned());
-        assert_eq!(account.url("/auth/password"), "https://example.com/auth/password");
+        assert_eq!(
+            account.url("/auth/password"),
+            "https://example.com/auth/password"
+        );
     }
 }

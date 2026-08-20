@@ -1,6 +1,13 @@
 module.exports = {
   preset: 'react-native',
   setupFilesAfterEnv: ['@testing-library/react-native/extend-expect'],
+  // React Native rendering plus `findBy*`'s polling makes these tests slow by
+  // nature — a passing file routinely takes tens of seconds of wall clock. At
+  // jest's 5s default, individual tests inside it began timing out whenever
+  // the whole monorepo's suites ran in parallel and the machine was busy, and
+  // then passed on a re-run. That is a flaky suite, not a slow one, and a
+  // flaky suite teaches people to re-run CI instead of reading it.
+  testTimeout: 30_000,
   // @lilypad/protocol ships pure ESM (`"type": "module"`, no "require" export
   // condition) — Jest's CJS resolver can't require() it. Map straight to the
   // TypeScript source instead of dist/, so babel-jest transforms it exactly

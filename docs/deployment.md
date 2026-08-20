@@ -198,21 +198,58 @@ Secrets live on the server in `.env.production` (gitignored; verified) and in
 GitHub Actions secrets. **Never in the repo.**
 
 ```bash
-# First time, on the VM
-git clone https://github.com/kushsharma024/lilypad && cd lilypad
-cp infra/production/.env.production.example .env.production
+# First time, on the VM. NOTE: the host keeps no git checkout — see
+# infra/production/README.md. This is the bootstrap; deploys after it copy in
+# only the compose file.
+mkdir -p /opt/lilypad && cd /opt/lilypad
+cp <repo>/infra/production/.env.production.example .env.production
 $EDITOR .env.production          # generate every secret with: openssl rand -hex 32
-docker compose -f infra/production/docker-compose.yml up -d
+docker compose --env-file .env.production -f infra/production/docker-compose.yml up -d
 ```
 
 Thereafter, `.github/workflows/deploy.yml` (manual dispatch, or a `v*` tag):
 
-**gate** (test · typecheck · lint · build · docs · format · audit) → **image**
-(multi-arch, pushed to GHCR) → **deploy** (migrate, then `up -d`) →
-**health-check** (30 attempts × 5s) → **roll back on failure**.
+**preflight** (every required secret present, in seconds) → **gate** (test ·
+typecheck · lint · build · docs · format · audit) → **image** (multi-arch,
+pushed to GHCR, commit SHA baked in) → **deploy** (migrate, then replace only
+the `backend` service) → **health-check** (`/health` must report BOTH `ok` and
+the SHA just built) → **roll back on failure** (to the image recorded as
+running before the deploy started).
 
 The gate is re-run rather than trusted from an earlier commit, because a deploy
 that trusts a stale green check is how untested code reaches production.
+
+### It works, and here is how that was established (2026-08-20)
+
+This workflow had never completed a single run before 2026-08-20; every
+production deploy was performed by hand. Running it for real found four
+defects, three of which no amount of reading would have shown:
+
+1. It began `cd $DEPLOY_PATH && git fetch && git checkout <sha>`. `/opt/lilypad`
+   is not a git repository, so the first line could never have succeeded.
+2. `DEPLOY_HOST`, `DEPLOY_USER`, `DEPLOY_SSH_KEY`, `DEPLOY_PATH` and
+   `vars.HEALTH_URL` were not configured at all.
+3. `BACKEND_IMAGE=x sudo docker compose ...` — sudo scrubs the environment, so
+   compose fell back to `.env.production` and redeployed the OLD image while
+   every step reported success.
+4. `docker compose up -d` recreated cloudflared from a definition that has
+   never matched production, taking every hostname off the internet for seven
+   minutes (see infra/production/README.md).
+
+All four are fixed. Two consecutive green runs since, each verified by
+`/health` reporting the exact commit deployed. **The health check verifying the
+REVISION rather than mere liveness is what caught defect 3** — a `"status":"ok"`
+check passes happily while the old container serves.
+
+### Which commit is running
+
+```sh
+curl -s https://api.takedia.com/health
+# {"status":"ok",...,"revision":"f96f8c8133badacbea53b71e3af81f7ed38bbd96"}
+```
+
+`revision` is baked into the image by the Dockerfile's `GIT_SHA` build arg.
+`unknown` means the image was built by hand rather than by the workflow.
 
 ## Recovery
 
@@ -227,7 +264,68 @@ that trusts a stale green check is how untested code reaches production.
 
 Backups: `pg_dump` to `infra/production/backups` on a cron, retained 7 days.
 **An untested backup is not a backup** — restore into a scratch database and
-confirm row counts before believing it.
+confirm row counts before believing it. Done 2026-08-20: the latest dump loaded
+into a scratch database with 7 tables and 7 migration rows, then dropped.
+
+Backups sit on the same disk as the database they protect. That is the one
+recovery path in this table with no second copy anywhere — see "What is not
+done".
+
+### Crash recovery, measured (2026-08-20)
+
+The table above described what _should_ happen. Each row below was induced
+deliberately against production with `sudo kill -9 <host pid>` — the container's
+own namespace refuses SIGKILL to pid 1, so `docker exec kill -9 1` proves
+nothing and has to be done from the host.
+
+| Killed   | API impact                 | Back to 200 | Restarted |
+| -------- | -------------------------- | ----------- | --------- |
+| Redis    | `/health` 503 `degraded`   | < 15 s      | yes       |
+| Postgres | none observed — stayed 200 | 7 s         | yes       |
+| Backend  | 502                        | 9 s         | yes       |
+
+Afterwards: 1 user, 1 refresh token, 262 audit rows. Nothing lost.
+
+One correction worth recording, because it looked alarming and was not: a
+container killed with `docker kill` does **not** come back, and that is correct
+— Docker treats it as an operator stopping the container, not as a crash. Only
+a real crash triggers `restart: unless-stopped`.
+
+### Dependency audit exceptions
+
+`pnpm audit --audit-level high` is a **blocking** gate in both `ci.yml` and
+`deploy.yml`. Two advisories are suppressed in `package.json`'s
+`pnpm.auditConfig.ignoreGhsas`, and the reason is recorded here because an
+unexplained suppression is indistinguishable from one added to make CI green:
+
+| Advisory                                                      | Package              | Why it is suppressed                                                                                                                                                                        |
+| ------------------------------------------------------------- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GHSA-w3rx-r6r6-pgpr` — ICNS parser infinite loop (high)      | `image-size` ≤ 2.0.2 | **No patched version exists.** Reached only through `metro`, React Native's build-time bundler, and never at runtime on any device. Triggering it needs a malicious image inside this repo. |
+| `GHSA-5p2g-fcmc-qvqq` — JXL/HEIF parser infinite loops (high) | `image-size` ≤ 2.0.2 | Same package, same path, same reasoning.                                                                                                                                                    |
+
+Both are denial-of-service in an image parser, both are build-time only, and
+neither ships. Re-check when `image-size` publishes a fix, or when React Native
+moves off it: `pnpm -r why image-size`.
+
+### Monitoring
+
+`.github/workflows/watchdog.yml`, every ten minutes: `/health` (and which
+dependency is down), `/metrics` (5xx rate, auth-failure and rate-limit spikes,
+p95 latency), the download page, a real STUN Binding Request to the relay, and
+per-VM disk, memory, container health, backup age, coturn state and pending
+reboots. Alerts open a GitHub issue — one per incident, with follow-up
+comments, closing itself on recovery.
+
+Proven against a real fault on 2026-08-20: with Redis deliberately killed it
+reported "health is degraded; down: redis", "container lilypad-prod-redis-1:
+state is exited", and "container lilypad-prod-backend-1: healthcheck failing".
+Its first-ever run found a genuine one nobody had noticed: the relay VM had a
+pending reboot for applied security updates.
+
+The host probe runs behind a **forced command** in `authorized_keys`, so the
+monitoring key can run `/usr/local/bin/lilypad-status` and nothing else.
+Verified: `ssh -i monitor_key <turn host> 'cat /etc/shadow'` returns the status
+JSON, not the file.
 
 ## What the owner must provide (2026-08-15)
 
@@ -444,10 +542,37 @@ Stated explicitly so nothing here reads as more finished than it is.
   but it is the reason to finish P1 before opening this to strangers.
 - ~~Legacy null-secret pairs (SEC-5) are not purged.~~ Migration `0005` revokes
   them and the connect gate refuses a null hash.
-- The `sessions` table is still never written.
-- No backup cron is installed; the procedure above is written, not automated.
+- The `sessions` table is still never written. Consequence: there is no session
+  history for support, and no basis for metering relayed minutes — the thing
+  [ADR-0013](adr/0013-connectivity-is-the-paid-boundary.md) says is the paid
+  boundary. Its three foreign keys are deliberately left unindexed while it
+  stays empty.
+- ~~No backup cron is installed.~~ It runs nightly, and the watchdog alerts if
+  the newest dump is over 36 hours old or the directory is empty. Restore was
+  exercised 2026-08-20.
+- **Backups have no off-host copy.** They live on the same disk as the database.
+  Losing the VM loses both, and Oracle's Always Free terms permit reclaiming an
+  idle instance. This is the single largest unmitigated risk in this document.
 - No staging environment exists yet — the workflow supports it, nothing runs it.
-- No crash reporting or metrics scraping.
+- ~~No crash reporting or metrics scraping.~~ Metrics are scraped by the
+  watchdog every ten minutes. Crash reporting (Sentry or equivalent) is still
+  absent: an unhandled exception is visible only as a 5xx rate and a line in
+  `docker logs`, with no stack trace retained past the container's 30 MB log cap.
+- **`audit_logs` has no retention policy.** It records IP addresses and the
+  email addresses failed sign-ins were attempted against, and it grows forever.
+  How long that data should be kept is a policy question, not an engineering
+  one, and the privacy policy that would answer it is not written — so nothing
+  is deleted rather than a number being invented. Both foreign keys are now
+  indexed, so a future prune (and account deletion) will not table-scan.
+- **A deploy is not zero-downtime.** Replacing the backend container is a hard
+  cutover; measured recovery is ~9 seconds of 502. Live P2P sessions are
+  unaffected (media never crosses this path), but signaling and sign-in are
+  down for those seconds.
+- **Revocation is single-process.** `hub.endRoomsForDevice` kills live rooms on
+  the instance that handled the request. With one backend that is complete;
+  with two it would not be, and horizontal scaling
+  ([ADR-0004](adr/0004-signaling-horizontal-scaling.md)) has to solve it before
+  a second instance exists.
 
 ### Verified locally
 
@@ -460,6 +585,62 @@ Stated explicitly so nothing here reads as more finished than it is.
 - `/metrics` answers 401 without a bearer token and 200 with one.
 - CORS fails closed: an unlisted origin receives no `Access-Control-Allow-Origin`.
 - The WebSocket upgrade returns 101 through the container.
+
+### Verified against production (2026-08-20)
+
+Adversarial and load checks run against the live public endpoint, not a local
+build. Numbers are single-vantage samples from one Mac over the public internet
+through the Cloudflare edge to the Oracle VM in `phx`, stated so they can be
+reproduced rather than believed.
+
+**Rate limiting binds to the real client IP and is not spoofable.** Against a
+5/minute route, eight requests each carrying a _different forged source_:
+
+| Forged header      | Result                                        |
+| ------------------ | --------------------------------------------- |
+| `X-Forwarded-For`  | 5 × 503 then 429 — identical to no header     |
+| `X-Real-IP`        | 5 × 503 then 429 — identical to no header     |
+| `CF-Connecting-IP` | 403 from Cloudflare; never reaches the origin |
+
+**Latency**, cold path separated from warm because a first connection pays for
+TLS and a tunnel hop:
+
+| Measurement                                | Result                                         |
+| ------------------------------------------ | ---------------------------------------------- |
+| First request (fresh TLS + tunnel)         | 911 ms                                         |
+| `GET /health` × 60                         | min 37, p50 68, p95 196, p99 1555 ms           |
+| `GET` an unrouted path × 20                | p50 90, p95 158 ms                             |
+| `POST /auth/password`, unknown account × 8 | p50 430, max 880 ms (32 MiB scrypt, by design) |
+| WebSocket `/ws/signal` open × 5            | p50 178, p95 427 ms                            |
+
+**Concurrency** on one OCPU — latency grows, nothing collapses:
+
+| Simultaneous | Wall   | Per-request p50 |
+| ------------ | ------ | --------------- |
+| 1            | 44 ms  | 41 ms           |
+| 5            | 71 ms  | 48 ms           |
+| 10           | 247 ms | 85 ms           |
+
+**Sustained capacity is NOT VERIFIED.** The per-IP rate limit (120/min) makes a
+real load test impossible from a handful of addresses — which is the limiter
+working correctly, not an obstacle to route around. A capacity figure needs a
+distributed generator, and no number is stated here until one runs.
+
+**The relay carries a long session.** A forced-relay WebRTC DataChannel
+(`iceTransportPolicy: 'relay'` on both peers, so no direct path is possible)
+ran 842 seconds on a 300-second TURN credential: 56 messages sent, 55 echoed,
+ICE never left `connected`. coturn's REST credential expiry gates new
+allocations, not existing ones — measured, because reading
+`turn/credentials.ts` suggests the opposite.
+
+**The relay survives a reboot.** Patched to kernel `6.17.0-1020-oracle` and
+rebooted: SSH back in 43 s, coturn `active` and `enabled`, STUN Binding Success
+in 9 ms, and a fresh forced-relay session opened and echoed.
+
+**The published updater artifact verifies.** `latest.json` for v0.1.1, both
+platform entries: minisign key id matches the `updater.pubkey` compiled into
+the shipped app, and the Ed25519 signature over the BLAKE2b-512 prehash of the
+21,106,156-byte tarball validates.
 
 **Re-verified 2026-08-15 against the production image, on the current commit**,
 because the checks above predate the M9/P-series work and a stale green is worth

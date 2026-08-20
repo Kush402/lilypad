@@ -86,7 +86,9 @@ jobs:
       - run: pnpm docs:check
       - run: pnpm format:check
       # Blocking: a known-vulnerable dependency must not reach production
-      # silently. Documented exceptions live in the audit config, not here.
+      # silently. The two suppressed advisories, and why, are in
+      # docs/deployment.md § "Dependency audit exceptions" — an ignore with no
+      # written reason is indistinguishable from one added to go green.
       - run: pnpm audit --audit-level high
 
   image:

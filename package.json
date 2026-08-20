@@ -2,7 +2,7 @@
   "name": "lilypad",
   "private": true,
   "version": "0.1.0",
-  "description": "Lilypad — internet-first, phone-first remote laptop control",
+  "description": "Lilypad \u2014 internet-first, phone-first remote laptop control",
   "packageManager": "pnpm@10.33.2",
   "engines": {
     "node": ">=20",
@@ -27,6 +27,9 @@
     "clean:all": "node scripts/clean.mjs all",
     "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,md,yml,yaml}\"",
     "format:check": "prettier --check \"**/*.{ts,tsx,js,jsx,json,md,yml,yaml}\"",
+    "rust:fmt": "cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml",
+    "rust:check": "cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml --check && cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets -- -D warnings && cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml",
+    "verify": "pnpm typecheck && pnpm lint && pnpm format:check && pnpm test && pnpm docs:check && pnpm rust:check",
     "infra:up": "docker compose -f infra/docker-compose.yml up -d",
     "infra:down": "docker compose -f infra/docker-compose.yml down",
     "infra:logs": "docker compose -f infra/docker-compose.yml logs -f"

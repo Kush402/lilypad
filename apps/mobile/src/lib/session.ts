@@ -23,6 +23,24 @@ import * as Keychain from 'react-native-keychain';
 
 const SERVICE = 'com.takedia.lilypad.session';
 
+/**
+ * Every Keychain write in this app uses the same accessibility class, and it
+ * has to be the strictest one: `identity.ts` already pins the device key to
+ * WHEN_UNLOCKED_THIS_DEVICE_ONLY, so the key never rides an iCloud or iTunes
+ * backup onto another phone.
+ *
+ * Leaving the other two stores on the library default (`WhenUnlocked`, which
+ * DOES migrate) produced two problems. The smaller one is a credential in a
+ * backup for no reason: `connectSecret` is a bearer secret presented on every
+ * no-QR reconnect. The larger one is incoherence — a restored phone would find
+ * a list of paired Macs and no device key to reach them with, so the user sees
+ * their computers, taps one, and it fails with nothing to explain why.
+ *
+ * A restored backup should start signed out and empty, which is what actually
+ * happened to the identity all along.
+ */
+const ACCESSIBLE = Keychain.ACCESSIBLE.WHEN_UNLOCKED_THIS_DEVICE_ONLY;
+
 export interface StoredSession {
   /** The account this phone enrolled onto. */
   userId: string;
@@ -66,7 +84,10 @@ export async function saveSession(session: Omit<StoredSession, 'signedInAt'>): P
   cache = full;
   loaded = true;
   try {
-    await Keychain.setGenericPassword('session', JSON.stringify(full), { service: SERVICE });
+    await Keychain.setGenericPassword('session', JSON.stringify(full), {
+      service: SERVICE,
+      accessible: ACCESSIBLE,
+    });
   } catch {
     /* best effort — the in-memory copy still serves this run */
   }

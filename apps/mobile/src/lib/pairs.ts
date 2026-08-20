@@ -3,7 +3,8 @@
  * relationship. One entry per desktop this phone has QR-paired with; drives
  * the My Devices list and the no-QR Connect flow. Stored as a JSON blob in
  * the OS keychain (same module as the device identity, its own service
- * namespace) so pairs survive restarts and OS backups.
+ * namespace) so pairs survive restarts. NOT backups — see ACCESSIBLE below;
+ * a pair is worthless without the device key, which never leaves the phone.
  *
  * "Forget" here is phone-side only: it removes the entry (and the desktop
  * disappears from My Devices), while the backend pair row survives until the
@@ -13,6 +14,24 @@
 import * as Keychain from 'react-native-keychain';
 
 const SERVICE = 'com.takedia.lilypad.paired-desktops';
+
+/**
+ * Every Keychain write in this app uses the same accessibility class, and it
+ * has to be the strictest one: `identity.ts` already pins the device key to
+ * WHEN_UNLOCKED_THIS_DEVICE_ONLY, so the key never rides an iCloud or iTunes
+ * backup onto another phone.
+ *
+ * Leaving the other two stores on the library default (`WhenUnlocked`, which
+ * DOES migrate) produced two problems. The smaller one is a credential in a
+ * backup for no reason: `connectSecret` is a bearer secret presented on every
+ * no-QR reconnect. The larger one is incoherence — a restored phone would find
+ * a list of paired Macs and no device key to reach them with, so the user sees
+ * their computers, taps one, and it fails with nothing to explain why.
+ *
+ * A restored backup should start signed out and empty, which is what actually
+ * happened to the identity all along.
+ */
+const ACCESSIBLE = Keychain.ACCESSIBLE.WHEN_UNLOCKED_THIS_DEVICE_ONLY;
 
 export interface PairedDesktop {
   /** The desktop's wire deviceId — the key /connect/request rings. */
@@ -39,6 +58,7 @@ async function persist(pairs: PairedDesktop[]): Promise<void> {
   try {
     await Keychain.setGenericPassword('paired-desktops', JSON.stringify(pairs), {
       service: SERVICE,
+      accessible: ACCESSIBLE,
     });
   } catch {
     /* best effort — the in-memory cache still serves this run */

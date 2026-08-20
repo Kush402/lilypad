@@ -1,0 +1,19 @@
+# Cloudflare Pages reads this file from the build output and applies it to
+# every matching response. Vite copies `public/` verbatim into `dist/`.
+#
+# This page's entire purpose is handing a stranger an executable. That makes
+# transport integrity a supply-chain property, not a formality: a visitor who
+# types the hostname without a scheme makes one plaintext request, and anyone
+# on that network can answer it with a different download link. HSTS closes
+# that window after the first visit; the rest are defence in depth for a page
+# that is otherwise a single static document.
+
+/*
+  Strict-Transport-Security: max-age=31536000; includeSubDomains
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+  Referrer-Policy: strict-origin-when-cross-origin
+  # No inline scripts, no external anything. The page has exactly one inline
+  # <style> block, which is why style-src allows 'unsafe-inline' and script-src
+  # does not allow anything at all.
+  Content-Security-Policy: default-src 'self'; script-src 'none'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; form-action 'none'; frame-ancestors 'none'; base-uri 'none'; upgrade-insecure-requests

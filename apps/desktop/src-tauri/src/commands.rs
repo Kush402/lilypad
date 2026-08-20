@@ -580,7 +580,12 @@ pub fn show_setup(app: &AppHandle) -> Result<(), String> {
 // ── window helpers (also called from the tray menu in lib.rs) ────────────────
 
 pub fn show_diagnostics(app: &AppHandle) -> Result<(), String> {
-    open_window(app, "diagnostics", "Lilypad — Diagnostics", DIAGNOSTICS_WINDOW)
+    open_window(
+        app,
+        "diagnostics",
+        "Lilypad — Diagnostics",
+        DIAGNOSTICS_WINDOW,
+    )
 }
 
 pub fn show_qr_overlay(app: &AppHandle) -> Result<(), String> {

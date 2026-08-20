@@ -100,7 +100,15 @@ async function checkMetrics() {
   const m = probe.value;
   // A rate, not a count: five 500s out of five requests is an outage, five out
   // of fifty thousand is a scraper hitting a bad path.
-  if (m.errors5xx > 0 && m.errors5xx / Math.max(m.requests, 1) > 0.05) {
+  //
+  // ...and a floor under the denominator, because a rate over a tiny sample is
+  // not a rate. Observed on the first live scrape: five 503s out of fifteen
+  // requests — all of them this audit's own probes of the deliberately
+  // unavailable email route — read as a 33% error rate. Below this floor the
+  // `api` check above is the one that speaks, and it reads /health rather than
+  // guessing from arithmetic.
+  const MIN_SAMPLE = 20;
+  if (m.requests >= MIN_SAMPLE && m.errors5xx / m.requests > 0.05) {
     alert('critical', 'error-rate',
       `${m.errors5xx} of ${m.requests} requests returned 5xx in the last ${m.windowMinutes} min`,
       'Read the backend logs — something is throwing, not merely refusing.');

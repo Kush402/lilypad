@@ -42,24 +42,67 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      # Detect which optional secrets exist so a fork / secret-less run still
-      # produces an UNSIGNED build instead of hard-failing. tauri-action treats
-      # an empty APPLE_CERTIFICATE as "don't sign", so passing empties below is
-      # safe; this step only gates the notarization key-file decode and surfaces
-      # human-readable warnings.
-      - name: Preflight — detect signing/notarization secrets
+      # Which optional secrets exist, and — critically — export ONLY the ones
+      # that do.
+      #
+      # The previous version of this step said tauri-action "treats an empty
+      # APPLE_CERTIFICATE as don't sign, so passing empties below is safe".
+      # That is not true, and a real run proved it: Tauri checks whether the
+      # variable is SET, not whether it is non-empty, so an empty string sends
+      # it down the signing path and it dies at
+      #   security: SecKeychainItemImport: One or more parameters ... not valid
+      #   failed to bundle project: failed codesign application
+      # after fifteen minutes of compiling. Every release therefore had to be
+      # built by hand on a developer's Mac.
+      #
+      # Absent secrets are now simply never exported, which is the difference
+      # between "sign with nothing" and "do not sign".
+      - name: Preflight — export only the signing secrets that exist
         id: preflight
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         run: |
-          if [ -n "$APPLE_CERTIFICATE" ]; then
+          set -euo pipefail
+
+          # NOT optional. Without it the updater artifacts are unsigned, every
+          # installed copy rejects the update as untrusted, and auto-update
+          # breaks silently for everyone — a far worse outcome than a failed
+          # build, and one nobody would notice for weeks.
+          if [ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY is not set. Publishing without it ships an update that every existing install will refuse."
+            exit 1
+          fi
+
+          export_if_set() {
+            local name="$1"
+            if [ -n "${!name:-}" ]; then
+              printf '%s<<__EOF_%s\n%s\n__EOF_%s\n' "$name" "$name" "${!name}" "$name" >> "$GITHUB_ENV"
+              echo "  $name: set"
+            else
+              echo "  $name: absent (not exported)"
+            fi
+          }
+
+          echo "Apple signing inputs:"
+          for v in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY \
+                   APPLE_TEAM_ID APPLE_API_ISSUER APPLE_API_KEY; do
+            export_if_set "$v"
+          done
+
+          if [ -n "${APPLE_CERTIFICATE:-}" ]; then
             echo "signing=true" >> "$GITHUB_OUTPUT"
           else
             echo "signing=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::APPLE_CERTIFICATE not set — building UNSIGNED (no Developer ID signature)."
+            echo "::warning::APPLE_CERTIFICATE not set — building UNSIGNED. macOS will warn on first open, and permissions granted to a previous version will not carry over (TCC binds a grant to the exact code signature)."
           fi
-          if [ -n "$APPLE_API_KEY_P8" ]; then
+          if [ -n "${APPLE_API_KEY_P8:-}" ]; then
             echo "notarize=true" >> "$GITHUB_OUTPUT"
           else
             echo "notarize=false" >> "$GITHUB_OUTPUT"
@@ -85,15 +128,14 @@ jobs:
           # latest.json emitted by createUpdaterArtifacts. ──
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          # ── macOS Developer ID signing (empty when unset → unsigned build). ──
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          # ── Notarization via App Store Connect API key. APPLE_API_KEY_PATH is
-          # exported by the decode step above only when the .p8 secret exists. ──
-          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          # The Apple variables are deliberately NOT listed here. Naming a
+          # secret in this block SETS it, empty or not, and Tauri branches on
+          # "is it set" — so listing them is what turned a missing certificate
+          # into a failed codesign instead of an unsigned build. The preflight
+          # step exports the ones that exist, and only those.
+          #
+          # APPLE_API_KEY_PATH comes from the decode step above, likewise only
+          # when the .p8 secret exists.
         with:
           projectPath: apps/desktop
           # For a tag push this is the tag itself; a manual dispatch falls back

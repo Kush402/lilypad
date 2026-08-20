@@ -10,6 +10,21 @@ pnpm bootstrap   # installs deps, starts infra, runs migrations — idempotent
 See the [README](README.md) for per-app run commands and
 [docs/architecture.md](docs/architecture.md) for how the pieces fit.
 
+## Before you push
+
+```bash
+pnpm verify      # exactly what CI runs, in the same order
+```
+
+Run this and not a subset. The habit of running `pnpm typecheck && pnpm test`
+and calling it checked is what left `main` red on **every single CI run** for
+weeks: `cargo fmt --check` had never been satisfied, and no TypeScript command
+was ever going to say so. `pnpm verify` exists so "the check I ran" and "the
+check CI runs" are the same list.
+
+`pnpm rust:fmt` fixes the Rust half in place, the way `pnpm format` does for
+TypeScript.
+
 ## Ground rules
 
 - **Every change ships with its tests.** Backend logic is unit-tested with

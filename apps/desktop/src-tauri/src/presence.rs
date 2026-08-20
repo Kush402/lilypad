@@ -182,7 +182,10 @@ async fn run(app: AppHandle) {
         // every desktop that was connected when the backend restarted would
         // otherwise re-knock in lockstep, every 15 seconds, indefinitely.
         // A deploy makes that a routine event. See `session::reconnect::jitter`.
-        tokio::time::sleep(crate::session::reconnect::jitter(Duration::from_millis(delay))).await;
+        tokio::time::sleep(crate::session::reconnect::jitter(Duration::from_millis(
+            delay,
+        )))
+        .await;
     }
 }
 

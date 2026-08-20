@@ -116,7 +116,9 @@ impl TrayHandles {
         // the same reasoning that already disables Approve while idle. The
         // dashboard is where the missing step lives, and clicking through the
         // bubble or the "+" leads there.
-        let _ = self.show_qr.set_enabled(!(active || connecting) && pairable);
+        let _ = self
+            .show_qr
+            .set_enabled(!(active || connecting) && pairable);
         let _ = self.approve.set_enabled(awaiting);
         let _ = self.deny.set_enabled(awaiting);
         let _ = self.disconnect.set_enabled(!idle);
@@ -345,7 +347,10 @@ pub fn run() {
             // while it is open, and that call keeps this cache current.
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                let link = handle.state::<std::sync::Arc<auth::DesktopAuth>>().link_state().await;
+                let link = handle
+                    .state::<std::sync::Arc<auth::DesktopAuth>>()
+                    .link_state()
+                    .await;
                 {
                     let state = handle.state::<state::SharedState>();
                     let mut guard = state
@@ -446,5 +451,4 @@ mod pairing_order_tests {
 
         assert_eq!(default_backend_url(true), "http://localhost:8080");
     }
-
 }
