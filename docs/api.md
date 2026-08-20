@@ -133,11 +133,28 @@ account there is nothing to list, so an anonymous caller gets **401**, not an
 empty array. Handlers:
 [`routes/devices.ts`](../apps/backend/src/routes/devices.ts).
 
-| Route                       | Purpose                                                                                                           |
-| --------------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| `GET /devices`              | Every device on the caller's account → `{ devices: AccountDevice[] }`.                                            |
-| `PATCH /devices/:deviceId`  | Rename — body `{ "name": "Work MacBook" }` → `{ ok: true }`. A label; nothing authorizes on it.                   |
-| `DELETE /devices/:deviceId` | Revoke. Ends the device's live rooms **and its presence room** immediately, then fails its next `/devices/token`. |
+| Route                       | Purpose                                                                                                                                                      |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `GET /devices`              | Every device on the caller's account → `{ devices: AccountDevice[] }`.                                                                                       |
+| `PATCH /devices/:deviceId`  | Rename — body `{ "name": "Work MacBook" }` → `{ ok: true }`. A label; nothing authorizes on it.                                                              |
+| `DELETE /devices/:deviceId` | Revoke. Ends the device's live rooms **and its presence room** immediately, revokes every refresh token on the account, and fails its next `/devices/token`. |
+
+**A revoked device is refused everywhere, immediately.** Access tokens are
+verified by signature alone (ADR-0001), so a device revoked one second ago holds
+a syntactically valid token for up to ten more minutes. Every route that takes a
+device token therefore re-checks the device row and answers
+`401 { "error": "device_revoked" }` — the device list, rename, revoke, the pair
+routes, `/devices/unpair`, `/pairing/*`, `/connect/request`, and
+`/devices/enrollment-code/approve`. That last one is the reason this is not
+merely tidiness: it takes a device token, so without the check a revoked phone
+could approve a **new** laptop onto the account.
+
+Revoking also revokes the account's refresh tokens, and re-enrolling a revoked
+device requires a credential minted **after** the revocation
+(`403 { "error": "device_revoked" }` from `/devices/enroll` otherwise). Together
+those stop the ten-minute window being used to make itself permanent — enrolling
+clears `revoked_at`. Recovery is unaffected: sign in again on the device and the
+token you get postdates the revocation.
 
 ```jsonc
 // GET /devices → 200
