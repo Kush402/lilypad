@@ -193,24 +193,47 @@ jobs:
           script: |
             set -euo pipefail
             cd "$DEPLOY_PATH"
+            HOST_OVERRIDE=""
+            [ -f "$DEPLOY_PATH/cloudflared-local.yml" ] && HOST_OVERRIDE="$DEPLOY_PATH/cloudflared-local.yml" || true
             compose() {
-              # --env-file is not optional: the compose file interpolates
-              # POSTGRES_USER, REDIS_PASSWORD and friends, and without it every
-              # one of them resolves to the empty string and the stack comes up
-              # with no credentials.
-              sudo docker compose --env-file "$DEPLOY_PATH/.env.production" \
-                -f infra/production/docker-compose.yml "$@"
+              # Three things here are each load-bearing, and each was learned
+              # from a failed run rather than guessed:
+              #
+              # --env-file: the compose file interpolates POSTGRES_USER,
+              # REDIS_PASSWORD and friends. Without it every one of them
+              # resolves to the empty string and the stack comes up with no
+              # credentials.
+              #
+              # `sudo BACKEND_IMAGE=...`, not `BACKEND_IMAGE=... sudo`: sudo
+              # scrubs the environment, so the prefixed form never reached
+              # docker compose at all. The image variable fell back to the
+              # value sitting in .env.production and the deploy redeployed the
+              # OLD image while every step reported success.
+              #
+              # The host override: this tunnel was created from the CLI with an
+              # origin certificate, so it runs from a local config file rather
+              # than the dashboard token this repo's compose file assumes.
+              # Deploying without the override rewrote cloudflared's command to
+              # `--token ""` and took api.takedia.com off the internet for
+              # seven minutes. See infra/production/README.md.
+              sudo BACKEND_IMAGE="$IMAGE_REF" docker compose \
+                --env-file "$DEPLOY_PATH/.env.production" \
+                -f infra/production/docker-compose.yml \
+                ${HOST_OVERRIDE:+-f "$HOST_OVERRIDE"} "$@"
             }
             sudo docker pull "$IMAGE_REF"
             # Migrations run BEFORE the new image serves traffic. Drizzle
             # migrations here are additive, so the old container tolerates the
             # new schema for the seconds between these two steps.
-            # No --no-deps: `run` then honours the compose file's
+            # No --no-deps on `run`: it then honours the compose file's
             # `service_healthy` conditions, so migrations wait for a healthy
             # Postgres instead of racing a database that is still starting.
-            BACKEND_IMAGE="$IMAGE_REF" compose run --rm -T \
-              backend node dist/db/migrate.js
-            BACKEND_IMAGE="$IMAGE_REF" compose up -d
+            compose run --rm -T backend node dist/db/migrate.js
+            # `--no-deps backend`, not a bare `up -d`: a deploy replaces the
+            # backend. Postgres, Redis and the tunnel are not part of what
+            # changed, and churning them turns a routine deploy into an outage
+            # with three more ways to fail.
+            compose up -d --no-deps backend
             sudo docker image prune -f
 
       - name: Verify the deployment is actually serving THIS commit
@@ -252,7 +275,10 @@ jobs:
               exit 1
             fi
             cd "$DEPLOY_PATH"
-            BACKEND_IMAGE="$prev" sudo docker compose \
+            HOST_OVERRIDE=""
+            [ -f "$DEPLOY_PATH/cloudflared-local.yml" ] && HOST_OVERRIDE="$DEPLOY_PATH/cloudflared-local.yml" || true
+            sudo BACKEND_IMAGE="$prev" docker compose \
               --env-file "$DEPLOY_PATH/.env.production" \
-              -f infra/production/docker-compose.yml up -d
+              -f infra/production/docker-compose.yml \
+              ${HOST_OVERRIDE:+-f "$HOST_OVERRIDE"} up -d --no-deps backend
             echo "rolled back to $prev"

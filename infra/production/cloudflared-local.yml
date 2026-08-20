@@ -1,0 +1,14 @@
+# Overrides ONLY how cloudflared authenticates: the repo compose expects a
+# dashboard-issued token (remotely-managed config). This tunnel was created
+# from the CLI with the existing origin certificate, so its ingress lives in a
+# local config file instead. Same architecture, same container, same hostname.
+#
+# Absolute paths: compose resolves relative volume paths against the FIRST
+# compose file directory (infra/production/), not this file, and a missing
+# source silently becomes a new empty DIRECTORY inside the container.
+services:
+  cloudflared:
+    command: ['tunnel', '--no-autoupdate', '--config', '/etc/cloudflared/config.yml', 'run']
+    volumes:
+      - /opt/lilypad/cloudflared/config.yml:/etc/cloudflared/config.yml:ro
+      - /opt/lilypad/tunnel-credentials.json:/etc/cloudflared/credentials.json:ro
