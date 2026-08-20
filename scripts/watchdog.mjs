@@ -76,6 +76,52 @@ async function checkApi() {
   }
 }
 
+/**
+ * The signals that separate "the process is alive" from "the API is working":
+ * error rate, auth-failure rate, rate-limit storms, and tail latency. All are
+ * windowed server-side, so this needs no memory between runs.
+ */
+async function checkMetrics() {
+  const token = process.env.METRICS_BEARER_TOKEN;
+  if (!token) return; // not configured for this run; not an alert on its own
+  const probe = await timed(async () => {
+    const res = await fetch(`${API}/metrics`, {
+      headers: { authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  });
+  facts.metrics = probe;
+  if (probe.error) {
+    return alert('warning', 'metrics', `GET ${API}/metrics failed: ${probe.error}`,
+      'Check METRICS_BEARER_TOKEN matches production, then the backend logs.');
+  }
+  const m = probe.value;
+  // A rate, not a count: five 500s out of five requests is an outage, five out
+  // of fifty thousand is a scraper hitting a bad path.
+  if (m.errors5xx > 0 && m.errors5xx / Math.max(m.requests, 1) > 0.05) {
+    alert('critical', 'error-rate',
+      `${m.errors5xx} of ${m.requests} requests returned 5xx in the last ${m.windowMinutes} min`,
+      'Read the backend logs — something is throwing, not merely refusing.');
+  }
+  if (m.authFailures >= 100) {
+    alert('warning', 'auth-failures',
+      `${m.authFailures} 401/403 responses in ${m.windowMinutes} min`,
+      'Either a credential-stuffing run, or a client version that has broken its own auth. Check audit_logs for the addresses tried.');
+  }
+  if (m.rateLimited >= 50) {
+    alert('warning', 'rate-limited',
+      `${m.rateLimited} requests rate-limited in ${m.windowMinutes} min`,
+      'An attack, or a limit set too low for real use. Check whether one IP or many.');
+  }
+  if (m.latencyP95Ms !== null && m.latencyP95Ms > 2000) {
+    alert('warning', 'latency',
+      `p95 request latency is ${m.latencyP95Ms} ms over the last ${m.latency ?? 512} samples`,
+      'Check Postgres load and VM CPU.');
+  }
+}
+
 async function checkSite() {
   const probe = await timed(async () => {
     const res = await fetch(SITE, { signal: AbortSignal.timeout(15_000) });
@@ -182,6 +228,7 @@ async function checkHosts() {
 }
 
 await checkApi();
+await checkMetrics();
 await checkSite();
 await checkTurn();
 await checkHosts();

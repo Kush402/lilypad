@@ -4,6 +4,7 @@ import rateLimit from '@fastify/rate-limit';
 import websocket from '@fastify/websocket';
 import { config } from './config.js';
 import { parseTrustProxy } from './trustProxy.js';
+import { observeResponse } from './serverMetrics.js';
 import { parseAllowedOrigins } from './allowedOrigins.js';
 import { healthRoutes } from './routes/health.js';
 import { authRoutes } from './routes/auth.js';
@@ -44,6 +45,15 @@ export async function buildServer(): Promise<FastifyInstance> {
   // is abuse. Without a cap, one giant frame forces a full string alloc +
   // JSON.parse that stalls the event loop (DoS).
   await app.register(websocket, { options: { maxPayload: 64 * 1024 } });
+
+  // Every finished request, counted. `onResponse` and not `onSend` so the
+  // duration includes serialisation, and so a request the router never matched
+  // (a 404, a probe) still lands in the totals — those are exactly the ones an
+  // operator wants to see a spike of.
+  app.addHook('onResponse', async (req, reply) => {
+    observeResponse(reply.statusCode, reply.elapsedTime);
+    void req;
+  });
 
   // Routes
   const hubBundle = createSignalingHubBundle();

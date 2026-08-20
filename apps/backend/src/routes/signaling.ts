@@ -24,6 +24,7 @@ import { advertisedUrls } from '../services/advertisedUrls.js';
 import { log } from '../logging.js';
 import { config } from '../config.js';
 import { isAuthorizedMetricsRequest } from '../metricsAuth.js';
+import { serverMetrics } from '../serverMetrics.js';
 
 /** Abuse-guard tuning. Generous for real clients (which batch ICE/heartbeats),
  * tight enough to bound a hostile socket. */
@@ -83,7 +84,11 @@ export async function signalingRoutes(
     if (!isAuthorizedMetricsRequest(req.headers.authorization, config.env.METRICS_BEARER_TOKEN)) {
       return reply.code(401).send({ error: 'unauthorized' });
     }
-    return hub.metricsSnapshot();
+    // The signaling counters answer "are sessions happening"; the server
+    // counters answer "is the API working". A scraper that can only see the
+    // first cannot tell a healthy idle server from one returning 500 to
+    // everything.
+    return { ...hub.metricsSnapshot(), ...serverMetrics.snapshot() };
   });
 
   // M5.4 no-QR reconnect: a trusted phone asks the backend to ring its

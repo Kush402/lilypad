@@ -58,6 +58,7 @@ jobs:
         env:
           MONITOR_KEY_PATH: /home/runner/.ssh/monitor
           TURN_HOST: ${{ secrets.TURN_HOST }}
+          METRICS_BEARER_TOKEN: ${{ secrets.METRICS_BEARER_TOKEN }}
           STATUS_HOSTS: ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }},${{ secrets.DEPLOY_USER }}@${{ secrets.TURN_HOST }}
         run: |
           set -o pipefail
