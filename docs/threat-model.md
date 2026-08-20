@@ -76,12 +76,49 @@ public internet. This documents the assets, threats, and mitigations.
       dropped at the desktop's injection boundary
       ([`apps/desktop/src-tauri/src/input/dispatcher.rs`](../apps/desktop/src-tauri/src/input/dispatcher.rs)),
       not just hidden by the mobile UI.
-- [ ] Per-route rate limits + IP reputation on pairing/auth.
-- [ ] Signed desktop auto-update (M6) to prevent tampered binaries.
+- [x] **Per-route rate limits** — every auth, enrollment, pairing and device
+      route carries its own `config.rateLimit` on top of the global 120/min,
+      and the per-IP key was verified unspoofable against production:
+      `X-Forwarded-For` and `X-Real-IP` changed nothing, and `CF-Connecting-IP`
+      is refused at Cloudflare's edge with a 403. **IP reputation remains
+      open** — there is none.
+- [x] **Signed desktop auto-update** — the updater verifies an Ed25519
+      signature over a BLAKE2b-512 prehash before installing, and the published
+      v0.1.1 artifact was verified end to end: the minisign key id matches the
+      public key compiled into the shipped app, and the signature validates
+      against the 21,106,156-byte tarball for both platform entries. This is
+      **not** the same as code signing: the app is ad-hoc signed, Gatekeeper
+      rejects it with "no usable signature", and that needs an Apple Developer
+      ID (see docs/deployment.md).
+- [x] **Full device-trust rollout** — delivered by M9/ADR-0010. Every route
+      resolves its actor from a signed token rather than the request body;
+      verified against production by driving the whole linking ceremony over
+      the API and then failing to break it nine different ways.
 - [ ] Optional: require the desktop to re-confirm for `control` scope escalation.
-- [ ] Data retention policy for audit logs; PII minimization.
-- [ ] Full M5 auth/device-trust rollout — design complete
-      ([docs/m5-auth-design.md](m5-auth-design.md)), implementation is M5 scope.
+- [ ] Data retention policy for audit logs; PII minimization. `audit_logs`
+      stores IP addresses and attempted email addresses with no expiry, and
+      survives deletion of the account they refer to. The retention period is a
+      policy question that has no answer yet, so no number has been invented.
+- [ ] IP reputation on pairing/auth (split out of the item above).
+
+### Residual: revocation is fast, not instantaneous
+
+Access tokens are verified by signature alone (ADR-0001) so that an unavailable
+Postgres cannot break sessions already running. The cost is a ten-minute lag on
+any authorization change, revocation included. Three things bound it:
+
+- Revoking a device revokes the account's **refresh tokens**, so no new token
+  can be minted (`routes/devices.ts`).
+- Every route a revoked device could still reach re-checks the device row
+  (`auth/liveDevice.ts`), so the stale token buys nothing on the management
+  surface, the pairing surface, or signaling.
+- Re-enrolling a revoked device requires a credential **minted after** the
+  revocation (`auth/deviceRegistry.ts`), so the window cannot be used to make
+  itself permanent.
+
+What remains is any route that authorizes on the token alone and does not touch
+the database. There are none today; this is written down so that adding one is a
+deliberate act rather than an oversight.
 
 ## Explicit non-goals (v1)
 
