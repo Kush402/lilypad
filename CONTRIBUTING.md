@@ -25,13 +25,19 @@ check CI runs" are the same list.
 `pnpm rust:fmt` fixes the Rust half in place, the way `pnpm format` does for
 TypeScript.
 
-Clippy runs against its own `CARGO_TARGET_DIR`, deliberately. Sharing
-`target/debug` with `cargo test` made the first test run after a clippy pass
-abort with `Library not loaded: @rpath/libswift_Concurrency.dylib` — a
-metadata-only clippy build leaves the Swift-interop crates' dylibs unbuilt where
-the test binary's rpath expects them, and re-running immediately succeeds. A
-check that fails once and passes on retry is worse than no check, because it is
-the one people learn to ignore.
+`rust:check` **`cd`s into the crate** rather than passing `--manifest-path`,
+which looks like a stylistic choice and is not. Run from the repo root, the
+test binary aborts on launch with
+
+```
+dyld: Library not loaded: @rpath/libswift_Concurrency.dylib
+```
+
+Run from `apps/desktop/src-tauri`, the identical binary passes. The
+Swift-interop crates (`screencapturekit`, `apple-cf`, `apple-metal`) emit that
+dylib from a build script and record **relative** rpath entries, so it only
+resolves when the working directory is the crate. CI never saw this because its
+Rust job already runs from that directory.
 
 ## Ground rules
 
