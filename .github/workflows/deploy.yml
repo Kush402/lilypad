@@ -7,6 +7,13 @@
 #
 # Manual dispatch by default. Nothing deploys because a branch moved; a human
 # (or a tag) decides.
+#
+# The host holds NO git checkout. It did not have one, and the earlier version
+# of this workflow began with `git fetch && git checkout` in `$DEPLOY_PATH`,
+# which meant it could never have succeeded even after its image tag was fixed.
+# The only file the host needs from the repo is the compose file, so this
+# copies exactly that — one artifact, from the commit being deployed, with no
+# second copy of the repo to drift out of date.
 
 name: deploy
 
@@ -37,6 +44,32 @@ env:
   IMAGE_NAME: lilypad-backend
 
 jobs:
+  # A deploy that dies 20 minutes in because a secret was never set is
+  # indistinguishable, from the outside, from a deploy that broke production.
+  # Check the inputs first, in seconds, and name the missing one.
+  preflight:
+    name: required secrets are present
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail loudly on a missing secret
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          HEALTH_URL: ${{ vars.HEALTH_URL }}
+        run: |
+          set -euo pipefail
+          missing=()
+          for name in DEPLOY_HOST DEPLOY_USER DEPLOY_SSH_KEY DEPLOY_PATH HEALTH_URL; do
+            [ -n "${!name:-}" ] || missing+=("$name")
+          done
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::not configured: ${missing[*]} — see docs/deployment.md"
+            exit 1
+          fi
+          echo "all deploy inputs present"
+
   gate:
     name: test · typecheck · lint · build · docs · audit
     runs-on: ubuntu-latest
@@ -58,7 +91,7 @@ jobs:
 
   image:
     name: build and push image
-    needs: gate
+    needs: [preflight, gate]
     runs-on: ubuntu-latest
     permissions: { contents: read, packages: write }
     outputs:
@@ -88,6 +121,10 @@ jobs:
           # paid fallback (Hetzner CX) is x86. One image must serve both.
           platforms: linux/amd64,linux/arm64
           push: true
+          # Baked into the image and reported by /health, so "which commit is
+          # serving?" is answerable with curl instead of an SSH session.
+          build-args: |
+            GIT_SHA=${{ github.sha }}
           tags: |
             ${{ env.IMAGE }}:${{ github.sha }}
             ${{ env.IMAGE }}:latest
@@ -110,52 +147,112 @@ jobs:
         env:
           OWNER: ${{ github.repository_owner }}
 
-      - name: Deploy over SSH
+      # Recorded BEFORE anything changes. The previous version of this step
+      # rolled back to `${IMAGE}:latest` — the tag the image job had just moved
+      # onto the broken build — so "rollback" redeployed the exact image whose
+      # health check had failed. A rollback target has to be captured, not
+      # assumed.
+      - name: Record the image currently serving
         uses: appleboy/ssh-action@v1
+        env:
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
         with:
           host: ${{ secrets.DEPLOY_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_SSH_KEY }}
+          envs: DEPLOY_PATH
           script: |
             set -euo pipefail
-            cd ${{ secrets.DEPLOY_PATH }}
-            git fetch --all --tags && git checkout ${{ github.sha }}
+            # Written to a file on the HOST rather than returned as a step
+            # output: the rollback step is a separate SSH session either way,
+            # and a file cannot be lost to a step that never ran.
+            sudo docker inspect --format '{{.Config.Image}}' lilypad-prod-backend-1               > "$DEPLOY_PATH/.previous-image" 2>/dev/null               || : > "$DEPLOY_PATH/.previous-image"
+            echo "previous image: $(cat "$DEPLOY_PATH/.previous-image")"
+
+      - name: Ship the compose file for this commit
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          source: infra/production/docker-compose.yml
+          target: ${{ secrets.DEPLOY_PATH }}
+          strip_components: 0
+          overwrite: true
+
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1
+        env:
+          IMAGE_REF: ${{ env.IMAGE }}:${{ github.sha }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          envs: IMAGE_REF,DEPLOY_PATH
+          script: |
+            set -euo pipefail
+            cd "$DEPLOY_PATH"
+            compose() {
+              # --env-file is not optional: the compose file interpolates
+              # POSTGRES_USER, REDIS_PASSWORD and friends, and without it every
+              # one of them resolves to the empty string and the stack comes up
+              # with no credentials.
+              sudo docker compose --env-file "$DEPLOY_PATH/.env.production" \
+                -f infra/production/docker-compose.yml "$@"
+            }
+            sudo docker pull "$IMAGE_REF"
             # Migrations run BEFORE the new image serves traffic. Drizzle
             # migrations here are additive, so the old container tolerates the
             # new schema for the seconds between these two steps.
-            docker compose -f infra/production/docker-compose.yml run --rm \
-              -e BACKEND_IMAGE=${{ env.IMAGE }}:${{ github.sha }} \
+            # No --no-deps: `run` then honours the compose file's
+            # `service_healthy` conditions, so migrations wait for a healthy
+            # Postgres instead of racing a database that is still starting.
+            BACKEND_IMAGE="$IMAGE_REF" compose run --rm -T \
               backend node dist/db/migrate.js
-            BACKEND_IMAGE=${{ env.IMAGE }}:${{ github.sha }} \
-              docker compose -f infra/production/docker-compose.yml up -d --pull always
-            docker image prune -f
+            BACKEND_IMAGE="$IMAGE_REF" compose up -d
+            sudo docker image prune -f
 
-      - name: Verify the deployment is actually serving
+      - name: Verify the deployment is actually serving THIS commit
+        env:
+          HEALTH_URL: ${{ vars.HEALTH_URL }}
+          EXPECT_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          url="${{ vars.HEALTH_URL }}"
           for i in $(seq 1 30); do
-            body=$(curl -fsS --max-time 10 "$url" || true)
-            if echo "$body" | grep -q '"status":"ok"'; then
-              echo "healthy: $body"; exit 0
+            body=$(curl -fsS --max-time 10 "$HEALTH_URL" || true)
+            # Both halves matter. "ok" alone passes when the OLD container is
+            # still up and perfectly healthy, which is exactly what a failed
+            # deploy looks like from the outside.
+            if echo "$body" | grep -q '"status":"ok"' && echo "$body" | grep -q "\"revision\":\"$EXPECT_SHA\""; then
+              echo "healthy and serving $EXPECT_SHA: $body"; exit 0
             fi
-            echo "attempt $i not healthy yet: ${body:-<no response>}"; sleep 5
+            echo "attempt $i: ${body:-<no response>}"; sleep 5
           done
-          echo "::error::deployment did not become healthy within 150s"
+          echo "::error::deployment did not serve $EXPECT_SHA healthily within 150s"
           exit 1
 
-      # A failed health check must not leave a broken image serving. Roll the
-      # compose stack back to the previously running tag.
+      # A failed health check must not leave a broken image serving. Roll back
+      # to the image that was recorded as running before this deploy started.
       - name: Roll back on failure
         if: failure()
         uses: appleboy/ssh-action@v1
+        env:
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
         with:
           host: ${{ secrets.DEPLOY_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_SSH_KEY }}
+          envs: DEPLOY_PATH
           script: |
             set -euo pipefail
-            cd ${{ secrets.DEPLOY_PATH }}
-            BACKEND_IMAGE=${{ env.IMAGE }}:latest \
-              docker compose -f infra/production/docker-compose.yml up -d
-            echo "rolled back to :latest"
+            prev=$(tr -d '\r' < "$DEPLOY_PATH/.previous-image" 2>/dev/null | tail -n1 | xargs || true)
+            if [ -z "$prev" ]; then
+              echo "::error::no previous image was recorded — rolling back would be a guess. Left as-is for a human."
+              exit 1
+            fi
+            cd "$DEPLOY_PATH"
+            BACKEND_IMAGE="$prev" sudo docker compose \
+              --env-file "$DEPLOY_PATH/.env.production" \
+              -f infra/production/docker-compose.yml up -d
+            echo "rolled back to $prev"

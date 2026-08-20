@@ -7,10 +7,12 @@ function fakeStore(): AccountStore & {
   users: Map<string, string>;
   identities: Map<string, string>;
   hashes: Map<string, string>;
+  verified: Set<string>;
 } {
   const users = new Map<string, string>(); // userId → email
   const identities = new Map<string, string>(); // "provider:subject" → userId
   const hashes = new Map<string, string>(); // userId → password hash
+  const verified = new Set<string>(); // userIds whose inbox has been proven
   const idByEmail = (email: string) => {
     for (const [id, mail] of users) if (mail === email) return id;
     return null;
@@ -19,9 +21,28 @@ function fakeStore(): AccountStore & {
     users,
     identities,
     hashes,
+    verified,
     findCredentialsByEmail(email) {
       const userId = idByEmail(email);
-      return Promise.resolve(userId ? { userId, passwordHash: hashes.get(userId) ?? null } : null);
+      return Promise.resolve(
+        userId
+          ? {
+              userId,
+              passwordHash: hashes.get(userId) ?? null,
+              emailVerifiedAt: verified.has(userId) ? new Date() : null,
+            }
+          : null,
+      );
+    },
+    claimUnprovenAccount(userId) {
+      if (verified.has(userId)) return Promise.resolve(false);
+      verified.add(userId);
+      hashes.delete(userId);
+      return Promise.resolve(true);
+    },
+    markEmailVerified(userId) {
+      verified.add(userId);
+      return Promise.resolve();
     },
     createPasswordUser({ email, name, passwordHash }) {
       void name;
@@ -45,6 +66,7 @@ function fakeStore(): AccountStore & {
     createUser(email) {
       const id = randomUUID();
       users.set(id, email);
+      verified.add(id); // only ever called from a proven-inbox path
       return Promise.resolve(id);
     },
     linkIdentity(userId, provider, subject) {
@@ -160,7 +182,7 @@ describe('AccountService.resolveEmail', () => {
     const accounts = new AccountService(store);
     const first = await accounts.resolveEmail('ada@example.com');
     const second = await accounts.resolveEmail('ada@example.com');
-    expect(second).toBe(first);
+    expect(second.userId).toBe(first.userId);
     expect(store.users.size).toBe(1);
   });
 
@@ -168,8 +190,14 @@ describe('AccountService.resolveEmail', () => {
     const store = fakeStore();
     const accounts = new AccountService(store);
     const first = await accounts.resolveEmail('ada@example.com');
-    expect(await accounts.resolveEmail('  Ada@Example.COM ')).toBe(first);
+    expect((await accounts.resolveEmail('  Ada@Example.COM ')).userId).toBe(first.userId);
     expect(store.users.size).toBe(1);
+  });
+
+  it('does not report a claim when the address was already proven', async () => {
+    const accounts = new AccountService(fakeStore());
+    expect((await accounts.resolveEmail('ada@example.com')).claimedFromUnproven).toBe(false);
+    expect((await accounts.resolveEmail('ada@example.com')).claimedFromUnproven).toBe(false);
   });
 
   it('writes no identity row — the email IS the identity for magic link', async () => {
@@ -275,5 +303,76 @@ describe('AccountService password credentials', () => {
       await new AccountService(store).setPasswordForEmail('nobody@example.com', 'passphrase here'),
     ).toBeNull();
     expect(store.users.size).toBe(0);
+  });
+});
+
+// ── account pre-hijacking (the reason `email_verified_at` exists) ────────────
+//
+// The attack: /auth/signup takes an address on the caller's word, so an
+// attacker registers the victim's address with a password of their choosing
+// and waits. The victim later signs in for real — with Apple, or a magic link
+// — and the account they land in is the attacker's, password and all.
+describe('AccountService — an address squatted by signup', () => {
+  const squat = (accounts: AccountService) =>
+    accounts.signUpWithPassword({
+      name: 'Not Ada',
+      email: 'ada@example.com',
+      password: 'attacker-chosen',
+    });
+
+  it('drops the squatter password when the real owner proves the inbox', async () => {
+    const store = fakeStore();
+    const accounts = new AccountService(store);
+    const squatted = await squat(accounts);
+    expect(squatted.ok).toBe(true);
+
+    const claimed = await accounts.resolveEmail('ada@example.com');
+    expect(claimed.claimedFromUnproven).toBe(true);
+    // Same account — the victim keeps the address, not a duplicate row.
+    expect(store.users.size).toBe(1);
+    // ...and the attacker's password no longer opens it.
+    expect(await accounts.verifyPasswordSignIn('ada@example.com', 'attacker-chosen')).toEqual({
+      ok: false,
+      reason: 'no_password',
+    });
+  });
+
+  it('drops it on a verified provider sign-in too, not only on magic link', async () => {
+    const store = fakeStore();
+    const accounts = new AccountService(store);
+    await squat(accounts);
+
+    const linked = await accounts.resolveProviderIdentity({
+      provider: 'apple' as OAuthProvider,
+      subject: 'sub-apple',
+      email: 'ada@example.com',
+      emailVerified: true,
+    });
+    expect(linked).toMatchObject({ ok: true, claimedFromUnproven: true });
+    expect(await accounts.verifyPasswordSignIn('ada@example.com', 'attacker-chosen')).toEqual({
+      ok: false,
+      reason: 'no_password',
+    });
+  });
+
+  it('claims once, so a second proof does not keep revoking sessions', async () => {
+    const accounts = new AccountService(fakeStore());
+    await squat(accounts);
+    expect((await accounts.resolveEmail('ada@example.com')).claimedFromUnproven).toBe(true);
+    expect((await accounts.resolveEmail('ada@example.com')).claimedFromUnproven).toBe(false);
+  });
+
+  it('leaves an ordinary password account alone once its owner has proved it', async () => {
+    const store = fakeStore();
+    const accounts = new AccountService(store);
+    await squat(accounts);
+    // Proof of inbox arrives via password reset — the owner's own recovery.
+    const userId = await accounts.setPasswordForEmail('ada@example.com', 'owner-chosen');
+    expect(userId).not.toBeNull();
+    // A later magic-link sign-in must NOT wipe the password they just set.
+    expect((await accounts.resolveEmail('ada@example.com')).claimedFromUnproven).toBe(false);
+    expect(await accounts.verifyPasswordSignIn('ada@example.com', 'owner-chosen')).toMatchObject({
+      ok: true,
+    });
   });
 });

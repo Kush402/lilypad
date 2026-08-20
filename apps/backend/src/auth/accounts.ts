@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm';
+import { and, eq, isNull } from 'drizzle-orm';
 import { db as defaultDb } from '../db/client.js';
 import { oauthIdentities, users } from '../db/schema.js';
 import type { OAuthProvider, ProviderIdentity } from './providers.js';
@@ -37,7 +37,8 @@ export type PasswordSignInResult =
   | { ok: true; userId: string }
   | { ok: false; reason: 'no_account' | 'no_password' | 'wrong_password' };
 
-export type LinkResult = { ok: true; userId: string } | { ok: false; reason: LinkFailure };
+export type LinkResult =
+  { ok: true; userId: string; claimedFromUnproven: boolean } | { ok: false; reason: LinkFailure };
 
 export interface AccountStore {
   findUserIdByIdentity(provider: OAuthProvider, subject: string): Promise<string | null>;
@@ -48,10 +49,14 @@ export interface AccountStore {
   linkIdentity(userId: string, provider: OAuthProvider, subject: string): Promise<void>;
   /** The credential row behind an address, or null if the address is unknown.
    * `passwordHash` is null for an account that has only ever used OAuth or a
-   * magic link — a normal state, not a missing value (ADR-0012). */
-  findCredentialsByEmail(
-    email: string,
-  ): Promise<{ userId: string; passwordHash: string | null } | null>;
+   * magic link — a normal state, not a missing value (ADR-0012).
+   * `emailVerifiedAt` is null when nobody has ever proved they read the
+   * inbox — see `users.emailVerifiedAt` and `claimUnprovenAccount`. */
+  findCredentialsByEmail(email: string): Promise<{
+    userId: string;
+    passwordHash: string | null;
+    emailVerifiedAt: Date | null;
+  } | null>;
   /** Insert a password account. Returns null if the address is already taken —
    * the unique index decides, not a prior read, so two concurrent signups
    * cannot both succeed. */
@@ -61,6 +66,27 @@ export interface AccountStore {
     passwordHash: string;
   }): Promise<string | null>;
   setPasswordHash(userId: string, passwordHash: string): Promise<void>;
+  /** Mark the address proven, and drop any password that was set before it
+   * was. Returns true when a password was actually cleared, which is the
+   * signal the caller needs to revoke the squatter's sessions too. */
+  claimUnprovenAccount(userId: string): Promise<boolean>;
+  /** Mark the address proven without touching credentials — the reset-password
+   * path, where the person changing the password just proved the inbox. */
+  markEmailVerified(userId: string): Promise<void>;
+}
+
+/**
+ * The outcome of resolving a PROVEN address to an account.
+ *
+ * `claimedFromUnproven` is true when the account already existed with a
+ * password nobody had ever proved they were entitled to set. That is an
+ * account pre-hijacking attempt (register the victim's address, wait for them
+ * to sign in for real, keep the password), so the password is dropped and the
+ * caller must revoke every refresh token the squatter holds.
+ */
+export interface ProvenEmailResult {
+  userId: string;
+  claimedFromUnproven: boolean;
 }
 
 export class AccountService {
@@ -69,15 +95,26 @@ export class AccountService {
   /** Resolve (or create) the account behind a verified provider identity. */
   async resolveProviderIdentity(identity: ProviderIdentity): Promise<LinkResult> {
     const existing = await this.store.findUserIdByIdentity(identity.provider, identity.subject);
-    if (existing) return { ok: true, userId: existing };
+    // A known (provider, subject) is already proven and already attached —
+    // nothing to claim, whatever the token now says the address is.
+    if (existing) return { ok: true, userId: existing, claimedFromUnproven: false };
 
     if (!identity.email) return { ok: false, reason: 'email_required' };
     if (!identity.emailVerified) return { ok: false, reason: 'email_unverified' };
 
+    // Reached only with a provider-VERIFIED address, so this caller has proved
+    // the inbox exactly as strongly as a magic link does.
     const byEmail = await this.store.findUserIdByEmail(identity.email);
-    const userId = byEmail ?? (await this.store.createUser(identity.email));
+    let claimedFromUnproven = false;
+    let userId: string;
+    if (byEmail) {
+      userId = byEmail;
+      claimedFromUnproven = await this.store.claimUnprovenAccount(userId);
+    } else {
+      userId = await this.store.createUser(identity.email);
+    }
     await this.store.linkIdentity(userId, identity.provider, identity.subject);
-    return { ok: true, userId };
+    return { ok: true, userId, claimedFromUnproven };
   }
 
   /**
@@ -85,10 +122,15 @@ export class AccountService {
    * magic-link path. No identity row is written: for this method the email IS
    * the identity, and possession of the inbox is the proof.
    */
-  async resolveEmail(email: string): Promise<string> {
+  async resolveEmail(email: string): Promise<ProvenEmailResult> {
     const normalized = email.trim().toLowerCase();
     const existing = await this.store.findUserIdByEmail(normalized);
-    return existing ?? this.store.createUser(normalized);
+    if (!existing)
+      return { userId: await this.store.createUser(normalized), claimedFromUnproven: false };
+    return {
+      userId: existing,
+      claimedFromUnproven: await this.store.claimUnprovenAccount(existing),
+    };
   }
 
   /**
@@ -152,6 +194,10 @@ export class AccountService {
     const found = await this.store.findCredentialsByEmail(email.trim().toLowerCase());
     if (!found) return null;
     await this.store.setPasswordHash(found.userId, await hashPassword(password));
+    // Redeeming the reset token WAS proof of inbox possession. Recording it
+    // means a squatted account stops being squatted once its real owner
+    // resets, rather than staying claimable forever.
+    await this.store.markEmailVerified(found.userId);
     return found.userId;
   }
 }
@@ -179,9 +225,12 @@ export function createDrizzleAccountStore(database: typeof defaultDb = defaultDb
       // Two first-time sign-ins for one address can race. `users.email` is
       // unique, so the loser yields to the winner rather than erroring —
       // the outcome ("one account for this address") is the same either way.
+      // `emailVerifiedAt` is set here and not in `createPasswordUser`: every
+      // caller of this method arrived holding proof of the inbox (a redeemed
+      // magic link, or a provider-verified address), and signup holds none.
       const inserted = await database
         .insert(users)
-        .values({ email })
+        .values({ email, emailVerifiedAt: new Date() })
         .onConflictDoNothing({ target: users.email })
         .returning({ id: users.id });
       if (inserted[0]) return inserted[0].id;
@@ -196,7 +245,11 @@ export function createDrizzleAccountStore(database: typeof defaultDb = defaultDb
     },
     async findCredentialsByEmail(email) {
       const rows = await database
-        .select({ userId: users.id, passwordHash: users.passwordHash })
+        .select({
+          userId: users.id,
+          passwordHash: users.passwordHash,
+          emailVerifiedAt: users.emailVerifiedAt,
+        })
         .from(users)
         .where(eq(users.email, email))
         .limit(1);
@@ -216,6 +269,28 @@ export function createDrizzleAccountStore(database: typeof defaultDb = defaultDb
     },
     async setPasswordHash(userId, passwordHash) {
       await database.update(users).set({ passwordHash }).where(eq(users.id, userId));
+    },
+    async claimUnprovenAccount(userId) {
+      // One statement, with `email_verified_at IS NULL` in the WHERE rather
+      // than in a preceding SELECT: two concurrent proofs of the same inbox
+      // must not both report a claim, or both would revoke and each would sign
+      // the other out.
+      //
+      // Revoking on the (rare) unproven-but-passwordless row is not
+      // over-reach: a session on an account nobody had proved belongs to
+      // whoever created it, and that was by definition not this caller.
+      const claimed = await database
+        .update(users)
+        .set({ passwordHash: null, emailVerifiedAt: new Date() })
+        .where(and(eq(users.id, userId), isNull(users.emailVerifiedAt)))
+        .returning({ id: users.id });
+      return claimed.length > 0;
+    },
+    async markEmailVerified(userId) {
+      await database
+        .update(users)
+        .set({ emailVerifiedAt: new Date() })
+        .where(and(eq(users.id, userId), isNull(users.emailVerifiedAt)));
     },
     async linkIdentity(userId, provider, subject) {
       // Idempotent: re-linking an identity that already exists is a no-op, and

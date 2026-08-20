@@ -48,6 +48,15 @@ RUN CI=true pnpm install --frozen-lockfile --prod --filter @lilypad/backend...
 FROM node:22-alpine AS runtime
 WORKDIR /repo
 ENV NODE_ENV=production
+
+# Which commit is actually serving. Without this, "is the fix deployed?" has no
+# answer from outside the VM — the image tag lives in a shell variable that
+# nothing records, and /health reported a version string edited by hand. The
+# deploy workflow passes the SHA it built; a local build gets `unknown`, which
+# is honest rather than misleading.
+ARG GIT_SHA=unknown
+ENV GIT_SHA=$GIT_SHA
+LABEL org.opencontainers.image.revision=$GIT_SHA
 # Never run as root: a container escape should not start with uid 0. `node` is
 # an unprivileged user Alpine's Node image already provides.
 USER node

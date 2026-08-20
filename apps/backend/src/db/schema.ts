@@ -42,6 +42,20 @@ export const users = pgTable('users', {
    * simply cannot use the password route
    * ([ADR-0012](../../../../docs/adr/0012-password-authentication.md)). */
   passwordHash: text('password_hash'),
+  /**
+   * When possession of this address was actually PROVEN — by redeeming a
+   * magic link, or by a provider that reported the address as verified.
+   *
+   * NULL is not "old row"; it means nobody has ever proved they read this
+   * inbox. `/auth/signup` cannot set it, because signing up with a password
+   * asserts an address rather than proving one, and that gap is an account
+   * pre-hijacking primitive: register the victim's address first, wait for
+   * them to sign in with Apple, and the provider identity attaches to the
+   * squatter's account with the squatter's password still on it. The password
+   * is therefore cleared the moment the real owner proves the inbox — see
+   * `AccountService.claimUnprovenAccount`.
+   */
+  emailVerifiedAt: timestamp('email_verified_at', { withTimezone: true }),
   tier: tierEnum('tier').notNull().default('free'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });

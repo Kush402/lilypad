@@ -50,6 +50,13 @@
       "when": 1786821716536,
       "tag": "0006_lyrical_mandrill",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1787212402375,
+      "tag": "0007_great_sunfire",
+      "breakpoints": true
     }
   ]
 }

@@ -76,6 +76,25 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     };
   }
 
+  /**
+   * The real owner of an inbox has just proved it, and found an account that
+   * had been created for their address by someone who never proved anything —
+   * the account pre-hijacking setup (register the victim's address with a
+   * password, wait for them to sign in with Apple or a magic link, keep the
+   * password). `AccountService` has already dropped that password; what is
+   * left is to end the squatter's sessions, and to say so in the audit log.
+   */
+  async function reclaim(userId: string, ip: string, via: string): Promise<void> {
+    await refreshTokens.revokeUser(userId);
+    log.server.warn(
+      { userId, via },
+      'proven email claimed an account whose password was never verified — password cleared and sessions revoked',
+    );
+    await auditLog
+      .sessionEnd({ userId, ip, metadata: { event: 'unproven_account_claimed', via } })
+      .catch((err) => log.audit.error({ err }, 'failed to write account-claim audit log'));
+  }
+
   function denySignIn(reply: FastifyReply, ip: string, reason: string): FastifyReply {
     void auditLog
       .loginFailed({ ip, metadata: { reason } })
@@ -127,6 +146,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
         });
       }
 
+      if (linked.claimedFromUnproven) await reclaim(linked.userId, req.ip, `oauth_${provider}`);
       return reply.code(200).send(await issueSession(linked.userId, req.ip));
     },
   );
@@ -186,7 +206,8 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       }
       const email = await redeemMagicLink(parsed.data.token);
       if (!email) return denySignIn(reply, req.ip, 'magic_link_invalid');
-      const userId = await accounts.resolveEmail(email);
+      const { userId, claimedFromUnproven } = await accounts.resolveEmail(email);
+      if (claimedFromUnproven) await reclaim(userId, req.ip, 'magic_link');
       return reply.code(200).send(await issueSession(userId, req.ip));
     },
   );
@@ -331,6 +352,15 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       if (!email) return denySignIn(reply, req.ip, 'password_reset_invalid');
       const userId = await accounts.setPasswordForEmail(email, parsed.data.password);
       if (!userId) return denySignIn(reply, req.ip, 'password_reset_no_account');
+      // Resetting a password is what a user does after being compromised, so
+      // it MUST end every session that existed before it. Without this the
+      // attacker's stolen refresh token survives the one remediation the
+      // product offers, and keeps renewing itself for another 30 days.
+      // Revoked before the new session is issued, so this one survives.
+      await refreshTokens.revokeUser(userId);
+      void auditLog
+        .sessionEnd({ userId, ip: req.ip, metadata: { event: 'password_reset_revoked_sessions' } })
+        .catch((err) => log.audit.error({ err }, 'failed to write password-reset audit log'));
       return reply.code(200).send(await issueSession(userId, req.ip));
     },
   );
