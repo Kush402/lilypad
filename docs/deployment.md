@@ -809,6 +809,55 @@ ever read.
 Recovery is unchanged: the owner signs in on the phone and re-enrols. A thief
 cannot, because signing in needs the password.
 
+### Revocation, the two rounds it took after that
+
+Deploying the refresh-token fix and re-running the same probe against
+production found the rest of it.
+
+**Round two — the ten-minute window was permanent, not ten minutes.**
+`/auth/refresh` correctly answered 401, and the account access token minted
+before the revoke re-enrolled the phone anyway. Ten minutes of stale access is
+the documented trade (ADR-0001), and it is survivable everywhere its worst case
+is ten more minutes of access. `/devices/enroll` is not such a route: enrolling
+clears `revoked_at`, so a stale credential does not buy ten minutes, it buys the
+device back for good.
+
+Closed by a comparison rather than a lookup — the token already carries `iat`
+and the row already carries `revoked_at`, so re-enrolling a revoked device now
+requires a credential minted after the revocation. The owner signs in again and
+recovers; a thief cannot, because signing in needs the password. The approval
+path passes no timestamp on purpose: a desktop is restored by a _different_
+device approving its code, and that second device is the proof.
+
+**Round three — a revoked device stopped being a target but not a caller.**
+The website says a removed device "loses access straight away … It does not wait
+for a token to expire." Measured against production with a token minted seconds
+before the revoke:
+
+| Route                                              | Before        | After    |
+| -------------------------------------------------- | ------------- | -------- |
+| `GET /devices` (every machine on the account)      | **200**       | 401      |
+| `PATCH /devices/:id` (rename any of them)          | **200**       | 401      |
+| `GET /devices/pairs` (which phones reach a laptop) | **200**       | 401      |
+| `POST /devices/enrollment-code/approve`            | **reachable** | 401      |
+| `POST /connect/request` (ring the Mac)             | 404           | 404      |
+| WebSocket presence claim                           | rejected      | rejected |
+
+The two that were already closed are the two that resolve the device row rather
+than trusting the token. Everything else trusted the signature.
+
+`authorize.ts` lets a revoked device still be _managed_ by its owner, and
+should — "I lost my laptop" must not also mean "and now you cannot clean up
+after it". But that is about the target. Nothing was asking whether the caller
+was still allowed to be a caller, and the worst consequence was not the
+information disclosure: `/devices/enrollment-code/approve` takes a device token,
+so a revoked phone had a ten-minute window to approve a **new** laptop onto the
+account. Revocation with a persistence mechanism attached is not revocation.
+
+`rejectRevokedActor` is one indexed lookup, on routes that already read the
+database to authorize, and deliberately not in `requireAuth` — that stays
+DB-free so signaling and reconnect survive a Postgres outage.
+
 ### Redis had no ceiling
 
 Measured on the host: `maxmemory 0`, `maxmemory-policy noeviction`, 952 MB of

@@ -3,6 +3,7 @@ import { PairingCreateRequestSchema, PairingRedeemRequestSchema } from '@lilypad
 import { createPairing, redeemPairing, PairingTokenError } from '../services/pairing.js';
 import { AuditLogService, createDrizzleAuditLogStore } from '../services/auditLog.js';
 import { optionalAuth, optionalActorOf } from '../auth/requireAuth.js';
+import { rejectRevokedActor } from '../auth/liveDevice.js';
 import { actAsDevice } from '../auth/authorize.js';
 import { deviceOwnershipByFingerprint } from '../auth/ownership.js';
 import { log } from '../logging.js';
@@ -29,7 +30,10 @@ export async function pairingRoutes(app: FastifyInstance): Promise<void> {
   // manual regenerates — 5/min throttled real users (observed in bring-up).
   app.post(
     '/pairing/create',
-    { preHandler: optionalAuth, config: { rateLimit: { max: 30, timeWindow: '1 minute' } } },
+    {
+      preHandler: [optionalAuth, rejectRevokedActor],
+      config: { rateLimit: { max: 30, timeWindow: '1 minute' } },
+    },
     async (req, reply) => {
       const parsed = PairingCreateRequestSchema.safeParse(req.body);
       if (!parsed.success) {
@@ -43,35 +47,39 @@ export async function pairingRoutes(app: FastifyInstance): Promise<void> {
   );
 
   // Mobile redeems the token after scanning. Single-use: a replay fails.
-  app.post('/pairing/redeem', { preHandler: optionalAuth }, async (req, reply) => {
-    const parsed = PairingRedeemRequestSchema.safeParse(req.body);
-    if (!parsed.success) {
-      return reply.code(400).send({ error: 'invalid_request', issues: parsed.error.issues });
-    }
-    const mobile = await deviceOwnershipByFingerprint('mobile', parsed.data.deviceId);
-    if (!actAsDevice(optionalActorOf(req), mobile).allow) return notFound(reply);
-    try {
-      const result = await redeemPairing(parsed.data);
-      // Repudiation mitigation (docs/threat-model.md): a device just
-      // completed pairing. Fire-and-forget — an audit-log blip must never
-      // fail a redeem the mobile app is blocked on, matching the
-      // `sessions.create`/`sessions.end` pattern in routes/signaling.ts.
-      void auditLog
-        .devicePaired({
-          ip: req.ip,
-          metadata: {
-            roomId: result.roomId,
-            mobileDeviceId: parsed.data.deviceId,
-            desktopDeviceName: result.desktopDeviceName,
-          },
-        })
-        .catch((err) => log.audit.error({ err }, 'failed to write device_paired audit log'));
-      return reply.code(200).send(result);
-    } catch (err) {
-      if (err instanceof PairingTokenError) {
-        return reply.code(410).send({ error: 'token_invalid', message: err.message });
+  app.post(
+    '/pairing/redeem',
+    { preHandler: [optionalAuth, rejectRevokedActor] },
+    async (req, reply) => {
+      const parsed = PairingRedeemRequestSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return reply.code(400).send({ error: 'invalid_request', issues: parsed.error.issues });
       }
-      throw err;
-    }
-  });
+      const mobile = await deviceOwnershipByFingerprint('mobile', parsed.data.deviceId);
+      if (!actAsDevice(optionalActorOf(req), mobile).allow) return notFound(reply);
+      try {
+        const result = await redeemPairing(parsed.data);
+        // Repudiation mitigation (docs/threat-model.md): a device just
+        // completed pairing. Fire-and-forget — an audit-log blip must never
+        // fail a redeem the mobile app is blocked on, matching the
+        // `sessions.create`/`sessions.end` pattern in routes/signaling.ts.
+        void auditLog
+          .devicePaired({
+            ip: req.ip,
+            metadata: {
+              roomId: result.roomId,
+              mobileDeviceId: parsed.data.deviceId,
+              desktopDeviceName: result.desktopDeviceName,
+            },
+          })
+          .catch((err) => log.audit.error({ err }, 'failed to write device_paired audit log'));
+        return reply.code(200).send(result);
+      } catch (err) {
+        if (err instanceof PairingTokenError) {
+          return reply.code(410).send({ error: 'token_invalid', message: err.message });
+        }
+        throw err;
+      }
+    },
+  );
 }

@@ -16,6 +16,7 @@ import {
 } from '../signaling/guards.js';
 import { decideRegisterGate } from '../signaling/registerAuth.js';
 import { optionalAuth, optionalActorOf } from '../auth/requireAuth.js';
+import { rejectRevokedActor } from '../auth/liveDevice.js';
 import { actAsDevice } from '../auth/authorize.js';
 import { deviceOwnershipByFingerprint } from '../auth/ownership.js';
 import { bearerToken, verifyAccessToken, type Actor } from '../auth/tokens.js';
@@ -97,7 +98,10 @@ export async function signalingRoutes(
   // unauthenticated pre-M5-keys and mints Redis state on success.
   app.post(
     '/connect/request',
-    { preHandler: optionalAuth, config: { rateLimit: { max: 30, timeWindow: '1 minute' } } },
+    {
+      preHandler: [optionalAuth, rejectRevokedActor],
+      config: { rateLimit: { max: 30, timeWindow: '1 minute' } },
+    },
     async (req, reply) => {
       const parsed = ConnectRequestSchema.safeParse(req.body);
       if (!parsed.success) {

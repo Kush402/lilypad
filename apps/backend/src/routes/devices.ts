@@ -17,6 +17,7 @@ import {
   deviceActorOf,
 } from '../auth/requireAuth.js';
 import { actAsDevice, manageDevice, managePair } from '../auth/authorize.js';
+import { rejectRevokedActor } from '../auth/liveDevice.js';
 import {
   deviceOwnershipByFingerprint,
   deviceOwnershipById,
@@ -68,7 +69,7 @@ export async function deviceRoutes(
   // nothing to list.
 
   /** Every device on the caller's account. */
-  app.get('/devices', { preHandler: requireDevice }, async (req, reply) => {
+  app.get('/devices', { preHandler: [requireDevice, rejectRevokedActor] }, async (req, reply) => {
     const actor = deviceActorOf(req);
     const list = await accountDevices.list(actor.userId, actor.deviceId, (kind, fingerprint) =>
       hub.hasLiveSession(kind, fingerprint),
@@ -79,7 +80,10 @@ export async function deviceRoutes(
   /** Rename a device. A label for a human; nothing authorizes on it. */
   app.patch(
     '/devices/:deviceId',
-    { preHandler: requireDevice, config: { rateLimit: { max: 30, timeWindow: '1 minute' } } },
+    {
+      preHandler: [requireDevice, rejectRevokedActor],
+      config: { rateLimit: { max: 30, timeWindow: '1 minute' } },
+    },
     async (req, reply) => {
       const params = DeviceIdParamsSchema.safeParse(req.params);
       const body = DeviceRenameSchema.safeParse(req.body);
@@ -128,7 +132,10 @@ export async function deviceRoutes(
    */
   app.delete(
     '/devices/:deviceId',
-    { preHandler: requireDevice, config: { rateLimit: { max: 30, timeWindow: '1 minute' } } },
+    {
+      preHandler: [requireDevice, rejectRevokedActor],
+      config: { rateLimit: { max: 30, timeWindow: '1 minute' } },
+    },
     async (req, reply) => {
       const params = DeviceIdParamsSchema.safeParse(req.params);
       if (!params.success) return reply.code(400).send({ error: 'invalid_request' });
@@ -161,21 +168,28 @@ export async function deviceRoutes(
   );
 
   /** Every pair for a desktop, for its Trusted Devices list. */
-  app.get('/devices/pairs', { preHandler: optionalAuth }, async (req, reply) => {
-    const parsed = ListQuerySchema.safeParse(req.query);
-    if (!parsed.success) {
-      return reply.code(400).send({ error: 'invalid_request', issues: parsed.error.issues });
-    }
-    const desktop = await deviceOwnershipByFingerprint('desktop', parsed.data.desktopDeviceId);
-    if (!manageDevice(optionalActorOf(req), desktop).allow) return notFound(reply);
-    const pairs = await trust.listForDesktop(parsed.data.desktopDeviceId);
-    return reply.code(200).send({ pairs });
-  });
+  app.get(
+    '/devices/pairs',
+    { preHandler: [optionalAuth, rejectRevokedActor] },
+    async (req, reply) => {
+      const parsed = ListQuerySchema.safeParse(req.query);
+      if (!parsed.success) {
+        return reply.code(400).send({ error: 'invalid_request', issues: parsed.error.issues });
+      }
+      const desktop = await deviceOwnershipByFingerprint('desktop', parsed.data.desktopDeviceId);
+      if (!manageDevice(optionalActorOf(req), desktop).allow) return notFound(reply);
+      const pairs = await trust.listForDesktop(parsed.data.desktopDeviceId);
+      return reply.code(200).send({ pairs });
+    },
+  );
 
   /** Flip a pair's "connect without approval" (Always allow) setting. */
   app.patch(
     '/devices/pairs/:pairId',
-    { preHandler: optionalAuth, config: { rateLimit: { max: 30, timeWindow: '1 minute' } } },
+    {
+      preHandler: [optionalAuth, rejectRevokedActor],
+      config: { rateLimit: { max: 30, timeWindow: '1 minute' } },
+    },
     async (req, reply) => {
       const params = PairParamsSchema.safeParse(req.params);
       const body = PatchBodySchema.safeParse(req.body);
@@ -195,7 +209,10 @@ export async function deviceRoutes(
    * phone to happen to disconnect on its own. */
   app.delete(
     '/devices/pairs/:pairId',
-    { preHandler: optionalAuth, config: { rateLimit: { max: 30, timeWindow: '1 minute' } } },
+    {
+      preHandler: [optionalAuth, rejectRevokedActor],
+      config: { rateLimit: { max: 30, timeWindow: '1 minute' } },
+    },
     async (req, reply) => {
       const params = PairParamsSchema.safeParse(req.params);
       if (!params.success) {
@@ -230,7 +247,10 @@ export async function deviceRoutes(
    * revoked" alert, which is reserved for the desktop-initiated Revoke. */
   app.post(
     '/devices/unpair',
-    { preHandler: optionalAuth, config: { rateLimit: { max: 30, timeWindow: '1 minute' } } },
+    {
+      preHandler: [optionalAuth, rejectRevokedActor],
+      config: { rateLimit: { max: 30, timeWindow: '1 minute' } },
+    },
     async (req, reply) => {
       const parsed = UnpairRequestSchema.safeParse(req.body);
       if (!parsed.success) {

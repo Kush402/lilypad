@@ -15,6 +15,7 @@ import {
 import { DeviceRegistry, createDrizzleDeviceIdentityStore } from '../auth/deviceRegistry.js';
 import { signAccessToken, ACCESS_TOKEN_TTL_SECONDS } from '../auth/tokens.js';
 import { requireAuth, requireDevice, actorOf, deviceActorOf } from '../auth/requireAuth.js';
+import { rejectRevokedActor } from '../auth/liveDevice.js';
 import {
   createDesktopEnrollmentCode,
   consumeDesktopEnrollmentCode,
@@ -221,7 +222,7 @@ export async function enrollmentRoutes(app: FastifyInstance): Promise<void> {
   app.post(
     '/devices/enrollment-code/approve',
     {
-      preHandler: requireDevice,
+      preHandler: [requireDevice, rejectRevokedActor],
       config: { rateLimit: { max: 20, timeWindow: '1 minute' } },
     },
     async (req, reply) => {
