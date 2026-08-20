@@ -196,7 +196,26 @@ export const trustedDevices = pgTable(
   'trusted_devices',
   {
     id: uuid('id').primaryKey().defaultRandom(),
-    /** NULL until accounts (M5) — then backfilled, never restructured. */
+    /**
+     * **Always NULL. Written by nothing, read by nothing.**
+     *
+     * The comment here used to say "NULL until accounts (M5) — then
+     * backfilled". Accounts shipped in M8/M9 and the backfill never happened:
+     * `establishTrustForDeviceIds` inserts a pair without an owner, and no
+     * query filters on this column. Verified against production 2026-08-20 —
+     * every row has `user_id IS NULL`.
+     *
+     * Its `ON DELETE CASCADE` is therefore inert, which sounds like an orphan
+     * bug and is not: `desktopDeviceId` and `mobileDeviceId` are NOT NULL and
+     * cascade from `devices`, which itself cascades from `users`. Deleting an
+     * account removes its devices, which removes their pairs. Confirmed by
+     * deleting three accounts and watching 4 devices and 2 pairs go with them,
+     * leaving 0 orphans.
+     *
+     * Kept rather than dropped because it is the natural home for ownership if
+     * a pair ever needs to outlive a device row. It gets no index while it
+     * holds nothing.
+     */
     userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }),
     desktopDeviceId: uuid('desktop_device_id')
       .notNull()
@@ -227,13 +246,14 @@ export const trustedDevices = pgTable(
   },
   (t) => [
     uniqueIndex('trusted_devices_pair_idx').on(t.desktopDeviceId, t.mobileDeviceId),
-    // Both foreign keys below were unindexed, with the same double cost as the
-    // ones on `devices` and `audit_logs`: a sequential scan on lookup, and a
-    // full scan of this table on every cascading delete from `users` or
-    // `devices`. `desktopDeviceId` needs no index of its own — it leads the
-    // pair index above, which Postgres can use as a prefix.
-    index('trusted_devices_user_idx').on(t.userId),
-    // What "which laptops may this phone reach?" runs.
+    // `mobileDeviceId` was unindexed, with the same double cost as the keys on
+    // `devices` and `audit_logs`: a sequential scan on lookup, and a full scan
+    // of this table on every cascading delete from `devices`. It is also what
+    // "which laptops may this phone reach?" runs.
+    //
+    // `desktopDeviceId` needs no index of its own — it leads the pair index
+    // above, which Postgres can use as a prefix. `userId` gets none either,
+    // for the reason recorded on the column itself: it is always NULL.
     index('trusted_devices_mobile_idx').on(t.mobileDeviceId),
   ],
 );

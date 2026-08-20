@@ -28,7 +28,7 @@
     "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,md,yml,yaml}\"",
     "format:check": "prettier --check \"**/*.{ts,tsx,js,jsx,json,md,yml,yaml}\"",
     "rust:fmt": "cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml",
-    "rust:check": "cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml --check && cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets -- -D warnings && cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml",
+    "rust:check": "cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml --check && CARGO_TARGET_DIR=apps/desktop/src-tauri/target/clippy cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets -- -D warnings && cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml",
     "verify": "pnpm typecheck && pnpm lint && pnpm format:check && pnpm test && pnpm docs:check && pnpm rust:check",
     "infra:up": "docker compose -f infra/docker-compose.yml up -d",
     "infra:down": "docker compose -f infra/docker-compose.yml down",

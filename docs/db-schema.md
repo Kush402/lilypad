@@ -138,14 +138,28 @@ deleting**, so the row remains the audit trail.
 | column                               | type                      | notes                                   |
 | ------------------------------------ | ------------------------- | --------------------------------------- |
 | id                                   | uuid PK                   |                                         |
-| user_id                              | uuid FK→users (cascade)   | nullable until M8 backfills it          |
-| desktop_device_id / mobile_device_id | uuid FK→devices (cascade) | **`UNIQUE` together**                   |
+| user_id                              | uuid FK→users (cascade)   | **always NULL — see below**             |
+| desktop_device_id / mobile_device_id | uuid FK→devices (cascade) | **`UNIQUE` together**; `mobile` indexed |
 | display_name                         | text nullable             | what each side calls the pair           |
 | auto_approve                         | boolean, default `false`  | desktop-side "Always allow"             |
 | last_connected_at                    | timestamptz nullable      |                                         |
 | revoked_at                           | timestamptz nullable      | set by Forget/Revoke; gate fails closed |
 | connect_secret_hash                  | text nullable             | SHA-256 of the per-pair connect secret  |
 | created_at                           | timestamptz               |                                         |
+
+**`user_id` is always NULL**, and the note that used to say "nullable until M8
+backfills it" was wrong: M8/M9 shipped and the backfill never happened.
+`establishTrustForDeviceIds` inserts a pair without an owner, and no query
+filters on the column. Verified against production 2026-08-20 — every row has
+it NULL.
+
+Its `ON DELETE CASCADE` is therefore inert, which sounds like an orphan bug and
+is not. `desktop_device_id` and `mobile_device_id` are NOT NULL and cascade from
+`devices`, which itself cascades from `users`, so deleting an account removes
+its devices and their pairs. Confirmed by deleting three accounts and watching 4
+devices and 2 pairs go with them, leaving 0 orphans. The column is kept as the
+natural home for ownership if a pair ever needs to outlive a device row, and
+carries no index while it holds nothing.
 
 **The `UNIQUE (desktop_device_id, mobile_device_id)` index is a correctness
 control, not a tidiness one**, and the write is shaped around it. Trust is

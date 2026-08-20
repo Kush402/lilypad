@@ -696,6 +696,48 @@ allocations, not existing ones — measured, because reading
 rebooted: SSH back in 43 s, coturn `active` and `enabled`, STUN Binding Success
 in 9 ms, and a fresh forced-relay session opened and echoed.
 
+**Every authorization boundary holds, tested with a real owned device.** An
+earlier probe claimed another device's presence seat and succeeded, which
+proved nothing: `authorize.ts` has a deliberate unowned lane for device rows
+with no account, and production had zero devices, so every id was unowned.
+Distinguishing "open by design" from "broken" needed a row that IS owned, so
+the whole linking ceremony was driven against production over the API — signup,
+phone enrolment with a real Ed25519 challenge signature, enrolment code, phone
+approval — and then:
+
+| Attempt                                                    | Result                      |
+| ---------------------------------------------------------- | --------------------------- |
+| A laptop enrolling ITSELF with an account token            | 403 (ADR-0010 holds)        |
+| Approving an enrolment code with an account, not a device  | 403 `device_token_required` |
+| An unapproved laptop asking for a device token             | 403 `device_not_enrolled`   |
+| Replaying a spent enrolment code                           | 404                         |
+| Replaying a spent challenge nonce                          | 401                         |
+| Anonymous socket claiming the OWNED laptop's presence seat | rejected                    |
+| Same, carrying a forged bearer token                       | rejected                    |
+| The owner's own phone trying to act AS the laptop          | rejected                    |
+| The laptop itself claiming its own seat                    | accepted                    |
+
+The last two together are the property worth having: owning a device is not the
+same as being it. Approval also returns the connect secret, so linking makes the
+laptop reachable rather than merely owned — the F2 bug, confirmed fixed on the
+live system.
+
+Also confirmed: a forged JWT and an `alg: none` JWT are both 401; eight
+malformed-input classes (broken JSON, 400-deep nesting, a 200 KB field,
+prototype pollution, SQL in an email) all answer 4xx and never 5xx, with
+Postgres healthy afterwards; a socket that never registers is closed after
+~10 s with code 4408; a frame over the 64 KB cap closes the socket with 1009.
+
+**Cascade deletion is complete.** Deleting the three audit accounts removed 4
+devices and 2 trust pairs, leaving 0 orphans. `audit_logs` rows survive by
+design (`ON DELETE SET NULL`), which is what makes the missing retention policy
+above matter.
+
+**Signaling authenticates by `Authorization` header**, not a query parameter.
+Not a defect — but it means a browser could never authenticate to this socket,
+since browsers cannot set headers on a WebSocket handshake. Nothing is broken
+today; anyone building a web client hits this immediately.
+
 **The published updater artifact verifies.** `latest.json` for v0.1.1, both
 platform entries: minisign key id matches the `updater.pubkey` compiled into
 the shipped app, and the Ed25519 signature over the BLAKE2b-512 prehash of the

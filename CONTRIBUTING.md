@@ -25,6 +25,14 @@ check CI runs" are the same list.
 `pnpm rust:fmt` fixes the Rust half in place, the way `pnpm format` does for
 TypeScript.
 
+Clippy runs against its own `CARGO_TARGET_DIR`, deliberately. Sharing
+`target/debug` with `cargo test` made the first test run after a clippy pass
+abort with `Library not loaded: @rpath/libswift_Concurrency.dylib` — a
+metadata-only clippy build leaves the Swift-interop crates' dylibs unbuilt where
+the test binary's rpath expects them, and re-running immediately succeeds. A
+check that fails once and passes on retry is worse than no check, because it is
+the one people learn to ignore.
+
 ## Ground rules
 
 - **Every change ships with its tests.** Backend logic is unit-tested with
