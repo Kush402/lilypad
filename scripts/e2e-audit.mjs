@@ -131,7 +131,11 @@ check(
   `HTTP ${beforeLink.status}`,
 );
 
-const approved = await post('/devices/enrollment-code/approve', { code: code.json.code }, phoneToken);
+const approved = await post(
+  '/devices/enrollment-code/approve',
+  { code: code.json.code },
+  phoneToken,
+);
 check('phone approves — the laptop is linked', approved.status === 200, `HTTP ${approved.status}`);
 check('approval delivers the per-pair connect secret', !!approved.json.pairSecret);
 
@@ -175,10 +179,19 @@ check(
 
 const redeem = await post(
   '/pairing/redeem',
-  { token: pairing.json.token, deviceId: `phone-${tag}`, deviceName: 'Audit iPhone', platform: 'ios' },
+  {
+    token: pairing.json.token,
+    deviceId: `phone-${tag}`,
+    deviceName: 'Audit iPhone',
+    platform: 'ios',
+  },
   phoneToken,
 );
-check('phone redeems the QR', redeem.status === 200 && !!redeem.json.roomId, `HTTP ${redeem.status}`);
+check(
+  'phone redeems the QR',
+  redeem.status === 200 && !!redeem.json.roomId,
+  `HTTP ${redeem.status}`,
+);
 
 const reuse = await post(
   '/pairing/redeem',
@@ -219,7 +232,11 @@ const noToken = await post('/connect/request', {
   mobileDeviceId: `phone-${tag}`,
   pairSecret: approved.json.pairSecret,
 });
-check('ringing without being the phone is refused', noToken.status === 404, `HTTP ${noToken.status}`);
+check(
+  'ringing without being the phone is refused',
+  noToken.status === 404,
+  `HTTP ${noToken.status}`,
+);
 
 // ── 8. Revocation ────────────────────────────────────────────────────────────
 const laptopId = (list.json.devices ?? []).find((d) => d.kind === 'desktop')?.id;
@@ -247,6 +264,34 @@ check(
   ringRevoked.status !== 200,
   `HTTP ${ringRevoked.status} ${ringRevoked.json.error}`,
 );
+
+// The half this suite used to miss entirely. It checked that a revoked
+// device's KEY stops working, then asserted that re-linking restores it — and
+// the second assertion is right for a laptop, whose re-link needs the owner's
+// phone to approve an enrollment code. Nothing checked the credential a thief
+// actually holds.
+//
+// Revoking used to leave `refresh_tokens` untouched, so the account session on
+// the stolen machine survived; an account session is enough to call
+// `/devices/enroll`; and enrolling clears `revoked_at`. Verified against
+// production in that order, all four steps succeeding.
+const refreshAfterRevoke = await post('/auth/refresh', {
+  refreshToken: login.json.refreshToken,
+});
+check(
+  'revoking a device also ends the account sessions that could undo it',
+  refreshAfterRevoke.status !== 200,
+  `HTTP ${refreshAfterRevoke.status} — a 200 means the stolen machine can still refresh`,
+);
+
+// What this deliberately does NOT assert: that the account ACCESS token minted
+// before the revoke stops working. It does not, for ten minutes, because
+// verification is signature-only by design (ADR-0001) and that lag applies to
+// every authorization change in the system. What changed is the bound. Before,
+// the refresh token lived thirty days and re-enrolling cleared `revoked_at`, so
+// the window was unbounded and the recovery permanent. Now a thief needs to
+// have been holding a live access token at the moment of the revoke — and the
+// desktop never stores one at all, only the refresh token this check kills.
 
 const reLink = await post('/devices/enrollment-code', {
   ...(await proof(laptop)),
