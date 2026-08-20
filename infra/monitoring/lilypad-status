@@ -1,0 +1,67 @@
+#!/bin/bash
+# Host facts a remote watchdog cannot see over HTTP: disk, memory, container
+# health, backup freshness, relay state.
+#
+# Runs as the forced command behind the monitoring SSH key
+# (`command="/usr/local/bin/lilypad-status"` in authorized_keys), so that key
+# can do this and nothing else — a scheduled workflow does not need, and must
+# not have, a shell on production.
+#
+# Output is one JSON object on stdout. Values only; the thresholds and the
+# decision to alert live in the watchdog, so changing "what counts as full"
+# does not need a change on the box.
+set -uo pipefail
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+json_escape() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+
+disk_pct=$(df --output=pcent / | tail -1 | tr -dc '0-9')
+mem_total=$(awk '/MemTotal/{print $2}' /proc/meminfo)
+mem_avail=$(awk '/MemAvailable/{print $2}' /proc/meminfo)
+mem_used_pct=$(( (mem_total - mem_avail) * 100 / mem_total ))
+load1=$(awk '{print $1}' /proc/loadavg)
+uptime_s=$(awk '{printf "%d", $1}' /proc/uptime)
+
+# Docker containers, if this host runs any. `|| true` so a TURN host with no
+# Docker reports an empty list rather than failing the whole probe.
+containers='[]'
+if command -v docker >/dev/null 2>&1; then
+  rows=$(sudo -n docker ps -a --format '{{.Names}}|{{.State}}|{{.Status}}' 2>/dev/null || true)
+  if [ -n "$rows" ]; then
+    containers=$(printf '%s\n' "$rows" | awk -F'|' '
+      BEGIN { printf "[" ; sep="" }
+      { gsub(/"/,"",$1); gsub(/"/,"",$2); gsub(/"/,"",$3);
+        healthy = ($3 ~ /\(healthy\)/) ? "true" : (($3 ~ /\(unhealthy\)/) ? "false" : "null");
+        printf "%s{\"name\":\"%s\",\"state\":\"%s\",\"healthy\":%s}", sep, $1, $2, healthy; sep="," }
+      END { printf "]" }')
+  fi
+fi
+
+# Newest backup, in seconds. -1 means the directory exists but holds nothing,
+# which is a louder signal than a missing directory: backups used to work.
+backup_age=-2
+backup_dir=/opt/lilypad/infra/production/backups
+if [ -d "$backup_dir" ]; then
+  newest=$(sudo -n find "$backup_dir" -name '*.sql.gz' -printf '%T@\n' 2>/dev/null | sort -n | tail -1)
+  if [ -n "$newest" ]; then
+    backup_age=$(( $(date +%s) - ${newest%.*} ))
+  else
+    backup_age=-1
+  fi
+fi
+
+coturn="absent"
+if systemctl list-unit-files coturn.service >/dev/null 2>&1 && \
+   systemctl cat coturn.service >/dev/null 2>&1; then
+  coturn=$(systemctl is-active coturn 2>/dev/null || echo unknown)
+fi
+
+# Unattended-upgrades leaves this behind when a kernel or libc update needs a
+# reboot to take effect. A host that has been asking for weeks is running known
+# -vulnerable code.
+reboot_required=false
+[ -f /var/run/reboot-required ] && reboot_required=true
+
+printf '{"host":"%s","diskPercent":%s,"memPercent":%s,"load1":%s,"uptimeSeconds":%s,"containers":%s,"backupAgeSeconds":%s,"coturn":"%s","rebootRequired":%s}\n' \
+  "$(json_escape "$(hostname)")" "${disk_pct:-0}" "$mem_used_pct" "$load1" "$uptime_s" \
+  "$containers" "$backup_age" "$(json_escape "$coturn")" "$reboot_required"

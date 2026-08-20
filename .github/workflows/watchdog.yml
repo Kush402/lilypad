@@ -1,0 +1,113 @@
+# Production watchdog.
+#
+# Lilypad had no monitoring and no alerting whatsoever: `/metrics` existed and
+# nothing scraped it, and the only way to discover the API was down was for a
+# customer to try it. This is the smallest thing that fixes that without a new
+# vendor, a new bill, or a new account: a scheduled probe that opens a GitHub
+# issue, which GitHub emails to the repository owner.
+#
+# It is deliberately not a dashboard. There is one question — "is a customer
+# broken right now, and what do I do about it?" — and every finding carries its
+# own remedy.
+#
+# The SSH key it uses is NOT the deploy key. It is confined by a forced command
+# in authorized_keys to `/usr/local/bin/lilypad-status`, so a scheduled job
+# running every ten minutes cannot become a shell on production.
+
+name: watchdog
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: watchdog
+  cancel-in-progress: true
+
+permissions:
+  # Opening and closing the alert issue is the entire alerting channel.
+  issues: write
+  contents: read
+
+jobs:
+  probe:
+    name: probe production
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+
+      - name: Install the read-only monitoring key
+        env:
+          MONITOR_SSH_KEY: ${{ secrets.MONITOR_SSH_KEY }}
+          MONITOR_KNOWN_HOSTS: ${{ secrets.MONITOR_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$MONITOR_SSH_KEY" > ~/.ssh/monitor && chmod 600 ~/.ssh/monitor
+          # Pinned host keys rather than StrictHostKeyChecking=no: a monitor
+          # that accepts any host key cannot tell "the VM is down" from
+          # "something else answered".
+          printf '%s\n' "$MONITOR_KNOWN_HOSTS" > ~/.ssh/known_hosts && chmod 600 ~/.ssh/known_hosts
+
+      - name: Probe
+        id: probe
+        continue-on-error: true
+        env:
+          MONITOR_KEY_PATH: /home/runner/.ssh/monitor
+          TURN_HOST: ${{ secrets.TURN_HOST }}
+          STATUS_HOSTS: ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }},${{ secrets.DEPLOY_USER }}@${{ secrets.TURN_HOST }}
+        run: |
+          set -o pipefail
+          node scripts/watchdog.mjs | tee verdict.json
+
+      - name: Open, update, or close the alert issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PROBE_OUTCOME: ${{ steps.probe.outcome }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          TITLE='🚨 production watchdog: something is wrong'
+          existing=$(gh issue list --state open --search "$TITLE in:title" --json number --jq '.[0].number // empty')
+
+          if [ "$PROBE_OUTCOME" = "success" ]; then
+            if [ -n "$existing" ]; then
+              gh issue comment "$existing" --body "Recovered — all checks green as of $(date -u +%FT%TZ). $RUN_URL"
+              gh issue close "$existing"
+              echo "closed #$existing"
+            else
+              echo "all green"
+            fi
+            exit 0
+          fi
+
+          # The probe script itself may have crashed rather than found a fault.
+          # Both are alertable, but they are not the same alert.
+          if [ ! -s verdict.json ]; then
+            body="The watchdog could not complete its probe — it produced no verdict. This is itself an outage signal: it usually means the runner could not reach production at all.\n\n$RUN_URL"
+          else
+            body=$(node -e '
+              const v = require("./verdict.json");
+              const rows = v.findings.map(f => `| ${f.severity === "critical" ? "🔴" : "🟡"} | \`${f.check}\` | ${f.detail} | ${f.remedy} |`).join("\n");
+              process.stdout.write(
+                `**${v.critical} critical, ${v.warnings} warning** as of ${v.at}\n\n` +
+                `| | check | what is wrong | what to do |\n|---|---|---|---|\n${rows}\n\n` +
+                `<details><summary>raw probe output</summary>\n\n\`\`\`json\n${JSON.stringify(v.facts, null, 2)}\n\`\`\`\n</details>\n\n${process.env.RUN_URL}`
+              );
+            ')
+          fi
+
+          if [ -n "$existing" ]; then
+            # One issue per incident, not one per probe. Ten-minute polling
+            # would otherwise file 144 issues a day for one broken container.
+            gh issue comment "$existing" --body "$body"
+            echo "commented on #$existing"
+          else
+            gh issue create --title "$TITLE" --body "$body" --label watchdog 2>/dev/null \
+              || gh issue create --title "$TITLE" --body "$body"
+            echo "opened a new alert issue"
+          fi
+          exit 1

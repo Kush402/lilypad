@@ -1,0 +1,201 @@
+#!/usr/bin/env node
+/**
+ * Production watchdog — the thing that notices before a customer does.
+ *
+ * Lilypad had no monitoring at all: /metrics existed and nothing read it, and
+ * the only way to learn the API was down was to try it. This probes what a
+ * customer's first minute actually depends on, plus the host facts no HTTP
+ * request can see (disk, memory, backup freshness, relay state), and returns a
+ * machine-readable verdict the workflow turns into a GitHub issue.
+ *
+ * Design rules, learned the hard way from noisy monitors:
+ *  - Alert on what a user would feel, not on what a graph would show. Disk at
+ *    71% is not an incident; disk at 90% is a database that stops writing.
+ *  - Every check names its own remedy. An alert nobody can act on trains
+ *    people to ignore alerts.
+ *  - The probe must not need production secrets it does not use. The SSH key
+ *    here is confined by a forced command to one read-only script.
+ *
+ * Usage: node scripts/watchdog.mjs   → prints a JSON verdict, exit 1 if firing.
+ */
+
+const API = process.env.API_BASE ?? 'https://api.takedia.com';
+const SITE = process.env.SITE_URL ?? 'https://lilypadhome.takedia.com';
+const TURN_HOST = process.env.TURN_HOST ?? '';
+const HOSTS = (process.env.STATUS_HOSTS ?? '').split(',').filter(Boolean);
+
+/** Alert thresholds. Deliberately here and not on the hosts: changing what
+ * counts as "full" must not require touching production. */
+const DISK_PERCENT = 88;
+const MEM_PERCENT = 92;
+/** Backups run nightly, so 36h means at least one has silently failed. */
+const BACKUP_MAX_AGE_S = 36 * 3600;
+
+const findings = [];
+const facts = {};
+
+/** @param {'critical'|'warning'} severity */
+function alert(severity, check, detail, remedy) {
+  findings.push({ severity, check, detail, remedy });
+}
+
+async function timed(fn) {
+  const t0 = performance.now();
+  try {
+    return { value: await fn(), ms: Math.round(performance.now() - t0) };
+  } catch (err) {
+    return { error: String(err?.message ?? err), ms: Math.round(performance.now() - t0) };
+  }
+}
+
+async function checkApi() {
+  const probe = await timed(async () => {
+    const res = await fetch(`${API}/health`, { signal: AbortSignal.timeout(15_000) });
+    return { status: res.status, body: await res.json() };
+  });
+  facts.api = probe;
+  if (probe.error) {
+    return alert('critical', 'api', `GET ${API}/health failed: ${probe.error}`,
+      'Check the cloudflared tunnel and the backend container on the production VM.');
+  }
+  const { status, body } = probe.value;
+  if (status !== 200 || body.status !== 'ok') {
+    // /health reports WHICH dependency is down, so the alert can say so
+    // instead of making someone SSH in to find out.
+    const down = Object.entries(body.checks ?? {}).filter(([, v]) => v !== 'up').map(([k]) => k);
+    return alert('critical', 'api',
+      `health is ${body.status ?? status}${down.length ? `; down: ${down.join(', ')}` : ''}`,
+      down.length ? `Restart the ${down.join(' and ')} container(s) and check disk.` :
+        'Backend is answering but not healthy — read its container logs.');
+  }
+  // A latency ceiling, not an average: this is one sample over Cloudflare and
+  // only means something when it is badly wrong.
+  if (probe.ms > 3000) {
+    alert('warning', 'api-latency', `/health took ${probe.ms} ms`,
+      'Check VM load and Postgres responsiveness.');
+  }
+}
+
+async function checkSite() {
+  const probe = await timed(async () => {
+    const res = await fetch(SITE, { signal: AbortSignal.timeout(15_000) });
+    return { status: res.status, length: (await res.text()).length };
+  });
+  facts.site = probe;
+  if (probe.error || probe.value.status !== 200) {
+    alert('critical', 'site',
+      `GET ${SITE} → ${probe.error ?? probe.value.status}`,
+      'The download page is how customers get the app. Check Cloudflare Pages.');
+  }
+}
+
+/**
+ * The relay, proved by a real STUN Binding request over UDP rather than by a
+ * port scan: coturn can be listening and still be refusing to allocate.
+ */
+async function checkTurn() {
+  if (!TURN_HOST) return;
+  const dgram = await import('node:dgram');
+  const probe = await timed(() => new Promise((resolve, reject) => {
+    const socket = dgram.createSocket('udp4');
+    const txId = Buffer.from(crypto.getRandomValues(new Uint8Array(12)));
+    // RFC 5389 Binding Request: type 0x0001, length 0, magic cookie, tx id.
+    const req = Buffer.concat([
+      Buffer.from([0x00, 0x01, 0x00, 0x00, 0x21, 0x12, 0xa4, 0x42]), txId,
+    ]);
+    const timer = setTimeout(() => {
+      socket.close();
+      reject(new Error('no STUN response within 5s'));
+    }, 5000);
+    socket.on('message', (msg) => {
+      clearTimeout(timer);
+      socket.close();
+      // 0x0101 = Binding Success Response, and the transaction id must match.
+      const ok = msg.length >= 20 && msg.readUInt16BE(0) === 0x0101 && msg.subarray(8, 20).equals(txId);
+      ok ? resolve('binding-success') : reject(new Error(`unexpected STUN reply 0x${msg.readUInt16BE(0).toString(16)}`));
+    });
+    socket.on('error', (err) => { clearTimeout(timer); reject(err); });
+    socket.send(req, 3478, TURN_HOST);
+  }));
+  facts.turn = probe;
+  if (probe.error) {
+    alert('critical', 'turn',
+      `STUN binding to ${TURN_HOST}:3478/udp failed: ${probe.error}`,
+      'Sessions that cannot go direct will fail entirely. Check coturn and the OCI NSG.');
+  }
+}
+
+async function checkHosts() {
+  const { execFile } = await import('node:child_process');
+  const { promisify } = await import('node:util');
+  const run = promisify(execFile);
+  facts.hosts = {};
+  for (const host of HOSTS) {
+    const probe = await timed(async () => {
+      const { stdout } = await run('ssh', [
+        '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=15',
+        '-i', process.env.MONITOR_KEY_PATH ?? '/dev/null', host,
+      ], { timeout: 30_000 });
+      return JSON.parse(stdout);
+    });
+    facts.hosts[host] = probe;
+    if (probe.error) {
+      alert('critical', `host:${host}`, `status probe failed: ${probe.error}`,
+        'The VM may be down, or Oracle may have reclaimed it. Check the OCI console.');
+      continue;
+    }
+    const s = probe.value;
+    if (s.diskPercent >= DISK_PERCENT) {
+      alert('critical', `disk:${s.host}`, `root filesystem ${s.diskPercent}% full`,
+        'Postgres stops accepting writes on a full disk. Prune docker images and old backups.');
+    }
+    if (s.memPercent >= MEM_PERCENT) {
+      alert('warning', `memory:${s.host}`, `memory ${s.memPercent}% used`,
+        'These are 1 GB Always-Free VMs; the OOM killer takes Postgres first.');
+    }
+    for (const c of s.containers ?? []) {
+      if (c.state !== 'running') {
+        alert('critical', `container:${c.name}`, `state is ${c.state}`,
+          'Bring the compose stack back up and read the container logs for why it exited.');
+      } else if (c.healthy === false) {
+        alert('critical', `container:${c.name}`, 'healthcheck failing',
+          'The container is running but not serving. Check its logs.');
+      }
+    }
+    if (s.backupAgeSeconds === -1) {
+      alert('critical', `backup:${s.host}`, 'backup directory exists but is empty',
+        'Backups used to run here. Check the cron entry and backup.sh.');
+    } else if (s.backupAgeSeconds > BACKUP_MAX_AGE_S) {
+      alert('critical', `backup:${s.host}`,
+        `newest backup is ${Math.round(s.backupAgeSeconds / 3600)}h old`,
+        'At least one nightly backup has failed silently. Run backup.sh by hand and read the error.');
+    }
+    if (s.coturn === 'failed' || s.coturn === 'inactive') {
+      alert('critical', `coturn:${s.host}`, `coturn is ${s.coturn}`,
+        'systemctl status coturn on the relay VM.');
+    }
+    if (s.rebootRequired) {
+      alert('warning', `patches:${s.host}`, 'a reboot is pending for applied security updates',
+        'The host is running the old kernel/libc. Schedule a reboot.');
+    }
+  }
+}
+
+await checkApi();
+await checkSite();
+await checkTurn();
+await checkHosts();
+
+const critical = findings.filter((f) => f.severity === 'critical');
+const verdict = {
+  at: new Date().toISOString(),
+  firing: findings.length > 0,
+  critical: critical.length,
+  warnings: findings.length - critical.length,
+  findings,
+  facts,
+};
+console.log(JSON.stringify(verdict, null, 2));
+// Exit 1 for ANY finding: the workflow decides how loudly to react, and a
+// warning that never surfaces is the same as no monitoring.
+process.exit(findings.length > 0 ? 1 : 0);
