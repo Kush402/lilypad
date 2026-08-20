@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Extra Info.plist keys, merged into the one the Tauri CLI generates
+  (https://v2.tauri.app/distribute/macos-application-bundle/). Keep this file to
+  keys Tauri does not already emit — overwriting its values, the version above
+  all, causes exactly the conflicts that document warns about.
+
+  NSLocalNetworkUsageDescription is the whole reason this file exists. Lilypad's
+  first and best path is the LAN one, and on macOS 15 that path is gated behind
+  Local Network privacy. Apple's TN3179 lists the operations that need it, and
+  Lilypad performs two of them on every LAN session — "Making an outgoing TCP
+  connection: yes" and "Sending a UDP unicast: yes" — because that is what an
+  ICE host candidate to a phone on the same Wi-Fi is.
+
+  Apple's guidance on the key itself: "Any app that uses the local network,
+  directly or indirectly, should include this description. This includes apps
+  that use Bonjour and services implemented with Bonjour, as well as direct
+  unicast or multicast connections to local hosts."
+  https://developer.apple.com/documentation/bundleresources/information-property-list/nslocalnetworkusagedescription
+
+  Without it the system still shows the alert — it just shows it with no reason
+  attached, on the one prompt whose answer decides whether the product's core
+  claim ("nothing leaves your home") is true for that user.
+
+  NSBonjourServices is deliberately absent: Lilypad does not register or browse
+  for Bonjour services. The phone dials an address the desktop advertised
+  through the signaling channel, which is unicast, and TN3179 asks for that key
+  only for "registering or browsing for specific Bonjour services".
+-->
+<plist version="1.0">
+  <dict>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>Lilypad connects your iPhone to this Mac directly over your own Wi-Fi, so your screen never leaves your home network.</string>
+  </dict>
+</plist>
