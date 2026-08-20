@@ -241,6 +241,24 @@ All four are fixed. Two consecutive green runs since, each verified by
 REVISION rather than mere liveness is what caught defect 3** — a `"status":"ok"`
 check passes happily while the old container serves.
 
+### Rollback, exercised (2026-08-20)
+
+The rollback step was rewritten after the first real deploy and had never run,
+which is the same trap the deploy itself was in. Exercised against production by
+running `deploy.yml`'s rollback script verbatim on the host:
+
+| Step                              | Result                                          |
+| --------------------------------- | ----------------------------------------------- |
+| Roll back to the recorded image   | serving the older revision in **8 s**           |
+| Tunnel during the rollback        | stayed up (`200`); only the backend is touched  |
+| Old code against the newer schema | fine — migration `0008` is additive, as claimed |
+| Roll forward again                | serving the current revision in **7 s**         |
+
+`.previous-image` is written before anything changes, and `docker image prune
+-f` removes only dangling images, so the rollback target is still on disk when
+it is needed. The rollback refuses to guess if that file is missing rather than
+deploying something arbitrary.
+
 ### Which commit is running
 
 ```sh
@@ -262,14 +280,47 @@ curl -s https://api.takedia.com/health
 | Bad deploy             | Health check fails                                                                                                            | Workflow rolls back automatically       |
 | Cloudflare tunnel down | API unreachable                                                                                                               | cloudflared restarts; LAN unaffected    |
 
-Backups: `pg_dump` to `infra/production/backups` on a cron, retained 7 days.
-**An untested backup is not a backup** — restore into a scratch database and
-confirm row counts before believing it. Done 2026-08-20: the latest dump loaded
-into a scratch database with 7 tables and 7 migration rows, then dropped.
+### Backups
 
-Backups sit on the same disk as the database they protect. That is the one
-recovery path in this table with no second copy anywhere — see "What is not
-done".
+`infra/monitoring/backup.sh`, installed at `/opt/lilypad/backup.sh` and run from
+cron at 03:17 UTC. `pg_dump | gzip`, retained 7 days locally and 7 days on the
+relay VM.
+
+Two things it does that the original did not, both found on 2026-08-20:
+
+**It verifies before publishing.** The original wrote `pg_dump | gzip` straight
+to the final filename. A dump that dies halfway still leaves a valid gzip file
+with a plausible name and a fresh mtime — so every age-based check, including
+the watchdog's, reports a healthy backup. The dump is now written under a
+temporary name, checked for pg_dump's `PostgreSQL database dump complete`
+marker, and only then moved into place. The move is atomic, so nothing ever
+reads a partial file under the real name.
+
+**It keeps a copy on another machine.** Backups previously lived on the same
+disk as the database they protect, which is no help in the scenario a backup
+exists for. Each verified dump is now piped over SSH to the relay VM, where
+`infra/monitoring/lilypad-backup-sink` re-checks the gzip and the completion
+marker on arrival before filing it.
+
+The key that does this is generated **on** the production host, never leaves it,
+and is pinned by a forced command on the relay to the sink script — so
+production can deposit a dump and cannot read one back, list them, or get a
+shell. That direction is deliberate: production is the more exposed of the two
+machines, and a copy an attacker can delete is not a backup. Verified: sending
+anything that is not a dump answers `REJECTED: not a valid gzip stream`.
+
+The sink caps input at 64 MiB, so a compromised or looping sender cannot fill
+the relay's disk and take TURN down with it.
+
+**An untested backup is not a backup.** Verified 2026-08-20 by pulling the
+OFF-HOST copy to a third machine, checking its integrity there, and restoring it
+into a scratch database on production: 0 errors, 7 tables, 1 user, 270 audit
+rows, 9 migration rows, and `users.email_verified_at` (migration 0007) present.
+Scratch database dropped.
+
+The watchdog alerts on the local dump and the off-host copy **separately**: they
+fail independently, and a local backup can keep succeeding for weeks while the
+copy to the other machine silently stops.
 
 ### Crash recovery, measured (2026-08-20)
 
@@ -550,9 +601,10 @@ Stated explicitly so nothing here reads as more finished than it is.
 - ~~No backup cron is installed.~~ It runs nightly, and the watchdog alerts if
   the newest dump is over 36 hours old or the directory is empty. Restore was
   exercised 2026-08-20.
-- **Backups have no off-host copy.** They live on the same disk as the database.
-  Losing the VM loses both, and Oracle's Always Free terms permit reclaiming an
-  idle instance. This is the single largest unmitigated risk in this document.
+- ~~Backups have no off-host copy.~~ Each verified dump is now copied to the
+  relay VM (see below). Still true, and the residual risk: **both machines are
+  Always Free instances in the same Oracle tenancy and region.** A disk failure,
+  a bad migration, or losing one VM is covered; losing the tenancy is not.
 - No staging environment exists yet — the workflow supports it, nothing runs it.
 - ~~No crash reporting or metrics scraping.~~ Metrics are scraped by the
   watchdog every ten minutes. Crash reporting (Sentry or equivalent) is still

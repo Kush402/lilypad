@@ -1,28 +1,28 @@
+//! This laptop's ACCOUNT session — who is signed in
+//! ([ADR-0012](../../../../docs/adr/0012-password-authentication.md)).
+//!
+//! Deliberately separate from `auth.rs`, which holds the DEVICE session. The
+//! two answer different questions and neither implies the other:
+//!
+//! - **Account** — who the human is. Established here, by email + password.
+//! - **Device** — whether an account owns this machine. Established only by a
+//!   phone approving an enrollment code
+//!   ([ADR-0010](../../../../docs/adr/0010-explicit-device-linking.md)).
+//!
+//! Signing in on this Mac therefore does NOT link this Mac, and the backend
+//! enforces that rather than trusting this client to: `/devices/enroll` refuses
+//! `kind: "desktop"` outright. That refusal is what makes it safe for a desktop
+//! to hold an account token at all.
+//!
+//! **What is stored is the refresh token, and nothing else.** Access tokens
+//! live ten minutes and are re-minted from it; storing one would be storing a
+//! copy of something that expires anyway. The refresh token is rotating and
+//! single-use, so a stolen copy is detectable — presenting a retired one
+//! revokes the whole family, which is the property that makes it storable in
+//! the first place.
+
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
-
-/// This laptop's ACCOUNT session — who is signed in
-/// ([ADR-0012](../../../../docs/adr/0012-password-authentication.md)).
-///
-/// Deliberately separate from `auth.rs`, which holds the DEVICE session. The
-/// two answer different questions and neither implies the other:
-///
-/// - **Account** — who the human is. Established here, by email + password.
-/// - **Device** — whether an account owns this machine. Established only by a
-///   phone approving an enrollment code
-///   ([ADR-0010](../../../../docs/adr/0010-explicit-device-linking.md)).
-///
-/// Signing in on this Mac therefore does NOT link this Mac, and the backend
-/// enforces that rather than trusting this client to: `/devices/enroll` refuses
-/// `kind: "desktop"` outright. That refusal is what makes it safe for a desktop
-/// to hold an account token at all.
-///
-/// **What is stored is the refresh token, and nothing else.** Access tokens
-/// live ten minutes and are re-minted from it; storing one would be storing a
-/// copy of something that expires anyway. The refresh token is rotating and
-/// single-use, so a stolen copy is detectable — presenting a retired one
-/// revokes the whole family, which is the property that makes it storable in
-/// the first place.
 
 const KEYCHAIN_SERVICE: &str = "com.takedia.lilypad.desktop.account";
 const KEYCHAIN_ACCOUNT: &str = "refresh-token";

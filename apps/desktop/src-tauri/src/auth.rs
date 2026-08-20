@@ -157,14 +157,17 @@ impl DeviceAuth {
         Ok((challenge, self.identity.public_key_base64url(), signature))
     }
 
-    /// Bind this device to a signed-in account. Requires an ACCOUNT access
-    /// token, because enrollment is the moment the device gains an owner.
     // `enroll()` used to live here: a desktop enrolling ITSELF with an account
-    // access token. It had no callers, and as of ADR-0012 it could not work —
+    // access token, "because enrollment is the moment the device gains an
+    // owner". It had no callers, and as of ADR-0012 it could not work —
     // `/devices/enroll` refuses `kind: "desktop"`, because a computer must be
     // adopted by a phone approving its enrollment code (ADR-0010) rather than
     // by whoever happens to be signed in on it. Removed rather than left as a
     // method that compiles and 403s.
+    //
+    // Its doc comment was left behind as `///`, which meant rustdoc attached
+    // the removed method's description to `request_enrollment_code` below —
+    // documentation for one function rendered on a different one.
 
     /// Ask for an enrollment code to show as a QR.
     ///

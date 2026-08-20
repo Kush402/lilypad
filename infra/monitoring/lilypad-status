@@ -50,6 +50,22 @@ if [ -d "$backup_dir" ]; then
   fi
 fi
 
+# The OFF-HOST copy of the production database, on whichever machine receives
+# it. Reported separately from `backupAgeSeconds` because they fail
+# independently: a local dump can keep succeeding for weeks while the copy to
+# the other machine silently stops, and the one that matters when the VM is
+# gone is this one.
+offsite_age=-2
+offsite_dir=/var/backups/lilypad
+if [ -d "$offsite_dir" ]; then
+  newest_off=$(sudo -n find "$offsite_dir" -name '*.sql.gz' -printf '%T@\n' 2>/dev/null | sort -n | tail -1)
+  if [ -n "$newest_off" ]; then
+    offsite_age=$(( $(date +%s) - ${newest_off%.*} ))
+  else
+    offsite_age=-1
+  fi
+fi
+
 coturn="absent"
 if systemctl list-unit-files coturn.service >/dev/null 2>&1 && \
    systemctl cat coturn.service >/dev/null 2>&1; then
@@ -62,6 +78,6 @@ fi
 reboot_required=false
 [ -f /var/run/reboot-required ] && reboot_required=true
 
-printf '{"host":"%s","diskPercent":%s,"memPercent":%s,"load1":%s,"uptimeSeconds":%s,"containers":%s,"backupAgeSeconds":%s,"coturn":"%s","rebootRequired":%s}\n' \
+printf '{"host":"%s","diskPercent":%s,"memPercent":%s,"load1":%s,"uptimeSeconds":%s,"containers":%s,"backupAgeSeconds":%s,"offsiteBackupAgeSeconds":%s,"coturn":"%s","rebootRequired":%s}\n' \
   "$(json_escape "$(hostname)")" "${disk_pct:-0}" "$mem_used_pct" "$load1" "$uptime_s" \
-  "$containers" "$backup_age" "$(json_escape "$coturn")" "$reboot_required"
+  "$containers" "$backup_age" "$offsite_age" "$(json_escape "$coturn")" "$reboot_required"

@@ -1,0 +1,37 @@
+#!/bin/bash
+# Receives one Postgres dump on stdin and files it. Nothing else.
+#
+# This runs as the forced command behind the backup key in the relay VM's
+# authorized_keys, so the production host can deposit a dump here and cannot
+# read one back, list them, or get a shell. That direction matters: the
+# production host is the more exposed of the two, and a copy an attacker can
+# delete is not a backup.
+set -euo pipefail
+
+DIR=/var/backups/lilypad
+mkdir -p "$DIR"
+chmod 700 "$DIR"
+
+STAMP=$(date -u +%Y%m%dT%H%M%SZ)
+TMP="$DIR/.incoming-$STAMP.partial"
+FINAL="$DIR/lilypad-$STAMP.sql.gz"
+trap 'rm -f "$TMP"' EXIT
+
+# Capped so a compromised or looping sender cannot fill this disk and take the
+# relay down with it. Dumps are kilobytes today; 64 MiB is far more headroom
+# than the growth curve needs before someone revisits this.
+head -c 67108864 > "$TMP"
+
+# A gzip that does not decompress is not a backup, and finding that out here —
+# on arrival — is much cheaper than finding it out during a restore.
+gzip -t "$TMP" 2>/dev/null || { echo "REJECTED: not a valid gzip stream" >&2; exit 1; }
+gzip -dc "$TMP" | tail -5 | grep -q 'PostgreSQL database dump complete' || {
+  echo "REJECTED: dump has no completion marker — it was truncated" >&2; exit 1; }
+
+chmod 600 "$TMP"
+mv "$TMP" "$FINAL"
+trap - EXIT
+
+find "$DIR" -name 'lilypad-*.sql.gz' -mtime +7 -delete
+find "$DIR" -name '.incoming-*.partial' -mmin +60 -delete
+echo "stored $(basename "$FINAL") ($(stat -c%s "$FINAL") bytes)"

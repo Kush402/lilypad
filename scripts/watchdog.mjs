@@ -224,6 +224,17 @@ async function checkHosts() {
         `newest backup is ${Math.round(s.backupAgeSeconds / 3600)}h old`,
         'At least one nightly backup has failed silently. Run backup.sh by hand and read the error.');
     }
+    // Reported and alerted separately from the local dump: the two fail
+    // independently, and a local backup on the same disk as its database is
+    // no help at all in the scenario the backup exists for.
+    if (s.offsiteBackupAgeSeconds === -1) {
+      alert('critical', `offsite-backup:${s.host}`, 'the off-host backup directory exists but is empty',
+        'Copies used to arrive here. Check backup.sh on the production VM and the offsite key.');
+    } else if (s.offsiteBackupAgeSeconds > BACKUP_MAX_AGE_S) {
+      alert('critical', `offsite-backup:${s.host}`,
+        `newest off-host copy is ${Math.round(s.offsiteBackupAgeSeconds / 3600)}h old`,
+        'The database is currently protected only by a copy on the same disk as itself. Run backup.sh by hand and read the error.');
+    }
     if (s.coturn === 'failed' || s.coturn === 'inactive') {
       alert('critical', `coturn:${s.host}`, `coturn is ${s.coturn}`,
         'systemctl status coturn on the relay VM.');
