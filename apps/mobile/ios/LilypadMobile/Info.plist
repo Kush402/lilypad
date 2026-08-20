@@ -48,6 +48,8 @@
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Lilypad connects to your Mac directly over your own Wi-Fi, so your screen never leaves your home network.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>Lilypad scans the pairing QR code shown on your laptop.</string>
 	<key>UILaunchStoryboardName</key>
