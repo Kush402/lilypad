@@ -17,7 +17,7 @@ mod clipboard_watcher;
 mod fsm;
 mod input_gate;
 mod media_controller;
-mod reconnect;
+pub(crate) mod reconnect;
 mod signaling_client;
 
 use std::sync::Arc;

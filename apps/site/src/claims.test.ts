@@ -138,3 +138,24 @@ describe('what the page must not say', () => {
     expect(html).toMatch(/[Ss]igning in does not reveal a computer/);
   });
 });
+
+/**
+ * The page shipped saying "Not yet released publicly" in its hero while
+ * linking a public v0.1.1 download further down the same page. Both cannot be
+ * true, and the visitor reads the hero first — so the honest half was the one
+ * nobody saw. A page that contradicts itself is worse than either claim alone.
+ */
+describe('release status', () => {
+  it('does not say it is unreleased while offering a download', () => {
+    expect(html).not.toMatch(/not yet released publicly/i);
+  });
+
+  it('names the version it actually offers, and keeps saying it is unsigned', () => {
+    expect(html).toMatch(/v0\.1\.1/);
+    expect(html).toMatch(/unsigned|not signed/i);
+  });
+
+  it('still tells iPhone users there is no install path', () => {
+    expect(html).toMatch(/built from source/i);
+  });
+});

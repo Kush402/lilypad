@@ -1,6 +1,7 @@
 import { Redis } from 'ioredis';
 import { env } from './config.js';
 import { log } from './logging.js';
+import { withProbeTimeout } from './db/client.js';
 
 export const redis = new Redis(env.REDIS_URL, {
   maxRetriesPerRequest: 2,
@@ -16,9 +17,8 @@ redis.on('error', (err: Error) => {
 });
 
 export async function pingRedis(): Promise<boolean> {
-  try {
-    return (await redis.ping()) === 'PONG';
-  } catch {
-    return false;
-  }
+  // Bounded for the same reason as pingPostgres: ioredis queues commands
+  // while it reconnects, so a PING issued during an outage can sit unanswered
+  // far longer than a health check may take. See `withProbeTimeout`.
+  return withProbeTimeout(redis.ping().then((pong) => pong === 'PONG'));
 }

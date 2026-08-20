@@ -11,6 +11,24 @@ use tokio::sync::mpsc::UnboundedReceiver;
 
 use crate::signaling::{self, Envelope};
 
+/// Equal jitter: keep half the delay, randomise the other half.
+///
+/// No `rand` dependency for this — the requirement is "clients do not land on
+/// the same millisecond", not cryptographic randomness, and the low bits of
+/// the system clock in nanoseconds are uncorrelated enough between machines
+/// and between attempts to do that.
+pub(crate) fn jitter(base: Duration) -> Duration {
+    let half = base.as_millis() as u64 / 2;
+    if half == 0 {
+        return base;
+    }
+    let entropy = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos() as u64)
+        .unwrap_or(0);
+    Duration::from_millis(half + entropy % (half + 1))
+}
+
 /// Signaling reconnect attempts before declaring the session lost.
 ///
 /// Mirrors `@lilypad/protocol`'s `MAX_SIGNALING_RECONNECTS`/
@@ -41,6 +59,25 @@ impl ReconnectPolicy {
         Duration::from_millis(ms.min(8_000))
     }
 
+    /// The same schedule, de-synchronised — what the loop actually sleeps.
+    ///
+    /// Every client connected when the backend restarts starts its retry clock
+    /// at the same instant, and `backoff` is deterministic, so they all knock
+    /// at 500ms, then all at 1s, then all at 2s. Deploys make that a routine
+    /// event rather than a rare one, and the herd landing together can hold a
+    /// just-started server down. Mirrors `jitteredBackoffMs` in
+    /// `packages/protocol/src/constants.ts`.
+    ///
+    /// Equal jitter (half fixed, half random) rather than full jitter: full
+    /// jitter can round to ~0 and turn a backoff into an immediate retry,
+    /// which is the behaviour being avoided. The jittered value is always
+    /// <= the scheduled one, so the cross-tier budget documented in
+    /// `constants.ts` (worst case under `BACKEND_REREGISTER_GRACE_MS`) is
+    /// unaffected.
+    pub fn jittered_backoff(&self, attempt: u32) -> Duration {
+        jitter(self.backoff(attempt))
+    }
+
     /// Re-establish signaling: reconnect with exponential backoff and
     /// re-register as the desktop seat, so the backend routes room traffic
     /// to the new socket. Gives up after `max_attempts`.
@@ -51,7 +88,7 @@ impl ReconnectPolicy {
         device_id: &str,
     ) -> Result<(signaling::SignalingHandle, UnboundedReceiver<Envelope>)> {
         for attempt in 0..self.max_attempts {
-            tokio::time::sleep(self.backoff(attempt)).await;
+            tokio::time::sleep(self.jittered_backoff(attempt)).await;
             match signaling::connect(url, None).await {
                 Ok((sig, inbound)) => {
                     sig.send(Envelope::register(room_id, device_id))?;
@@ -97,5 +134,48 @@ mod tests {
         assert_eq!(policy.backoff(4), Duration::from_millis(8000));
         assert_eq!(policy.backoff(10), Duration::from_millis(8000));
         assert_eq!(policy.backoff(u32::MAX), Duration::from_millis(8000));
+    }
+}
+
+#[cfg(test)]
+mod jitter_tests {
+    use super::*;
+
+    /// Mirrors `packages/protocol/src/constants.ts`'s own assertion: the
+    /// jittered delay is never longer than the scheduled one, so the
+    /// cross-tier timing budget (client retry budget < backend reregister
+    /// grace) is unaffected by adding jitter.
+    #[test]
+    fn jitter_never_exceeds_the_scheduled_delay() {
+        let policy = ReconnectPolicy::new();
+        for attempt in 0..8 {
+            let scheduled = policy.backoff(attempt);
+            for _ in 0..200 {
+                let jittered = policy.jittered_backoff(attempt);
+                assert!(
+                    jittered <= scheduled,
+                    "attempt {attempt}: {jittered:?} > {scheduled:?}"
+                );
+                assert!(
+                    jittered >= scheduled / 2,
+                    "attempt {attempt}: {jittered:?} collapsed below half of {scheduled:?}"
+                );
+            }
+        }
+    }
+
+    /// The point of the change: two clients backing off from the same restart
+    /// must not choose the same millisecond.
+    #[test]
+    fn jitter_spreads_a_herd() {
+        let policy = ReconnectPolicy::new();
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..200 {
+            seen.insert(policy.jittered_backoff(3).as_millis());
+            // The entropy source is the nanosecond clock, so consecutive calls
+            // in a tight loop need a moment to differ.
+            std::thread::sleep(Duration::from_micros(50));
+        }
+        assert!(seen.len() > 20, "only {} distinct delays", seen.len());
     }
 }

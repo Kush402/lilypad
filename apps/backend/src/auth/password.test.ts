@@ -1,5 +1,16 @@
-import { describe, it, expect } from 'vitest';
+import { vi, describe, it, expect } from 'vitest';
 import { hashPassword, verifyPassword, verifyAgainstDummy } from './password.js';
+
+/**
+ * scrypt is the point of this file, and it is deliberately expensive: 32 MiB
+ * and ~350 ms per hash on an unloaded machine (`auth/password.ts`). Several
+ * tests here hash three or four times, so vitest's 5-second default is only
+ * ~3x headroom — and a two-core CI runner sharing itself with the rest of the
+ * suite eats that easily. These timed out under load while passing in
+ * isolation, which is the signature of a flaky test rather than a slow one.
+ * The work is real and must stay; the deadline is what was wrong.
+ */
+vi.setConfig({ testTimeout: 30_000 });
 
 describe('password hashing', () => {
   it('verifies the password it hashed', async () => {

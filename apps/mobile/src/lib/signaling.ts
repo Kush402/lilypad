@@ -1,8 +1,8 @@
 import {
   encodeSignal,
   decodeSignal,
-  reconnectBackoffMs,
   MAX_SIGNALING_RECONNECTS,
+  jitteredBackoffMs,
   type SignalingMessage,
   type SessionScope,
   type CaptureMode,
@@ -134,7 +134,7 @@ export class MobileSignaling {
 
   private async runReconnect(deviceId: string, token: number): Promise<void> {
     for (let attempt = 0; attempt < MAX_SIGNALING_RECONNECTS; attempt++) {
-      await sleep(reconnectBackoffMs(attempt));
+      await sleep(jitteredBackoffMs(attempt));
       if (token !== this.reconnectToken || this.closing) return;
       try {
         await this.attach(new WebSocket(this.url));

@@ -1,7 +1,18 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { vi, describe, it, expect, beforeEach } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { AccountService, type AccountStore } from './accounts.js';
 import type { OAuthProvider, ProviderIdentity } from './providers.js';
+
+/**
+ * scrypt is the point of this file, and it is deliberately expensive: 32 MiB
+ * and ~350 ms per hash on an unloaded machine (`auth/password.ts`). Several
+ * tests here hash three or four times, so vitest's 5-second default is only
+ * ~3x headroom — and a two-core CI runner sharing itself with the rest of the
+ * suite eats that easily. These timed out under load while passing in
+ * isolation, which is the signature of a flaky test rather than a slow one.
+ * The work is real and must stay; the deadline is what was wrong.
+ */
+vi.setConfig({ testTimeout: 30_000 });
 
 function fakeStore(): AccountStore & {
   users: Map<string, string>;

@@ -92,6 +92,28 @@ export function reconnectBackoffMs(attempt: number): number {
 }
 
 /**
+ * The same schedule, de-synchronised.
+ *
+ * Every client that was connected when the backend restarted starts its
+ * retry clock at the same instant, and the schedule above is deterministic —
+ * so they all knock at 500ms, then all at 1s, then all at 2s. That is a
+ * reconnect storm: the herd lands together and can hold a just-started server
+ * down, which then restarts the whole cycle. Deploys make this a routine
+ * event rather than a rare one.
+ *
+ * Equal jitter (half the delay fixed, half random) rather than full jitter:
+ * full jitter can return ~0 and turn a backoff into an immediate retry, which
+ * is the behaviour being avoided. Because the jittered value is always ≤ the
+ * scheduled one, the cross-tier budget above is unaffected — worst case is
+ * still 7.5s against a 15s reregister grace.
+ */
+export function jitteredBackoffMs(attempt: number, random: () => number = Math.random): number {
+  const base = reconnectBackoffMs(attempt);
+  const half = base / 2;
+  return Math.round(half + random() * half);
+}
+
+/**
  * Cross-tier timing budget (`docs/audit/m3/reconnect-lifecycle.md` Finding 6)
  * — these four constants were previously tuned independently per tier and
  * raced each other (the desktop's reconnect budget could exceed the

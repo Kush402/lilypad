@@ -126,6 +126,16 @@ export const devices = pgTable(
     // A public key must name exactly one device, or it cannot be an identity.
     // Postgres treats NULLs as distinct, so unenrolled rows are unaffected.
     uniqueIndex('devices_public_key_idx').on(t.publicKey),
+    // Every one of the indexes below covers a FOREIGN KEY that had none.
+    // Postgres does not index a referencing column automatically, and an
+    // unindexed one costs twice: the ordinary lookup becomes a sequential
+    // scan, and every ON DELETE CASCADE / SET NULL from the parent has to scan
+    // this whole table to find the rows it must touch. Deleting one account
+    // therefore got slower for every row anyone else had ever written.
+    // This one is also the hottest ownership read in the product: it is what
+    // "my devices" runs, and what every authorization check that starts from
+    // an account resolves through.
+    index('devices_user_idx').on(t.userId),
   ],
 );
 
@@ -215,7 +225,17 @@ export const trustedDevices = pgTable(
     connectSecretHash: text('connect_secret_hash'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [uniqueIndex('trusted_devices_pair_idx').on(t.desktopDeviceId, t.mobileDeviceId)],
+  (t) => [
+    uniqueIndex('trusted_devices_pair_idx').on(t.desktopDeviceId, t.mobileDeviceId),
+    // Both foreign keys below were unindexed, with the same double cost as the
+    // ones on `devices` and `audit_logs`: a sequential scan on lookup, and a
+    // full scan of this table on every cascading delete from `users` or
+    // `devices`. `desktopDeviceId` needs no index of its own — it leads the
+    // pair index above, which Postgres can use as a prefix.
+    index('trusted_devices_user_idx').on(t.userId),
+    // What "which laptops may this phone reach?" runs.
+    index('trusted_devices_mobile_idx').on(t.mobileDeviceId),
+  ],
 );
 
 // ── sessions ─────────────────────────────────────────────────────────────────
@@ -255,5 +275,18 @@ export const auditLogs = pgTable(
     ip: inet('ip'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index('audit_logs_event_type_idx').on(t.eventType)],
+  (t) => [
+    index('audit_logs_event_type_idx').on(t.eventType),
+    // Every one of the indexes below covers a FOREIGN KEY that had none.
+    // Postgres does not index a referencing column automatically, and an
+    // unindexed one costs twice: the ordinary lookup becomes a sequential
+    // scan, and every ON DELETE CASCADE / SET NULL from the parent has to scan
+    // this whole table to find the rows it must touch. Deleting one account
+    // therefore got slower for every row anyone else had ever written.
+    // This is the table that grows without bound, so it is the one where an
+    // unindexed foreign key gets worse forever — and "show me this account's
+    // sign-in history" is the first question a support case asks.
+    index('audit_logs_user_idx').on(t.userId),
+    index('audit_logs_device_idx').on(t.deviceId),
+  ],
 );

@@ -178,7 +178,11 @@ async fn run(app: AppHandle) {
         }
         let delay = BACKOFF_MS.get(attempt).copied().unwrap_or(BACKOFF_CAP_MS);
         attempt = attempt.saturating_add(1);
-        tokio::time::sleep(Duration::from_millis(delay)).await;
+        // Jittered, because this loop retries FOREVER at a capped cadence:
+        // every desktop that was connected when the backend restarted would
+        // otherwise re-knock in lockstep, every 15 seconds, indefinitely.
+        // A deploy makes that a routine event. See `session::reconnect::jitter`.
+        tokio::time::sleep(crate::session::reconnect::jitter(Duration::from_millis(delay))).await;
     }
 }
 
