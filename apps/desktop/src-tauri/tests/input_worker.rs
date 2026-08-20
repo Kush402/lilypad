@@ -8,6 +8,18 @@ use std::time::{Duration, Instant};
 
 use lilypad_desktop_lib::input::{InputMetricsSnapshot, InputWorker, Scope};
 
+/// How long a `wait_for` may take before the test calls it a failure.
+///
+/// Generous on purpose. `wait_for` returns the instant its condition holds, so
+/// a large budget costs a passing run nothing — the whole file finishes in
+/// about 1.3 seconds on an idle machine. What it buys is not being a
+/// wall-clock assertion about the host's spare capacity: these ran green alone
+/// and failed three-of-eight inside `pnpm verify`, which builds two Rust
+/// targets and seven JavaScript test suites at the same time. A suite that
+/// only passes on an unloaded laptop makes `main` randomly red, and a randomly
+/// red `main` teaches everyone to re-run instead of read.
+const SETTLE: Duration = Duration::from_secs(20);
+
 fn wait_for<F: Fn() -> bool>(cond: F, timeout: Duration) -> bool {
     let start = Instant::now();
     while start.elapsed() < timeout {
@@ -41,7 +53,7 @@ fn rejects_input_before_the_gate_opens() {
 
     assert!(wait_for(
         || decided(&worker.metrics().snapshot()) >= 1,
-        Duration::from_secs(2)
+        SETTLE
     ));
     let snap = worker.metrics().snapshot();
     assert_eq!(
@@ -72,7 +84,7 @@ fn processes_the_exact_wire_format_the_mobile_app_sends() {
 
     assert!(wait_for(
         || decided(&worker.metrics().snapshot()) >= 6,
-        Duration::from_secs(2)
+        SETTLE
     ));
     let snap = worker.metrics().snapshot();
     assert_eq!(snap.events_received, 6);
@@ -97,7 +109,7 @@ fn malformed_frame_is_rejected_without_crashing_the_worker() {
     worker.handle_message(b"{ not valid json".to_vec());
     assert!(wait_for(
         || worker.metrics().snapshot().events_dropped_invalid >= 1,
-        Duration::from_secs(2)
+        SETTLE
     ));
 
     // The worker thread must still be alive and processing after a bad frame.
@@ -106,7 +118,7 @@ fn malformed_frame_is_rejected_without_crashing_the_worker() {
     worker.handle_message(frame.to_vec());
     assert!(wait_for(
         || decided(&worker.metrics().snapshot()) >= 1,
-        Duration::from_secs(2)
+        SETTLE
     ));
 }
 
@@ -122,7 +134,7 @@ fn reconnect_cycle_re_gates_correctly() {
     worker.handle_message(frame(1));
     assert!(wait_for(
         || decided(&worker.metrics().snapshot()) >= 1,
-        Duration::from_secs(2)
+        SETTLE
     ));
 
     // Simulate a disconnect.
@@ -130,7 +142,7 @@ fn reconnect_cycle_re_gates_correctly() {
     worker.handle_message(frame(2));
     assert!(wait_for(
         || decided(&worker.metrics().snapshot()) >= 2,
-        Duration::from_secs(2)
+        SETTLE
     ));
     assert_eq!(worker.metrics().snapshot().events_dropped_gated, 1);
 
@@ -139,7 +151,7 @@ fn reconnect_cycle_re_gates_correctly() {
     worker.handle_message(frame(3));
     assert!(wait_for(
         || decided(&worker.metrics().snapshot()) >= 3,
-        Duration::from_secs(2)
+        SETTLE
     ));
     let snap = worker.metrics().snapshot();
     assert_eq!(
@@ -177,7 +189,7 @@ fn view_only_session_input_is_dropped_at_the_injection_boundary() {
 
     assert!(wait_for(
         || decided(&worker.metrics().snapshot()) >= 5,
-        Duration::from_secs(2)
+        SETTLE
     ));
     let snap = worker.metrics().snapshot();
     assert_eq!(
@@ -209,7 +221,7 @@ fn no_grant_at_all_is_treated_the_same_as_view_only() {
 
     assert!(wait_for(
         || decided(&worker.metrics().snapshot()) >= 1,
-        Duration::from_secs(2)
+        SETTLE
     ));
     let snap = worker.metrics().snapshot();
     assert_eq!(snap.events_dropped_scope, 1);
@@ -233,7 +245,7 @@ fn control_scope_allows_input_through_same_as_before_the_fix() {
 
     assert!(wait_for(
         || decided(&worker.metrics().snapshot()) >= 5,
-        Duration::from_secs(2)
+        SETTLE
     ));
     let snap = worker.metrics().snapshot();
     assert_eq!(snap.events_dropped_scope, 0);
@@ -262,7 +274,7 @@ fn scope_change_mid_session_takes_effect_on_the_very_next_batch() {
     worker.handle_message(frame(1));
     assert!(wait_for(
         || decided(&worker.metrics().snapshot()) >= 1,
-        Duration::from_secs(2)
+        SETTLE
     ));
     assert_eq!(worker.metrics().snapshot().events_dropped_scope, 1);
 
@@ -271,7 +283,7 @@ fn scope_change_mid_session_takes_effect_on_the_very_next_batch() {
     worker.handle_message(frame(2));
     assert!(wait_for(
         || decided(&worker.metrics().snapshot()) >= 2,
-        Duration::from_secs(2)
+        SETTLE
     ));
     let snap = worker.metrics().snapshot();
     assert_eq!(
