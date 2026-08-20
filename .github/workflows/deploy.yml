@@ -224,17 +224,37 @@ jobs:
                 ${HOST_OVERRIDE:+-f "$HOST_OVERRIDE"} "$@"
             }
             sudo docker pull "$IMAGE_REF"
+            # Converge the stateful services FIRST, explicitly, and by name.
+            #
+            # This step used to be implicit and it was not doing what the
+            # comment below claimed. `compose run` without `--no-deps` honours
+            # `depends_on`, which means it does not merely WAIT for Postgres and
+            # Redis — it brings them up, and recreates either one whose
+            # definition changed. Caught in the run that shipped Redis's
+            # `--maxmemory` setting: the log reads
+            # `Container lilypad-prod-redis-1  Recreate` at 18:10:27, from the
+            # migration line, while the line below still explained that Redis
+            # was not part of what changed.
+            #
+            # The convenient outcome (a compose change to a dependency reaches
+            # production on the next deploy) is worth keeping. Doing it as an
+            # unnamed side effect of a migration is not: the same mechanism
+            # would recreate Postgres, or cloudflared, on a typo. So it happens
+            # here, where it is visible in the log, and `--wait` blocks until
+            # both report healthy.
+            compose up -d --no-deps --wait postgres redis
             # Migrations run BEFORE the new image serves traffic. Drizzle
             # migrations here are additive, so the old container tolerates the
             # new schema for the seconds between these two steps.
-            # No --no-deps on `run`: it then honours the compose file's
-            # `service_healthy` conditions, so migrations wait for a healthy
-            # Postgres instead of racing a database that is still starting.
-            compose run --rm -T backend node dist/db/migrate.js
+            #
+            # `--no-deps` now that the line above has already guaranteed a
+            # healthy Postgres: there is nothing left for the dependency graph
+            # to do except surprise us.
+            compose run --rm -T --no-deps backend node dist/db/migrate.js
             # `--no-deps backend`, not a bare `up -d`: a deploy replaces the
-            # backend. Postgres, Redis and the tunnel are not part of what
-            # changed, and churning them turns a routine deploy into an outage
-            # with three more ways to fail.
+            # backend, and the tunnel in particular must never be churned by
+            # one — recreating cloudflared from this repo's definition is what
+            # took api.takedia.com off the internet for seven minutes.
             compose up -d --no-deps backend
             sudo docker image prune -f
 
