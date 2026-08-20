@@ -7,7 +7,15 @@ collapsed every ~30s and the session fell into the connect→reconnect→recover
 loop. This gives you **one dedicated relay on TLS:443** that you control:
 a single stable hop that survives cellular NAT rebinds and DPI.
 
-You run the box + DNS; then tell me the domain and I wire `PUBLIC_TURN_URL`.
+> **This is deployed.** `turn.takedia.com` has been live since 2026-08-19 on a
+> second Oracle Always Free VM, at **$0** — so ignore the "cheap VPS ~$5/mo"
+> framing below, which predates it. The live box also runs coturn **natively
+> under systemd rather than via the compose file here**, because Docker's daemon
+> costs ~120 MB on a 1 GB instance that exists only to forward packets;
+> `turnserver.conf` in this directory is still used verbatim. See
+> [docs/deployment.md § TURN](../../docs/deployment.md#turn-deployed-2026-08-19)
+> for what was actually done and what was actually verified. The steps below
+> remain the correct recipe for standing up a _second_ relay.
 
 ---
 

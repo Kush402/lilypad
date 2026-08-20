@@ -8,8 +8,8 @@ summary: How the control plane is deployed, what it costs, how it scales, and ho
 # Deploying the Lilypad control plane
 
 **Status: the control plane is DEPLOYED and publicly verified** at
-`https://api.takedia.com` (Oracle Always Free, 2026-08-16). **TURN is not
-deployed, and deliberately will not run on this VM.** See
+`https://api.takedia.com` (Oracle Always Free, 2026-08-16). **TURN is now also
+deployed** — on a _second_ Always Free VM, never this one (2026-08-19). See
 [What is deployed](#what-is-deployed-2026-08-16) and
 [What is not done](#what-is-not-done) before treating any of this as finished.
 
@@ -54,7 +54,8 @@ mechanism already serves `lilypad.takedia.com` and is proven in this repo.
 
 **Why TURN is not on that VM:** a tunnel carries HTTP and WebSockets only. TURN
 needs UDP on a public IP with a wide port range, and its bandwidth profile is
-nothing like the control plane's. It stays in [`infra/coturn-prod`](../infra/coturn-prod/README.md).
+nothing like the control plane's. It runs on its own VM, from
+[`infra/coturn-prod`](../infra/coturn-prod/README.md) — see [TURN](#turn-deployed-2026-08-19).
 
 **Redis is not optional.** Eleven modules depend on it for pairing tokens,
 device challenges, magic links, desktop-enrollment codes and live room-routing
@@ -68,7 +69,7 @@ nonce that survives a restart is a replay window, not a recovered value.
 | `lilypad.takedia.com`     | Local-development tunnel  | **Live** — preserved. Stays the dev tunnel; moving it is M13's, not P4's. |
 | `lilypadhome.takedia.com` | Marketing site (P4)       | Planned — the site is built (`apps/site`); DNS and hosting are M13's      |
 | `api.takedia.com`         | REST **and** `/ws/signal` | **Live** — Oracle Always Free, tunnel `lilypad-prod` (2026-08-16)         |
-| `turn.takedia.com`        | TURN/STUN relay           | Awaiting a host — deliberately NOT the Oracle VM (see What is deployed)   |
+| `turn.takedia.com`        | TURN/STUN relay           | **Live** — second Oracle Always Free VM, DNS-only (2026-08-19)            |
 | `dl.takedia.com`          | Downloads                 | Planned                                                                   |
 | `status.takedia.com`      | Status page               | Planned                                                                   |
 
@@ -351,29 +352,80 @@ Two deviations from the text above, both deliberate and neither architectural:
 - **Reboot-tested:** `sudo reboot` → the full stack, tunnel included, returned
   unattended in ~90s and re-passed the whole audit.
 
-### What blocks TURN
+### TURN (deployed 2026-08-19)
 
-Measured, not assumed: with host `iptables` opened on TCP 80 and a listener
-running, an external connection still **timed out**. So the block is Oracle's
-**VCN security list**, which is console-level and cannot be changed over SSH.
+Runs on a **second Oracle Always Free instance**, provisioned end to end with
+the OCI CLI. Same shape as the control plane (`VM.Standard.E2.1.Micro`, 1 OCPU /
+1 GB, PHX-AD-3 — the tenancy's limit is 2 and one was spare), on **Ubuntu 24.04
+LTS** rather than the control plane's end-of-life 20.04. Cost: **$0**.
 
-1. **OCI console** → VCN → Security List → ingress for UDP `3478`,
-   UDP `49160-49260`, TCP `443`, and TCP `80` (Let's Encrypt ACME only).
-2. **`turn.takedia.com` A record → the VM’s public IP, DNS-only (grey cloud).**
-   TURN is UDP; it can traverse neither the tunnel nor Cloudflare's proxy.
-   `cloudflared tunnel route dns` creates CNAMEs to a tunnel and cannot do this.
+The earlier finding stands and is why this is a separate box: with host
+`iptables` opened on TCP 80 and a listener running, an external connection still
+timed out, proving the block was Oracle's console-level **VCN security list**.
+That is now solved without touching the control plane's exposure — the TURN
+host's ports live in a **Network Security Group** attached to that one VNIC, not
+in the shared subnet's security list. Both VMs sit in the same subnet and the
+API's surface is unchanged.
 
-Until both exist, `infra/coturn-prod` cannot obtain its certificate or serve a
-relay, and the backend's `TURN_URL` points at a name that does not resolve.
-**LAN and direct P2P are unaffected** — they never touch TURN.
+| Layer           | Opened                                                       |
+| --------------- | ------------------------------------------------------------ |
+| OCI NSG         | UDP 3478, TCP 3478, TCP 443, UDP 49160-49260, TCP 22, TCP 80 |
+| Host `iptables` | the same, inserted above the image's trailing `REJECT`       |
+
+Both layers are required — the Oracle image ships an `iptables` chain that
+rejects everything except SSH, so an NSG alone is silently insufficient.
+
+**Four decisions worth keeping:**
+
+- **coturn runs natively under systemd, not Docker.** The repo ships a compose
+  file, but Docker's daemon costs ~120 MB on a 954 MB box whose only job is
+  forwarding packets. `turnserver.conf` is still used **verbatim** from
+  `infra/coturn-prod`; `/etc/coturn/certs` is a symlink to the Let's Encrypt
+  live directory so the committed cert paths resolve unchanged.
+- **`external-ip=<public>/<private>`.** Oracle gives the instance only its
+  private address and 1:1-NATs the public one. A bare public IP would make
+  coturn try to bind an address the host does not have.
+- **HTTP-01, deliberately not DNS-01.** DNS-01 would have put a zone-wide
+  Cloudflare token on a public-facing relay; port 80 with certbot's ephemeral
+  standalone listener is the smaller exposure. Renewal is automatic, with a
+  deploy hook that re-applies group permissions and restarts coturn.
+- **The private key is `640 root:turnserver`, not world-readable.** The
+  `infra/coturn-prod` README's `chmod -R a+rX` is the Docker-image workaround;
+  running natively, group ownership does the same job without publishing the
+  key to every account on the box. coturn also needs a systemd drop-in granting
+  `CAP_NET_BIND_SERVICE`, since the unit runs unprivileged and 443 is reserved.
+
+**Verified, not assumed.** Four forced relay-only WebRTC sessions from a
+different machine: both peers built with `iceTransportPolicy: 'relay'`, so a
+DataChannel that opens cannot have taken a direct path — every byte crossed the
+relay. One run per transport (**UDP 3478, TCP 3478, TLS 443**) plus the exact
+ICE-server list the backend sends, each carrying a payload end to end. The
+credential for the last run was minted **inside the production backend
+container**, which is what proves the two halves genuinely share `TURN_SECRET`
+rather than merely being configured to look alike. Re-run unchanged after a
+reboot, which also confirmed coturn auto-starts and the firewall rules persist.
+Idle footprint 338 MB of 954 MB.
+
+**Not verified:** a real Mac↔iPhone session failing over to this relay on a
+hostile network, and sustained throughput under concurrent sessions. The relay
+provably relays; the product's fall-back to it has not been watched on hardware.
+
+**The reclamation risk applies here too, and harder.** A relay used by nobody is
+idle by definition, so the same Always Free policy that threatens the control
+plane threatens this box on the same terms — see
+[the structural risk](#the-risk-that-is-structural-not-a-misconfiguration).
+Egress is the other open question: Oracle's free allowance is generous but has
+not been measured against real relayed sessions, and TURN is the one component
+whose cost tracks usage rather than user count.
 
 ## What is not done
 
 Stated explicitly so nothing here reads as more finished than it is.
 
-- **Nothing is deployed.** No VM, no `api.takedia.com`, no TURN host. Every
-  artifact below was verified locally only. The blocker is accounts, not work —
-  see [What the owner must provide](#what-the-owner-must-provide-2026-08-15).
+- ~~Nothing is deployed.~~ Superseded: the control plane went live 2026-08-16
+  and TURN 2026-08-19. This bullet predated both and is kept struck through
+  because its replacement is the point — the blocker really was accounts, and
+  once they existed the work was hours, not weeks.
 - **A free tier of "LAN only" cannot ship yet.**
   [ADR-0013](adr/0013-connectivity-is-the-paid-boundary.md) makes LAN the free
   product, but a LAN session still needs the control plane to _establish_ (its

@@ -61,11 +61,10 @@
             <li>
               <h3>Relayed, only if it must</h3>
               <p>
-                When a network blocks a direct connection, traffic is meant to be relayed, staying
-                end-to-end encrypted in transit (DTLS-SRTP) the whole way.
-                <strong>No relay is running yet</strong>, so today a session that cannot connect
-                directly will fail rather than fall back. The first two paths are the ones that
-                work.
+                When a network blocks a direct connection, traffic is relayed, staying end-to-end
+                encrypted in transit (DTLS-SRTP) the whole way. The relay is live, and carries
+                traffic over UDP, TCP, and TLS on port 443 — so it still works on networks that
+                allow nothing but HTTPS.
               </p>
             </li>
           </ol>

@@ -99,11 +99,21 @@ describe('distribution and relay claims match reality', () => {
     expect(row![0].replace(/\s+/g, ' ')).toMatch(/no public install path/i);
   });
 
-  // Verified: no TURN host is deployed (docs/deployment.md, "What is deployed").
-  // Promising a fallback that cannot happen is the worst kind of copy: the user
-  // only discovers it when they are away from home and it matters.
-  it('does not promise relay fallback while no relay is running', () => {
-    expect(flat).toMatch(/no relay is running yet/i);
+  // Verified 2026-08-19: coturn is deployed at turn.takedia.com (Oracle Always
+  // Free #2) and actually relays. Proof was four forced relay-only WebRTC
+  // sessions — `iceTransportPolicy: 'relay'` on both peers, so a DataChannel
+  // that opens cannot have taken a direct path — one per transport (UDP 3478,
+  // TCP 3478, TLS 443) plus the exact ICE list the backend sends, each carrying
+  // a payload through the relay. The credential for the last run was
+  // minted inside the production backend container, which is what proves the
+  // two halves share TURN_SECRET rather than merely being configured alike.
+  //
+  // This assertion replaced its own inverse. Until today the page said "no
+  // relay is running yet"; the negative lookahead keeps that sentence from
+  // creeping back after the fact stopped being true.
+  it('claims relay fallback only because a relay is actually deployed', () => {
+    expect(flat).toMatch(/the relay is live/i);
+    expect(flat).not.toMatch(/no relay is running yet/i);
   });
 });
 
