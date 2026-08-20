@@ -33,9 +33,24 @@ sudo docker compose --env-file /opt/lilypad/.env.production \
   -f /opt/lilypad/cloudflared-local.yml <command>
 ```
 
-`deploy.yml` adds the override automatically when the file is present, and
-touches only the `backend` service — a deploy has no business restarting the
-database or the tunnel.
+`deploy.yml` adds the override automatically when the file is present.
+
+It does **not** touch only the `backend` service, which this file used to claim.
+`compose run` honours `depends_on` unless told otherwise, so the migration step
+brought up Postgres and Redis too — and recreated either one whose definition
+had changed. Observed on 2026-08-20: the run that shipped Redis's `--maxmemory`
+logged `Container lilypad-prod-redis-1  Recreate` from the migration line.
+
+That behaviour is now explicit rather than incidental: the deploy converges
+`postgres` and `redis` by name, with `--wait`, on its own line before
+migrations. The tunnel is still never touched by a deploy, which is the part
+that actually matters — recreating cloudflared from this repo's definition is
+what caused the outage described above.
+
+The deploy also rewrites `BACKEND_IMAGE` in `.env.production` after a successful
+health check, so the command above reproduces what is really running. It
+previously read `lilypad-backend:prod` — a bare name with no registry, which
+resolves to Docker Hub and does not exist.
 
 ## `sudo` scrubs the environment
 

@@ -277,6 +277,35 @@ jobs:
           echo "::error::deployment did not serve $EXPECT_SHA healthily within 150s"
           exit 1
 
+      # Only reached when the health check above passed, so this records what is
+      # genuinely serving rather than what was hoped for.
+      #
+      # `.env.production` is where a human's `docker compose` picks up
+      # BACKEND_IMAGE, and infra/production/README.md tells them to run exactly
+      # that during an incident. It held `lilypad-backend:prod` — a bare name
+      # with no registry, which resolves to Docker Hub and does not exist. The
+      # deploy never noticed because it passes the image explicitly; a person
+      # following the runbook at 3am would have.
+      - name: Pin the host env file to what is actually serving
+        uses: appleboy/ssh-action@v1
+        env:
+          IMAGE_REF: ${{ env.IMAGE }}:${{ github.sha }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          envs: IMAGE_REF,DEPLOY_PATH
+          script: |
+            set -euo pipefail
+            f="$DEPLOY_PATH/.env.production"
+            if grep -q '^BACKEND_IMAGE=' "$f"; then
+              sed -i "s|^BACKEND_IMAGE=.*|BACKEND_IMAGE=$IMAGE_REF|" "$f"
+            else
+              printf 'BACKEND_IMAGE=%s\n' "$IMAGE_REF" >> "$f"
+            fi
+            grep '^BACKEND_IMAGE=' "$f"
+
       # A failed health check must not leave a broken image serving. Roll back
       # to the image that was recorded as running before this deploy started.
       - name: Roll back on failure
