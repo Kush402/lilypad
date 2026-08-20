@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm';
+import { and, eq, isNull, lt, or } from 'drizzle-orm';
 import type { DeviceKind } from '@lilypad/protocol';
 import { db as defaultDb } from '../db/client.js';
 import { devices } from '../db/schema.js';
@@ -51,8 +51,19 @@ export interface DeviceIdentityStore {
     name: string | null;
     platform: DevicePlatform | null;
   }): Promise<string | null>;
-  /** Attach an owner and a key to an existing row, clearing any revocation —
-   * re-enrolling a device is how a user un-revokes it deliberately. */
+  /**
+   * Attach an owner and a key to an existing row, clearing any revocation —
+   * re-enrolling a device is how a user un-revokes it deliberately.
+   *
+   * Returns whether it applied. `credentialIssuedAt`, when given, is a
+   * condition rather than a value: the row is only claimed if it is
+   * unrevoked, or was revoked BEFORE that moment. Checking it in `attempt`
+   * first would be a check-then-act with a revocation able to land in the
+   * gap between the read and this write, and the gap is a database round
+   * trip. `RefreshTokenService.markRotatedIfLive` and
+   * `AccountDeviceStore.revoke` guard themselves the same way, for the same
+   * reason: the WHERE clause is the decision, the SELECT is only advice.
+   */
   claim(
     id: string,
     patch: {
@@ -60,8 +71,9 @@ export interface DeviceIdentityStore {
       publicKey: string;
       name: string | null;
       platform: DevicePlatform | null;
+      credentialIssuedAt?: Date | null;
     },
-  ): Promise<void>;
+  ): Promise<boolean>;
   touchLastSeen(id: string): Promise<void>;
 }
 
@@ -154,7 +166,13 @@ export class DeviceRegistry {
       platform: input.platform ?? null,
     };
     if (byFingerprint) {
-      await this.store.claim(byFingerprint.id, patch);
+      // Not `if (claimed) ... else` on the pre-check above: the pre-check gives
+      // the caller a clear answer, and this gives the database the last word.
+      const claimed = await this.store.claim(byFingerprint.id, {
+        ...patch,
+        credentialIssuedAt: input.credentialIssuedAt,
+      });
+      if (!claimed) return { ok: false, reason: 'device_revoked' };
       return { ok: true, deviceId: byFingerprint.id };
     }
     const id = await this.store.create({
@@ -226,7 +244,12 @@ export function createDrizzleDeviceIdentityStore(
       // A re-enrolling client need not resend its label. Writing the null
       // through would silently erase a name the user chose, so absent fields
       // are left alone rather than overwritten.
-      await database
+      //
+      // The revocation guard lives in the WHERE clause so that a revoke landing
+      // between the caller's lookup and this write still wins. Absent
+      // `credentialIssuedAt` — the approval path, where a second device is the
+      // proof — there is no condition to add.
+      const claimed = await database
         .update(devices)
         .set({
           userId: patch.userId,
@@ -236,7 +259,16 @@ export function createDrizzleDeviceIdentityStore(
           ...(patch.name === null ? {} : { name: patch.name }),
           ...(patch.platform === null ? {} : { platform: patch.platform }),
         })
-        .where(eq(devices.id, id));
+        .where(
+          patch.credentialIssuedAt == null
+            ? eq(devices.id, id)
+            : and(
+                eq(devices.id, id),
+                or(isNull(devices.revokedAt), lt(devices.revokedAt, patch.credentialIssuedAt)),
+              ),
+        )
+        .returning({ id: devices.id });
+      return claimed.length > 0;
     },
     async touchLastSeen(id) {
       await database.update(devices).set({ lastSeenAt: new Date() }).where(eq(devices.id, id));

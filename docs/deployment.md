@@ -829,6 +829,16 @@ recovers; a thief cannot, because signing in needs the password. The approval
 path passes no timestamp on purpose: a desktop is restored by a _different_
 device approving its code, and that second device is the proof.
 
+**Round four — the guard was a check-then-act.** Rounds two and three both read
+the device row and then acted on what they read, with a database round trip in
+between. A revoke landing in that gap would have been read as "not revoked" and
+the write would have cleared it. Microseconds wide and not realistically
+reachable, but the codebase already had the right answer twice over —
+`RefreshTokenService.markRotatedIfLive` and `AccountDeviceStore.revoke` both put
+their condition in the WHERE clause and treat the SELECT as advice. Re-enrolment
+now does the same, and the regression test drives a revocation into the gap; it
+fails if the guard is removed.
+
 **Round three — a revoked device stopped being a target but not a caller.**
 The website says a removed device "loses access straight away … It does not wait
 for a token to expire." Measured against production with a token minted seconds

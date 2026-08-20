@@ -45,12 +45,23 @@ function fakeStore(): DeviceIdentityStore & { rows: Map<string, StoredDevice> } 
     claim(id, patch) {
       const row = rows.get(id);
       if (!row) throw new Error('claim on a missing row');
+      // Models the adapter's conditional WHERE: a row revoked at or after the
+      // credential was minted is not claimable. Without this the fake would be
+      // more permissive than Postgres, and the tests would prove nothing about
+      // the guard that actually runs.
+      if (
+        patch.credentialIssuedAt != null &&
+        row.revokedAt !== null &&
+        row.revokedAt.getTime() >= patch.credentialIssuedAt.getTime()
+      ) {
+        return Promise.resolve(false);
+      }
       row.userId = patch.userId;
       row.publicKey = patch.publicKey;
       row.revokedAt = null;
       if (patch.name !== null) row.name = patch.name;
       if (patch.platform !== null) row.platform = patch.platform;
-      return Promise.resolve();
+      return Promise.resolve(true);
     },
     touchLastSeen(id) {
       const row = rows.get(id);
@@ -297,6 +308,34 @@ describe('re-enrolling a revoked device', () => {
     expect(result.ok).toBe(true);
     const row = store.rows.get(result.ok ? result.deviceId : '');
     expect(row?.revokedAt).toBeNull();
+  });
+
+  it('loses to a revoke that lands between the lookup and the write', async () => {
+    // The pre-check reads the row, then `claim` writes it: two round trips with
+    // a gap in between. This drives a revocation into that gap and asserts the
+    // WHERE clause still wins — the SELECT is advice, the UPDATE is the
+    // decision. Same shape as `RefreshTokenService.markRotatedIfLive`.
+    const issued = new Date('2026-08-20T12:00:00Z');
+    const first = await registry.enroll(enrollment);
+    const id = first.ok ? first.deviceId : '';
+
+    const original = store.findByFingerprint.bind(store);
+    store.findByFingerprint = async (kind, fingerprint) => {
+      const row = await original(kind, fingerprint);
+      // A SNAPSHOT, not the live object. The point of this test is that the
+      // pre-check saw an unrevoked row and the write still lost; handing back
+      // the live reference would let the pre-check see the revocation and the
+      // test would pass without exercising the WHERE clause at all.
+      const seen = row ? { ...row } : null;
+      const live = store.rows.get(id);
+      if (live) live.revokedAt = new Date('2026-08-20T12:00:30Z');
+      return seen;
+    };
+
+    const racing = await registry.enroll({ ...enrollment, credentialIssuedAt: issued });
+
+    expect(racing).toEqual({ ok: false, reason: 'device_revoked' });
+    expect(store.rows.get(id)?.revokedAt).not.toBeNull();
   });
 
   it('does not get in the way of a device that was never revoked', async () => {
