@@ -156,7 +156,19 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
         });
       }
       const { token } = await createMagicLink(parsed.data.email);
-      await mailer.sendMagicLink(parsed.data.email, token);
+      // A configured provider can still refuse the message — an unverified
+      // sending domain and a revoked key both look like this. 202 would promise
+      // a link that is not coming, and an unhandled throw would answer 500, so
+      // this reports the same honest 503 as having no sender at all.
+      try {
+        await mailer.sendMagicLink(parsed.data.email, token);
+      } catch (err) {
+        req.log.error({ err }, 'magic-link send failed');
+        return reply.code(503).send({
+          error: 'magic_link_unavailable',
+          message: 'email sign-in is not available on this server right now',
+        });
+      }
       return reply.code(202).send({ ok: true });
     },
   );
@@ -281,7 +293,17 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
         });
       }
       const { token } = await createPasswordReset(parsed.data.email);
-      await mailer.sendPasswordReset(parsed.data.email, token);
+      // Same reasoning as the magic-link route: a provider rejection must not
+      // surface as 500, and must not be reported as a mail that is on its way.
+      try {
+        await mailer.sendPasswordReset(parsed.data.email, token);
+      } catch (err) {
+        req.log.error({ err }, 'password-reset send failed');
+        return reply.code(503).send({
+          error: 'magic_link_unavailable',
+          message: 'password reset by email is not available on this server right now',
+        });
+      }
       return reply.code(202).send({ ok: true });
     },
   );

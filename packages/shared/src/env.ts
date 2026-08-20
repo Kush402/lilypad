@@ -96,6 +96,17 @@ const EnvSchema = z.object({
   // `curl localhost:8080/metrics` keeps working with no setup.
   METRICS_BEARER_TOKEN: z.string().min(16).optional(),
 
+  // ── Outbound mail (magic-link sign-in, password reset) ────────────────────
+  // Both must be present for mail to be sent at all. Absent, `createMailSender`
+  // returns null and the two routes answer 503 rather than accepting a sign-in
+  // whose email will never arrive — an honest failure beats a silent one.
+  // Optional in the schema because development deliberately runs without them,
+  // logging the code to the server instead.
+  RESEND_API_KEY: z.string().optional(),
+  // Envelope sender, e.g. `Lilypad <no-reply@takedia.com>`. Must be on a domain
+  // verified in Resend, or Resend rejects every send.
+  MAIL_FROM: z.string().optional(),
+
   // ── M8 auth (docs/adr/0001-account-authentication.md, 0002-device-identity.md)
   // Signing key for Lilypad's OWN access tokens. Symmetric (HS256) on purpose:
   // only this backend ever verifies these tokens, so an asymmetric key would

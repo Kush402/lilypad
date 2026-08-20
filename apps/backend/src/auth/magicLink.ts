@@ -1,7 +1,8 @@
 import { randomBytes } from 'node:crypto';
 import { redisKeys } from '@lilypad/shared';
 import { redis } from '../redis.js';
-import { config } from '../config.js';
+import { config, env } from '../config.js';
+import { createResendMailSender } from './resendMailer.js';
 import { log } from '../logging.js';
 
 /**
@@ -55,7 +56,17 @@ export const consoleMailSender: MailSender = {
   },
 };
 
+/**
+ * The sender this deployment should use, or `null` if it cannot send at all.
+ *
+ * Resend wins wherever it is configured, including development — a developer
+ * testing real delivery should not have to edit code to get it. Without it,
+ * development still logs the code to the server, and production answers 503
+ * rather than accepting a sign-in whose email will never arrive.
+ */
 export function createMailSender(): MailSender | null {
+  const resend = createResendMailSender(env.RESEND_API_KEY, env.MAIL_FROM);
+  if (resend) return resend;
   return config.isDev ? consoleMailSender : null;
 }
 
