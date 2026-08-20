@@ -122,6 +122,19 @@ export async function signalingRoutes(
         });
       if (!actAsDevice(optionalActorOf(req), mobile).allow) return notTrusted();
 
+      // A laptop removed from its account is not reachable, whatever its pairs
+      // still say. Device revocation withdraws OWNERSHIP; the `trusted_devices`
+      // rows survive as audit trail, so `authorizeConnect` passes one and the
+      // ring falls through to the presence check and answers 503
+      // `desktop_offline`. Measured against production. It grants no access —
+      // a revoked device cannot hold a device token, so it can never occupy a
+      // presence room — but it tells the owner their Mac is offline when what
+      // actually happened is that it was removed, which is the one thing they
+      // would want to know. Same 404 as an unknown pair, for the same
+      // enumeration reason as above.
+      const desktop = await deviceOwnershipByFingerprint('desktop', desktopDeviceId);
+      if (desktop?.state === 'revoked') return notTrusted();
+
       // Authorize: trusted, not revoked, and the per-pair connect secret must
       // match (unless this is a legacy pre-secret pair). Fails closed.
       const authz = await trust.authorizeConnect(desktopDeviceId, mobileDeviceId, pairSecret);

@@ -273,4 +273,35 @@ describe('P2 account-device route authorization', () => {
     expect(pairOwnership).toHaveBeenCalledWith(PAIR_ID);
     expect(deviceOwnershipById).not.toHaveBeenCalled();
   });
+
+  // Device revocation withdraws OWNERSHIP; the `trusted_devices` rows survive
+  // as audit trail. So `authorizeConnect` still passes a pair whose laptop was
+  // removed from the account, and the ring used to fall through to the presence
+  // check and answer 503 `desktop_offline` — measured against production. No
+  // access was granted either way, because a revoked device cannot hold a
+  // device token and so can never occupy a presence room. What was wrong is
+  // what it told the owner: that their Mac was offline, when it had been
+  // removed.
+  it('refuses to ring a desktop that was removed from the account', async () => {
+    vi.mocked(deviceOwnershipByFingerprint).mockImplementation(async (kind) =>
+      kind === 'mobile'
+        ? { deviceId: 'dev-phone', userId: null, state: 'unlinked' }
+        : { deviceId: 'dev-laptop', userId: 'user-alice', state: 'revoked' },
+    );
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/connect/request',
+      payload: {
+        desktopDeviceId: 'laptop-fingerprint',
+        mobileDeviceId: 'phone-fingerprint',
+        mobileDeviceName: 'a phone',
+      },
+    });
+
+    // 404, not a distinct code: a caller that could tell "removed" from "no
+    // such pair" could enumerate which laptops exist.
+    expect(res.statusCode).toBe(404);
+    expect(res.json()).toMatchObject({ error: 'not_trusted' });
+  });
 });

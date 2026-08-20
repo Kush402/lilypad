@@ -260,8 +260,13 @@ const ringRevoked = await post(
   phoneToken,
 );
 check(
-  'a revoked laptop cannot be rung',
-  ringRevoked.status !== 200,
+  'a revoked laptop cannot be rung, and says so honestly',
+  // Not merely `!== 200`. It used to answer 503 `desktop_offline`, because
+  // device revocation withdraws ownership while the `trusted_devices` row
+  // survives as audit trail — so the pair authorized and the ring failed later,
+  // at the presence check. Telling the owner their Mac is offline when it was
+  // removed from the account is the one thing they would want to know.
+  ringRevoked.status === 404 && ringRevoked.json.error === 'not_trusted',
   `HTTP ${ringRevoked.status} ${ringRevoked.json.error}`,
 );
 
