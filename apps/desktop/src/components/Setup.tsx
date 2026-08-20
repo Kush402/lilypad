@@ -34,6 +34,28 @@ const COPY: Record<PermissionKind, { label: string; body: string }> = {
 /// timer alone would be wrong far more often than this.
 const RELAUNCH_THRESHOLD = 3;
 
+/**
+ * Survives the relaunch `restart_app` performs, so "we already tried that" is
+ * knowable after the process it happened in is gone.
+ *
+ * A restart that does not fix the permission means the problem is not the
+ * one a restart fixes. The remaining cause is verified and specific: macOS
+ * binds a TCC grant to the *code signature* of the app that asked for it, and
+ * Lilypad is ad-hoc signed, so every build has a different cdhash. TCC keeps
+ * showing the switch as on — it is on, for the version that asked — while
+ * denying the running binary, whose hash no longer matches. Confirmed on this
+ * Mac: the recorded requirement named two cdhashes, and the installed app's
+ * was neither.
+ *
+ * Re-adding the app in System Settings rewrites the requirement against the
+ * installed binary, which is the only user-side repair. The real fix is a
+ * Developer ID signature, which gives TCC a stable identity that survives
+ * updates; until Lilypad has one, this will recur on every single update, and
+ * the copy below says so rather than looping the user through a button that
+ * cannot work.
+ */
+const RESTART_TRIED_KEY = 'lilypad.permission.restart-tried';
+
 /** How often to re-ask whether a phone has adopted this computer. Matches
  * `AccountPanel`'s cadence, against endpoints budgeted at 60/minute. */
 const LINK_POLL_MS = 3_000;
@@ -146,6 +168,18 @@ export function Setup() {
   }, []);
 
   const allGranted = status.screen_capture && status.accessibility;
+  const [restartAlreadyTried] = useState(() => {
+    try {
+      return localStorage.getItem(RESTART_TRIED_KEY) === '1';
+    } catch {
+      return false;
+    }
+  });
+  // Steps 2-4 hang off this. `account` is null until the first read lands, and
+  // "not read yet" is not "signed out" — but the only cost of being cautious
+  // here is a step staying locked for one tick, where the cost of being wrong
+  // the other way is prompting a stranger for Screen Recording.
+  const signedIn = account?.signedIn ?? false;
   const linked = linkState?.state === 'linked';
   // `unknown` means the backend could not be asked; a null value means the
   // first read has not landed yet. Neither is evidence that nobody owns this
@@ -155,6 +189,19 @@ export function Setup() {
   // Approval happens on the phone, so there is nothing local to react to. Poll
   // only while the answer can still change: once linked, the final card is
   // already saying the right thing and there is nothing left to learn.
+  // Once the permissions are actually satisfied the stuck-state marker has
+  // done its job; leaving it set would make the next unrelated stall skip
+  // straight to the re-add advice without trying the restart that usually
+  // works.
+  useEffect(() => {
+    if (!allGranted) return;
+    try {
+      localStorage.removeItem(RESTART_TRIED_KEY);
+    } catch {
+      /* nothing to clean up if storage is unavailable */
+    }
+  }, [allGranted]);
+
   useEffect(() => {
     refreshLink();
     if (!allGranted || linked) return;
@@ -173,6 +220,13 @@ export function Setup() {
   };
 
   const restart = async () => {
+    // Remembered across the relaunch so a restart that does not help is not
+    // offered a second time — see `RESTART_TRIED_KEY`.
+    try {
+      localStorage.setItem(RESTART_TRIED_KEY, '1');
+    } catch {
+      /* private mode / storage disabled — the worst case is re-offering. */
+    }
     setRestarting(true);
     await invoke('restart_app');
   };
@@ -192,48 +246,83 @@ export function Setup() {
       <AccountSignIn onChange={setAccount} />
 
       <h2 className="section-title">2 · Permissions</h2>
-      <p className="muted">Two are needed before this Mac can be controlled at all.</p>
+      {!signedIn ? (
+        /* Asking for Screen Recording before the user has an account inverts
+           the product: macOS permissions are the most alarming thing Lilypad
+           ever requests, and a stranger who has not yet said who they are has
+           been given no reason to say yes. Locked rather than hidden, so the
+           flow still reads as four steps rather than appearing to end here. */
+        <p className="muted" data-testid="permissions-step-locked">
+          Finish step 1 first. Lilypad asks for Screen Recording and Accessibility only once there
+          is an account to attach this Mac to.
+        </p>
+      ) : (
+        <>
+          <p className="muted">Two are needed before this Mac can be controlled at all.</p>
 
-      {needsRestart ? (
-        <section className="control__approve">
-          <p>
-            <strong>Finish setup</strong> — Lilypad needs to restart once to pick up the new
-            permission.
-          </p>
-          <div className="row">
-            <button
-              className="btn btn--primary"
-              disabled={restarting}
-              onClick={() => void restart()}
-            >
-              {restarting ? 'Restarting…' : 'Restart Lilypad'}
-            </button>
-          </div>
-        </section>
-      ) : null}
-
-      {KINDS.map((kind) => {
-        const granted = status[kind];
-        return (
-          <section key={kind} className="control__approve">
-            <p className="control__approve-title">
-              <strong>{COPY[kind].label}</strong>
-              {granted ? <span className="chip">Granted</span> : null}
-            </p>
-            <p className="muted">{COPY[kind].body}</p>
-            {!granted ? (
+          {needsRestart && restartAlreadyTried ? (
+            <section className="control__approve" data-testid="permission-stale-tcc">
+              <p>
+                <strong>macOS is still refusing</strong> — and restarting did not help, so the
+                switch being on in System Settings is not the whole story.
+              </p>
+              <p className="muted">
+                macOS ties a permission to the exact version of the app that asked for it. Lilypad
+                is not signed yet, so this update looks like a different app to macOS: the switch
+                stays on for the old version while the new one is refused. To repair it, open
+                Settings, select Lilypad in the list, remove it with the “−” button, then add
+                Lilypad back. Until Lilypad is signed, this can recur after an update.
+              </p>
               <div className="row">
-                <button className="btn btn--primary" onClick={() => void grant(kind)}>
-                  Grant
-                </button>
-                <button className="btn" onClick={() => void openSettings(kind)}>
-                  Open Settings
+                {KINDS.filter((kind) => !status[kind]).map((kind) => (
+                  <button key={kind} className="btn" onClick={() => void openSettings(kind)}>
+                    Open {COPY[kind].label}
+                  </button>
+                ))}
+              </div>
+            </section>
+          ) : needsRestart ? (
+            <section className="control__approve">
+              <p>
+                <strong>Finish setup</strong> — Lilypad needs to restart once to pick up the new
+                permission.
+              </p>
+              <div className="row">
+                <button
+                  className="btn btn--primary"
+                  disabled={restarting}
+                  onClick={() => void restart()}
+                >
+                  {restarting ? 'Restarting…' : 'Restart Lilypad'}
                 </button>
               </div>
-            ) : null}
-          </section>
-        );
-      })}
+            </section>
+          ) : null}
+
+          {KINDS.map((kind) => {
+            const granted = status[kind];
+            return (
+              <section key={kind} className="control__approve">
+                <p className="control__approve-title">
+                  <strong>{COPY[kind].label}</strong>
+                  {granted ? <span className="chip">Granted</span> : null}
+                </p>
+                <p className="muted">{COPY[kind].body}</p>
+                {!granted ? (
+                  <div className="row">
+                    <button className="btn btn--primary" onClick={() => void grant(kind)}>
+                      Grant
+                    </button>
+                    <button className="btn" onClick={() => void openSettings(kind)}>
+                      Open Settings
+                    </button>
+                  </div>
+                ) : null}
+              </section>
+            );
+          })}
+        </>
+      )}
 
       {/* Steps 3 and 4 only once the Mac can actually do anything — offering to
           put an unusable computer on an account is a step out of order. */}
@@ -244,7 +333,7 @@ export function Setup() {
             Linking is what puts this Mac on your account, so you can see it — and remove it — from
             your phone. Pairing comes after it.
           </p>
-          <LinkStep signedIn={account?.signedIn ?? false} />
+          <LinkStep signedIn={signedIn} />
 
           <h2 className="section-title">4 · Pair a phone</h2>
           {linked ? (
@@ -274,11 +363,6 @@ export function Setup() {
         </>
       ) : null}
 
-      {/* Unnumbered on purpose: Ask is a feature you can set up whenever, not a
-          step between you and a working session. */}
-      <h2 className="section-title">Optional · Ask</h2>
-      <AgentProviderCard />
-
       {allGranted ? (
         <section className="control__active" data-testid="setup-done">
           {/* Three states, not two. "Not on an account" and "we could not ask"
@@ -306,6 +390,20 @@ export function Setup() {
             </button>
           </div>
         </section>
+      ) : null}
+
+      {/* Unnumbered on purpose: Ask is a feature you can set up whenever, not a
+          step between you and a working session. It sits after the closing card
+          rather than before step 1, which is where it used to be — a first run
+          that opens by asking a stranger to paste an AI provider's API key,
+          before they have an account or a working Mac, reads as a product that
+          does not know what it is for. It appears once this Mac can actually do
+          something, and never blocks anything. */}
+      {allGranted ? (
+        <div data-testid="ask-optional">
+          <h2 className="section-title">Optional · Ask</h2>
+          <AgentProviderCard />
+        </div>
       ) : null}
     </div>
   );

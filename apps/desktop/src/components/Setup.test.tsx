@@ -39,6 +39,19 @@ function nth(elements: HTMLElement[], index: number): HTMLElement {
   return el;
 }
 
+/** Permissions live behind step 1 now, so any test that wants to see a
+ * permission row has to be signed in first. Mirrors what `AccountSignIn`
+ * reports upward via `onChange`. */
+function mockSignedIn(link: 'linked' | 'unlinked' | 'unknown' = 'unlinked') {
+  vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+    if (cmd === 'get_permission_status') return status();
+    if (cmd === 'get_link_state') return { state: link };
+    if (cmd === 'get_account_state')
+      return { signedIn: true, email: 'ada@example.com', userId: 'user-1' };
+    return undefined;
+  });
+}
+
 describe('Setup', () => {
   let eventHandler: ((event: { payload: unknown }) => void) | undefined;
 
@@ -79,7 +92,38 @@ describe('Setup', () => {
     expect(steps[1]).toBe('2 · Permissions');
   });
 
+  /**
+   * Reported from the installed build: first run showed "Sign in",
+   * "Permissions" and "Ask" together, so a stranger who had not yet made an
+   * account was being asked for Screen Recording — the most alarming thing
+   * Lilypad ever requests — and to paste an AI provider's API key. Neither has
+   * any reason to be answered by someone who has not said who they are yet.
+   */
+  it('does not ask for OS permissions before there is an account', async () => {
+    render(<Setup />);
+    await waitFor(() => expect(listen).toHaveBeenCalled());
+
+    expect(await screen.findByTestId('permissions-step-locked')).toHaveTextContent(
+      /finish step 1 first/i,
+    );
+    expect(screen.queryByText('Screen Recording')).not.toBeInTheDocument();
+    expect(screen.queryByText('Grant')).not.toBeInTheDocument();
+  });
+
+  /** Ask needs an API key and blocks nothing; offering it on a Mac that cannot
+   * yet capture or type put optional configuration ahead of the product. */
+  it('does not offer Ask until the Mac can actually do something', async () => {
+    mockSignedIn();
+    render(<Setup />);
+    await waitFor(() => expect(listen).toHaveBeenCalled());
+
+    expect(screen.queryByTestId('ask-optional')).not.toBeInTheDocument();
+    grantAll(eventHandler);
+    expect(await screen.findByTestId('ask-optional')).toBeInTheDocument();
+  });
+
   it('fetches initial status and shows both permission rows', async () => {
+    mockSignedIn();
     render(<Setup />);
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('get_permission_status'));
     expect(screen.getByText('Screen Recording')).toBeInTheDocument();
@@ -87,8 +131,9 @@ describe('Setup', () => {
   });
 
   it('Grant calls the prompting request_permission command', async () => {
+    mockSignedIn();
     render(<Setup />);
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith('get_permission_status'));
+    await screen.findByText('Screen Recording');
     vi.mocked(invoke).mockResolvedValueOnce(true);
 
     fireEvent.click(nth(screen.getAllByText('Grant'), 0));
@@ -99,8 +144,9 @@ describe('Setup', () => {
   });
 
   it('Open Settings deep-links via open_permission_settings', async () => {
+    mockSignedIn();
     render(<Setup />);
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith('get_permission_status'));
+    await screen.findByText('Screen Recording');
 
     fireEvent.click(nth(screen.getAllByText('Open Settings'), 0));
 
@@ -110,6 +156,7 @@ describe('Setup', () => {
   });
 
   it('updates status when a lilypad://permission event fires, without a poll timer', async () => {
+    mockSignedIn();
     render(<Setup />);
     await waitFor(() =>
       expect(listen).toHaveBeenCalledWith('lilypad://permission', expect.any(Function)),
@@ -298,8 +345,10 @@ describe('Setup', () => {
   // ungranted after several consecutive polls — never on a timer alone, and
   // never for a permission nobody tried to grant yet.
   it('offers a restart only after Settings was opened AND 3 consecutive polls still read ungranted', async () => {
+    mockSignedIn();
     render(<Setup />);
     await waitFor(() => expect(listen).toHaveBeenCalled());
+    await screen.findByText('Screen Recording');
 
     // Two stale polls with Settings never opened for accessibility — must not offer a restart.
     eventHandler?.({ payload: status() });
@@ -323,8 +372,10 @@ describe('Setup', () => {
   });
 
   it('a granted permission resets its stale-poll counter', async () => {
+    mockSignedIn();
     render(<Setup />);
     await waitFor(() => expect(listen).toHaveBeenCalled());
+    await screen.findByText('Screen Recording');
 
     fireEvent.click(nth(screen.getAllByText('Open Settings'), 1)); // accessibility
     await waitFor(() =>

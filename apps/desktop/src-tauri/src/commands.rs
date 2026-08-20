@@ -195,7 +195,7 @@ pub async fn create_pairing(
     );
     log::info!(target: "lilypad::audit", "pairing_created — room started, awaiting scan");
 
-    open_window(&app, "qr-overlay", "Lilypad — Pair", 360.0, 500.0)?;
+    open_window(&app, "qr-overlay", "Lilypad — Pair", QR_WINDOW)?;
     crate::sync_tray_menu(&app);
     Ok(payload)
 }
@@ -384,7 +384,7 @@ pub fn simulate_pair_request(app: AppHandle, state: State<'_, SharedState>) -> R
             }
         }
         log::info!(target: "lilypad::audit", "pair_request — phone requested control");
-        open_window(&app, "control", "Lilypad — Session", 400.0, 560.0)?;
+        open_window(&app, "control", "Lilypad — Session", CONTROL_WINDOW)?;
         crate::sync_tray_menu(&app);
         Ok(())
     }
@@ -399,7 +399,7 @@ pub fn simulate_pair_request(app: AppHandle, state: State<'_, SharedState>) -> R
 /// room. One creator, no race.
 #[tauri::command]
 pub fn show_qr_window(app: AppHandle) -> Result<(), String> {
-    open_window(&app, "qr-overlay", "Lilypad — Pair", 360.0, 500.0)
+    open_window(&app, "qr-overlay", "Lilypad — Pair", QR_WINDOW)
 }
 
 #[tauri::command]
@@ -548,12 +548,19 @@ pub fn restart_app(app: AppHandle) {
 /// background poll broadcasting fresh permission status over
 /// `lilypad://permission` every ~700ms (matching the passive-check cache
 /// TTL) — an actual Tauri event stream, not another frontend poll loop
-/// (Finding 8's fix applies here too). Stops itself once both permissions
-/// are satisfied or the window closes, so no timer runs for the rest of the
-/// app's life once setup is done.
+/// (Finding 8's fix applies here too).
+///
+/// The poll stops when the window closes, and **only** then. It used to also
+/// stop the moment both permissions read granted, which made the window blind
+/// to the reverse transition: a user who revokes Screen Recording in System
+/// Settings while setup is open kept seeing "Granted" forever, because the one
+/// thing that could have corrected the screen had already exited. Permission
+/// state is not monotonic, so nothing watching it may assume it is. The cost
+/// of being right is one cached TCC round-trip per 700ms for as long as a
+/// window the user is actively looking at stays open.
 pub fn show_setup(app: &AppHandle) -> Result<(), String> {
     let already_open = app.get_webview_window("setup").is_some();
-    open_window(app, "setup", "Lilypad — Setup", 460.0, 440.0)?;
+    open_window(app, "setup", "Lilypad — Setup", SETUP_WINDOW)?;
     if !already_open {
         let app = app.clone();
         tauri::async_runtime::spawn(async move {
@@ -563,11 +570,7 @@ pub fn show_setup(app: &AppHandle) -> Result<(), String> {
                 if app.get_webview_window("setup").is_none() {
                     break;
                 }
-                let snapshot = permission_snapshot();
-                let _ = app.emit("lilypad://permission", snapshot);
-                if snapshot.screen_capture && snapshot.accessibility {
-                    break;
-                }
+                let _ = app.emit("lilypad://permission", permission_snapshot());
             }
         });
     }
@@ -577,15 +580,15 @@ pub fn show_setup(app: &AppHandle) -> Result<(), String> {
 // ── window helpers (also called from the tray menu in lib.rs) ────────────────
 
 pub fn show_diagnostics(app: &AppHandle) -> Result<(), String> {
-    open_window(app, "diagnostics", "Lilypad — Diagnostics", 420.0, 420.0)
+    open_window(app, "diagnostics", "Lilypad — Diagnostics", DIAGNOSTICS_WINDOW)
 }
 
 pub fn show_qr_overlay(app: &AppHandle) -> Result<(), String> {
-    open_window(app, "qr-overlay", "Lilypad — Pair", 360.0, 500.0)
+    open_window(app, "qr-overlay", "Lilypad — Pair", QR_WINDOW)
 }
 
 pub fn show_control(app: &AppHandle) -> Result<(), String> {
-    open_window(app, "control", "Lilypad — Session", 400.0, 560.0)
+    open_window(app, "control", "Lilypad — Session", CONTROL_WINDOW)
 }
 
 /// Open (create-if-absent, else focus) the dashboard. Unlike the ring path in
@@ -631,7 +634,66 @@ fn reset_to_idle(state: &State<'_, SharedState>) {
 /// pairing attempt running for up to two minutes (`qr-overlay`) or, far
 /// worse, left the runner in `AwaitingApproval` forever with no timeout and
 /// no visible way back in (`control`).
-fn open_window(app: &AppHandle, label: &str, title: &str, w: f64, h: f64) -> Result<(), String> {
+/// Setup is the longest flow in the app and the only one the user leaves for
+/// System Settings and comes back to, so it is the one window that must not
+/// float and must be growable.
+const SETUP_WINDOW: WindowSpec = WindowSpec {
+    w: 560.0,
+    h: 720.0,
+    min_w: 420.0,
+    min_h: 480.0,
+    on_top: false,
+};
+/// Photographed with a phone; staying above other windows is the point.
+const QR_WINDOW: WindowSpec = WindowSpec {
+    w: 380.0,
+    h: 520.0,
+    min_w: 320.0,
+    min_h: 420.0,
+    on_top: true,
+};
+/// Reached for mid-session, when something else is deliberately in front.
+const CONTROL_WINDOW: WindowSpec = WindowSpec {
+    w: 420.0,
+    h: 600.0,
+    min_w: 360.0,
+    min_h: 440.0,
+    on_top: true,
+};
+/// A read-only list nobody acts on in a hurry.
+const DIAGNOSTICS_WINDOW: WindowSpec = WindowSpec {
+    w: 460.0,
+    h: 520.0,
+    min_w: 380.0,
+    min_h: 360.0,
+    on_top: false,
+};
+
+/// Size and behaviour of one window.
+///
+/// Every window used to be built `resizable(false)` and `always_on_top(true)`.
+/// Both were wrong, and in different ways:
+///
+/// - **Not resizable** meant the Setup window's 460x440 was a hard ceiling on
+///   a flow that has an account form, two permission cards, a link step, a
+///   pair step and an optional Ask card in it. There was no size at which the
+///   user could see the thing they were being asked to complete, and no way to
+///   ask for one.
+/// - **Always on top** is right for a QR you are photographing and for session
+///   controls you need during a session. It is actively harmful for Setup:
+///   granting a macOS permission means going to System Settings, and Setup
+///   floated over System Settings while the user tried to do it.
+struct WindowSpec {
+    w: f64,
+    h: f64,
+    /// Floor, not a second guess at the ideal size — small enough to be a
+    /// usable choice on an 11" display, large enough that nothing clips.
+    min_w: f64,
+    min_h: f64,
+    on_top: bool,
+}
+
+fn open_window(app: &AppHandle, label: &str, title: &str, spec: WindowSpec) -> Result<(), String> {
     if let Some(win) = app.get_webview_window(label) {
         let _ = win.show();
         let _ = win.set_focus();
@@ -639,9 +701,10 @@ fn open_window(app: &AppHandle, label: &str, title: &str, w: f64, h: f64) -> Res
     }
     let win = WebviewWindowBuilder::new(app, label, WebviewUrl::App("index.html".into()))
         .title(title)
-        .inner_size(w, h)
-        .resizable(false)
-        .always_on_top(true)
+        .inner_size(spec.w, spec.h)
+        .min_inner_size(spec.min_w, spec.min_h)
+        .resizable(true)
+        .always_on_top(spec.on_top)
         .build()
         .map_err(|e| e.to_string())?;
 

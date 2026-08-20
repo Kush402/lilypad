@@ -36,6 +36,17 @@ body,
   height: 100%;
 }
 
+/* Windows are resizable now, so every panel needs a real scroll container:
+ * at the minimum window size the Setup flow is taller than the viewport by
+ * design, and without this the overflow is simply unreachable rather than
+ * scrollable. `#root` owns the scrolling instead of `body` because the bubble
+ * window paints a transparent full-viewport root that must not gain a
+ * scrollbar. */
+#root {
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
 body {
   background: transparent;
   color: var(--ink);
