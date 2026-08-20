@@ -8,10 +8,19 @@
 # bandwidth (docs/deployment.md, "Options considered") — a marketing page that
 # gets attention should not produce a bill.
 #
-# INERT UNTIL A SECRET EXISTS. `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`
-# are not set, so the deploy step skips and the build still runs. That way this
-# file is a working artifact rather than a red X: adding the secrets turns it on
-# with no edit. The token needs `Cloudflare Pages: Edit` and nothing else.
+# `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` are not set, so this cannot
+# deploy. It used to skip the deploy step and report SUCCESS, which is worse
+# than not existing: on 2026-08-20 the live site still read "Not yet released
+# publicly" while a fix for exactly that line sat on `main` behind three green
+# `site` runs. A workflow that reports success without deploying teaches people
+# to trust a signal that means nothing.
+#
+# It therefore builds and tests on every trigger, and FAILS on a push to `main`
+# when it cannot deploy. That red X is accurate — the site is not being
+# deployed — and it costs nothing else, because this workflow gates no other
+# work. Adding the two secrets turns it green with no edit.
+#
+# The token needs `Cloudflare Pages: Edit` and nothing else.
 
 name: site
 
@@ -39,13 +48,29 @@ jobs:
 
       - name: Check for Cloudflare credentials
         id: creds
+        env:
+          TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
-          if [ -n "${{ secrets.CLOUDFLARE_API_TOKEN }}" ]; then
+          if [ -n "${TOKEN:-}" ] && [ -n "${ACCOUNT:-}" ]; then
             echo "present=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "present=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::CLOUDFLARE_API_TOKEN is not set — built but not deployed."
+            exit 0
           fi
+          echo "present=false" >> "$GITHUB_OUTPUT"
+          missing=""
+          [ -z "${TOKEN:-}" ] && missing="$missing CLOUDFLARE_API_TOKEN"
+          [ -z "${ACCOUNT:-}" ] && missing="$missing CLOUDFLARE_ACCOUNT_ID"
+          if [ "${{ github.event_name }}" = "push" ]; then
+            # A push to main means "publish this". Saying "success" while
+            # publishing nothing is the failure mode this replaces.
+            echo "::error::cannot deploy the site —$missing not set. The site on lilypadhome.takedia.com is NOT tracking main. Create a Cloudflare API token scoped to 'Cloudflare Pages: Edit' and add both as repository secrets."
+            exit 1
+          fi
+          echo "::warning::$missing not set — built and tested, not deployed."
+
+      - name: Confirm the deploy actually published this commit
+        if: steps.creds.outputs.present == 'true'
+        run: echo "deploying $(git rev-parse --short HEAD) to lilypad-site"
 
       - name: Deploy to Cloudflare Pages
         if: steps.creds.outputs.present == 'true'

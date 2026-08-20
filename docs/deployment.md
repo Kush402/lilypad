@@ -606,6 +606,13 @@ Stated explicitly so nothing here reads as more finished than it is.
   Always Free instances in the same Oracle tenancy and region.** A disk failure,
   a bad migration, or losing one VM is covered; losing the tenancy is not.
 - No staging environment exists yet — the workflow supports it, nothing runs it.
+- **The website is not deployed by CI.** `site.yml` builds and tests but cannot
+  publish: `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` are not set. It
+  used to report SUCCESS anyway, which is how the live page kept saying "Not
+  yet released publicly" through three green runs while the fix sat on `main`.
+  It now fails on a push to `main`, so the signal means what it says. **Whoever
+  updates the site is doing it by hand, and the live page can lag `main`
+  silently until those two secrets exist.**
 - ~~No crash reporting or metrics scraping.~~ Metrics are scraped by the
   watchdog every ten minutes. Crash reporting (Sentry or equivalent) is still
   absent: an unhandled exception is visible only as a 5xx rate and a line in
