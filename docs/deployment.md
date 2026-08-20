@@ -764,3 +764,144 @@ nothing:
   and sign-in are unaffected, so account creation works without email.
 
 Still local-only. Nothing above was run on a public host, because none exists.
+
+## Second audit pass (2026-08-20)
+
+A deeper pass over the same system, after the first one had closed its findings.
+Everything below was proven before it was fixed, and verified after.
+
+### Revocation did not survive contact with its own threat
+
+`DELETE /devices/:deviceId` is the answer to "I lost my laptop". Run against
+production, against a real account with a real enrolled phone and an
+approved laptop:
+
+| Step                                      | Before the fix                       |
+| ----------------------------------------- | ------------------------------------ |
+| Revoke the phone from the laptop          | `200 {"ok":true}`                    |
+| Phone asks for a device token             | `403 device_revoked` ✅              |
+| Phone refreshes its **account** session   | `200` — the session on it never died |
+| Phone re-enrols its own unchanged keypair | `200` — `revoked_at` cleared         |
+| Phone asks for a device token again       | `200` — fully restored               |
+
+Three separate pieces of correct-looking code. Revoke does not touch
+`refresh_tokens`; an account session is enough to call `POST /devices/enroll`;
+and `DeviceRegistry.claim()` clears `revoked_at` on purpose, because
+re-enrolling is how someone restores a device they got back.
+
+The account session is the crown jewel, not the device key — holding one lets
+you enrol a `kind: "mobile"` device you control and approve anything from it. So
+revocation now revokes the account's refresh tokens, and it is awaited: a route
+that answers 200 while the credential that undoes it is still live is worse than
+one that fails, because the user believes it worked.
+
+Whole-account rather than per-device because `refresh_tokens` has no device
+column and cannot have one — a client signs in _before_ it enrols, so at issue
+time there is no device to bind to. It costs nothing today: **nothing in either
+client ever presents a refresh token.**
+
+Which was the other half of it. The desktop kept one in the login keychain for
+thirty days and never used it — there is no `/auth/refresh` call in that crate.
+A dormant bearer credential, on the machine whose theft is the entire reason the
+Revoke button exists. It now stores an email and a user id, which is all the UI
+ever read.
+
+Recovery is unchanged: the owner signs in on the phone and re-enrols. A thief
+cannot, because signing in needs the password.
+
+### Redis had no ceiling
+
+Measured on the host: `maxmemory 0`, `maxmemory-policy noeviction`, 952 MB of
+RAM shared by four containers, steady state 1.2 MB. Unlimited does not mean
+Redis stops somewhere sensible — it means the OOM killer eventually picks
+whatever has the largest RSS, which is Postgres, not the process at fault.
+
+Now `--maxmemory 128mb --maxmemory-policy volatile-ttl`. `volatile-ttl` because
+these keys are not equally valuable and their TTLs already say so: a device
+challenge lives 120s and its client just retries, while a room-auth record lives
+six hours and losing it hard-rejects the reconnect of a session whose media is
+still flowing. Nearest-to-expiring goes first, which under a flood is the flood.
+
+That converts a crash into a silent eviction, so the watchdog now alerts on
+`evicted_keys > 0` (critical — someone has already been told to pair again
+mid-session), on crossing 75% of the cap, and on `maxmemory` reading back as 0,
+which is this fix checking that it is still applied.
+
+### The compose file's default image was not ours
+
+`${BACKEND_IMAGE:-ghcr.io/kushsharma024/lilypad-backend:latest}`. The repo is
+`Kush402/lilypad`, so the image is `ghcr.io/kush402/…`, and `kushsharma024` is
+a live GitHub account somebody holds. Unreachable in practice — the deploy
+always passes an exact SHA — but a fallback that could pull a stranger's image
+is worse than no fallback. Now `${BACKEND_IMAGE:?…}`, verified to stop
+`docker compose config` with its own sentence.
+
+### Apple: both apps take the local network without saying why
+
+Apple's [TN3179](https://developer.apple.com/documentation/technotes/tn3179-understanding-local-network-privacy)
+gates local network access on iOS 14+ and **macOS 15+**, and lists both
+operations an ICE host candidate to a phone on the same Wi-Fi performs:
+"Making an outgoing TCP connection: yes", "Sending a UDP unicast: yes". On
+[`NSLocalNetworkUsageDescription`](https://developer.apple.com/documentation/bundleresources/information-property-list/nslocalnetworkusagedescription)
+Apple writes: _"Any app that uses the local network, directly or indirectly,
+should include this description … as well as direct unicast or multicast
+connections to local hosts."_
+
+Neither app declared it. The macOS bundle had **no** usage descriptions at all;
+iOS declared only the camera. Both now do, and both have a test pinning it,
+because nothing else in either codebase imports those files.
+
+`NSBonjourServices` is deliberately absent: the phone dials an address the
+desktop advertised over signaling, which is unicast, and TN3179 asks for that
+key only for registering or browsing Bonjour services.
+
+Two things this does **not** fix, both recorded rather than guessed at:
+
+- TN3179: _"it may deny the operation immediately, before the user has responded
+  to the alert."_ Whether Lilypad's first LAN session on macOS 15+/iOS silently
+  falls back to the relay is **NOT VERIFIED** — it needs the two devices.
+- Nothing in either UI tells the user which of the three paths a session took.
+  The website makes three distinct promises about that, and the product cannot
+  currently confirm any of them.
+
+### The webview had no CSP and shipped a global IPC handle
+
+Both were M3 audit findings, still open. `withGlobalTauri: true` put raw
+`invoke` — screen capture, input injection — on `window` for any script in any
+Lilypad window, and it was reach for nothing: every call site already imports
+from `@tauri-apps/api`. Verified gone from the built binary.
+
+The CSP was the part worth being careful about, because an unverifiable CSP is a
+blank window for every customer. It was verified rather than argued: build,
+launch, and confirm the bubble renders — `index.html` is an empty
+`<div id="root">` plus a module script, so a rendered bubble means scripts ran
+and styles applied under the policy. `img-src data:` is load-bearing; the
+pairing QR is a data URL.
+
+### Backups: the schedule had never actually run offsite
+
+The off-host copy existed, but every copy in it had been made by hand. The 03:17
+cron had last run _before_ the offsite sink was built, so the automated path was
+untested and would have stayed untested for another 36 hours — the watchdog's
+alert threshold.
+
+Proven by scheduling a one-off cron entry two minutes out and watching it fire:
+
+```
+Aug 20 17:41:01 CRON[1627491]: (root) CMD (/opt/lilypad/backup.sh …)
+2026-08-20T17:41:02Z local: lilypad-20260820T174101Z.sql.gz (13920 bytes)
+stored lilypad-20260820T174103Z.sql.gz (13920 bytes)
+2026-08-20T17:41:02Z offsite: copied
+```
+
+Byte-identical on the far host. The temporary entry was removed and the crontab
+restored to its two original lines.
+
+### A test that asserted on the host's spare capacity
+
+Three of `input_worker`'s eight tests failed inside `pnpm verify` and all eight
+passed alone. Twelve hardcoded two-second deadlines, against a run that builds
+two Rust targets and seven JavaScript suites at once. `wait_for` returns the
+moment its condition holds, so the budget was free to raise — the file still
+finishes in about 1.4 seconds. A suite that only passes on an idle laptop makes
+`main` randomly red, and that teaches people to re-run instead of read.
