@@ -216,6 +216,27 @@ function productionSafetyProblems(env: Env): string[] {
     );
   }
 
+  // Rate limiting, the WebSocket connection-count guard and every per-IP
+  // decision key off `request.ip`. Behind a proxy with TRUST_PROXY unset,
+  // `request.ip` is the PROXY's address, so every client in the world collapses
+  // into a single bucket: one user exhausting any limit locks out all of them,
+  // and the per-IP connection cap stops meaning anything. Measured on the
+  // deployed stack before this check existed — a second machine, with a
+  // different public IP and no prior requests, was served 429 immediately
+  // because a laptop had just used up the shared allowance.
+  //
+  // A directly-exposed origin genuinely wants no proxy trust, so this does not
+  // demand a proxy — it demands that the operator SAY which it is. `false` is
+  // an accepted answer; silence is not, because silence is what produced the
+  // broken configuration.
+  if (env.TRUST_PROXY.trim() === '') {
+    problems.push(
+      'TRUST_PROXY is not set — behind a proxy this collapses every client into one rate-limit ' +
+        'bucket (set the number of trusted hops, e.g. 1 for a single tunnel/CDN in front); ' +
+        'set it to `false` if this origin is exposed directly with no proxy',
+    );
+  }
+
   // Redis holds pairing-token and (as of the room-resurrection work) live
   // room-routing state — an unauthenticated instance reachable by anything
   // that can reach its port is a full session-hijack surface, not just a

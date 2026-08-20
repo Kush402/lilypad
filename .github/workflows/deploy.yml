@@ -27,7 +27,14 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  IMAGE: ghcr.io/${{ github.repository_owner }}/lilypad-backend
+  # GHCR rejects any tag whose repository part is not lowercase, and
+  # `repository_owner` is the account's display casing — "Kush402" here — so
+  # this interpolated straight into an invalid tag and every deploy run failed
+  # at `docker buildx` with "repository name must be lowercase". The workflow
+  # had therefore never once deployed; production was reached by hand each
+  # time. There is no expression-level `lower()` in workflow syntax, so the
+  # lowercasing happens in a step below and lands in $GITHUB_ENV.
+  IMAGE_NAME: lilypad-backend
 
 jobs:
   gate:
@@ -60,6 +67,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
+      - name: Compute a GHCR-legal image reference
+        # `${OWNER,,}` is bash lowercasing; GHCR requires it and workflow
+        # expressions cannot do it.
+        run: echo "IMAGE=ghcr.io/${OWNER,,}/${IMAGE_NAME}" >> "$GITHUB_ENV"
+        env:
+          OWNER: ${{ github.repository_owner }}
+
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -87,6 +101,14 @@ jobs:
     environment: ${{ github.event.inputs.environment || 'production' }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Compute a GHCR-legal image reference
+        # Recomputed rather than passed as a job output: `$GITHUB_ENV` does not
+        # cross job boundaries, and one three-line step is less machinery than
+        # plumbing an output through `needs`.
+        run: echo "IMAGE=ghcr.io/${OWNER,,}/${IMAGE_NAME}" >> "$GITHUB_ENV"
+        env:
+          OWNER: ${{ github.repository_owner }}
 
       - name: Deploy over SSH
         uses: appleboy/ssh-action@v1

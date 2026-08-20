@@ -13,6 +13,7 @@ function secureProdEnv(overrides: Record<string, string | undefined> = {}): Node
     TURN_SECRET: 'a-real-unique-secret-at-least-32-chars-long',
     AUTH_TOKEN_SECRET: 'a-real-unique-auth-signing-key-32-chars-plus',
     METRICS_BEARER_TOKEN: 'a-real-unique-metrics-token',
+    TRUST_PROXY: '1',
     ...overrides,
   };
 }
@@ -50,6 +51,25 @@ describe('loadEnv', () => {
   describe('production safety guards', () => {
     it('boots cleanly with a fully secure production configuration', () => {
       expect(() => loadEnv(secureProdEnv())).not.toThrow();
+    });
+
+    /**
+     * Measured on the deployed stack, not theorised: with TRUST_PROXY unset,
+     * `request.ip` was cloudflared's address, so a second machine with a
+     * different public IP and no prior requests received 429 the instant a
+     * laptop used up the shared allowance. Every per-IP decision in the
+     * product — rate limits, the WebSocket connection cap — was global.
+     * After setting one trusted hop the same probe returned 401 while the
+     * laptop was still limited, which is per-IP behaviour.
+     */
+    it('refuses to boot in production when nobody has said how many proxies are in front', () => {
+      expect(() => loadEnv(secureProdEnv({ TRUST_PROXY: undefined }))).toThrow(/TRUST_PROXY/);
+      expect(() => loadEnv(secureProdEnv({ TRUST_PROXY: '   ' }))).toThrow(/TRUST_PROXY/);
+    });
+
+    /** A directly-exposed origin is a real topology; it just has to be stated. */
+    it('accepts an explicit `false` for an origin with no proxy in front', () => {
+      expect(() => loadEnv(secureProdEnv({ TRUST_PROXY: 'false' }))).not.toThrow();
     });
 
     it('does not apply production guards outside NODE_ENV=production', () => {
