@@ -34,6 +34,9 @@ const BACKUP_MAX_AGE_S = 36 * 3600;
  * next burst starts evicting, and an eviction here is a customer's session
  * failing to reconnect — see the `redisEvictedKeys` alert below. */
 const REDIS_PERCENT = 75;
+/** certbot renews at 30 days out, so this firing means renewal is already
+ * failing rather than merely due. */
+const TLS_MIN_DAYS = 14;
 
 const findings = [];
 const facts = {};
@@ -270,10 +273,55 @@ async function checkHosts() {
   }
 }
 
+/**
+ * The relay's TLS certificate.
+ *
+ * coturn serves TURNS on 443 from a Let's Encrypt certificate, renewed by a
+ * certbot timer with a deploy hook that restarts the service. All of that is
+ * wired correctly today — which is exactly why nobody would notice the day it
+ * stops. A relay certificate expiring does not degrade anything gently: TURNS
+ * on 443 is the path for users behind networks that allow nothing but HTTPS,
+ * so for them it is the difference between a session and no session.
+ *
+ * Fourteen days is the alert horizon because certbot renews at thirty. Seeing
+ * this fire means two renewal windows have already been missed.
+ */
+async function checkTurnTls() {
+  if (!TURN_HOST) return;
+  const tls = await import('node:tls');
+  const probe = await timed(() => new Promise((resolve, reject) => {
+    const socket = tls.connect(
+      { host: TURN_HOST, port: 443, servername: 'turn.takedia.com', timeout: 8000 },
+      () => {
+        const cert = socket.getPeerCertificate();
+        socket.end();
+        if (!cert || !cert.valid_to) return reject(new Error('no certificate presented'));
+        resolve({ validTo: cert.valid_to, subject: cert.subject?.CN ?? null });
+      },
+    );
+    socket.on('timeout', () => { socket.destroy(); reject(new Error('TLS handshake timed out')); });
+    socket.on('error', reject);
+  }));
+  facts.turnTls = probe;
+  if (probe.error) {
+    return alert('critical', 'turn-tls',
+      `TLS handshake with ${TURN_HOST}:443 failed: ${probe.error}`,
+      'TURNS on 443 is the only path for users on networks that allow nothing but HTTPS. Check coturn and /etc/coturn/certs.');
+  }
+  const daysLeft = Math.floor((Date.parse(probe.value.validTo) - Date.now()) / 86_400_000);
+  facts.turnTls.daysLeft = daysLeft;
+  if (daysLeft <= TLS_MIN_DAYS) {
+    alert(daysLeft <= 3 ? 'critical' : 'warning', 'turn-tls-expiry',
+      `the relay certificate expires in ${daysLeft} days`,
+      'certbot renews at 30 days, so this means renewal has been failing. Run `certbot renew --dry-run` on the relay VM and check /etc/letsencrypt/renewal-hooks/deploy/coturn.sh still runs.');
+  }
+}
+
 await checkApi();
 await checkMetrics();
 await checkSite();
 await checkTurn();
+await checkTurnTls();
 await checkHosts();
 
 const critical = findings.filter((f) => f.severity === 'critical');
