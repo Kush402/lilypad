@@ -1,6 +1,6 @@
 {
   "name": "@lilypad/desktop",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Lilypad desktop app (Tauri v2 + React)",
   "type": "module",
   "scripts": {

@@ -37,8 +37,30 @@ use tauri::{AppHandle, Manager, Wry};
 
 use state::{AppState, SessionStatus, SharedState};
 
-/// Default dev backend; override with the LILYPAD_BACKEND_URL env var.
-const DEFAULT_BACKEND_URL: &str = "http://localhost:8080";
+/// Where this build talks to, absent a `LILYPAD_BACKEND_URL` override.
+///
+/// This is split by build profile because the two builds have different users.
+/// A debug build is run by a developer from a terminal with a backend on
+/// :8080. A release build is double-clicked from /Applications by a customer
+/// who has no backend, no terminal, and — critically — **no environment**:
+/// macOS launches GUI apps from launchd, which does not inherit the shell, so
+/// an env var is not a mechanism a customer can be served by. Shipping the dev
+/// default in a release build meant every downloaded copy reached for
+/// localhost:8080 and found nothing, which is exactly what v0.1.0 did.
+///
+/// Written as a function of the profile rather than two `#[cfg]` constants so
+/// both branches are reachable from one test run — the release value is the
+/// one that broke, and a test that can only see its own profile's value is
+/// exactly the test that missed this.
+const fn default_backend_url(debug_build: bool) -> &'static str {
+    if debug_build {
+        "http://localhost:8080"
+    } else {
+        "https://api.takedia.com"
+    }
+}
+
+const DEFAULT_BACKEND_URL: &str = default_backend_url(cfg!(debug_assertions));
 
 /// Persist a stable device id under the app config dir so a laptop keeps the
 /// same identity across launches (used to bind pairings; real auth is M5).
@@ -403,4 +425,26 @@ mod pairing_order_tests {
             "connection refused".to_owned()
         )));
     }
+
+    /// v0.1.0 shipped with the dev backend as the release default, so every
+    /// downloaded copy tried localhost:8080 and reached nothing. macOS starts
+    /// GUI apps from launchd with no shell environment, so `LILYPAD_BACKEND_URL`
+    /// could not rescue a customer — the compiled-in value is the only one they
+    /// ever get. Both branches are asserted because the release branch is the
+    /// one that cannot be observed from a normal `cargo test`.
+    #[test]
+    fn a_release_build_never_ships_the_developer_backend() {
+        let release = default_backend_url(false);
+        assert_eq!(release, "https://api.takedia.com");
+        assert!(
+            !release.contains("localhost") && !release.contains("127.0.0.1"),
+            "release builds must not point at a developer machine, got {release}"
+        );
+        // presence.rs derives signaling from this base and maps https -> wss,
+        // so an http release default would also silently downgrade the socket.
+        assert!(release.starts_with("https://"), "got {release}");
+
+        assert_eq!(default_backend_url(true), "http://localhost:8080");
+    }
+
 }
