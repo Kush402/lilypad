@@ -222,6 +222,90 @@ describe('DeviceRegistry.enroll', () => {
   });
 });
 
+describe('re-enrolling a revoked device', () => {
+  let store: ReturnType<typeof fakeStore>;
+  let registry: DeviceRegistry;
+
+  /** Enroll, then revoke, and hand back the moment of revocation. */
+  async function enrolledThenRevokedAt(at: Date): Promise<void> {
+    const first = await registry.enroll(enrollment);
+    const row = store.rows.get(first.ok ? first.deviceId : '');
+    row!.revokedAt = at;
+  }
+
+  beforeEach(() => {
+    store = fakeStore();
+    registry = new DeviceRegistry(store);
+  });
+
+  it('refuses a credential minted before the revocation', async () => {
+    // The bug this closes, in order: revoke leaves the account session alive
+    // (fixed separately), an account session is enough to call
+    // `/devices/enroll`, and enrolling clears `revoked_at`. That last step is
+    // what makes it permanent rather than a ten-minute window, so the last step
+    // is where it stops.
+    const revokedAt = new Date('2026-08-20T12:00:00Z');
+    await enrolledThenRevokedAt(revokedAt);
+
+    const result = await registry.enroll({
+      ...enrollment,
+      credentialIssuedAt: new Date('2026-08-20T11:59:00Z'),
+    });
+
+    expect(result).toEqual({ ok: false, reason: 'device_revoked' });
+  });
+
+  it('refuses a credential minted in the same second, because a tie is not proof', async () => {
+    // `iat` has one-second resolution. A token stamped in the same second as
+    // the revocation cannot be shown to be later, and the tie goes to the
+    // person who pressed the button.
+    const revokedAt = new Date('2026-08-20T12:00:00Z');
+    await enrolledThenRevokedAt(revokedAt);
+
+    const result = await registry.enroll({ ...enrollment, credentialIssuedAt: revokedAt });
+
+    expect(result).toEqual({ ok: false, reason: 'device_revoked' });
+  });
+
+  it('accepts a credential minted after it, so the owner can sign back in', async () => {
+    // The recovery path has to keep working, or the fix is a lockout: the owner
+    // opens the app on the phone they still have, signs in, and the token they
+    // get is newer than the revocation.
+    const revokedAt = new Date('2026-08-20T12:00:00Z');
+    await enrolledThenRevokedAt(revokedAt);
+
+    const result = await registry.enroll({
+      ...enrollment,
+      credentialIssuedAt: new Date('2026-08-20T12:00:01Z'),
+    });
+
+    expect(result.ok).toBe(true);
+    const row = store.rows.get(result.ok ? result.deviceId : '');
+    expect(row?.revokedAt).toBeNull();
+  });
+
+  it('leaves the approval path alone, where another device is the proof', async () => {
+    // `/devices/enrollment-code/approve` passes no `credentialIssuedAt`, and
+    // must not: a desktop is restored by a DIFFERENT device approving its code,
+    // and that second device IS the freshness check. Requiring the approver's
+    // token to postdate the revocation would break the recovery it exists for
+    // and add nothing — whoever holds the owner's phone has already won.
+    await enrolledThenRevokedAt(new Date('2026-08-20T12:00:00Z'));
+
+    const result = await registry.enroll(enrollment);
+
+    expect(result.ok).toBe(true);
+    const row = store.rows.get(result.ok ? result.deviceId : '');
+    expect(row?.revokedAt).toBeNull();
+  });
+
+  it('does not get in the way of a device that was never revoked', async () => {
+    await registry.enroll(enrollment);
+    const again = await registry.enroll({ ...enrollment, credentialIssuedAt: new Date(0) });
+    expect(again.ok).toBe(true);
+  });
+});
+
 describe('DeviceRegistry.authenticate', () => {
   let store: ReturnType<typeof fakeStore>;
   let registry: DeviceRegistry;

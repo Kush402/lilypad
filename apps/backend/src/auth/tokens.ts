@@ -37,6 +37,21 @@ export interface Actor {
   userId: string;
   /** `devices.id`, or null for a browser session. */
   deviceId: string | null;
+  /**
+   * When this token was minted, from the JWT's `iat`.
+   *
+   * Exposed for exactly one caller. Revocation cannot be instant here — that is
+   * the trade above — so a token issued before a device was revoked keeps
+   * working until it expires. That is fine for every route whose worst case is
+   * ten more minutes of access, and not fine for `/devices/enroll`, whose
+   * effect is PERMANENT: enrolling clears `revoked_at`, so a stale token could
+   * turn a ten-minute window into an undone revocation. Comparing this against
+   * the row's `revoked_at` closes it without a database read on the hot path,
+   * because the answer is already inside the token.
+   *
+   * Null only for a token minted before this claim was set, which is none.
+   */
+  issuedAt: Date | null;
 }
 
 function signingKey(): Uint8Array {
@@ -45,7 +60,7 @@ function signingKey(): Uint8Array {
 
 /** Mint an access token for an actor. */
 export async function signAccessToken(
-  actor: Actor,
+  actor: Pick<Actor, 'userId' | 'deviceId'>,
   ttlSeconds: number = ACCESS_TOKEN_TTL_SECONDS,
 ): Promise<string> {
   const jwt = new SignJWT(actor.deviceId ? { did: actor.deviceId } : {})
@@ -77,7 +92,11 @@ export async function verifyAccessToken(token: string): Promise<Actor | null> {
     if (typeof payload.sub !== 'string' || payload.sub.length === 0) return null;
     const did = payload.did;
     if (did !== undefined && typeof did !== 'string') return null;
-    return { userId: payload.sub, deviceId: did ?? null };
+    return {
+      userId: payload.sub,
+      deviceId: did ?? null,
+      issuedAt: typeof payload.iat === 'number' ? new Date(payload.iat * 1000) : null,
+    };
   } catch {
     return null;
   }

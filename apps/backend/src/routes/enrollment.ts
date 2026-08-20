@@ -100,6 +100,11 @@ export async function enrollmentRoutes(app: FastifyInstance): Promise<void> {
         publicKey,
         name,
         platform,
+        // Self-enrollment proves an account session and nothing more, and
+        // enrolling clears `revoked_at`. Handing the registry the token's issue
+        // time is what stops a phone that was revoked a minute ago from
+        // undoing that with the credential it was already holding.
+        credentialIssuedAt: actor.issuedAt,
       });
       if (!enrolled.ok) {
         void auditLog
@@ -109,6 +114,12 @@ export async function enrollmentRoutes(app: FastifyInstance): Promise<void> {
             metadata: { reason: enrolled.reason, step: 'enroll', kind },
           })
           .catch((err) => log.audit.error({ err }, 'failed to write login_failed audit log'));
+        if (enrolled.reason === 'device_revoked') {
+          return reply.code(403).send({
+            error: 'device_revoked',
+            message: 'this device was removed from the account — sign in again on it to restore it',
+          });
+        }
         return reply.code(409).send({
           error: enrolled.reason,
           message:

@@ -8,12 +8,28 @@ const key = () => new TextEncoder().encode(config.env.AUTH_TOKEN_SECRET);
 describe('access tokens', () => {
   it('round-trips an actor', async () => {
     const token = await signAccessToken({ userId: 'user-1', deviceId: 'device-1' });
-    expect(await verifyAccessToken(token)).toEqual({ userId: 'user-1', deviceId: 'device-1' });
+    expect(await verifyAccessToken(token)).toMatchObject({
+      userId: 'user-1',
+      deviceId: 'device-1',
+    });
   });
 
   it('carries a null deviceId for browser sessions', async () => {
     const token = await signAccessToken({ userId: 'user-1', deviceId: null });
-    expect(await verifyAccessToken(token)).toEqual({ userId: 'user-1', deviceId: null });
+    expect(await verifyAccessToken(token)).toMatchObject({ userId: 'user-1', deviceId: null });
+  });
+
+  it('reports when it was minted, which is what bounds a stale credential', async () => {
+    // `/devices/enroll` compares this against the device row's `revoked_at`,
+    // because enrolling clears that column: without it, a token minted before a
+    // revocation could undo the revocation permanently.
+    const before = Date.now();
+    const token = await signAccessToken({ userId: 'user-1', deviceId: null });
+    const actor = await verifyAccessToken(token);
+    expect(actor?.issuedAt).toBeInstanceOf(Date);
+    // `iat` has one-second resolution, so it can round down past `before`.
+    expect(actor!.issuedAt!.getTime()).toBeGreaterThanOrEqual(before - 1000);
+    expect(actor!.issuedAt!.getTime()).toBeLessThanOrEqual(Date.now() + 1000);
   });
 
   it('rejects a token whose payload was tampered with', async () => {

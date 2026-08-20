@@ -284,15 +284,6 @@ check(
   `HTTP ${refreshAfterRevoke.status} — a 200 means the stolen machine can still refresh`,
 );
 
-// What this deliberately does NOT assert: that the account ACCESS token minted
-// before the revoke stops working. It does not, for ten minutes, because
-// verification is signature-only by design (ADR-0001) and that lag applies to
-// every authorization change in the system. What changed is the bound. Before,
-// the refresh token lived thirty days and re-enrolling cleared `revoked_at`, so
-// the window was unbounded and the recovery permanent. Now a thief needs to
-// have been holding a live access token at the moment of the revoke — and the
-// desktop never stores one at all, only the refresh token this check kills.
-
 const reLink = await post('/devices/enrollment-code', {
   ...(await proof(laptop)),
   fingerprint: `mac-${tag}`,
@@ -308,6 +299,39 @@ check(
   're-linking a revoked laptop restores it',
   reApprove.status === 200 && restored.status === 200,
   `approve ${reApprove.status}, token ${restored.status}`,
+);
+
+// The other half, and the case with no second factor at all. A laptop is
+// restored by a phone approving its code; a PHONE enrolls on an account token
+// alone. So revoke the phone — using the laptop just restored above — and try
+// exactly what a thief holding it would: re-enroll its own unchanged keypair
+// with the account token it already had.
+//
+// `login.json.accessToken` was minted at sign-in, long before this revocation,
+// which is the whole point. Enrolling clears `revoked_at`, so without the
+// check this turns a ten-minute token lag into a permanently undone revoke.
+const phoneId = (list.json.devices ?? []).find((d) => d.kind === 'mobile')?.id;
+const revokePhone = await req(
+  'DELETE',
+  `/devices/${phoneId}`,
+  undefined,
+  restored.json.accessToken,
+);
+check(
+  'the restored laptop revokes the phone',
+  revokePhone.status === 200,
+  `HTTP ${revokePhone.status}`,
+);
+
+const selfReEnroll = await post(
+  '/devices/enroll',
+  { ...(await proof(phone)), kind: 'mobile', fingerprint: `phone-${tag}`, platform: 'ios' },
+  login.json.accessToken,
+);
+check(
+  'a credential older than the revocation cannot re-enroll the device',
+  selfReEnroll.status === 403 && selfReEnroll.json.error === 'device_revoked',
+  `HTTP ${selfReEnroll.status} ${selfReEnroll.json.error ?? ''} — a 200 means revocation can be undone by the device it revoked`,
 );
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : `\n${failures} CHECK(S) FAILED`);

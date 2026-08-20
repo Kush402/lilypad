@@ -23,7 +23,8 @@ import { devices } from '../db/schema.js';
  *    orphaned.
  */
 
-export type EnrollFailure = 'public_key_in_use' | 'device_owned_by_another_account';
+export type EnrollFailure =
+  'public_key_in_use' | 'device_owned_by_another_account' | 'device_revoked';
 
 export type EnrollResult = { ok: true; deviceId: string } | { ok: false; reason: EnrollFailure };
 
@@ -73,6 +74,22 @@ export interface EnrollInput {
   publicKey: string;
   name?: string | null;
   platform?: DevicePlatform | null;
+  /**
+   * When the credential authorising this enrollment was minted.
+   *
+   * Present only for the self-enrollment path, where the caller proves nothing
+   * but an account session. Enrolling clears `revoked_at`, so without this a
+   * device revoked sixty seconds ago could re-enroll itself with the access
+   * token it was already holding and be permanently back — the ten-minute
+   * token lag turning into an undone revocation.
+   *
+   * Absent for the approval path, and deliberately so: a desktop is restored by
+   * a DIFFERENT device approving its enrollment code, and that second device is
+   * the proof. Demanding freshness there would break the recovery it exists for
+   * without adding anything, since an attacker who holds the owner's phone has
+   * already won.
+   */
+  credentialIssuedAt?: Date | null;
 }
 
 export type DeviceAuthFailure = 'device_not_enrolled' | 'device_revoked';
@@ -117,6 +134,17 @@ export class DeviceRegistry {
     }
     if (byFingerprint && byFingerprint.userId !== null && byFingerprint.userId !== input.userId) {
       return { ok: false, reason: 'device_owned_by_another_account' };
+    }
+    // A revoked device may only come back on a credential minted AFTER it was
+    // revoked. `<=` rather than `<`: `iat` has one-second resolution, so a token
+    // stamped in the same second as the revocation is not provably later, and
+    // the tie goes to the person who pressed the button.
+    if (
+      byFingerprint?.revokedAt != null &&
+      input.credentialIssuedAt != null &&
+      input.credentialIssuedAt.getTime() <= byFingerprint.revokedAt.getTime()
+    ) {
+      return { ok: false, reason: 'device_revoked' };
     }
 
     const patch = {
