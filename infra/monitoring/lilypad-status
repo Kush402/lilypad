@@ -66,6 +66,40 @@ if [ -d "$offsite_dir" ]; then
   fi
 fi
 
+# Redis memory headroom and eviction count.
+#
+# This exists because of the fix that made it possible. Redis used to run with
+# `maxmemory 0` on a 952 MB box, so the failure mode was the OOM killer taking
+# whichever process had the largest RSS — usually Postgres. It now runs with a
+# 128 MB cap and `volatile-ttl`, which turns that crash into an eviction. That
+# is a much better failure, and a completely silent one: Redis holds pairing
+# tokens and live room-authorization records, so an eviction shows up to a
+# customer as a session that will not reconnect and to us as nothing at all.
+# `evictedKeys` is therefore the number that matters, not the memory percent —
+# any value above zero means somebody already lost something.
+redis_used=-1
+redis_max=-1
+redis_evicted=-1
+if command -v docker >/dev/null 2>&1; then
+  redis_name=$(sudo -n docker ps --filter 'name=redis' --format '{{.Names}}' 2>/dev/null | head -1 || true)
+  if [ -n "$redis_name" ]; then
+    # The password is only ever on the argv of a command running as root on this
+    # host; it is never printed, and the probe's whole output is the JSON below.
+    rpass=$(sudo -n docker inspect "$redis_name" --format '{{json .Config.Cmd}}' 2>/dev/null \
+      | tr ',' '\n' | grep -A1 -- '--requirepass' | tail -1 | tr -d '"[] ' || true)
+    if [ -n "$rpass" ]; then
+      info=$(sudo -n docker exec "$redis_name" redis-cli --no-auth-warning -a "$rpass" \
+        INFO memory 2>/dev/null || true)
+      stats=$(sudo -n docker exec "$redis_name" redis-cli --no-auth-warning -a "$rpass" \
+        INFO stats 2>/dev/null || true)
+      redis_used=$(printf '%s' "$info" | awk -F: '/^used_memory:/{gsub(/\r/,"");print $2}')
+      redis_max=$(printf '%s' "$info" | awk -F: '/^maxmemory:/{gsub(/\r/,"");print $2}')
+      redis_evicted=$(printf '%s' "$stats" | awk -F: '/^evicted_keys:/{gsub(/\r/,"");print $2}')
+    fi
+  fi
+fi
+: "${redis_used:=-1}" "${redis_max:=-1}" "${redis_evicted:=-1}"
+
 coturn="absent"
 if systemctl list-unit-files coturn.service >/dev/null 2>&1 && \
    systemctl cat coturn.service >/dev/null 2>&1; then
@@ -78,6 +112,7 @@ fi
 reboot_required=false
 [ -f /var/run/reboot-required ] && reboot_required=true
 
-printf '{"host":"%s","diskPercent":%s,"memPercent":%s,"load1":%s,"uptimeSeconds":%s,"containers":%s,"backupAgeSeconds":%s,"offsiteBackupAgeSeconds":%s,"coturn":"%s","rebootRequired":%s}\n' \
+printf '{"host":"%s","diskPercent":%s,"memPercent":%s,"load1":%s,"uptimeSeconds":%s,"containers":%s,"backupAgeSeconds":%s,"offsiteBackupAgeSeconds":%s,"coturn":"%s","rebootRequired":%s,"redisUsedBytes":%s,"redisMaxBytes":%s,"redisEvictedKeys":%s}\n' \
   "$(json_escape "$(hostname)")" "${disk_pct:-0}" "$mem_used_pct" "$load1" "$uptime_s" \
-  "$containers" "$backup_age" "$offsite_age" "$(json_escape "$coturn")" "$reboot_required"
+  "$containers" "$backup_age" "$offsite_age" "$(json_escape "$coturn")" "$reboot_required" \
+  "${redis_used:--1}" "${redis_max:--1}" "${redis_evicted:--1}"

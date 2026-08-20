@@ -50,7 +50,10 @@ find "$OUT" -name '.lilypad-*.partial' -mmin +60 -delete
 # more than a script that aborted — but it is loud, and the watchdog alerts
 # separately when the offsite copy goes stale.
 if [ -n "$OFFSITE_HOST" ] && [ -r "$OFFSITE_KEY" ]; then
-  if ssh -i "$OFFSITE_KEY" -o BatchMode=yes -o ConnectTimeout=20 \
+  # -T: the sink is a forced command reading one dump from stdin, and without
+  # it every run writes "Pseudo-terminal will not be allocated" into the log a
+  # human only ever reads while something is wrong.
+  if ssh -T -i "$OFFSITE_KEY" -o BatchMode=yes -o ConnectTimeout=20 \
        -o StrictHostKeyChecking=yes "$OFFSITE_HOST" < "$FINAL"; then
     echo "$(date -u +%FT%TZ) offsite: copied"
   else

@@ -30,6 +30,10 @@ const DISK_PERCENT = 88;
 const MEM_PERCENT = 92;
 /** Backups run nightly, so 36h means at least one has silently failed. */
 const BACKUP_MAX_AGE_S = 36 * 3600;
+/** Redis runs with a 128 MB cap and `volatile-ttl`. Crossing this means the
+ * next burst starts evicting, and an eviction here is a customer's session
+ * failing to reconnect — see the `redisEvictedKeys` alert below. */
+const REDIS_PERCENT = 75;
 
 const findings = [];
 const facts = {};
@@ -242,6 +246,26 @@ async function checkHosts() {
     if (s.rebootRequired) {
       alert('warning', `patches:${s.host}`, 'a reboot is pending for applied security updates',
         'The host is running the old kernel/libc. Schedule a reboot.');
+    }
+    // Redis went from "unlimited, and one day the OOM killer takes Postgres" to
+    // "capped, and one day it evicts". That is the better failure and the
+    // quieter one, so it needs an alarm bolted to it or the fix just moves the
+    // outage somewhere harder to see.
+    if (typeof s.redisEvictedKeys === 'number' && s.redisEvictedKeys > 0) {
+      alert('critical', `redis-evictions:${s.host}`,
+        `Redis has evicted ${s.redisEvictedKeys} keys`,
+        'Redis is at its 128 MB cap. Evicted keys are pairing tokens and live room-authorization records, so somebody is being told to pair again mid-session. Check for a flood of /devices/challenge or /pairing/create, then raise --maxmemory in infra/production/docker-compose.yml.');
+    }
+    if (typeof s.redisUsedBytes === 'number' && s.redisMaxBytes > 0) {
+      const pct = Math.round((s.redisUsedBytes / s.redisMaxBytes) * 100);
+      if (pct >= REDIS_PERCENT) {
+        alert('warning', `redis-memory:${s.host}`, `Redis is at ${pct}% of its cap`,
+          'Steady state is well under 2 MB, so this is either real growth or a flood. Check /metrics for the request rate before raising the cap.');
+      }
+    }
+    if (s.redisMaxBytes === 0) {
+      alert('warning', `redis-unbounded:${s.host}`, 'Redis is running with no maxmemory',
+        'An unbounded Redis on a 952 MB VM ends as an OOM kill of whatever has the largest RSS, which is Postgres. The compose file sets --maxmemory 128mb; this host is not running it.');
     }
   }
 }
