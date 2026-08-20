@@ -26,6 +26,7 @@ import {
   AccountDeviceService,
   createDrizzleAccountDeviceStore,
 } from '../services/accountDevices.js';
+import { RefreshTokenService, createDrizzleRefreshTokenStore } from '../auth/refreshTokens.js';
 import type { SignalingHub } from '../signaling/hub.js';
 import { log } from '../logging.js';
 
@@ -50,6 +51,7 @@ export async function deviceRoutes(
   const trust = new TrustService(createDrizzleTrustStore());
   const auditLog = new AuditLogService(createDrizzleAuditLogStore());
   const accountDevices = new AccountDeviceService(createDrizzleAccountDeviceStore());
+  const refreshTokens = new RefreshTokenService(createDrizzleRefreshTokenStore());
 
   /** One answer for "not yours" and "never existed" alike — a caller that can
    * tell them apart can enumerate other accounts' devices. */
@@ -94,10 +96,35 @@ export async function deviceRoutes(
   /**
    * Revoke a device — "I lost my laptop" / "sign this phone out".
    *
-   * Ends its live rooms immediately, including its presence room. Without
-   * that, a ten-minute access token would keep a stolen machine controllable
-   * for ten more minutes, which is exactly the window revocation exists to
-   * close.
+   * Three things have to happen, and for a while only the first two did.
+   *
+   * 1. `revoked_at` is set, so the device's key stops authenticating.
+   * 2. Its live rooms end immediately, including its presence room. Without
+   *    that, a ten-minute access token would keep a stolen machine
+   *    controllable for ten more minutes, which is exactly the window
+   *    revocation exists to close.
+   * 3. **Every refresh token on the account is revoked.** This is the one that
+   *    was missing, and without it revocation did not survive contact with the
+   *    threat it exists for. A stolen Mac holds an account refresh token in its
+   *    keychain; a stolen phone holds one wherever its client put it. Revoking
+   *    the device left that credential untouched, and an account session is
+   *    enough to call `POST /devices/enroll` — which resolves to
+   *    `DeviceRegistry.claim()`, and `claim()` writes `revoked_at: null`. The
+   *    revoked device could therefore re-enrol its own unchanged keypair and
+   *    hand itself a working device token again. Verified against production
+   *    before the fix: revoke returned 200, `/devices/token` correctly returned
+   *    403 `device_revoked`, and then re-enrolment returned 200 and
+   *    `/devices/token` returned 200 — fully restored, by the machine that had
+   *    just been revoked.
+   *
+   * Revoking the whole account's sessions rather than only this device's is
+   * deliberate: `refresh_tokens` has no device column to scope by, and it
+   * could not have one — a client signs in before it enrols, so at issue time
+   * there is no device to bind to. Signing out everywhere is also the safe
+   * direction and the ordinary meaning of "I lost my laptop". It costs the
+   * user's other machines nothing today, because nothing in either client ever
+   * presents a refresh token: the desktop reads its stored session only to
+   * render who is signed in, and the phone keeps no refresh token at all.
    */
   app.delete(
     '/devices/:deviceId',
@@ -108,6 +135,7 @@ export async function deviceRoutes(
       const device = await deviceOwnershipById(params.data.deviceId);
       if (!manageDevice(actorOf(req), device).allow) return notFound(reply);
 
+      const userId = deviceActorOf(req).userId;
       const revoked = await accountDevices.revoke(params.data.deviceId);
       if (revoked) {
         const ended = hub.endRoomsForDevice(revoked.fingerprint, 'revoked');
@@ -117,10 +145,14 @@ export async function deviceRoutes(
             'device revoke ended live rooms',
           );
         }
+        // Awaited, not fire-and-forget: a revoke that answers 200 while the
+        // credential that undoes it is still live would be worse than one that
+        // fails outright, because the user would believe it worked.
+        await refreshTokens.revokeUser(userId);
       }
       void auditLog
         .sessionEnd({
-          userId: deviceActorOf(req).userId,
+          userId,
           metadata: { event: 'device_revoked', deviceId: params.data.deviceId },
         })
         .catch((err) => log.audit.error({ err }, 'failed to write device_revoked audit log'));

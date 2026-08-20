@@ -14,31 +14,49 @@
 //! `kind: "desktop"` outright. That refusal is what makes it safe for a desktop
 //! to hold an account token at all.
 //!
-//! **What is stored is the refresh token, and nothing else.** Access tokens
-//! live ten minutes and are re-minted from it; storing one would be storing a
-//! copy of something that expires anyway. The refresh token is rotating and
-//! single-use, so a stolen copy is detectable — presenting a retired one
-//! revokes the whole family, which is the property that makes it storable in
-//! the first place.
+//! **No credential is stored here — only a label.** This module keeps the
+//! signed-in email and user id so the dashboard can say who is signed in
+//! without a network round trip, and nothing else.
+//!
+//! It used to store the account's refresh token, on the reasoning that access
+//! tokens expire and a rotating single-use refresh token is detectable if
+//! stolen. Both halves of that were true and the conclusion was still wrong,
+//! for a reason the comment itself hid: **nothing here ever presented it.**
+//! There is no call to `/auth/refresh` in this crate, because the desktop acts
+//! as the DEVICE for every request it makes and never as the account. So the
+//! token's single-use property could never fire — it sat in the login keychain
+//! as a plain thirty-day bearer credential, doing nothing, on the one machine
+//! whose theft is the whole reason "revoke this device" exists.
+//!
+//! It was worth more to an attacker than to us: an account session is enough
+//! to call `/devices/enroll`, and enrolment clears `revoked_at`, so whoever
+//! held it could undo the revocation of the very laptop they had stolen.
+//! Storing nothing is the fix; the backend closed the other half by revoking
+//! the account's refresh tokens whenever a device is revoked.
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
 const KEYCHAIN_SERVICE: &str = "com.takedia.lilypad.desktop.account";
+// Kept at its original name on purpose. Renaming it would leave the old entry
+// — the one that still holds a real refresh token — sitting in the keychain
+// untouched forever. Reusing the name means the next sign-in overwrites that
+// secret with a blob that has none.
 const KEYCHAIN_ACCOUNT: &str = "refresh-token";
 
 const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
-/// What the backend returns from every sign-in and refresh.
+/// What the backend returns from every sign-in.
+///
+/// Only the user id is captured. `accessToken`, `refreshToken`, and
+/// `expiresInSeconds` are all deliberately dropped on the floor: nothing on the
+/// desktop acts as the ACCOUNT — every call it makes is authorised by the
+/// device key — so each of them would be a credential with no caller, and a
+/// credential with no caller is only ever a liability.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct AuthSession {
-    refresh_token: String,
     user_id: String,
-    // `accessToken` and `expiresInSeconds` are deliberately not captured.
-    // Nothing on the desktop acts as the ACCOUNT — every call it makes is
-    // authorised by the device key — so a ten-minute account token would be a
-    // credential with no user.
 }
 
 /// What the UI needs to render the account section.
@@ -50,12 +68,15 @@ pub struct AccountState {
     pub user_id: Option<String>,
 }
 
-/// The stored half. The email is kept alongside the token purely so the UI can
-/// say who is signed in without a network round trip — it is a label, and
-/// nothing authorises on it.
+/// The stored half: two labels, no secret. Nothing authorises on either of
+/// them, and the app is no more capable for having them than a sticky note is.
+///
+/// Older installs have a `refreshToken` field here from before this changed.
+/// Serde ignores unknown fields, so those entries still read correctly, and the
+/// stale token stops mattering the first time anything revokes a device — which
+/// now revokes the account's refresh tokens with it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct StoredAccount {
-    refresh_token: String,
     email: String,
     user_id: String,
 }
@@ -87,7 +108,6 @@ impl Account {
 
     fn store(session: &AuthSession, email: &str) -> Result<()> {
         let stored = StoredAccount {
-            refresh_token: session.refresh_token.clone(),
             email: email.to_owned(),
             user_id: session.user_id.clone(),
         };
@@ -231,6 +251,43 @@ impl Account {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_stored_session_carries_no_credential() {
+        // The regression this guards: a thirty-day account refresh token used
+        // to live in this blob, and nothing ever presented it. An account
+        // session is enough to call `/devices/enroll`, and enrolment clears
+        // `revoked_at` — so whoever pulled it out of a stolen laptop's keychain
+        // could undo the revocation of that same laptop.
+        let stored = StoredAccount {
+            email: "someone@example.com".to_owned(),
+            user_id: "user-1".to_owned(),
+        };
+        let json = serde_json::to_string(&stored).expect("serialises");
+        assert!(
+            !json.contains("refresh") && !json.contains("token"),
+            "the stored account session must hold no credential, got {json}"
+        );
+    }
+
+    #[test]
+    fn an_older_entry_that_still_has_a_token_reads_back_as_a_label() {
+        // Installs from before the field was removed still have it. Their entry
+        // must keep rendering "signed in as" rather than failing to parse and
+        // silently signing the user out.
+        let legacy = r#"{"refresh_token":"leftover","email":"a@b.co","user_id":"user-1"}"#;
+        let parsed: StoredAccount = serde_json::from_str(legacy).expect("legacy entry still reads");
+        assert_eq!(parsed.email, "a@b.co");
+        assert_eq!(parsed.user_id, "user-1");
+    }
+
+    #[test]
+    fn a_sign_in_response_is_read_without_capturing_its_tokens() {
+        let body =
+            r#"{"accessToken":"a","refreshToken":"r","expiresInSeconds":600,"userId":"user-1"}"#;
+        let session: AuthSession = serde_json::from_str(body).expect("parses");
+        assert_eq!(session.user_id, "user-1");
+    }
 
     #[test]
     fn state_is_signed_out_when_nothing_is_stored() {
