@@ -937,6 +937,25 @@ launch, and confirm the bubble renders — `index.html` is an empty
 and styles applied under the policy. `img-src data:` is load-bearing; the
 pairing QR is a data URL.
 
+### There is no way for a customer to delete their account
+
+Found while cleaning up after this audit's own probes: `pnpm e2e:audit` leaves
+one account behind per run, and the only way to remove it is SQL on the host.
+There is no account-deletion route — not for the test, and not for a customer.
+
+The data model already supports it. Deleting a user cascades correctly, verified
+repeatedly against production: the last cleanup removed 6 accounts and took 8
+devices, 2 pairs and 4 refresh tokens with them, leaving 0 orphans. What is
+missing is the route and the decisions around it — whether it demands the
+password again, what happens to `audit_logs` rows that reference the account
+(they currently survive, holding IP addresses and attempted email addresses),
+and whether a linked Mac is told.
+
+Those are product and policy decisions, not bugs, so nothing has been built or
+invented here. It is recorded because a product that stores IP addresses and
+grants screen access should be able to answer "delete everything about me", and
+today it cannot.
+
 ### Backups: the schedule had never actually run offsite
 
 The off-host copy existed, but every copy in it had been made by hand. The 03:17

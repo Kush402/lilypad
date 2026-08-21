@@ -17,6 +17,15 @@
  * Rate limits are real and shared per IP (signup is 5/minute), so running this
  * repeatedly within a minute WILL produce 429s. That is the product working,
  * not a failure — wait out the window and re-run.
+ *
+ * **It leaves an account behind, and there is no way to remove it through the
+ * API.** Every run signs up `audit-<random>@example.test` and there is no
+ * account-deletion route in the product — for this script or for a customer.
+ * Against a throwaway backend that costs nothing. Against production it means
+ * one permanent row per run, removable only with SQL on the host, so prefer a
+ * local backend and treat a production run as something you clean up after.
+ * `.test` is reserved by RFC 6761, so the address can never collide with a
+ * real one, which is what makes the cleanup query safe to write.
  */
 import { randomBytes, generateKeyPairSync, sign as nodeSign } from 'node:crypto';
 
