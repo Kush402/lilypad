@@ -16,6 +16,8 @@ import type { AccountDevice } from '@lilypad/protocol';
 import type { RootStackParamList } from '../types';
 import { theme } from '../theme';
 import {
+  AccountDeleteConfirmationError,
+  deleteAccount,
   listAccountDevices,
   renameAccountDevice,
   revokeAccountDevice,
@@ -61,6 +63,12 @@ export function AccountDevicesScreen({ route, navigation }: Props): React.JSX.El
   const [renaming, setRenaming] = useState<string | null>(null);
   const [draftName, setDraftName] = useState('');
   const [busy, setBusy] = useState<string | null>(null);
+  // The delete flow, collapsed until asked for. This is the only irreversible
+  // thing in the app, and a button that is always on screen is a button that
+  // eventually gets pressed by accident.
+  const [deleting, setDeleting] = useState(false);
+  const [confirmEmail, setConfirmEmail] = useState('');
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -80,6 +88,27 @@ export function AccountDevicesScreen({ route, navigation }: Props): React.JSX.El
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  const confirmDeleteAccount = useCallback(async () => {
+    setBusy('account');
+    setDeleteError(null);
+    try {
+      await deleteAccount(apiBaseUrl, confirmEmail.trim());
+      // The account is gone, so every screen behind this one is about data
+      // that no longer exists. Sign-in is the only honest destination.
+      navigation.replace('SignIn', { apiBaseUrl });
+    } catch (err) {
+      // A mistyped address keeps the form open — it is a typo, not a failure
+      // the user can do nothing about.
+      setDeleteError(
+        err instanceof AccountDeleteConfirmationError || err instanceof Error
+          ? err.message
+          : 'Could not delete your account.',
+      );
+    } finally {
+      setBusy(null);
+    }
+  }, [apiBaseUrl, confirmEmail, navigation]);
 
   const commitRename = useCallback(
     async (device: AccountDevice) => {
@@ -222,6 +251,66 @@ export function AccountDevicesScreen({ route, navigation }: Props): React.JSX.El
       />
 
       {error !== null ? <Text style={styles.error}>{error}</Text> : null}
+
+      {deleting ? (
+        <View style={styles.deletePanel} testID="delete-account-panel">
+          <Text style={styles.deleteWarning}>
+            This permanently deletes your account, every device on it, and every pairing between
+            them. Your Macs stay installed but stop being yours. This cannot be undone.
+          </Text>
+          <TextInput
+            testID="delete-confirm-email"
+            style={styles.input}
+            placeholder="Type your account email to confirm"
+            placeholderTextColor={theme.muted}
+            autoCapitalize="none"
+            autoCorrect={false}
+            keyboardType="email-address"
+            value={confirmEmail}
+            onChangeText={setConfirmEmail}
+          />
+          {deleteError !== null ? <Text style={styles.error}>{deleteError}</Text> : null}
+          <View style={styles.cardActions}>
+            <Pressable
+              testID="delete-confirm"
+              disabled={busy !== null || confirmEmail.trim().length === 0}
+              onPress={() => void confirmDeleteAccount()}
+            >
+              <Text
+                style={[
+                  styles.action,
+                  styles.danger,
+                  (busy !== null || confirmEmail.trim().length === 0) && styles.actionDisabled,
+                ]}
+              >
+                {busy === 'account' ? 'Deleting…' : 'Permanently delete'}
+              </Text>
+            </Pressable>
+            <Pressable
+              testID="delete-cancel"
+              disabled={busy !== null}
+              onPress={() => {
+                setDeleting(false);
+                setConfirmEmail('');
+                setDeleteError(null);
+              }}
+            >
+              <Text style={styles.action}>Cancel</Text>
+            </Pressable>
+          </View>
+        </View>
+      ) : (
+        <Pressable
+          testID="delete-account"
+          style={styles.deleteEntry}
+          onPress={() => {
+            setDeleting(true);
+            setDeleteError(null);
+          }}
+        >
+          <Text style={[styles.action, styles.danger]}>Delete account</Text>
+        </Pressable>
+      )}
     </View>
   );
 }
@@ -240,7 +329,16 @@ const styles = StyleSheet.create({
   cardMeta: { color: theme.muted, fontSize: 13 },
   cardActions: { flexDirection: 'row', gap: 20 },
   action: { color: theme.accent, fontSize: 14, fontWeight: '600' },
+  actionDisabled: { opacity: 0.45 },
   danger: { color: theme.danger },
+  deleteEntry: { paddingVertical: 14, alignItems: 'center' },
+  deletePanel: {
+    gap: 12,
+    paddingTop: 14,
+    borderTopColor: theme.line,
+    borderTopWidth: StyleSheet.hairlineWidth,
+  },
+  deleteWarning: { color: theme.danger, fontSize: 13, lineHeight: 18 },
   input: {
     color: theme.ink,
     fontSize: 16,

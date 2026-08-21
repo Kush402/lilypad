@@ -86,3 +86,32 @@ export async function revokeAccountDevice(apiBaseUrl: string, deviceId: string):
   const res = await request(apiBaseUrl, `/devices/${deviceId}`, { method: 'DELETE' });
   if (!res.ok) throw new AccountDeviceError('Could not remove that device.');
 }
+
+/** A typed address that does not name this account. Its own type so the screen
+ * can keep the form open and let the user fix a typo, rather than treating it
+ * like a failure it can do nothing about. */
+export class AccountDeleteConfirmationError extends AccountDeviceError {}
+
+/**
+ * Delete the account, permanently. Every device, every pairing, every session.
+ *
+ * The typed address is the confirmation, and it is the ONLY thing asked for —
+ * unlike the Mac, which also asks for the password. The difference is not
+ * inconsistency: the Mac deliberately stores no account credential, so it has
+ * to re-authenticate to act as the account at all, while this phone is holding
+ * a hardware-backed Ed25519 device key that already proves who it is. Asking
+ * for a password here would also lock out every account that has never had one
+ * — Apple, Google and magic-link sign-ins all reach this screen.
+ */
+export async function deleteAccount(apiBaseUrl: string, confirmEmail: string): Promise<void> {
+  const res = await request(apiBaseUrl, '/account', {
+    method: 'DELETE',
+    body: { confirmEmail },
+  });
+  if (res.status === 400) {
+    throw new AccountDeleteConfirmationError(
+      'That is not the email address on this account. Type it exactly as you signed up.',
+    );
+  }
+  if (!res.ok) throw new AccountDeviceError('Could not delete your account. Try again.');
+}

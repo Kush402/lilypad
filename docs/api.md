@@ -208,6 +208,14 @@ On the Mac this is **Your account → Delete account**, which asks for the
 password and for the address to be typed out. The desktop keeps no account
 credential at all, so a stolen laptop cannot reach this route on its own.
 
+On the phone it is **Your devices → Delete account**, which asks only for the
+address. That difference is deliberate rather than inconsistent: the phone holds
+a hardware-backed Ed25519 device key that already proves who it is, and asking
+for a password there would lock out every account that has never had one — Apple,
+Google and magic-link sign-ins all reach that screen. The phone also matters
+more than the Mac here, because it is the device a user still has when the Mac
+is the thing that was lost.
+
 Revoking a device also revokes the account's refresh tokens, and re-enrolling a
 revoked device requires a credential minted **after** the revocation
 (`403 { "error": "device_revoked" }` from `/devices/enroll` otherwise). Together
