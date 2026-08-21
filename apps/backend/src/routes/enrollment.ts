@@ -155,9 +155,23 @@ export async function enrollmentRoutes(app: FastifyInstance): Promise<void> {
 
       const authenticated = await registry.authenticate(publicKey);
       if (!authenticated.ok) {
-        void auditLog
-          .loginFailed({ ip: req.ip, metadata: { reason: authenticated.reason } })
-          .catch((err) => log.audit.error({ err }, 'failed to write login_failed audit log'));
+        // Only `device_revoked` is a security event. `device_not_enrolled` is
+        // the ordinary state of every laptop between install and linking, and
+        // this route is how the desktop LEARNS it has been linked — the
+        // comment on the approve route says so: "the desktop learns it
+        // succeeded by its next /devices/token call starting to work". So the
+        // product polls it on purpose, and auditing every poll writes a
+        // `login_failed` row for a machine doing exactly what it should.
+        //
+        // Measured on the 0.1.3 customer run: 120 `login_failed` rows in the
+        // three minutes between first launch and linking, all of them normal.
+        // A revoked device coming back — the one thing here worth alerting on
+        // — was indistinguishable from that noise.
+        if (authenticated.reason === 'device_revoked') {
+          void auditLog
+            .loginFailed({ ip: req.ip, metadata: { reason: authenticated.reason } })
+            .catch((err) => log.audit.error({ err }, 'failed to write login_failed audit log'));
+        }
         // 403 rather than 401: the caller's credential is valid, it is the
         // device that is not allowed — retrying with the same key will not
         // help, and a client that cannot tell these apart retries forever.
@@ -289,9 +303,18 @@ export async function enrollmentRoutes(app: FastifyInstance): Promise<void> {
       // protocol to specify. The PHONE, though, needs the connect secret it
       // will present later, and this is its one delivery: it is never stored
       // in plaintext server-side and cannot be re-read.
+      //
+      // It also needs the laptop's WIRE id, and for a while it was handed the
+      // uuid instead. `deviceId` here is `devices.id`; `/connect/request` and
+      // `/devices/unpair` resolve `devices.fingerprint`. The phone stored the
+      // uuid as the wire id, so both routes looked for a device that could not
+      // exist: connect answered `404 not_trusted` about a live pair, and
+      // Forget answered 200 while severing nothing. Both are returned now,
+      // under names that say which is which.
       return reply.code(200).send({
         ok: true,
         deviceId: enrolled.deviceId,
+        desktopDeviceId: record.fingerprint,
         name: record.name,
         platform: record.platform,
         pairSecret,

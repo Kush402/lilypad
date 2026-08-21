@@ -100,7 +100,24 @@ jobs:
             echo "signing=true" >> "$GITHUB_OUTPUT"
           else
             echo "signing=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::APPLE_CERTIFICATE not set — building UNSIGNED. macOS will warn on first open, and permissions granted to a previous version will not carry over (TCC binds a grant to the exact code signature)."
+            # Ad-hoc, because the alternative is not "unsigned but fine" — it is
+            # a product that cannot work. Without ANY signature the bundle has
+            # no Info.plist binding and no sealed resources, so macOS has no
+            # code identity to bind a TCC grant to. Measured on the 0.1.3 DMG:
+            # the user granted Screen Recording and Accessibility, TCC recorded
+            # both as allowed, and the requirement it stored named two cdhashes
+            # that were not the installed binary's — so CGPreflightScreenCapture
+            # Access() and AXIsProcessTrusted() returned false forever, through
+            # any number of restarts, while System Settings showed the switches
+            # on. The x86_64 slice was not signed at all.
+            #
+            # `-` is Tauri's documented ad-hoc pseudo-identity. It seals the
+            # bundle and covers both slices, which is what TCC needs. It does
+            # NOT fix Gatekeeper, and the cdhash changes every build, so a
+            # customer must re-grant after each update — only a Developer ID
+            # certificate gives a requirement stable across versions.
+            echo "APPLE_SIGNING_IDENTITY=-" >> "$GITHUB_ENV"
+            echo "::warning::APPLE_CERTIFICATE not set — signing AD-HOC. macOS will warn on first open, and permissions must be re-granted after every update (TCC binds a grant to the exact code signature)."
           fi
           if [ -n "${APPLE_API_KEY_P8:-}" ]; then
             echo "notarize=true" >> "$GITHUB_OUTPUT"
@@ -147,3 +164,49 @@ jobs:
           prerelease: false
           # Universal binary so one artifact covers Intel + Apple Silicon.
           args: --target universal-apple-darwin
+
+      # The one property that decides whether the product can work at all on a
+      # customer's Mac, checked on the artifact rather than assumed from the
+      # configuration above.
+      #
+      # macOS binds a TCC grant to a code requirement. A bundle with no
+      # signature has no requirement to bind to, so Screen Recording and
+      # Accessibility can be granted, recorded as allowed, shown as on in
+      # System Settings — and still read as denied by the running process,
+      # forever. That shipped in 0.1.3. Publishing an unsigned build again
+      # would ship a remote-control app that can neither see the screen nor
+      # move the mouse, and nothing downstream would notice.
+      - name: Verify the app is signed at all
+        run: |
+          set -euo pipefail
+          app="apps/desktop/src-tauri/target/universal-apple-darwin/release/bundle/macos/Lilypad.app"
+          [ -d "$app" ] || { echo "::error::no .app at $app — nothing was bundled"; exit 1; }
+
+          if ! codesign --verify --deep --strict "$app" 2>&1; then
+            echo "::error::${app} is not validly signed. TCC cannot bind a permission grant to it, so Screen Recording and Accessibility will read as denied no matter how often the customer grants them."
+            exit 1
+          fi
+
+          details=$(codesign -dvvv "$app" 2>&1)
+          echo "$details"
+          # Both are absent on a linker-only ad-hoc signature, which is what an
+          # unsigned bundle reports, and both are what a grant is bound through.
+          case "$details" in
+            *"Info.plist=not bound"*)
+              echo "::error::the Info.plist is not sealed into the signature — the bundle identifier TCC keys on is not bound to this code."
+              exit 1 ;;
+          esac
+          case "$details" in
+            *"Sealed Resources=none"*)
+              echo "::error::no sealed resources — the bundle is not signed as a bundle, only its inner Mach-O is."
+              exit 1 ;;
+          esac
+
+          # Both slices, because a universal binary with one unsigned slice is
+          # a build that works on one architecture and not the other.
+          for arch in x86_64 arm64; do
+            codesign -dvvv --arch "$arch" "$app" >/dev/null 2>&1 \
+              || { echo "::error::the $arch slice is not signed"; exit 1; }
+          done
+
+          echo "signed: $(codesign -d -r- "$app" 2>&1 | tail -1)"

@@ -149,12 +149,22 @@ export function ScannerScreen({ navigation }: Props) {
       // The connect secret is delivered exactly once and is never stored in
       // plaintext server-side. Persisting the pair here is what turns "this
       // laptop is mine" into "and I can reach it without another QR".
-      void upsertPair({
-        desktopDeviceId: res.deviceId,
-        name: res.name ?? payload.deviceName,
-        apiBaseUrl: payload.apiBaseUrl,
-        connectSecret: res.pairSecret,
-      }).catch(() => {});
+      //
+      // `desktopDeviceId`, NOT `deviceId`: the latter is the backend's
+      // internal `devices.id` uuid, and storing it here as the wire id is
+      // what made every later Connect answer "this laptop hasn't trusted this
+      // phone" about a pairing that was live, and every Forget silently sever
+      // nothing. An older backend omits the field; without it the laptop is
+      // linked but not rememberable, so say so rather than store a key that
+      // rings nothing.
+      if (res.desktopDeviceId) {
+        void upsertPair({
+          desktopDeviceId: res.desktopDeviceId,
+          name: res.name ?? payload.deviceName,
+          apiBaseUrl: payload.apiBaseUrl,
+          connectSecret: res.pairSecret,
+        }).catch(() => {});
+      }
       setLinked(res.name ?? payload.deviceName ?? 'That computer');
       setConnecting(false);
     } catch (e) {

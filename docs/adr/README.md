@@ -46,3 +46,4 @@ the old one `Superseded by ADR-NNNN`.
 | [0011](0011-design-tokens.md)                     | One palette, three surfaces                                | Accepted                                              |
 | [0012](0012-password-authentication.md)           | Email + password sign-in                                   | Accepted                                              |
 | [0013](0013-connectivity-is-the-paid-boundary.md) | Connectivity is the paid boundary                          | Accepted                                              |
+| [0014](0014-device-identifiers-and-lifecycles.md) | Two device identifiers, four lifecycles                    | Accepted                                              |

@@ -83,9 +83,12 @@ async function buildApp(): Promise<FastifyInstance> {
 const routes = [
   {
     name: 'GET /devices/pairs',
-    request: { method: 'GET' as const, url: '/devices/pairs?desktopDeviceId=laptop-fingerprint' },
+    request: {
+      method: 'GET' as const,
+      url: '/devices/pairs?desktopDeviceId=desktop-laptop-fingerprint',
+    },
     resolves: 'device' as const,
-    named: ['desktop', 'laptop-fingerprint'],
+    named: ['desktop', 'desktop-laptop-fingerprint'],
   },
   {
     name: 'PATCH /devices/pairs/:pairId',
@@ -108,10 +111,13 @@ const routes = [
     request: {
       method: 'POST' as const,
       url: '/devices/unpair',
-      payload: { desktopDeviceId: 'laptop-fingerprint', mobileDeviceId: 'phone-fingerprint' },
+      payload: {
+        desktopDeviceId: 'desktop-laptop-fingerprint',
+        mobileDeviceId: 'mobile-phone-fingerprint',
+      },
     },
     resolves: 'device' as const,
-    named: ['mobile', 'phone-fingerprint'],
+    named: ['mobile', 'mobile-phone-fingerprint'],
   },
   {
     name: 'POST /connect/request',
@@ -119,23 +125,27 @@ const routes = [
       method: 'POST' as const,
       url: '/connect/request',
       payload: {
-        desktopDeviceId: 'laptop-fingerprint',
-        mobileDeviceId: 'phone-fingerprint',
+        desktopDeviceId: 'desktop-laptop-fingerprint',
+        mobileDeviceId: 'mobile-phone-fingerprint',
         mobileDeviceName: 'a phone',
       },
     },
     resolves: 'device' as const,
-    named: ['mobile', 'phone-fingerprint'],
+    named: ['mobile', 'mobile-phone-fingerprint'],
   },
   {
     name: 'POST /pairing/create',
     request: {
       method: 'POST' as const,
       url: '/pairing/create',
-      payload: { deviceId: 'laptop-fingerprint', deviceName: 'a laptop', platform: 'macos' },
+      payload: {
+        deviceId: 'desktop-laptop-fingerprint',
+        deviceName: 'a laptop',
+        platform: 'macos',
+      },
     },
     resolves: 'device' as const,
-    named: ['desktop', 'laptop-fingerprint'],
+    named: ['desktop', 'desktop-laptop-fingerprint'],
   },
   {
     name: 'POST /pairing/redeem',
@@ -144,13 +154,13 @@ const routes = [
       url: '/pairing/redeem',
       payload: {
         token: 'a'.repeat(32),
-        deviceId: 'phone-fingerprint',
+        deviceId: 'mobile-phone-fingerprint',
         deviceName: 'a phone',
         platform: 'ios',
       },
     },
     resolves: 'device' as const,
-    named: ['mobile', 'phone-fingerprint'],
+    named: ['mobile', 'mobile-phone-fingerprint'],
   },
 ];
 
@@ -293,8 +303,8 @@ describe('P2 account-device route authorization', () => {
       method: 'POST',
       url: '/connect/request',
       payload: {
-        desktopDeviceId: 'laptop-fingerprint',
-        mobileDeviceId: 'phone-fingerprint',
+        desktopDeviceId: 'desktop-laptop-fingerprint',
+        mobileDeviceId: 'mobile-phone-fingerprint',
         mobileDeviceName: 'a phone',
       },
     });

@@ -267,7 +267,11 @@ describe('ScannerScreen — linking a computer to an account', () => {
   it('stores the one-time connect secret so the computer is reachable, not merely owned', async () => {
     approveDesktopEnrollment.mockResolvedValue({
       ok: true,
-      deviceId: 'desktop-uuid',
+      // The two ids the backend returns, and they are NOT interchangeable:
+      // `deviceId` is `devices.id`, an internal uuid; `desktopDeviceId` is
+      // `devices.fingerprint`, the wire id `/connect/request` resolves.
+      deviceId: '3c927336-81f0-4564-b7d6-1fe58e053795',
+      desktopDeviceId: 'desktop-b31d4eed-d318-4e37-ba08-9a1f76349290',
       name: 'MacBook Pro',
       platform: 'macos',
       pairSecret: 'a-one-time-secret',
@@ -282,12 +286,37 @@ describe('ScannerScreen — linking a computer to an account', () => {
       'http://192.168.1.50:4000',
       'c'.repeat(24),
     );
+    // Storing the uuid here is the regression: every later Connect then said
+    // "this laptop hasn't trusted this phone" about a live pairing, and every
+    // Forget answered ok while severing nothing. The old fixture hid it by
+    // calling the uuid `'desktop-uuid'`, which reads like a wire id.
     expect(upsertPair).toHaveBeenCalledWith(
       expect.objectContaining({
-        desktopDeviceId: 'desktop-uuid',
+        desktopDeviceId: 'desktop-b31d4eed-d318-4e37-ba08-9a1f76349290',
         connectSecret: 'a-one-time-secret',
       }),
     );
+  });
+
+  it('remembers nothing rather than a key that rings nothing', async () => {
+    // An older backend omits `desktopDeviceId`. The laptop is still linked —
+    // that is the account's business and already done — but this phone has no
+    // id it could ring, and storing the uuid to fill the gap is precisely the
+    // bug above.
+    approveDesktopEnrollment.mockResolvedValue({
+      ok: true,
+      deviceId: '3c927336-81f0-4564-b7d6-1fe58e053795',
+      name: 'MacBook Pro',
+      platform: 'macos',
+      pairSecret: 'a-one-time-secret',
+    });
+
+    renderScanner();
+    scan(LINK_QR);
+    fireEvent.press(screen.getByText('Add computer'));
+
+    await waitFor(() => expect(screen.getByTestId('link-done')).toBeTruthy());
+    expect(upsertPair).not.toHaveBeenCalled();
   });
 
   // Linking is not connecting. Owning a computer and choosing to control it
@@ -295,7 +324,7 @@ describe('ScannerScreen — linking a computer to an account', () => {
   it('does not start a session on success', async () => {
     approveDesktopEnrollment.mockResolvedValue({
       ok: true,
-      deviceId: 'desktop-uuid',
+      deviceId: '3c927336-81f0-4564-b7d6-1fe58e053795',
       name: 'MacBook Pro',
       platform: 'macos',
       pairSecret: 's',

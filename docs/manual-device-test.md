@@ -181,17 +181,17 @@ the source:
 > device key is the one that matters most: the Mac would rejoin its old identity
 > and the pairing steps would not be testing what they claim to.
 
-| #   | Do                                                                  | Expect                                                                                                                                                      |
-| --- | ------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1.1 | Open <https://lilypadhome.takedia.com>, then **Download for macOS** | The site serves `Lilypad.dmg` from its own `/download/` path — 20 MB, universal (`x86_64 arm64`), v0.1.3, built from `main`. No GitHub account, no sign-in. |
-| 1.2 | Double-click the DMG                                                | It mounts and shows `Lilypad.app` next to an Applications alias.                                                                                            |
-| 1.3 | Drag Lilypad to Applications                                        | Copies without error.                                                                                                                                       |
-| 1.4 | Double-click Lilypad in Applications                                | **The build is unsigned, so macOS refuses it**: _"Lilypad" cannot be opened because the developer cannot be verified._ This is correct for this build.      |
-| 1.5 | Right-click Lilypad → **Open** → **Open**                           | It launches. (Or System Settings → Privacy & Security → **Open Anyway**.)                                                                                   |
-| 1.6 | Look at the screen                                                  | A small green **bubble** floats near the top-left.                                                                                                          |
-| 1.7 | Look at the menu bar                                                | A Lilypad **tray icon**, with: Open Dashboard, Show QR / Pair, Approve, Deny, Disconnect, ⛔ Panic disconnect, Diagnostics…                                 |
-| 1.8 | Leave it running for 10 minutes while you use the Mac normally      | No crash, no beachball, no runaway CPU (check Activity Monitor: idle should be low single-digit %).                                                         |
-| 1.9 | Tray → **Diagnostics…**                                             | A window opens showing Health, Last connection, and `backend: https://api.takedia.com`. **If the backend is anything else, stop and report it.**            |
+| #   | Do                                                                  | Expect                                                                                                                                                                                            |
+| --- | ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1.1 | Open <https://lilypadhome.takedia.com>, then **Download for macOS** | The site serves `Lilypad.dmg` from its own `/download/` path — 20 MB, universal (`x86_64 arm64`), v0.1.3, built from `main`. No GitHub account, no sign-in.                                       |
+| 1.2 | Double-click the DMG                                                | It mounts and shows `Lilypad.app` next to an Applications alias.                                                                                                                                  |
+| 1.3 | Drag Lilypad to Applications                                        | Copies without error.                                                                                                                                                                             |
+| 1.4 | Double-click Lilypad in Applications                                | **The build is ad-hoc signed, not notarized, so macOS refuses it**: _"Lilypad" cannot be opened because the developer cannot be verified._ Correct for this build; right-click → Open to proceed. |
+| 1.5 | Right-click Lilypad → **Open** → **Open**                           | It launches. (Or System Settings → Privacy & Security → **Open Anyway**.)                                                                                                                         |
+| 1.6 | Look at the screen                                                  | A small green **bubble** floats near the top-left.                                                                                                                                                |
+| 1.7 | Look at the menu bar                                                | A Lilypad **tray icon**, with: Open Dashboard, Show QR / Pair, Approve, Deny, Disconnect, ⛔ Panic disconnect, Diagnostics…                                                                       |
+| 1.8 | Leave it running for 10 minutes while you use the Mac normally      | No crash, no beachball, no runaway CPU (check Activity Monitor: idle should be low single-digit %).                                                                                               |
+| 1.9 | Tray → **Diagnostics…**                                             | A window opens showing Health, Last connection, and `backend: https://api.takedia.com`. **If the backend is anything else, stop and report it.**                                                  |
 
 > **Signed builds behave differently at 1.4/1.5.** A Developer-ID-signed,
 > notarized build opens on the first double-click with no warning at all. Until
@@ -208,15 +208,40 @@ the source:
 | 2.5 | System Settings → Privacy & Security → Local Network                | Lilypad is listed and enabled.                                                                                                                  |
 
 macOS binds a permission grant to the exact code signature of the app that
-asked for it. Three consequences, all expected:
+asked for it. What follows from that, measured rather than assumed:
 
-- This unsigned build's grants are tied to **this exact copy**. Replacing
-  `Lilypad.app` with a new unsigned build invalidates them, and every
-  permission has to be granted again.
-- Moving to a signed build invalidates them once more, for the same reason.
-- After that, signed build → signed build **keeps** them, as long as the
-  signing identity does not change. Verifying this is step §9, and it cannot be
-  done until signed builds exist.
+- **A bundle with no signature cannot hold a grant at all.** 0.1.3 shipped
+  that way — no `_CodeSignature`, `Info.plist=not bound`, `Sealed
+Resources=none`, and an entirely unsigned x86_64 slice. The customer granted
+  both permissions, TCC recorded both as allowed, System Settings showed both
+  switches on, and `CGPreflightScreenCaptureAccess()` / `AXIsProcessTrusted()`
+  returned false through every restart. The requirement TCC had stored named
+  two cdhashes; the installed binary's was neither. Restarting cannot fix this,
+  because a restart is not what is broken.
+- **Builds from 0.1.4 on are ad-hoc signed**, which seals the bundle and gives
+  TCC something to bind to. The release workflow fails rather than publishing
+  a build that is not.
+- **An ad-hoc cdhash changes every build**, so replacing `Lilypad.app` with a
+  new version invalidates both grants and they must be granted again. Expected
+  until a Developer ID certificate exists.
+- Moving to a Developer ID build invalidates them once more, for the same
+  reason. After that, signed → signed **keeps** them as long as the identity
+  does not change. Verifying that is §9, and it cannot be done until signed
+  builds exist.
+
+If a permission reads ungranted after a restart, check the app rather than the
+toggle:
+
+```sh
+codesign --verify --deep --strict /Applications/Lilypad.app   # must print nothing
+codesign -d -r- /Applications/Lilypad.app                     # the requirement TCC will store
+sudo sqlite3 "/Library/Application Support/com.apple.TCC/TCC.db" \
+  "select service,client,auth_value from access where client='com.takedia.lilypad.desktop';"
+```
+
+`auth_value=2` with the app still denied means the stored requirement does not
+match the installed binary. The repair is `tccutil reset ScreenCapture
+com.takedia.lilypad.desktop` (and `Accessibility`), then grant once more.
 
 **Local Network is not asked for on macOS 14 or earlier** — Apple introduced
 that prompt in macOS 15 (Apple TN3179). On macOS 14 the LAN path simply works,

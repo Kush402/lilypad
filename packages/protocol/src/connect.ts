@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { WireDeviceIdSchema } from './identity.js';
 import { SessionScopeSchema } from './pairing.js';
 
 /**
@@ -14,9 +15,9 @@ import { SessionScopeSchema } from './pairing.js';
 
 export const ConnectRequestSchema = z.object({
   /** The trusted desktop's wire deviceId (devices.fingerprint). */
-  desktopDeviceId: z.string().min(8).max(128),
+  desktopDeviceId: WireDeviceIdSchema,
   /** This phone's stable wire deviceId. */
-  mobileDeviceId: z.string().min(8).max(128),
+  mobileDeviceId: WireDeviceIdSchema,
   mobileDeviceName: z.string().min(1).max(120).nullish(),
   /** The per-pair connect secret issued at trust time (M5.4 security).
    * Optional on the WIRE only, so an older client still parses; the server
@@ -44,8 +45,8 @@ export type ConnectErrorCode = 'not_trusted' | 'revoked' | 'desktop_offline';
  * wire device ids as a connect; no secret needed (revoking is strictly less
  * powerful than connecting, and self-directed). */
 export const UnpairRequestSchema = z.object({
-  desktopDeviceId: z.string().min(8).max(128),
-  mobileDeviceId: z.string().min(8).max(128),
+  desktopDeviceId: WireDeviceIdSchema,
+  mobileDeviceId: WireDeviceIdSchema,
 });
 export type UnpairRequest = z.infer<typeof UnpairRequestSchema>;
 
@@ -64,7 +65,7 @@ export const TrustedPairListingSchema = z.object({
 export type TrustedPairListing = z.infer<typeof TrustedPairListingSchema>;
 
 export const DevicePairsQuerySchema = z.object({
-  desktopDeviceId: z.string().min(8).max(128),
+  desktopDeviceId: WireDeviceIdSchema,
 });
 
 export const PairIdParamsSchema = z.object({
