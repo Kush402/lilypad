@@ -35,39 +35,106 @@ curl -s https://api.takedia.com/health
 ## Installing on the iPhone
 
 **There is no TestFlight build and no App Store listing.** Both need Apple
-Developer credentials the project does not have yet, so the phone app has to be
-built from source and run on a device you own:
+Developer credentials the project does not have, so the phone app is built from
+source and installed over USB.
 
-```bash
-pnpm install
-cd apps/mobile/ios && pod install && cd ..
-open ios/LilypadMobile.xcworkspace
+This was done on 2026-08-21 and the app is **already on the iPhone** — `Lilypad`,
+`com.takedia.lilypad`, built from `main`. What follows is how to do it again,
+because you will have to: the provisioning below comes from a **personal** Apple
+team and Apple expires those after **7 days**, after which the app refuses to
+launch until it is rebuilt.
+
+### The one thing that blocks a plain build
+
+```
+error: Cannot create a iOS App Development provisioning profile for
+"com.takedia.lilypad". Personal development teams, including "Kush Sharma",
+do not support the Sign In with Apple capability.
 ```
 
-In Xcode: select your iPhone as the destination, set a Signing Team on the
-`LilypadMobile` target (a free personal Apple ID works), then Run. A free
-personal team's provisioning expires after **7 days**, after which the app will
-refuse to launch until you rebuild — that is Apple's limit, not a Lilypad bug.
+`LilypadMobile.entitlements` requests `com.apple.developer.applesignin`, and a
+personal team may not provision it. Passing `CODE_SIGN_ENTITLEMENTS=` on the
+command line does **not** help — Xcode reads the capability while gathering
+provisioning inputs, before build settings apply. The entitlements file itself
+has to be empty for the duration of the build.
 
-The app talks to `https://api.takedia.com` by default
-(`apps/mobile/src/config/backend.ts`). If sign-in reaches a different backend,
-that constant is the first thing to check.
+Nothing else in the app needs an entitlement: the camera and local-network
+prompts come from `Info.plist` usage descriptions, not from entitlements. The
+only thing lost is Sign in with Apple, which no step of this test uses.
+
+### Rebuilding it
+
+```bash
+cd ~/Desktop/lilypad
+git checkout main && git pull
+
+# 1. Empty the entitlements for the build, keeping the real one safe.
+cp apps/mobile/ios/LilypadMobile/LilypadMobile.entitlements /tmp/ent.orig
+printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' \
+  '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
+  '<plist version="1.0">' '<dict/>' '</plist>' \
+  > apps/mobile/ios/LilypadMobile/LilypadMobile.entitlements
+
+# 2. Build RELEASE, not Debug. A Debug build has no embedded JS bundle and
+#    loads it from a Metro dev server, so it would die the moment the phone
+#    moves to cellular — which is most of section 4.
+cd apps/mobile/ios
+xcodebuild -workspace LilypadMobile.xcworkspace -scheme LilypadMobile \
+  -configuration Release -destination 'id=<YOUR-DEVICE-ID>' \
+  -derivedDataPath /tmp/ios-release -allowProvisioningUpdates build
+
+# 3. Put the real entitlements back, immediately.
+cp /tmp/ent.orig ../../../apps/mobile/ios/LilypadMobile/LilypadMobile.entitlements
+
+# 4. Install over USB.
+xcrun devicectl device install app --device <YOUR-DEVICE-ID> \
+  /tmp/ios-release/Build/Products/Release-iphoneos/LilypadMobile.app
+```
+
+`xcrun devicectl list devices` prints the device id. Developer Mode must be on
+(Settings → Privacy & Security → Developer Mode); it already is on this phone.
+
+The build that is currently installed is also saved at
+`~/Desktop/lilypad-ios-build/LilypadMobile.app`.
+
+### What the installed build talks to
+
+Verified by reading the strings in the shipped `main.jsbundle`, not by reading
+the source:
+
+| Host                                              | Occurrences |
+| ------------------------------------------------- | ----------- |
+| `api.takedia.com`                                 | 1           |
+| `lilypad.takedia.com` (the dev tunnel)            | 0           |
+| `lilypadhome.takedia.com` (the website)           | 0           |
+| `trycloudflare`, `ngrok`, `192.168.`, `127.0.0.1` | 0           |
 
 ---
 
 ## 1. Installation
 
-| #   | Do                                                                         | Expect                                                                                                                                                 |
-| --- | -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 1.1 | Download the DMG from <https://github.com/Kush402/lilypad/releases/latest> | `Lilypad_<version>_universal.dmg`, roughly 20 MB.                                                                                                      |
-| 1.2 | Double-click the DMG                                                       | It mounts and shows Lilypad next to an Applications alias.                                                                                             |
-| 1.3 | Drag Lilypad to Applications                                               | Copies without error.                                                                                                                                  |
-| 1.4 | Double-click Lilypad in Applications                                       | **The build is unsigned, so macOS refuses it**: _"Lilypad" cannot be opened because the developer cannot be verified._ This is correct for this build. |
-| 1.5 | Right-click Lilypad → **Open** → **Open**                                  | It launches. (Or System Settings → Privacy & Security → **Open Anyway**.)                                                                              |
-| 1.6 | Look at the screen                                                         | A small green **bubble** floats near the top-left.                                                                                                     |
-| 1.7 | Look at the menu bar                                                       | A Lilypad **tray icon**, with: Open Dashboard, Show QR / Pair, Approve, Deny, Disconnect, ⛔ Panic disconnect, Diagnostics…                            |
-| 1.8 | Leave it running for 10 minutes while you use the Mac normally             | No crash, no beachball, no runaway CPU (check Activity Monitor: idle should be low single-digit %).                                                    |
-| 1.9 | Tray → **Diagnostics…**                                                    | A window opens showing Health, Last connection, and `backend: https://api.takedia.com`. **If the backend is anything else, stop and report it.**       |
+> **Do not use the DMG on the GitHub releases page for this run.** `v0.1.1` was
+> published from commit `ea55653`, before Delete account and the Diagnostics
+> "Last connection" pane existed — so sections 4 and 7.10–7.13 cannot be
+> performed with it. Use the build made from `main`, in
+> `~/Desktop/lilypad-test-build/`.
+>
+> To rebuild it later:
+> `pnpm --filter @lilypad/desktop tauri build --target universal-apple-darwin --config '{"bundle":{"createUpdaterArtifacts":false}}'`
+> — the `--config` override is needed only because the updater signing key lives
+> in GitHub secrets rather than on this machine.
+
+| #   | Do                                                              | Expect                                                                                                                                                 |
+| --- | --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 1.1 | Open `~/Desktop/lilypad-test-build/Lilypad_0.1.1_universal.dmg` | 20 MB, universal (`x86_64 arm64`), built from `main`.                                                                                                  |
+| 1.2 | Double-click the DMG                                            | It mounts and shows `Lilypad.app` next to an Applications alias.                                                                                       |
+| 1.3 | Drag Lilypad to Applications                                    | Copies without error.                                                                                                                                  |
+| 1.4 | Double-click Lilypad in Applications                            | **The build is unsigned, so macOS refuses it**: _"Lilypad" cannot be opened because the developer cannot be verified._ This is correct for this build. |
+| 1.5 | Right-click Lilypad → **Open** → **Open**                       | It launches. (Or System Settings → Privacy & Security → **Open Anyway**.)                                                                              |
+| 1.6 | Look at the screen                                              | A small green **bubble** floats near the top-left.                                                                                                     |
+| 1.7 | Look at the menu bar                                            | A Lilypad **tray icon**, with: Open Dashboard, Show QR / Pair, Approve, Deny, Disconnect, ⛔ Panic disconnect, Diagnostics…                            |
+| 1.8 | Leave it running for 10 minutes while you use the Mac normally  | No crash, no beachball, no runaway CPU (check Activity Monitor: idle should be low single-digit %).                                                    |
+| 1.9 | Tray → **Diagnostics…**                                         | A window opens showing Health, Last connection, and `backend: https://api.takedia.com`. **If the backend is anything else, stop and report it.**       |
 
 > **Signed builds behave differently at 1.4/1.5.** A Developer-ID-signed,
 > notarized build opens on the first double-click with no warning at all. Until
@@ -249,4 +316,5 @@ Lilypad version:         Signed: no / yes (identity: …)
 §8 Recovery              pass / fail / not run    notes:
 §9 After signing         blocked — no Apple credentials
 Password reset           blocked — Resend not configured
+Sign in with Apple       blocked — personal team cannot provision it
 ```
