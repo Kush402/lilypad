@@ -11,6 +11,7 @@ vi.mock('../lib/tauri', () => ({
     accountRequestPasswordReset: vi.fn(),
     accountConfirmPasswordReset: vi.fn(),
     accountSignOut: vi.fn(),
+    accountDelete: vi.fn(),
   },
 }));
 
@@ -162,5 +163,121 @@ describe('AccountSignIn', () => {
 
     await waitFor(() => expect(api.accountSignOut).toHaveBeenCalled());
     expect(await screen.findByTestId('account-sign-in')).toBeInTheDocument();
+  });
+
+  describe('deleting the account', () => {
+    /**
+     * The only irreversible action in the product. What is tested is the ways
+     * it could fire when nobody meant it to: on one click, on an empty form,
+     * or with the confirmation quietly filled in by the app instead of by the
+     * person.
+     */
+    beforeEach(() => {
+      vi.mocked(api.getAccountState).mockResolvedValue(SIGNED_IN);
+    });
+
+    it('is not one click away', async () => {
+      render(<AccountSignIn />);
+      await screen.findByTestId('account-signed-in');
+
+      // The button that starts the flow exists; the button that DOES it does
+      // not, until asked for.
+      expect(screen.queryByTestId('account-delete')).toBeNull();
+      expect(screen.queryByTestId('delete-confirm')).toBeNull();
+    });
+
+    it('says what will happen before asking for anything', async () => {
+      render(<AccountSignIn />);
+      await screen.findByTestId('account-signed-in');
+      fireEvent.click(screen.getByText('Delete account'));
+
+      expect(await screen.findByTestId('account-delete')).toHaveTextContent(/cannot be undone/i);
+    });
+
+    it('will not submit until both the address and the password are typed', async () => {
+      render(<AccountSignIn />);
+      await screen.findByTestId('account-signed-in');
+      fireEvent.click(screen.getByText('Delete account'));
+      await screen.findByTestId('account-delete');
+
+      expect(screen.getByTestId('delete-confirm')).toBeDisabled();
+      type('delete-confirm-email', 'ada@example.com');
+      expect(screen.getByTestId('delete-confirm')).toBeDisabled();
+      type('delete-password', 'correct horse battery staple');
+      expect(screen.getByTestId('delete-confirm')).toBeEnabled();
+    });
+
+    it('sends the address the USER typed, not the one it already knows', async () => {
+      // If this screen filled the confirmation in from the stored account, the
+      // server's check would pass without a human ever confirming anything —
+      // which is the only thing that check is for.
+      vi.mocked(api.accountDelete).mockResolvedValue(undefined);
+      render(<AccountSignIn />);
+      await screen.findByTestId('account-signed-in');
+      fireEvent.click(screen.getByText('Delete account'));
+      await screen.findByTestId('account-delete');
+
+      type('delete-confirm-email', ' ada@example.com ');
+      type('delete-password', 'correct horse battery staple');
+      fireEvent.click(screen.getByTestId('delete-confirm'));
+
+      await waitFor(() =>
+        expect(api.accountDelete).toHaveBeenCalledWith(
+          'ada@example.com',
+          'correct horse battery staple',
+        ),
+      );
+    });
+
+    it('returns to the signed-out screen once the account is gone', async () => {
+      vi.mocked(api.accountDelete).mockResolvedValue(undefined);
+      render(<AccountSignIn />);
+      await screen.findByTestId('account-signed-in');
+      fireEvent.click(screen.getByText('Delete account'));
+      await screen.findByTestId('account-delete');
+
+      type('delete-confirm-email', 'ada@example.com');
+      type('delete-password', 'correct horse battery staple');
+      fireEvent.click(screen.getByTestId('delete-confirm'));
+
+      expect(await screen.findByTestId('account-sign-in')).toBeInTheDocument();
+    });
+
+    it('keeps the user signed in, and says why, when the server refuses', async () => {
+      // A wrong password must leave everything exactly as it was — including
+      // the form, so the user can simply fix the typo.
+      vi.mocked(api.accountDelete).mockRejectedValue(
+        new Error('That password does not match this account.'),
+      );
+      render(<AccountSignIn />);
+      await screen.findByTestId('account-signed-in');
+      fireEvent.click(screen.getByText('Delete account'));
+      await screen.findByTestId('account-delete');
+
+      type('delete-confirm-email', 'ada@example.com');
+      type('delete-password', 'wrong');
+      fireEvent.click(screen.getByTestId('delete-confirm'));
+
+      expect(await screen.findByText(/does not match this account/i)).toBeInTheDocument();
+      expect(screen.getByTestId('account-signed-in')).toBeInTheDocument();
+      expect(screen.getByTestId('delete-confirm')).toBeInTheDocument();
+    });
+
+    it('cancelling forgets what was typed', async () => {
+      render(<AccountSignIn />);
+      await screen.findByTestId('account-signed-in');
+      fireEvent.click(screen.getByText('Delete account'));
+      await screen.findByTestId('account-delete');
+
+      type('delete-confirm-email', 'ada@example.com');
+      type('delete-password', 'correct horse battery staple');
+      fireEvent.click(screen.getByTestId('delete-cancel'));
+
+      expect(screen.queryByTestId('account-delete')).toBeNull();
+      fireEvent.click(screen.getByText('Delete account'));
+      expect(await screen.findByTestId('delete-confirm-email')).toHaveValue('');
+      expect(screen.getByTestId('delete-password')).toHaveValue('');
+      expect(api.accountDelete).not.toHaveBeenCalled();
+    });
   });
 });

@@ -396,6 +396,14 @@ body {
   opacity: 0.6;
 }
 
+/* The delete flow, revealed only after the user asks for it. */
+.account__delete {
+  display: grid;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
 .account__enroll {
   display: grid;
   gap: 8px;

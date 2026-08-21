@@ -87,6 +87,13 @@ pub struct AppState {
     /// await. Starts `Unknown`, which is honest: nothing has asked yet, and
     /// `Unknown` is deliberately NOT treated as "not linked" anywhere.
     pub link_state: crate::auth::LinkState,
+    /// Which way the last (or current) session's media actually travelled:
+    /// `lan`, `direct`, or `relay`. `None` until a session has connected.
+    ///
+    /// Kept after the session ends on purpose. "Was that call relayed?" is a
+    /// question asked *after* hanging up, and clearing it on `Ended` would
+    /// answer it only while nobody was asking.
+    pub connection_path: Option<String>,
 }
 
 impl AppState {
@@ -102,6 +109,7 @@ impl AppState {
             auto_approve_room: None,
             session_task: None,
             link_state: crate::auth::LinkState::Unknown("not checked yet".to_owned()),
+            connection_path: None,
         }
     }
 }
@@ -120,4 +128,6 @@ pub struct AppStateDto {
     /// the normal approve/session UI — see `docs/audit/m3/desktop-ux.md`
     /// Finding 2).
     pub plugin_health: std::collections::BTreeMap<String, String>,
+    /// `lan`, `direct` or `relay` — how the last session's media travelled.
+    pub connection_path: Option<String>,
 }

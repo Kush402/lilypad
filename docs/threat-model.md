@@ -95,10 +95,22 @@ public internet. This documents the assets, threats, and mitigations.
       verified against production by driving the whole linking ceremony over
       the API and then failing to break it nine different ways.
 - [ ] Optional: require the desktop to re-confirm for `control` scope escalation.
-- [ ] Data retention policy for audit logs; PII minimization. `audit_logs`
-      stores IP addresses and attempted email addresses with no expiry, and
-      survives deletion of the account they refer to. The retention period is a
-      policy question that has no answer yet, so no number has been invented.
+- [x] **Data retention policy for audit logs; PII minimization** — the policy is
+      **2 days**, and it is enforced rather than documented:
+      [`services/auditRetention.ts`](../apps/backend/src/services/auditRetention.ts)
+      deletes every row past the window on boot and hourly thereafter. Two days
+      because of what the rows hold — an IP address, an account, a device and a
+      metadata blob per sign-in, pairing and session, which together are a
+      movement log of a person's machines. The questions that need them
+      ("what just happened?", a live support case) are same-day questions;
+      anything longer is a liability that buys nothing.
+- [x] **Account deletion** — `DELETE /account` (docs/api.md), reachable from the
+      Mac at Your account → Delete account. Removes the account, its devices,
+      its pairs and every refresh token; ends every live session for those
+      devices; and refuses the caller's own token from that moment on. Audit
+      rows survive it _anonymised_ and then expire on the 2-day clock above:
+      deleting an account is neither a way to erase what it did nor a way to
+      keep the record longer than anyone else's.
 - [ ] IP reputation on pairing/auth (split out of the item above).
 
 ### Residual: revocation is fast, not instantaneous

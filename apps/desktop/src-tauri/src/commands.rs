@@ -92,6 +92,7 @@ pub fn get_state(state: State<'_, SharedState>) -> AppStateDto {
         current_room_id: s.current_room_id.clone(),
         pending_request: s.pending_request.clone(),
         plugin_health: crate::health::plugin_health(),
+        connection_path: s.connection_path.clone(),
     }
 }
 
@@ -333,6 +334,15 @@ fn apply_session_event(app: &AppHandle, ev: &SessionEvent) {
             if state == "connected" {
                 s.session = SessionStatus::Active;
             }
+        }
+        // Recorded rather than acted on. Nothing branches on the path — the
+        // product works the same over all three — but "was that relayed?" is
+        // the first question of any connectivity report, and until this landed
+        // the only place the answer existed was a stderr line that a
+        // Finder-launched .app has nowhere to write.
+        SessionEvent::ConnectionPath { path } => {
+            log::info!(target: "lilypad::session", "connection path: {path}");
+            s.connection_path = Some(path.clone());
         }
         SessionEvent::Ended { .. } => {
             s.session = SessionStatus::Idle;
@@ -1112,6 +1122,23 @@ pub async fn account_confirm_password_reset(
 ) -> Result<account::AccountState, String> {
     account_client(&state)
         .confirm_password_reset(&email, &code, &password)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Delete the account permanently — every device, every pairing, every session.
+///
+/// Distinct from `account_sign_out` in the only way that matters: sign-out is
+/// local and reversible, this is neither. It re-authenticates with the password
+/// and passes the user's typed address to the server untouched.
+#[tauri::command]
+pub async fn account_delete(
+    state: State<'_, SharedState>,
+    confirm_email: String,
+    password: String,
+) -> Result<(), String> {
+    account_client(&state)
+        .delete(&confirm_email, &password)
         .await
         .map_err(|e| e.to_string())
 }

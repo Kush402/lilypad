@@ -89,6 +89,17 @@ pub enum SessionEvent {
     Ended {
         reason: String,
     },
+    /// Which way the media actually ended up travelling — `lan`, `direct` or
+    /// `relay`. Emitted once per connection, after ICE has chosen a pair.
+    ///
+    /// Not derivable from anything else the UI sees: `ConnectionState`
+    /// ("connected") is true of all three, and the candidate logs say what was
+    /// offered rather than what was picked. Without it, "did that session go
+    /// over the relay?" could only be answered by reading stderr from a Mac
+    /// app that, launched from Finder, has nowhere to write it.
+    ConnectionPath {
+        path: String,
+    },
     Error {
         message: String,
     },
@@ -659,6 +670,18 @@ impl SessionRunner {
                     // clipboard predates this session and shouldn't be
                     // forced onto a phone that just connected.
                     self.clipboard.seed();
+                    // Ask ICE what it settled on, now that it has settled.
+                    // Also after an ICE restart, because a session that
+                    // recovers onto the relay has genuinely changed path and
+                    // reporting the old one would be worse than reporting
+                    // nothing.
+                    if let Some(p) = self.peer.as_ref() {
+                        if let Some(path) = p.connection_path().await {
+                            self.emit(SessionEvent::ConnectionPath {
+                                path: path.to_owned(),
+                            });
+                        }
+                    }
                 }
             }
             self.gate

@@ -59,6 +59,16 @@ struct AuthSession {
     user_id: String,
 }
 
+/// The access token, captured transiently by `Account::delete` and by nothing
+/// else. Separate from `AuthSession` on purpose: that type drops the token
+/// deliberately, and widening it would hand every sign-in path a credential
+/// none of them has a use for.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AccessToken {
+    access_token: String,
+}
+
 /// What the UI needs to render the account section.
 #[derive(Debug, Clone, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -235,6 +245,58 @@ impl Account {
         }
     }
 
+    /// Delete the account this Mac is signed in to, permanently.
+    ///
+    /// Two things are asked for, and neither is optional.
+    ///
+    /// The **password** is asked for because this machine holds no account
+    /// credential at all — see `AuthSession`, which drops the tokens on the
+    /// floor. That is normally a limitation; for the one irreversible call in
+    /// the product it is exactly right. A stolen laptop cannot delete its
+    /// owner's account, because the laptop was never able to act as the
+    /// account in the first place. The token minted here lives in a local
+    /// variable for the length of one request and is never stored.
+    ///
+    /// The **typed address** is passed through to the server verbatim rather
+    /// than filled in from the keychain. Filling it in would satisfy the
+    /// server's confirmation check without a human ever confirming anything,
+    /// which is the one thing that check exists to prevent.
+    pub async fn delete(&self, confirm_email: &str, password: &str) -> Result<()> {
+        let stored = Self::stored().context("No account is signed in on this computer.")?;
+
+        let (status, text) = self
+            .post(
+                "/auth/password",
+                serde_json::json!({ "email": stored.email, "password": password }),
+            )
+            .await?;
+        if status != 200 {
+            bail!("That password does not match this account.");
+        }
+        let session: AccessToken =
+            serde_json::from_str(&text).context("the server’s sign-in response was not valid")?;
+
+        let response = self
+            .http
+            .delete(self.url("/account"))
+            .bearer_auth(&session.access_token)
+            .json(&serde_json::json!({ "confirmEmail": confirm_email }))
+            .send()
+            .await
+            .context("could not reach Lilypad’s server")?;
+
+        match response.status().as_u16() {
+            200 => {}
+            400 => bail!("Type the email address on this account to confirm."),
+            401 | 404 => bail!("That account could not be deleted — sign in again."),
+            _ => bail!("That account could not be deleted."),
+        }
+
+        // The account is gone; the local record of it must go too, or the
+        // dashboard keeps claiming a signed-in account that no longer exists.
+        Self::sign_out()
+    }
+
     fn remember(&self, body: &str, email: &str) -> Result<AccountState> {
         let session: AuthSession =
             serde_json::from_str(body).context("the server’s sign-in response was not valid")?;
@@ -287,6 +349,18 @@ mod tests {
             r#"{"accessToken":"a","refreshToken":"r","expiresInSeconds":600,"userId":"user-1"}"#;
         let session: AuthSession = serde_json::from_str(body).expect("parses");
         assert_eq!(session.user_id, "user-1");
+    }
+
+    #[test]
+    fn the_delete_path_reads_the_access_token_and_nothing_else() {
+        // `Account::delete` needs a token for exactly one request, so it reads
+        // the sign-in response a second way. This asserts it reads the real
+        // shape — and, by having only the one field, that the refresh token in
+        // the same body still goes nowhere.
+        let body =
+            r#"{"accessToken":"a","refreshToken":"r","expiresInSeconds":600,"userId":"user-1"}"#;
+        let token: AccessToken = serde_json::from_str(body).expect("parses");
+        assert_eq!(token.access_token, "a");
     }
 
     #[test]

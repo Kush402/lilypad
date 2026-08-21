@@ -64,7 +64,7 @@ export async function enrollmentRoutes(app: FastifyInstance): Promise<void> {
   app.post(
     '/devices/enroll',
     {
-      preHandler: requireAuth,
+      preHandler: [requireAuth, rejectRevokedActor],
       config: { rateLimit: { max: 20, timeWindow: '1 minute' } },
     },
     async (req, reply) => {

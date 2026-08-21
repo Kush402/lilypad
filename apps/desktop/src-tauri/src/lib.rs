@@ -393,6 +393,7 @@ pub fn run() {
             commands::account_request_password_reset,
             commands::account_confirm_password_reset,
             commands::account_sign_out,
+            commands::account_delete,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Lilypad desktop");

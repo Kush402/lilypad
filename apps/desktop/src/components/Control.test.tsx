@@ -69,6 +69,7 @@ function dto(overrides: Partial<AppStateDto> = {}): AppStateDto {
     current_room_id: null,
     pending_request: null,
     plugin_health: { ScreenCapture: 'ok', Accessibility: 'ok', Encoder: 'not yet tested this run' },
+    connection_path: null,
     ...overrides,
   };
 }
