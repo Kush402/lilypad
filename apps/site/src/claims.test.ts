@@ -26,6 +26,15 @@ const html = readFileSync(fileURLToPath(new URL('../index.html', import.meta.url
  * so a phrase-level assertion must not depend on where the wrap landed. */
 const flat = html.replace(/\s+/g, ' ');
 
+/** The version the desktop app is actually built at — the same field
+ * `pnpm release` bumps and `tauri-action` names the DMG after. */
+const shippedVersion: string = JSON.parse(
+  readFileSync(
+    fileURLToPath(new URL('../../desktop/src-tauri/tauri.conf.json', import.meta.url)),
+    'utf8',
+  ),
+).version;
+
 describe('platform claims', () => {
   it('presents macOS and iOS as supported', () => {
     for (const row of [/macOS[\s\S]{0,200}?tag--yes/, /iOS[\s\S]{0,200}?tag--yes/]) {
@@ -151,7 +160,11 @@ describe('release status', () => {
   });
 
   it('names the version it actually offers, and keeps saying it is unsigned', () => {
-    expect(html).toMatch(/v0\.1\.1/);
+    // Read the shipped version rather than hard-coding it. The page once
+    // advertised v0.1.1 for forty-two commits after main had moved on, and a
+    // literal in this test is exactly what let that pass: it asserted the page
+    // was consistent with the test, not with the build a visitor downloads.
+    expect(html).toContain(`v${shippedVersion}`);
     expect(html).toMatch(/unsigned|not signed/i);
   });
 
