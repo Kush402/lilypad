@@ -170,13 +170,16 @@ describe('release status', () => {
     expect(html).not.toMatch(/not yet released publicly/i);
   });
 
-  it('names the version it actually offers, and keeps saying it is unsigned', () => {
+  it('names the version it actually offers, and does not overstate its trust', () => {
     // Read the shipped version rather than hard-coding it. The page once
     // advertised v0.1.1 for forty-two commits after main had moved on, and a
     // literal in this test is exactly what let that pass: it asserted the page
     // was consistent with the test, not with the build a visitor downloads.
     expect(html).toContain(`v${shippedVersion}`);
-    expect(html).toMatch(/unsigned|not signed/i);
+    // Builds are ad-hoc signed from 0.1.4 — enough for macOS to bind a TCC
+    // grant, not enough for Gatekeeper — so the page must still warn. It may
+    // stop only when a Developer ID build is notarized.
+    expect(html).toMatch(/not notarized|unsigned|not signed/i);
   });
 
   it('still tells iPhone users there is no install path', () => {
