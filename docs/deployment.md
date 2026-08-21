@@ -64,14 +64,58 @@ nonce that survives a restart is a replay window, not a recovered value.
 
 ## Domains
 
-| Host                      | Purpose                   | Status                                                                    |
-| ------------------------- | ------------------------- | ------------------------------------------------------------------------- |
-| `lilypad.takedia.com`     | Local-development tunnel  | **Live** — preserved. Stays the dev tunnel; moving it is M13's, not P4's. |
-| `lilypadhome.takedia.com` | Marketing site (P4)       | Planned — the site is built (`apps/site`); DNS and hosting are M13's      |
-| `api.takedia.com`         | REST **and** `/ws/signal` | **Live** — Oracle Always Free, tunnel `lilypad-prod` (2026-08-16)         |
-| `turn.takedia.com`        | TURN/STUN relay           | **Live** — second Oracle Always Free VM, DNS-only (2026-08-19)            |
-| `dl.takedia.com`          | Downloads                 | Planned                                                                   |
-| `status.takedia.com`      | Status page               | Planned                                                                   |
+| Host                      | Purpose                          | Status                                                                    |
+| ------------------------- | -------------------------------- | ------------------------------------------------------------------------- |
+| `lilypad.takedia.com`     | Local-development tunnel         | **Live** — preserved. Stays the dev tunnel; moving it is M13's, not P4's. |
+| `lilypadhome.takedia.com` | Marketing site **and downloads** | **Live** — Cloudflare Pages, project `lilypad-site`; serves `/download/`  |
+| `api.takedia.com`         | REST **and** `/ws/signal`        | **Live** — Oracle Always Free, tunnel `lilypad-prod` (2026-08-16)         |
+| `turn.takedia.com`        | TURN/STUN relay                  | **Live** — second Oracle Always Free VM, DNS-only (2026-08-19)            |
+| `dl.takedia.com`          | Downloads                        | Not needed — `lilypadhome.takedia.com/download/` serves them              |
+| `status.takedia.com`      | Status page                      | Planned                                                                   |
+
+## Distribution — why GitHub is not the customer's path
+
+The source repository is **private**. GitHub Releases inherit that, so every
+release asset URL answers `404` to anyone without repo access. The site linked
+to `releases/latest` from the day it went live, which meant:
+
+- the **Download for macOS** button was dead for every visitor,
+- the **Releases** and **Source** links were dead,
+- and `latest.json` — the manifest every installed copy polls — was dead, so
+  automatic updates could never have worked for anyone.
+
+None of it was visible from inside the org, because an authenticated browser and
+an authenticated `gh` both resolve those URLs. It was found by fetching the
+site's own links with no credentials.
+
+Releases still go to GitHub: they are the build record, they hold the minisign
+signatures, and `tauri-action` produces them. What changed is that the **bytes a
+stranger downloads come from Cloudflare Pages**, which is public, already hosts
+the page, and does not meter egress:
+
+| Path                           | What                                            |
+| ------------------------------ | ----------------------------------------------- |
+| `/download/Lilypad.dmg`        | the installer the page links                    |
+| `/download/Lilypad.app.tar.gz` | the archive the updater downloads               |
+| `/download/latest.json`        | the updater manifest, `Cache-Control: no-cache` |
+
+`site.yml` stages these after building the page. It fetches the release matching
+the **exact** version in `tauri.conf.json` — not `latest` — because a page that
+says v0.1.3 while serving v0.1.2's bytes is the same lie in a different place,
+and `release: published` plus a version-bump push otherwise race. It rewrites
+the manifest's asset URLs to this site; the signatures still verify, because
+minisign covers the archive's bytes and not the address they came from. It then
+refuses to pass unless an anonymous `curl` can fetch the installer, its bytes
+hash to what was built, and the archive named by the manifest answers 200.
+
+**Cloudflare Pages caps a single file at 25 MiB.** The DMG is 19.7 MiB and the
+archive 20.2 MiB, so both fit with room that is not unlimited. The staging step
+fails loudly at the cap rather than letting a deploy silently drop a file; when
+the build outgrows it, downloads move to R2 and only these three URLs change.
+
+The names carry no version on purpose. The page states the version in prose, so
+a stable URL means the download link cannot go stale and the updater endpoint is
+one fixed address for every past and future build.
 
 The site and the development tunnel are **deliberately different hostnames**.
 `lilypad.takedia.com` keeps serving the dev backend that off-LAN and cellular

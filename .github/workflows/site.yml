@@ -27,12 +27,35 @@ name: site
 on:
   push:
     branches: [main]
-    paths: ['apps/site/**', 'packages/design/**', '.github/workflows/site.yml']
+    paths:
+      - 'apps/site/**'
+      - 'packages/design/**'
+      - '.github/workflows/site.yml'
+      # The desktop version lives here, and this workflow refuses to deploy
+      # unless a matching release exists — so a version bump has to re-run it.
+      - 'apps/desktop/src-tauri/tauri.conf.json'
+  # The site SERVES the installer, so a new release is a new site. Without this
+  # the page would advertise a version whose bytes were never uploaded.
+  #
+  # `release: [published]` is the obvious trigger and it does NOT work here:
+  # `tauri-action` creates the release with `secrets.GITHUB_TOKEN`, and GitHub
+  # refuses to fire workflow events for anything that token did — a deliberate
+  # loop guard. The release would appear and nothing would deploy. `workflow_run`
+  # is the documented way out; it runs from the default branch, which is where
+  # the version to serve lives anyway.
+  workflow_run:
+    workflows: [Release]
+    types: [completed]
   workflow_dispatch:
 
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
+    # A failed release has no artifacts to serve, so there is nothing to deploy.
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    permissions:
+      # `gh release download` reads the release assets this site hands out.
+      contents: read
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -45,6 +68,66 @@ jobs:
       # promises a feature the product lacks is a bug, so this gates the deploy.
       - run: pnpm --filter @lilypad/site test
       - run: pnpm --filter @lilypad/site build
+
+      # ── The installer itself ───────────────────────────────────────────────
+      #
+      # The source repository is private, so GitHub Releases cannot be the
+      # customer's download path: every asset URL there answers 404 to anyone
+      # without repo access, and so did the updater manifest every installed
+      # copy polls. Releases stay where they are — they are the build record —
+      # but the bytes a stranger downloads are served from Cloudflare Pages,
+      # which is public, free of egress charges, and already hosting this page.
+      #
+      # Assets are fetched for the EXACT version in tauri.conf.json rather than
+      # "latest". A page that says v0.1.3 while serving v0.1.2's bytes is the
+      # same class of lie this workflow already guards against, and "latest"
+      # makes it a race: `release: published` and a version-bump push both land
+      # here within seconds of each other.
+      - name: Stage the installer the site hands out
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./apps/desktop/src-tauri/tauri.conf.json').version")
+          echo "site will serve v$version"
+
+          if ! gh release view "v$version" --json tagName >/dev/null 2>&1; then
+            echo "::error::the site advertises v$version but no release v$version exists. Cut it with 'pnpm release' + a tag push, or this page would offer a download that is not there."
+            exit 1
+          fi
+
+          mkdir -p apps/site/dist/download
+          gh release download "v$version" --dir "$RUNNER_TEMP/rel" \
+            --pattern '*.dmg' --pattern '*.app.tar.gz' --pattern 'latest.json'
+
+          # Stable, unversioned names. The page names the version in prose; the
+          # URL does not, so the download link never goes stale and the updater
+          # endpoint is a fixed address for every past and future build.
+          cp "$RUNNER_TEMP/rel"/*.dmg         apps/site/dist/download/Lilypad.dmg
+          cp "$RUNNER_TEMP/rel"/*.app.tar.gz  apps/site/dist/download/Lilypad.app.tar.gz
+
+          # latest.json ships with GitHub asset URLs baked in by tauri-action.
+          # Rewrite them to this site. The minisign signatures cover the archive
+          # bytes, not the URL, so they stay valid — the updater verifies what it
+          # downloaded regardless of where it came from.
+          node -e '
+            const fs = require("fs");
+            const m = JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP + "/rel/latest.json", "utf8"));
+            for (const p of Object.values(m.platforms)) {
+              p.url = "https://lilypadhome.takedia.com/download/Lilypad.app.tar.gz";
+            }
+            fs.writeFileSync("apps/site/dist/download/latest.json", JSON.stringify(m, null, 2));
+          '
+
+          # Cloudflare Pages refuses any single file over 25 MiB.
+          for f in apps/site/dist/download/*; do
+            bytes=$(wc -c < "$f")
+            printf '  %-28s %s bytes\n' "$(basename "$f")" "$bytes"
+            if [ "$bytes" -gt 26214400 ]; then
+              echo "::error::$(basename "$f") is $bytes bytes — over Cloudflare Pages' 25 MiB per-file limit. Move downloads to R2 before this can ship."
+              exit 1
+            fi
+          done
 
       - name: Check for Cloudflare credentials
         id: creds
@@ -134,3 +217,45 @@ jobs:
           done
           echo "::error::the deploy reported success but https://lilypadhome.takedia.com/ is not serving this build. Likely causes, in order: the Pages project's production branch is not 'main' (so this published a preview); lilypadhome.takedia.com is a custom domain on a different Pages project; or the zone transforms HTML (auto-minify, Rocket Loader), which would make a byte comparison the wrong check."
           exit 1
+
+      # The page rendering is not the product; the installer is. This fetches it
+      # the way a stranger would — no token, no cookie, no gh — and compares
+      # bytes with what was uploaded. The previous arrangement passed every
+      # check this workflow had while handing every visitor a 404, because
+      # nothing ever tried the download itself.
+      - name: Verify a stranger can actually download it
+        if: steps.creds.outputs.present == 'true'
+        run: |
+          set -euo pipefail
+          base=https://lilypadhome.takedia.com
+
+          for attempt in 1 2 3 4 5 6; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' -L "$base/download/Lilypad.dmg") || code=000
+            [ "$code" = "200" ] && break
+            echo "attempt $attempt: /download/Lilypad.dmg -> $code — waiting"
+            sleep 10
+          done
+          [ "$code" = "200" ] || { echo "::error::the download link answers $code to an anonymous request"; exit 1; }
+
+          expected=$(shasum -a 256 apps/site/dist/download/Lilypad.dmg | cut -d' ' -f1)
+          live=$(curl -fsSL "$base/download/Lilypad.dmg" | shasum -a 256 | cut -d' ' -f1)
+          [ "$live" = "$expected" ] || { echo "::error::the served installer differs from the one built ($live != $expected)"; exit 1; }
+          echo "installer verified: $expected"
+
+          # The updater manifest, and the archive it names — the path every
+          # already-installed copy takes. A 404 here breaks updates silently for
+          # everyone and shows as "Update check failed" in the app.
+          manifest=$(curl -fsSL "$base/download/latest.json")
+          echo "$manifest" | node -e '
+            const m = JSON.parse(require("fs").readFileSync(0, "utf8"));
+            const urls = Object.values(m.platforms).map((p) => p.url);
+            if (urls.some((u) => u.includes("github.com"))) {
+              console.error("latest.json still points at the private repo: " + urls.join(", "));
+              process.exit(1);
+            }
+            console.log("manifest v" + m.version + " -> " + [...new Set(urls)].join(", "));
+          '
+          archive=$(echo "$manifest" | node -e 'const m=JSON.parse(require("fs").readFileSync(0,"utf8"));console.log(Object.values(m.platforms)[0].url)')
+          code=$(curl -s -o /dev/null -w '%{http_code}' -L "$archive") || code=000
+          [ "$code" = "200" ] || { echo "::error::latest.json names $archive, which answers $code"; exit 1; }
+          echo "update archive reachable: $archive"

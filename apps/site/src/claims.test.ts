@@ -53,8 +53,19 @@ describe('platform claims', () => {
 
   // v0.1.0 was published 2026-08-19, so the page may now offer a download. What
   // it must NOT do is imply the download is signed — see the distribution suite.
-  it('links the release that actually exists', () => {
-    expect(html).toMatch(/releases\/latest/);
+  it('offers a download this site actually serves', () => {
+    expect(html).toMatch(/href="\/download\/Lilypad\.dmg"/);
+  });
+
+  // The page pointed at github.com/Kush402/lilypad/releases/latest for its
+  // whole life, and that repository is private: every one of those links
+  // answered 404 to anyone who was not signed in with access. Both the
+  // download button and the updater manifest were dead for every real visitor,
+  // and it looked fine from inside because an authenticated browser resolves
+  // them. A link to a private host is worse than no link — it fails only for
+  // the people the page exists for.
+  it('sends nobody to a host that requires an account', () => {
+    expect(html).not.toMatch(/github\.com/i);
   });
 });
 

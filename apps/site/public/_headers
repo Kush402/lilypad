@@ -17,3 +17,20 @@
   # <style> block, which is why style-src allows 'unsafe-inline' and script-src
   # does not allow anything at all.
   Content-Security-Policy: default-src 'self'; script-src 'none'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; form-action 'none'; frame-ancestors 'none'; base-uri 'none'; upgrade-insecure-requests
+
+# The installer and the updater manifest. This site is the only public path to
+# both: the source repository is private, so GitHub Releases 404 for everyone
+# outside it.
+
+/download/latest.json
+  # Every installed copy polls this. Caching it is how an update stops shipping
+  # without anyone noticing, so it revalidates every time.
+  Cache-Control: no-cache
+  Content-Type: application/json
+
+/download/Lilypad.dmg
+  Content-Type: application/x-apple-diskimage
+  Content-Disposition: attachment; filename="Lilypad.dmg"
+
+/download/Lilypad.app.tar.gz
+  Content-Type: application/gzip

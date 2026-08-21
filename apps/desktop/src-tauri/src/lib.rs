@@ -452,4 +452,40 @@ mod pairing_order_tests {
 
         assert_eq!(default_backend_url(true), "http://localhost:8080");
     }
+
+    /// The updater endpoint has to be reachable by a stranger.
+    ///
+    /// It used to be `github.com/Kush402/lilypad/releases/latest/download/…`,
+    /// and that repository is private: every installed copy's update check got
+    /// a 404, and the launch banner surfaced it as "Update check failed"
+    /// because `phase == "error"` is one of the states it shows. The same 404
+    /// was on the website's download button, so nobody outside the org could
+    /// install Lilypad OR update it.
+    ///
+    /// Downloads are served from the site instead. This asserts the config
+    /// still says so, because the failure is invisible from inside the org —
+    /// an authenticated browser and an authenticated `gh` both make the broken
+    /// URL look fine.
+    #[test]
+    fn the_updater_endpoint_is_reachable_without_a_github_account() {
+        let conf: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        let endpoints = conf["plugins"]["updater"]["endpoints"]
+            .as_array()
+            .expect("tauri.conf.json must configure updater endpoints");
+        assert!(!endpoints.is_empty(), "at least one endpoint is required");
+
+        for endpoint in endpoints {
+            let url = endpoint.as_str().expect("each endpoint is a string");
+            assert!(
+                !url.contains("github.com"),
+                "the source repository is private, so a GitHub release URL 404s for every \
+                 customer and for every installed copy checking for updates; got {url}"
+            );
+            assert!(
+                url.starts_with("https://lilypadhome.takedia.com/"),
+                "updates are served from the public site; got {url}"
+            );
+        }
+    }
 }

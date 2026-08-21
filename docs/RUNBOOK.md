@@ -157,9 +157,16 @@ cleanly** (green, with a "not configured" log line) rather than failing.
 ## 4. How automatic updates work
 
 **Desktop:** the app embeds the updater's public key and polls
-`https://github.com/Kush402/lilypad/releases/latest/download/latest.json`. On
-launch it checks silently; a manual "Check for updates" affordance also exists
-in Diagnostics. When a newer signed release is found, the app downloads, verifies
+`https://lilypadhome.takedia.com/download/latest.json`. On launch it checks
+silently; a manual "Check for updates" affordance also exists in Diagnostics.
+
+It used to poll `github.com/Kush402/lilypad/releases/latest/download/latest.json`.
+That repository is **private**, so the manifest answered 404 to every installed
+copy — updates could never ship, and the launch banner showed "Update check
+failed" to anyone who opened the dashboard. The manifest and the archive it
+names are served from the site instead; `latest.json` is rewritten at deploy
+time to point at the site's own copy, and the minisign signatures still verify
+because they cover the archive's bytes, not the address it came from. When a newer signed release is found, the app downloads, verifies
 the signature, installs, and relaunches. An update only installs if its signature
 matches the embedded public key — an unsigned or tampered artifact is rejected.
 

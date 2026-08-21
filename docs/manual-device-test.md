@@ -159,11 +159,18 @@ the source:
 > **Start at the website, not at a local build.** This run is a customer
 > journey, so the app has to arrive the way a customer's would.
 >
-> For most of this document's life that was impossible: `releases/latest` was
-> `v0.1.1`, published from commit `ea55653`, and `main` moved forty-two commits
-> past it — no Delete account, no Diagnostics "Last connection" pane, none of
-> the security pass. Anyone who downloaded Lilypad got that. `v0.1.2` is cut
-> from `main` and is what the website now hands out.
+> For most of this document's life that was impossible, for two reasons.
+> `releases/latest` was `v0.1.1`, published from commit `ea55653`, while `main`
+> moved forty-two commits past it — no Delete account, no Diagnostics "Last
+> connection" pane, none of the security pass. And the link went to GitHub, on a
+> repository that is **private**, so it answered 404 to everyone who was not
+> signed in with access. The download, the releases page, the source link and
+> the updater manifest were all dead for every real visitor, and all four looked
+> fine from inside because an authenticated browser resolves them.
+>
+> Downloads are now served from the site itself. `v0.1.3` is cut from `main`,
+> and `docs/deployment.md` § Distribution records why GitHub is not the
+> customer's path.
 >
 > Before starting, confirm the Mac has no Lilypad state left from a previous
 > run — `/Applications/Lilypad.app`, `~/Library/Application Support/`,
@@ -174,17 +181,17 @@ the source:
 > device key is the one that matters most: the Mac would rejoin its old identity
 > and the pairing steps would not be testing what they claim to.
 
-| #   | Do                                                                  | Expect                                                                                                                                                 |
-| --- | ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 1.1 | Open <https://lilypadhome.takedia.com>, then **Download for macOS** | The releases page offers `Lilypad_0.1.2_universal.dmg` — 20 MB, universal (`x86_64 arm64`), built from `main`.                                         |
-| 1.2 | Double-click the DMG                                                | It mounts and shows `Lilypad.app` next to an Applications alias.                                                                                       |
-| 1.3 | Drag Lilypad to Applications                                        | Copies without error.                                                                                                                                  |
-| 1.4 | Double-click Lilypad in Applications                                | **The build is unsigned, so macOS refuses it**: _"Lilypad" cannot be opened because the developer cannot be verified._ This is correct for this build. |
-| 1.5 | Right-click Lilypad → **Open** → **Open**                           | It launches. (Or System Settings → Privacy & Security → **Open Anyway**.)                                                                              |
-| 1.6 | Look at the screen                                                  | A small green **bubble** floats near the top-left.                                                                                                     |
-| 1.7 | Look at the menu bar                                                | A Lilypad **tray icon**, with: Open Dashboard, Show QR / Pair, Approve, Deny, Disconnect, ⛔ Panic disconnect, Diagnostics…                            |
-| 1.8 | Leave it running for 10 minutes while you use the Mac normally      | No crash, no beachball, no runaway CPU (check Activity Monitor: idle should be low single-digit %).                                                    |
-| 1.9 | Tray → **Diagnostics…**                                             | A window opens showing Health, Last connection, and `backend: https://api.takedia.com`. **If the backend is anything else, stop and report it.**       |
+| #   | Do                                                                  | Expect                                                                                                                                                      |
+| --- | ------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1.1 | Open <https://lilypadhome.takedia.com>, then **Download for macOS** | The site serves `Lilypad.dmg` from its own `/download/` path — 20 MB, universal (`x86_64 arm64`), v0.1.3, built from `main`. No GitHub account, no sign-in. |
+| 1.2 | Double-click the DMG                                                | It mounts and shows `Lilypad.app` next to an Applications alias.                                                                                            |
+| 1.3 | Drag Lilypad to Applications                                        | Copies without error.                                                                                                                                       |
+| 1.4 | Double-click Lilypad in Applications                                | **The build is unsigned, so macOS refuses it**: _"Lilypad" cannot be opened because the developer cannot be verified._ This is correct for this build.      |
+| 1.5 | Right-click Lilypad → **Open** → **Open**                           | It launches. (Or System Settings → Privacy & Security → **Open Anyway**.)                                                                                   |
+| 1.6 | Look at the screen                                                  | A small green **bubble** floats near the top-left.                                                                                                          |
+| 1.7 | Look at the menu bar                                                | A Lilypad **tray icon**, with: Open Dashboard, Show QR / Pair, Approve, Deny, Disconnect, ⛔ Panic disconnect, Diagnostics…                                 |
+| 1.8 | Leave it running for 10 minutes while you use the Mac normally      | No crash, no beachball, no runaway CPU (check Activity Monitor: idle should be low single-digit %).                                                         |
+| 1.9 | Tray → **Diagnostics…**                                             | A window opens showing Health, Last connection, and `backend: https://api.takedia.com`. **If the backend is anything else, stop and report it.**            |
 
 > **Signed builds behave differently at 1.4/1.5.** A Developer-ID-signed,
 > notarized build opens on the first double-click with no warning at all. Until
