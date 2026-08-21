@@ -62,13 +62,45 @@ Nothing else in the app needs an entitlement: the camera and local-network
 prompts come from `Info.plist` usage descriptions, not from entitlements. The
 only thing lost is Sign in with Apple, which no step of this test uses.
 
+**The button for it is still there, and it will fail.** `SignInScreen` shows
+"Continue with Apple" whenever `Platform.OS === 'ios'`, not when the entitlement
+is present, so this build offers a method it cannot perform. Tapping it shows an
+error rather than crashing. Use email + password, which is the method that needs
+neither a provider nor a delivered email — and record the dead button as a
+finding about **this build**, not about the product.
+
 ### Rebuilding it
+
+> **Do not stage anything while this runs.** Step 1 empties a file that git
+> tracks. A `git add -A` landing in that window commits the emptied version,
+> which is exactly how the Sign in with Apple entitlement vanished from `main`
+> for one commit on 2026-08-21.
+
+> **DerivedData must not live under `~/Desktop`.** That folder is synced by an
+> iCloud file provider, which stamps every file with an empty
+> `com.apple.FinderInfo`. rsync carries it into the `.app` and codesign refuses
+> the framework with _"resource fork, Finder information, or similar detritus
+> not allowed"_. `xattr -cr` cannot clear it in place — the provider re-adds it
+> within the second. Step 0 is what makes the build possible at all; the real
+> fix is to move this repository somewhere that is not synced.
 
 ```bash
 cd ~/Desktop/lilypad
 git checkout main && git pull
+git diff --cached --quiet || { echo "unstage first"; exit 1; }
+
+# 0. CocoaPods signs the embedded WebRTC framework without stripping the
+#    attribute the file provider put on it. Strip it at signing time, where
+#    stripping sticks because DerivedData is outside the synced tree. Pods/ is
+#    gitignored, so `pod install` will undo this and it has to be redone.
+S="apps/mobile/ios/Pods/Target Support Files/Pods-LilypadMobile/Pods-LilypadMobile-frameworks.sh"
+grep -q 'xattr -cr "$1"' "$S" || \
+  sed -i '' 's|    local code_sign_cmd=|    xattr -cr "$1" 2>/dev/null \|\| true\n    local code_sign_cmd=|' "$S"
 
 # 1. Empty the entitlements for the build, keeping the real one safe.
+#    A personal Apple team cannot provision com.apple.developer.applesignin,
+#    and Xcode reads capabilities before any CODE_SIGN_ENTITLEMENTS= override
+#    on the command line applies — so the file itself has to be empty.
 cp apps/mobile/ios/LilypadMobile/LilypadMobile.entitlements /tmp/ent.orig
 printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' \
   '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
@@ -80,22 +112,33 @@ printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' \
 #    moves to cellular — which is most of section 4.
 cd apps/mobile/ios
 xcodebuild -workspace LilypadMobile.xcworkspace -scheme LilypadMobile \
-  -configuration Release -destination 'id=<YOUR-DEVICE-ID>' \
-  -derivedDataPath /tmp/ios-release -allowProvisioningUpdates build
+  -configuration Release -destination 'generic/platform=iOS' \
+  -derivedDataPath /tmp/ios-release \
+  DEVELOPMENT_TEAM=7TYFS43RR3 CODE_SIGN_STYLE=Automatic build
 
-# 3. Put the real entitlements back, immediately.
-cp /tmp/ent.orig ../../../apps/mobile/ios/LilypadMobile/LilypadMobile.entitlements
+# 3. Put the real entitlements back, immediately, and check it took.
+cp /tmp/ent.orig LilypadMobile/LilypadMobile.entitlements
+git -C ../../.. diff --quiet -- apps/mobile/ios/LilypadMobile/LilypadMobile.entitlements \
+  && echo "entitlements restored" || echo "ENTITLEMENTS STILL MODIFIED — fix before committing"
 
 # 4. Install over USB.
 xcrun devicectl device install app --device <YOUR-DEVICE-ID> \
   /tmp/ios-release/Build/Products/Release-iphoneos/LilypadMobile.app
 ```
 
+Confirm the build is standalone before installing it — a missing bundle is the
+failure that only shows up once the phone is off Wi-Fi:
+
+```bash
+ls -l /tmp/ios-release/Build/Products/Release-iphoneos/LilypadMobile.app/main.jsbundle
+# ~2.7 MB. If this file does not exist, you built Debug.
+```
+
 `xcrun devicectl list devices` prints the device id. Developer Mode must be on
 (Settings → Privacy & Security → Developer Mode); it already is on this phone.
 
 The build that is currently installed is also saved at
-`~/Desktop/lilypad-ios-build/LilypadMobile.app`.
+`~/Desktop/lilypad-test-build/LilypadMobile.app`.
 
 ### What the installed build talks to
 
