@@ -25,15 +25,29 @@
  */
 
 /**
- * The deployment this build talks to.
+ * The deployment this build talks to: **production**.
  *
- * Currently the tunnel in `infra/cloudflared/lilypad.yml`, which is the address
- * the backend already advertises in its own QR payloads. It moves to a real
- * production host with the deployment milestone (M13,
- * [ADR-0009](../../../../docs/adr/0009-control-plane-deployment.md)); nothing
- * else in the app needs to change when it does.
+ * This used to be `https://lilypad.takedia.com`, described here as temporary —
+ * "it moves to a real production host with the deployment milestone (M13,
+ * [ADR-0009](../../../../docs/adr/0009-control-plane-deployment.md))". M13
+ * shipped, production went live at `api.takedia.com`, and this line did not
+ * move with it.
+ *
+ * `lilypad.takedia.com` is not another name for production. It is the
+ * **local-development tunnel** (`infra/cloudflared/lilypad.yml`,
+ * docs/deployment.md § Domains), which forwards to `localhost:8080` on a
+ * developer's Mac. Every iPhone build therefore created its account, signed in,
+ * and listed its devices against whatever backend happened to be running on
+ * that laptop — a deployment with none of the revocation, ownership or
+ * deletion behaviour production has. Confirmed by comparing the two on
+ * 2026-08-20: `api.takedia.com` reported revision `2435111a…`, the tunnel
+ * reported no revision at all and five days of uptime.
+ *
+ * This is the same class of bug as the desktop's "v0.1.0 shipped pointing at a
+ * developer's laptop", found and fixed on one client and missed on the other.
+ * `backend.test.ts` is what stops it coming back.
  */
-export const DEFAULT_API_BASE_URL = 'https://lilypad.takedia.com';
+export const DEFAULT_API_BASE_URL = 'https://api.takedia.com';
 
 /** Normalised, trailing slash removed — the form every caller wants. */
 export function defaultApiBaseUrl(): string {
