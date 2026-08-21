@@ -1,7 +1,7 @@
 ---
 status: In Progress
 owner: @kushsharma024
-last-verified: 2026-08-20
+last-verified: 2026-08-21
 summary: How the control plane is deployed, what it costs, how it scales, and how to recover it.
 ---
 
@@ -1146,3 +1146,85 @@ The desktop now reads the selected candidate pair once the connection settles
 and shows it in **tray → Diagnostics… → Last connection**, in words. It is kept
 after the session ends, because "was that relayed?" is a question asked after
 hanging up.
+
+## Shipped and verified in production (2026-08-21)
+
+`171f08e67e7d431dac7af6d1fcf95cbf88021327`, deployed by `deploy.yml`
+(`workflow_dispatch`, environment `production`, run 32447322906). Every step
+green, including the workflow's own "Verify the deployment is actually serving
+THIS commit"; the rollback step was skipped because nothing needed rolling back.
+
+Verified **against `https://api.takedia.com`**, not locally:
+
+| Check                       | Result                                                                                                                                                                                                                                                                                                                                     |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `/health` revision          | `171f08e6…` — matches `main` exactly                                                                                                                                                                                                                                                                                                       |
+| Postgres / Redis            | `up` / `up`                                                                                                                                                                                                                                                                                                                                |
+| `checks.mail`               | `unconfigured` — the field exists at all, which is itself proof the new image is live                                                                                                                                                                                                                                                      |
+| `DELETE /account`, no token | `401 unauthorized` (the old image had no such route)                                                                                                                                                                                                                                                                                       |
+| Pairing QR                  | `apiBaseUrl https://api.takedia.com`, `signalingUrl wss://api.takedia.com/ws/signal`                                                                                                                                                                                                                                                       |
+| Security headers            | HSTS, nosniff, no-referrer, `X-Frame-Options: DENY`                                                                                                                                                                                                                                                                                        |
+| `scripts/e2e-audit.mjs`     | **37/37 pass**, including deletion end to end: wrong confirmation → 400 `confirmation_mismatch`; unauthenticated → 401; delete → `200 devicesRemoved=2`; the deleted account's **device** token → 401; its **account** token at `/devices/enroll` → 401 (the gate, not a 500 from the foreign key); sign-in with the deleted address → 401 |
+| Watchdog                    | 0 critical, 1 warning — the new `mail` alert, correctly reporting that Resend is still unset                                                                                                                                                                                                                                               |
+
+The audit script deleted its own fixture account through the route it was
+testing, so production carries nothing from the run.
+
+**Audit retention is NOT independently verified in production.** The deployed
+revision contains it and the boot prune runs on start, but confirming which rows
+it removed needs a database session on the host, and the host address is
+deliberately not in this repo. Its behaviour was proved against a real Postgres
+locally: 1,036 rows past the window removed on boot, the 25 remaining all under
+48 hours. Treat production retention as "the code is live", not "the behaviour
+was observed".
+
+### The site is live and current
+
+`lilypadhome.takedia.com` now serves `main`'s build, byte for byte:
+
+```
+built from main : 475d5afa35181d73d3eb0848a781143b5f1dd767608cb50c880be5a43878d149
+custom domain   : 475d5afa35181d73d3eb0848a781143b5f1dd767608cb50c880be5a43878d149
+pages.dev       : 475d5afa35181d73d3eb0848a781143b5f1dd767608cb50c880be5a43878d149
+```
+
+`pages.dev` matching is what proves this is the **production** deployment rather
+than a preview. "Not yet released publicly" appears zero times, and the
+`site-stale` watchdog alert — which fired correctly while the page was stale —
+has cleared.
+
+Two things had to be fixed before that deploy could work at all, both found by
+running it rather than by reading it:
+
+- `cloudflare/wrangler-action` runs `pnpm add wrangler@…` when it finds no local
+  wrangler, and pnpm refuses that at a workspace root without `-w`. The action
+  offers no way to pass it. Replaced with `pnpm dlx wrangler@3.90.0`, which
+  installs into a temp directory and touches neither the workspace nor the
+  lockfile.
+- CodeQL's `analyze` needed `actions: read` to attach its results to the run.
+
+### CodeQL cannot pass on this repository
+
+`Security — CodeQL + dependency audit` is red on `main`, and the dependency
+audit half is green. The analysis runs and finds nothing; the **upload** is
+refused:
+
+```
+##[error]Code scanning is not enabled for this repository.
+```
+
+The repo is private on a free plan, and every path to enabling it needs a
+purchase:
+
+```
+PATCH /repos  advanced_security=enabled  → 422 "Advanced security has not been purchased."
+PUT   /code-scanning/default-setup       → 404 Not Found
+PATCH /repos  secret_scanning=enabled    → 422 "Secret scanning is not available for this repository."
+```
+
+It was working earlier the same day — `Successfully uploaded results` at 03:15
+UTC, refused by 04:08 — so an entitlement lapsed in that window rather than
+anything in the code changing. Buying GitHub Advanced Security, or making the
+repository public, turns it green with no edit. The job is deliberately left in
+place rather than deleted: it is a gate that works the moment the entitlement
+returns, and removing it to make a report look clean would be the wrong trade.
