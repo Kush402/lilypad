@@ -30,6 +30,11 @@ use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::peer_connection::RTCPeerConnection;
 
+/// How long to wait for the unreliable move channel, in 50 ms ticks — ten
+/// seconds. Generous on purpose: the loop exits the moment the channel opens,
+/// so the budget costs a healthy run nothing and only bounds the failure.
+const MOVE_CHANNEL_POLLS: usize = 200;
+
 const ROOM: &str = "room-1";
 const DEVICE: &str = "desktop-01";
 
@@ -274,10 +279,21 @@ async fn connect_and_stream() -> ConnectedSession {
 
     // The unreliable move channel is negotiated in the same SDP as the
     // critical channel, so it should already have arrived by the time the
-    // critical one has opened; a short poll absorbs any residual scheduling
-    // slack instead of asserting on an exact ordering guarantee.
+    // critical one has opened; a poll absorbs any residual scheduling slack
+    // instead of asserting on an exact ordering guarantee.
+    //
+    // The budget was twenty ticks — one second — and one second is a statement
+    // about the machine, not about the code. This test drives a real ICE, DTLS
+    // and SRTP handshake, and it failed once on a CI runner with
+    //
+    //   the desktop never opened the unreliable move input channel
+    //
+    // on a commit that changed nothing but a markdown file. The loop breaks the
+    // instant the flag is set, so a healthy run is exactly as fast as before
+    // and only a channel that genuinely never opens pays the full wait. Same
+    // reasoning as `input_worker.rs`'s twenty-second deadlines.
     let mut saw_move = false;
-    for _ in 0..20 {
+    for _ in 0..MOVE_CHANNEL_POLLS {
         if saw_move_channel.load(Ordering::Relaxed) {
             saw_move = true;
             break;
