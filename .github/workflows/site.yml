@@ -72,6 +72,28 @@ jobs:
         if: steps.creds.outputs.present == 'true'
         run: echo "deploying $(git rev-parse --short HEAD) to lilypad-site"
 
+      # Wrangler invoked directly, NOT via `cloudflare/wrangler-action`.
+      #
+      # The action inspects the repo, decides the package manager is pnpm, and
+      # when it finds no local wrangler runs `pnpm add wrangler@<version>` —
+      # which pnpm refuses at the root of a workspace:
+      #
+      #   ERR_PNPM_ADDING_TO_ROOT  Running this command will add the dependency
+      #   to the workspace root ... run this command again with the -w flag
+      #
+      # That is what the first run with real credentials died on, after the
+      # secrets had already been accepted. The action offers no way to pass
+      # `-w`, so the choice is to add wrangler as a root devDependency — 40 MB
+      # that every other CI job would then install for a tool only this one
+      # step uses — or to stop asking it to install anything. `pnpm dlx` fetches
+      # it into a temp directory, touches neither the workspace nor the
+      # lockfile, and is one line.
+      #
+      # Pinned, because `pages deploy` is the last step before a live site and
+      # a floating major is a change nobody reviewed. Wrangler reads
+      # CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID from the environment
+      # itself, so the secrets are never interpolated into a command line.
+      #
       # `--branch` is explicit rather than inferred. Wrangler reads the branch
       # from the CI environment, and any branch that is not the project's
       # PRODUCTION branch publishes a PREVIEW deployment instead — which gets
@@ -80,11 +102,12 @@ jobs:
       # workflow was rewritten to stop telling, wearing a different hat.
       - name: Deploy to Cloudflare Pages
         if: steps.creds.outputs.present == 'true'
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages deploy apps/site/dist --project-name=lilypad-site --branch=main
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          pnpm dlx wrangler@3.90.0 pages deploy apps/site/dist \
+            --project-name=lilypad-site --branch=main
 
       # The deploy step succeeding means Cloudflare accepted an upload. It does
       # not mean the site people visit changed — a preview deployment, a custom
