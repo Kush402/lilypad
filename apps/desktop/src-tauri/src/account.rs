@@ -261,6 +261,13 @@ impl Account {
     /// than filled in from the keychain. Filling it in would satisfy the
     /// server's confirmation check without a human ever confirming anything,
     /// which is the one thing that check exists to prevent.
+    ///
+    /// Requiring a password locks out an account that has never had one —
+    /// Apple, Google and magic-link sign-ins all produce those. That is not a
+    /// dead end here, because such an account can never be signed in on this
+    /// Mac in the first place: `AccountSignIn` offers email + password and
+    /// nothing else (ADR-0012). Deleting a passwordless account is done from
+    /// the phone, which authenticates with its device key instead.
     pub async fn delete(&self, confirm_email: &str, password: &str) -> Result<()> {
         let stored = Self::stored().context("No account is signed in on this computer.")?;
 
