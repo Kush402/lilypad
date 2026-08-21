@@ -113,28 +113,35 @@ the source:
 
 ## 1. Installation
 
-> **Do not use the DMG on the GitHub releases page for this run.** `v0.1.1` was
-> published from commit `ea55653`, before Delete account and the Diagnostics
-> "Last connection" pane existed — so sections 4 and 7.10–7.13 cannot be
-> performed with it. Use the build made from `main`, in
-> `~/Desktop/lilypad-test-build/`.
+> **Start at the website, not at a local build.** This run is a customer
+> journey, so the app has to arrive the way a customer's would.
 >
-> To rebuild it later:
-> `pnpm --filter @lilypad/desktop tauri build --target universal-apple-darwin --config '{"bundle":{"createUpdaterArtifacts":false}}'`
-> — the `--config` override is needed only because the updater signing key lives
-> in GitHub secrets rather than on this machine.
+> For most of this document's life that was impossible: `releases/latest` was
+> `v0.1.1`, published from commit `ea55653`, and `main` moved forty-two commits
+> past it — no Delete account, no Diagnostics "Last connection" pane, none of
+> the security pass. Anyone who downloaded Lilypad got that. `v0.1.2` is cut
+> from `main` and is what the website now hands out.
+>
+> Before starting, confirm the Mac has no Lilypad state left from a previous
+> run — `/Applications/Lilypad.app`, `~/Library/Application Support/`,
+> `~/Library/Caches/`, `~/Library/WebKit/` (all `com.takedia.lilypad.desktop`),
+> the `com.takedia.lilypad.desktop.device-key` keychain item, the
+> `~/Library/LaunchAgents/com.takedia.lilypad.desktop.plist` login item, and the
+> permission grants (`tccutil reset All com.takedia.lilypad.desktop`). A leftover
+> device key is the one that matters most: the Mac would rejoin its old identity
+> and the pairing steps would not be testing what they claim to.
 
-| #   | Do                                                              | Expect                                                                                                                                                 |
-| --- | --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 1.1 | Open `~/Desktop/lilypad-test-build/Lilypad_0.1.1_universal.dmg` | 20 MB, universal (`x86_64 arm64`), built from `main`.                                                                                                  |
-| 1.2 | Double-click the DMG                                            | It mounts and shows `Lilypad.app` next to an Applications alias.                                                                                       |
-| 1.3 | Drag Lilypad to Applications                                    | Copies without error.                                                                                                                                  |
-| 1.4 | Double-click Lilypad in Applications                            | **The build is unsigned, so macOS refuses it**: _"Lilypad" cannot be opened because the developer cannot be verified._ This is correct for this build. |
-| 1.5 | Right-click Lilypad → **Open** → **Open**                       | It launches. (Or System Settings → Privacy & Security → **Open Anyway**.)                                                                              |
-| 1.6 | Look at the screen                                              | A small green **bubble** floats near the top-left.                                                                                                     |
-| 1.7 | Look at the menu bar                                            | A Lilypad **tray icon**, with: Open Dashboard, Show QR / Pair, Approve, Deny, Disconnect, ⛔ Panic disconnect, Diagnostics…                            |
-| 1.8 | Leave it running for 10 minutes while you use the Mac normally  | No crash, no beachball, no runaway CPU (check Activity Monitor: idle should be low single-digit %).                                                    |
-| 1.9 | Tray → **Diagnostics…**                                         | A window opens showing Health, Last connection, and `backend: https://api.takedia.com`. **If the backend is anything else, stop and report it.**       |
+| #   | Do                                                                  | Expect                                                                                                                                                 |
+| --- | ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 1.1 | Open <https://lilypadhome.takedia.com>, then **Download for macOS** | The releases page offers `Lilypad_0.1.2_universal.dmg` — 20 MB, universal (`x86_64 arm64`), built from `main`.                                         |
+| 1.2 | Double-click the DMG                                                | It mounts and shows `Lilypad.app` next to an Applications alias.                                                                                       |
+| 1.3 | Drag Lilypad to Applications                                        | Copies without error.                                                                                                                                  |
+| 1.4 | Double-click Lilypad in Applications                                | **The build is unsigned, so macOS refuses it**: _"Lilypad" cannot be opened because the developer cannot be verified._ This is correct for this build. |
+| 1.5 | Right-click Lilypad → **Open** → **Open**                           | It launches. (Or System Settings → Privacy & Security → **Open Anyway**.)                                                                              |
+| 1.6 | Look at the screen                                                  | A small green **bubble** floats near the top-left.                                                                                                     |
+| 1.7 | Look at the menu bar                                                | A Lilypad **tray icon**, with: Open Dashboard, Show QR / Pair, Approve, Deny, Disconnect, ⛔ Panic disconnect, Diagnostics…                            |
+| 1.8 | Leave it running for 10 minutes while you use the Mac normally      | No crash, no beachball, no runaway CPU (check Activity Monitor: idle should be low single-digit %).                                                    |
+| 1.9 | Tray → **Diagnostics…**                                             | A window opens showing Health, Last connection, and `backend: https://api.takedia.com`. **If the backend is anything else, stop and report it.**       |
 
 > **Signed builds behave differently at 1.4/1.5.** A Developer-ID-signed,
 > notarized build opens on the first double-click with no warning at all. Until
@@ -187,6 +194,22 @@ Pairing and linking are different things and the test covers both.
 | 3.9  | Scan it with the signed-in iPhone and approve                      | The Mac's panel flips to **Linked**.                                                                                                 |
 | 3.10 | iPhone → Your devices                                              | Both the Mac and the iPhone are listed.                                                                                              |
 | 3.11 | On the Mac: sign in with the same account under **Your account**   | It says signed in — and says explicitly that signing in does **not** link the computer. Both statements should be on screen at once. |
+
+### Account state
+
+Sign-in is not linking and neither is pairing, so the account's own behaviour
+gets its own rows. Nothing here needs a delivered email — that is the point of
+password auth ([ADR-0012](adr/0012-password-authentication.md)), and it is why
+the journey is testable at all while Resend is unconfigured.
+
+| #    | Do                                                              | Expect                                                                               |
+| ---- | --------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| 3.12 | Create the account with a password shorter than 12 characters   | Refused, and it says so before the request is sent.                                  |
+| 3.13 | Try to create a second account on the same address              | Refused: an account already exists for that address.                                 |
+| 3.14 | Sign out on the Mac, then sign in again with the right password | Signed back in. The computer is **still linked** — signing out is not unlinking.     |
+| 3.15 | Sign in with the right address and a wrong password             | Refused. The message must not reveal whether the address has an account.             |
+| 3.16 | Sign in with an address that has no account                     | Refused with the **same** message and no noticeable difference in how long it takes. |
+| 3.17 | Quit the app entirely and reopen it                             | Still signed in and still linked. Neither should need doing twice.                   |
 
 ## 4. Connectivity
 

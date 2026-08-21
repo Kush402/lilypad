@@ -2,17 +2,5 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<!-- Sign in with Apple (M8, docs/adr/0001-account-authentication.md).
-	     Apple REQUIRES this to be offered on iOS once any other third-party
-	     sign-in exists, so adding Google sign-in makes this mandatory rather
-	     than optional.
-
-	     This entitlement must also be enabled on the App ID
-	     (com.takedia.lilypad) in the Apple Developer portal, or signing fails
-	     with a provisioning-profile mismatch. -->
-	<key>com.apple.developer.applesignin</key>
-	<array>
-		<string>Default</string>
-	</array>
 </dict>
 </plist>
