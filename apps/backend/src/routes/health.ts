@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import type { HealthReport } from '@lilypad/shared';
 import { pingPostgres } from '../db/client.js';
 import { pingRedis } from '../redis.js';
+import { config } from '../config.js';
 
 const VERSION = '0.1.0';
 
@@ -22,6 +23,10 @@ export async function healthRoutes(app: FastifyInstance): Promise<void> {
       checks: {
         postgres: postgres ? 'up' : 'down',
         redis: redis ? 'up' : 'down',
+        // Both halves, because either alone is a half-configured deployment
+        // that fails on every message — the same rule `createResendMailSender`
+        // applies.
+        mail: config.env.RESEND_API_KEY && config.env.MAIL_FROM ? 'configured' : 'unconfigured',
       },
       version: VERSION,
       revision: REVISION,

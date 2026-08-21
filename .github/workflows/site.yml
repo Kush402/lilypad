@@ -72,10 +72,42 @@ jobs:
         if: steps.creds.outputs.present == 'true'
         run: echo "deploying $(git rev-parse --short HEAD) to lilypad-site"
 
+      # `--branch` is explicit rather than inferred. Wrangler reads the branch
+      # from the CI environment, and any branch that is not the project's
+      # PRODUCTION branch publishes a PREVIEW deployment instead — which gets
+      # its own hashed URL, leaves lilypadhome.takedia.com untouched, and
+      # reports success. That is the same "green but not deployed" failure this
+      # workflow was rewritten to stop telling, wearing a different hat.
       - name: Deploy to Cloudflare Pages
         if: steps.creds.outputs.present == 'true'
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages deploy apps/site/dist --project-name=lilypad-site
+          command: pages deploy apps/site/dist --project-name=lilypad-site --branch=main
+
+      # The deploy step succeeding means Cloudflare accepted an upload. It does
+      # not mean the site people visit changed — a preview deployment, a custom
+      # domain attached to a different project, or a stale cache all look
+      # identical from here. So this fetches the real address and compares it
+      # to the exact file that was just built.
+      #
+      # Byte-for-byte, because a semantic check ("does it still say
+      # unreleased?") passes just as happily on last month's deployment.
+      - name: Verify the live site is serving this build
+        if: steps.creds.outputs.present == 'true'
+        run: |
+          set -euo pipefail
+          expected=$(shasum -a 256 apps/site/dist/index.html | cut -d' ' -f1)
+          for attempt in 1 2 3 4 5 6; do
+            live=$(curl -fsSL --max-time 20 https://lilypadhome.takedia.com/ \
+              | shasum -a 256 | cut -d' ' -f1) || live="unreachable"
+            if [ "$live" = "$expected" ]; then
+              echo "lilypadhome.takedia.com is serving this build ($expected)"
+              exit 0
+            fi
+            echo "attempt $attempt: live=$live expected=$expected — waiting"
+            sleep 10
+          done
+          echo "::error::the deploy reported success but https://lilypadhome.takedia.com/ is not serving this build. Likely causes, in order: the Pages project's production branch is not 'main' (so this published a preview); lilypadhome.takedia.com is a custom domain on a different Pages project; or the zone transforms HTML (auto-minify, Rocket Loader), which would make a byte comparison the wrong check."
+          exit 1

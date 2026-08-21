@@ -69,11 +69,23 @@ async function checkApi() {
   if (status !== 200 || body.status !== 'ok') {
     // /health reports WHICH dependency is down, so the alert can say so
     // instead of making someone SSH in to find out.
-    const down = Object.entries(body.checks ?? {}).filter(([, v]) => v !== 'up').map(([k]) => k);
+    // Only the up/down probes. `checks.mail` reports configured/unconfigured
+    // and has its own alert below — listing it here would say "down: mail"
+    // during a Postgres outage and send someone to look at the wrong thing.
+    const down = Object.entries(body.checks ?? {}).filter(([, v]) => v === 'down').map(([k]) => k);
     return alert('critical', 'api',
       `health is ${body.status ?? status}${down.length ? `; down: ${down.join(', ')}` : ''}`,
       down.length ? `Restart the ${down.join(' and ')} container(s) and check disk.` :
         'Backend is answering but not healthy — read its container logs.');
+  }
+  // Outbound email, which is invisible from every other signal. With no
+  // mailer, password reset and magic-link sign-in answer 503 while the API is
+  // otherwise perfectly healthy — a customer who cannot get back into their
+  // account, and a dashboard that says everything is fine.
+  if (body.checks?.mail === 'unconfigured') {
+    alert('warning', 'mail',
+      'production has no mail sender — password reset and magic-link sign-in return 503',
+      'Set RESEND_API_KEY and MAIL_FROM in the host .env.production and redeploy.');
   }
   // A latency ceiling, not an average: this is one sample over Cloudflare and
   // only means something when it is badly wrong.
@@ -140,13 +152,25 @@ async function checkMetrics() {
 async function checkSite() {
   const probe = await timed(async () => {
     const res = await fetch(SITE, { signal: AbortSignal.timeout(15_000) });
-    return { status: res.status, length: (await res.text()).length };
+    const text = await res.text();
+    return { status: res.status, length: text.length, text };
   });
-  facts.site = probe;
+  // The body is not kept in `facts` — it is 10 KB of HTML, and the report is
+  // meant to be readable.
+  facts.site = probe.error ? probe : { ...probe, value: { status: probe.value.status, length: probe.value.length } };
   if (probe.error || probe.value.status !== 200) {
-    alert('critical', 'site',
+    return alert('critical', 'site',
       `GET ${SITE} → ${probe.error ?? probe.value.status}`,
       'The download page is how customers get the app. Check Cloudflare Pages.');
+  }
+  // A tripwire for one specific failure that really happened: for weeks the
+  // live site said the product was unreleased while a fix for that exact
+  // sentence sat on `main` behind a workflow that could not deploy. The site
+  // being UP was never the question; the site being STALE was.
+  if (/not yet released publicly/i.test(probe.value.text)) {
+    alert('critical', 'site-stale',
+      `${SITE} still says the product is not released`,
+      'The Cloudflare Pages deploy is not tracking main. Check the `site` workflow and its CLOUDFLARE_* secrets.');
   }
 }
 
