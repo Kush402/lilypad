@@ -87,6 +87,20 @@ export const PasswordResetConfirmSchema = z.object({
 });
 export type PasswordResetConfirm = z.infer<typeof PasswordResetConfirmSchema>;
 
+/**
+ * Delete the signed-in account and everything it owns.
+ *
+ * `confirmEmail` must equal the account's own address. It is NOT a security
+ * control and must not be mistaken for one — anyone holding the access token
+ * can already read that address from their own account. It exists so the
+ * destructive call cannot be made by a mis-click, a stale form, or a client
+ * bug: the request has to name the exact account it is about to destroy.
+ */
+export const AccountDeleteRequestSchema = z.object({
+  confirmEmail: z.string().email().max(320),
+});
+export type AccountDeleteRequest = z.infer<typeof AccountDeleteRequestSchema>;
+
 /** Exchange a refresh token for a fresh pair. Single-use: the presented token
  * is retired by the exchange. */
 export const RefreshRequestSchema = z.object({

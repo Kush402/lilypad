@@ -4,6 +4,10 @@ import { redis } from './redis.js';
 import { queryClient } from './db/client.js';
 import { setAdvertisedUrls } from './services/advertisedUrls.js';
 import {
+  startAuditRetention,
+  createDrizzleAuditRetentionStore,
+} from './services/auditRetention.js';
+import {
   startQuickTunnel,
   tunnelAdvertisedUrls,
   type QuickTunnelHandle,
@@ -13,12 +17,17 @@ async function main() {
   const app = await buildServer();
   let tunnel: QuickTunnelHandle | null = null;
 
+  // Audit-log retention (2 days). Here rather than in `buildServer` so that
+  // building a server in a test does not start a timer that talks to Postgres.
+  const auditRetention = startAuditRetention(createDrizzleAuditRetentionStore());
+
   let shuttingDown = false;
   const shutdown = async (signal: string) => {
     if (shuttingDown) return; // a second signal shouldn't race the first
     shuttingDown = true;
     app.log.info({ signal }, 'shutting down');
     tunnel?.stop();
+    auditRetention.stop();
     // Watchdog: never hang forever if a socket/connection won't drain.
     const watchdog = setTimeout(() => {
       app.log.error('graceful shutdown timed out — forcing exit');

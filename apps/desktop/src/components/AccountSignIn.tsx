@@ -39,6 +39,12 @@ export function AccountSignIn({ onChange }: AccountSignInProps = {}) {
   const [busy, setBusy] = useState(false);
   const [reveal, setReveal] = useState(false);
   const [error, setError] = useState('');
+  // The delete flow, which only exists once signed in. Kept collapsed by
+  // default: an irreversible button that is always on screen is a button that
+  // eventually gets pressed by accident.
+  const [deleting, setDeleting] = useState(false);
+  const [deleteEmail, setDeleteEmail] = useState('');
+  const [deletePassword, setDeletePassword] = useState('');
 
   const apply = useCallback(
     (next: AccountStateDto) => {
@@ -109,7 +115,88 @@ export function AccountSignIn({ onChange }: AccountSignInProps = {}) {
           >
             Sign out
           </button>
+          {deleting ? null : (
+            <button
+              className="btn btn--danger"
+              disabled={busy}
+              onClick={() => {
+                setDeleting(true);
+                setError('');
+              }}
+            >
+              Delete account
+            </button>
+          )}
         </div>
+
+        {deleting ? (
+          <div className="account__delete" data-testid="account-delete">
+            {/* Said plainly and in full BEFORE the inputs. Someone who reads
+                only the first line should still know what they are agreeing
+                to. */}
+            <p className="error">
+              This permanently deletes your account, every computer and phone on it, and every
+              pairing between them. Your Macs stay installed but stop being yours. This cannot be
+              undone.
+            </p>
+            <input
+              className="field"
+              data-testid="delete-confirm-email"
+              type="email"
+              aria-label={`Type ${account.email} to confirm`}
+              placeholder={`Type ${account.email} to confirm`}
+              autoComplete="off"
+              value={deleteEmail}
+              disabled={busy}
+              onChange={(e) => setDeleteEmail(e.target.value)}
+            />
+            <input
+              className="field"
+              data-testid="delete-password"
+              type="password"
+              aria-label="Your password"
+              placeholder="Your password"
+              autoComplete="current-password"
+              value={deletePassword}
+              disabled={busy}
+              onChange={(e) => setDeletePassword(e.target.value)}
+            />
+            <div className="row">
+              <button
+                className="btn btn--danger"
+                data-testid="delete-confirm"
+                // Both fields, always. The server checks the address itself —
+                // this only stops the request being sent half-finished.
+                disabled={busy || !deleteEmail.trim() || deletePassword.length === 0}
+                onClick={() =>
+                  void run(async () => {
+                    await api.accountDelete(deleteEmail.trim(), deletePassword);
+                    setDeleting(false);
+                    setDeleteEmail('');
+                    setDeletePassword('');
+                    apply({ signedIn: false, email: null, userId: null });
+                  })
+                }
+              >
+                {busy ? 'Deleting…' : 'Permanently delete'}
+              </button>
+              <button
+                className="btn"
+                data-testid="delete-cancel"
+                disabled={busy}
+                onClick={() => {
+                  setDeleting(false);
+                  setDeleteEmail('');
+                  setDeletePassword('');
+                  setError('');
+                }}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        ) : null}
+
         {error ? <p className="error">{error}</p> : null}
       </section>
     );

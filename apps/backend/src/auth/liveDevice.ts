@@ -1,5 +1,5 @@
 import type { FastifyReply, FastifyRequest } from 'fastify';
-import { deviceOwnershipById } from './ownership.js';
+import { accountExists, deviceOwnershipById } from './ownership.js';
 
 /**
  * Deny a request whose CALLING device has been revoked.
@@ -34,10 +34,26 @@ import { deviceOwnershipById } from './ownership.js';
  */
 export async function rejectRevokedActor(req: FastifyRequest, reply: FastifyReply): Promise<void> {
   if (reply.sent) return; // an earlier preHandler already answered
-  const deviceId = req.actor?.deviceId;
-  // No device in the token — an account session, or an unauthenticated request
-  // on an `optionalAuth` route. Neither is a device that can be revoked.
-  if (!deviceId) return;
+  const actor = req.actor;
+  // An unauthenticated request on an `optionalAuth` route. There is no actor
+  // to disqualify.
+  if (!actor) return;
+
+  const deviceId = actor.deviceId;
+  if (!deviceId) {
+    // An ACCOUNT session. There is no device to revoke, but the account itself
+    // can have been deleted, and the token outlives the row by up to its full
+    // ten minutes. Without this, `DELETE /account` would answer 200 while the
+    // caller's own token still opened `POST /devices/enroll` — which would
+    // then write a `user_id` no `users` row matches and fail as a 500, telling
+    // the user their deleted account was a server error.
+    if (await accountExists(actor.userId)) return;
+    await reply.code(401).send({
+      error: 'unauthorized',
+      message: 'this account no longer exists',
+    });
+    return;
+  }
 
   const device = await deviceOwnershipById(deviceId);
   // Unknown covers the account having been deleted out from under the token.

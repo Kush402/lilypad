@@ -1,6 +1,6 @@
 module.exports = {
   preset: 'react-native',
-  setupFilesAfterEnv: ['@testing-library/react-native/extend-expect'],
+  setupFilesAfterEnv: ['@testing-library/react-native/extend-expect', '<rootDir>/jest.setup.ts'],
   // React Native rendering plus `findBy*`'s polling makes these tests slow by
   // nature — a passing file routinely takes tens of seconds of wall clock. At
   // jest's 5s default, individual tests inside it began timing out whenever

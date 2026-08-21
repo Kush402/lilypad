@@ -29,6 +29,7 @@ describe('Diagnostics', () => {
       current_room_id: null,
       pending_request: null,
       plugin_health: { ScreenCapture: 'ok', Accessibility: 'degraded: not granted' },
+      connection_path: null,
     } satisfies AppStateDto);
 
     render(<Diagnostics />);
@@ -37,6 +38,43 @@ describe('Diagnostics', () => {
     expect(screen.getByText('Accessibility')).toBeInTheDocument();
     expect(screen.getByText('degraded: not granted')).toBeInTheDocument();
     expect(screen.getByText(/desktop-abc/)).toBeInTheDocument();
+  });
+
+  it.each([
+    ['lan', /local network/i],
+    ['direct', /over the internet/i],
+    ['relay', /TURN/i],
+  ] as const)('names the %s path in words', (path, expected) => {
+    // The whole reason this exists: a connectivity test has to be able to say
+    // which transport a session actually used, and every other signal — the
+    // status indicator, the candidate logs — looks the same for all three.
+    vi.mocked(useAppState).mockReturnValue({
+      device_id: 'desktop-abc',
+      backend_base_url: 'http://localhost:8080',
+      session: 'active',
+      current_room_id: 'room-1',
+      pending_request: null,
+      plugin_health: {},
+      connection_path: path,
+    } satisfies AppStateDto);
+
+    render(<Diagnostics />);
+    expect(screen.getByTestId('connection-path')).toHaveTextContent(expected);
+  });
+
+  it('says no session has connected rather than implying one has', () => {
+    vi.mocked(useAppState).mockReturnValue({
+      device_id: 'desktop-abc',
+      backend_base_url: 'http://localhost:8080',
+      session: 'idle',
+      current_room_id: null,
+      pending_request: null,
+      plugin_health: {},
+      connection_path: null,
+    } satisfies AppStateDto);
+
+    render(<Diagnostics />);
+    expect(screen.getByTestId('connection-path')).toHaveTextContent(/no session/i);
   });
 
   it('renders nothing crash-worthy before state has loaded', () => {

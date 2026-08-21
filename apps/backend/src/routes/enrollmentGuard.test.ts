@@ -25,6 +25,19 @@ vi.mock('../auth/deviceIdentity.js', () => ({
   verifyDeviceSignature: vi.fn(() => false),
 }));
 
+// `rejectRevokedActor` runs ahead of the handler now: a deleted account must
+// not be able to enrol a device onto itself. Stubbed to "the account is still
+// there" so this file keeps testing the linking rule rather than the gate —
+// `liveDevice.test.ts` owns the gate.
+vi.mock('../auth/ownership.js', () => ({
+  accountExists: vi.fn(async () => true),
+  deviceOwnershipById: vi.fn(async () => null),
+  deviceOwnershipByFingerprint: vi.fn(async () => null),
+  pairOwnership: vi.fn(async () => null),
+  ownsDevice: vi.fn(() => false),
+  canManagePair: vi.fn(() => false),
+}));
+
 const { enrollmentRoutes } = await import('./enrollment.js');
 
 /**

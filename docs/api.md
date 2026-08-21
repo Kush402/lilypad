@@ -56,10 +56,22 @@ Liveness + dependency checks.
 {
   "status": "ok",              // "degraded" (503) if a dep is down
   "uptimeSeconds": 42,
-  "checks": { "postgres": "up", "redis": "up" },
-  "version": "0.1.0"
+  "checks": {
+    "postgres": "up",
+    "redis": "up",
+    "mail": "configured"       // or "unconfigured" — see below
+  },
+  "version": "0.1.0",
+  "revision": "<git sha>"      // "unknown" on a local build
 }
 ```
+
+`checks.mail` reports whether `RESEND_API_KEY` **and** `MAIL_FROM` are both set.
+It deliberately does **not** affect `status`: a deployment with no mailer still
+signs devices in, pairs them and relays sessions, so degrading health would take
+a working API out of rotation. But with no mailer, `/auth/password/reset/request`
+and `/auth/magic-link/request` answer **503**, and nothing else said so out loud
+— an operator would have found out from a support ticket.
 
 ## `POST /pairing/create` ✅
 
@@ -149,8 +161,68 @@ routes, `/devices/unpair`, `/pairing/*`, `/connect/request`, and
 merely tidiness: it takes a device token, so without the check a revoked phone
 could approve a **new** laptop onto the account.
 
-Revoking also revokes the account's refresh tokens, and re-enrolling a revoked
-device requires a credential minted **after** the revocation
+### `DELETE /account` ✅ 🔒 account or device token
+
+Delete the account permanently. Body `{ "confirmEmail": "you@example.com" }` →
+`200 { "ok": true, "devicesRemoved": 2 }`.
+
+`requireAuth`, not `requireDevice`: this is an account action, and the session
+between signing in and enrolling a device is exactly when someone is most likely
+to want it. A device that has been **removed** from the account still cannot
+call it — `rejectRevokedActor` applies, so revocation cannot be retaliated
+against.
+
+`confirmEmail` must equal the account's own address, compared case-insensitively
+after trimming. **It is not a security control**: whoever holds the token can
+already read that address. It exists so the one irreversible call in the product
+cannot be made by a mis-click or a stale form, and it is checked against the
+account the **token** names — never used to look an account up, which would make
+typing someone else's address a way to delete it.
+
+| Result                                   | Meaning                                                                            |
+| ---------------------------------------- | ---------------------------------------------------------------------------------- |
+| `200 { ok, devicesRemoved }`             | Gone. Every live session for those devices is ended.                               |
+| `400 { error: "invalid_request" }`       | No `confirmEmail` in the body.                                                     |
+| `400 { error: "confirmation_mismatch" }` | The address does not name this account.                                            |
+| `401`                                    | No token, an expired one, a revoked device, or an account that is already deleted. |
+| `404 { error: "not_found" }`             | The token names an account that no longer exists.                                  |
+
+What it removes, and what it does not:
+
+| Data                              | Fate                                                                                                                                                                                                                 |
+| --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `users`                           | Deleted.                                                                                                                                                                                                             |
+| `oauth_identities` (Apple/Google) | Deleted (cascade).                                                                                                                                                                                                   |
+| `devices`                         | Deleted (cascade). Live rooms ended immediately.                                                                                                                                                                     |
+| `trusted_devices` (pairs)         | Deleted (cascade from both device columns).                                                                                                                                                                          |
+| `refresh_tokens`                  | Deleted (cascade) — every session, on every machine.                                                                                                                                                                 |
+| `sessions`                        | Kept, anonymised (`ON DELETE SET NULL`).                                                                                                                                                                             |
+| `audit_logs`                      | Kept, anonymised, then expired by the ordinary **2-day** retention window — see [Audit logs](db-schema.md). Deleting an account is not a way to erase what it did, and not a way to keep it longer than anyone else. |
+
+Access tokens are signed, not stored, so they cannot be deleted. They are closed
+by the same gate that closes a revoked device's: a token naming an account that
+no longer exists is refused with **401** on every route that carries
+`rejectRevokedActor`, including `POST /devices/enroll`.
+
+On the Mac this is **Your account → Delete account**, which asks for the
+password and for the address to be typed out. The desktop keeps no account
+credential at all, so a stolen laptop cannot reach this route on its own.
+
+A passwordless account — one created with Apple, Google or a magic link — can
+only be deleted from the phone. That is not a dead end: the Mac offers email +
+password sign-in and nothing else ([ADR-0012](adr/0012-password-authentication.md)),
+so such an account can never be signed in there to begin with.
+
+On the phone it is **Your devices → Delete account**, which asks only for the
+address. That difference is deliberate rather than inconsistent: the phone holds
+a hardware-backed Ed25519 device key that already proves who it is, and asking
+for a password there would lock out every account that has never had one — Apple,
+Google and magic-link sign-ins all reach that screen. The phone also matters
+more than the Mac here, because it is the device a user still has when the Mac
+is the thing that was lost.
+
+Revoking a device also revokes the account's refresh tokens, and re-enrolling a
+revoked device requires a credential minted **after** the revocation
 (`403 { "error": "device_revoked" }` from `/devices/enroll` otherwise). Together
 those stop the ten-minute window being used to make itself permanent — enrolling
 clears `revoked_at`. Recovery is unaffected: sign in again on the device and the

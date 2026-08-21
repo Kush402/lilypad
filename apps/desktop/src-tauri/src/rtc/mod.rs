@@ -63,6 +63,43 @@ fn summarize_candidate(candidate: &str) -> String {
     format!("typ {typ} {transport} {addr}:{port}")
 }
 
+/// Which way the media is actually travelling, once ICE has settled.
+///
+/// This is the question every connectivity report has to answer and that no
+/// amount of candidate logging does: candidates are what each side *offered*,
+/// and a session that offered a relay candidate may well have ended up direct
+/// (or the reverse). Only the selected pair says what happened.
+///
+/// The three values are the three cases that mean something different to a
+/// person and to the cost model: on the same network, over the internet
+/// directly, and through the TURN relay — the last being the one that costs
+/// bandwidth and adds latency.
+pub const PATH_LAN: &str = "lan";
+pub const PATH_DIRECT: &str = "direct";
+pub const PATH_RELAY: &str = "relay";
+
+/// Classify a selected candidate pair, as printed by `RTCIceCandidatePair`'s
+/// `Display`: `(local) udp host 10.0.0.2:54321 <-> (remote) udp srflx …`.
+///
+/// Formatted text rather than the typed fields because the pair's `local` and
+/// `remote` are private in webrtc-0.11 and `Display` is the only accessor it
+/// offers. The parse is correspondingly defensive: an unrecognised shape
+/// reports `direct` rather than guessing `lan`, because claiming a session is
+/// local when it might be relayed is the wrong way to be wrong.
+pub fn classify_candidate_pair(pair: &str) -> &'static str {
+    if pair.contains("relay") {
+        return PATH_RELAY;
+    }
+    // `host` on BOTH sides is the only combination that means "neither side
+    // needed to go outside its own network". One host plus one server-reflexive
+    // is an ordinary internet connection.
+    let sides: Vec<&str> = pair.split("<->").collect();
+    if sides.len() == 2 && sides.iter().all(|side| side.contains("host")) {
+        return PATH_LAN;
+    }
+    PATH_DIRECT
+}
+
 impl From<IceServerConfig> for RTCIceServer {
     fn from(c: IceServerConfig) -> Self {
         RTCIceServer {
@@ -285,6 +322,21 @@ impl WebRtcPeer {
         })
     }
 
+    /// The path the connection actually settled on, or `None` while ICE is
+    /// still choosing. See `classify_candidate_pair`.
+    pub async fn connection_path(&self) -> Option<&'static str> {
+        let pair = self
+            .pc
+            .sctp()
+            .transport()
+            .ice_transport()
+            .get_selected_candidate_pair()
+            .await?;
+        let described = pair.to_string();
+        log::info!(target: "lilypad::rtc", "selected candidate pair: {described}");
+        Some(classify_candidate_pair(&described))
+    }
+
     /// Create + set the local offer, returning its SDP for signaling.
     pub async fn create_offer(&self) -> Result<String> {
         let offer = self.pc.create_offer(None).await?;
@@ -376,4 +428,54 @@ fn build_api() -> Result<API> {
         .with_media_engine(media)
         .with_interceptor_registry(registry)
         .build())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn both_sides_on_their_own_network_is_lan() {
+        assert_eq!(
+            classify_candidate_pair(
+                "(local) udp host 10.0.0.2:54321 <-> (remote) udp host 10.0.0.7:51000"
+            ),
+            PATH_LAN
+        );
+    }
+
+    #[test]
+    fn a_reflexive_side_means_the_internet_not_the_lan() {
+        assert_eq!(
+            classify_candidate_pair(
+                "(local) udp host 10.0.0.2:54321 <-> (remote) udp srflx 203.0.113.9:51000"
+            ),
+            PATH_DIRECT
+        );
+    }
+
+    #[test]
+    fn a_relay_on_either_side_is_a_relayed_session() {
+        assert_eq!(
+            classify_candidate_pair(
+                "(local) udp relay 198.51.100.4:49200 <-> (remote) udp srflx 203.0.113.9:51000"
+            ),
+            PATH_RELAY
+        );
+        assert_eq!(
+            classify_candidate_pair(
+                "(local) udp host 10.0.0.2:54321 <-> (remote) udp relay 198.51.100.4:49200"
+            ),
+            PATH_RELAY
+        );
+    }
+
+    #[test]
+    fn an_unrecognised_pair_reports_direct_rather_than_lan() {
+        assert_eq!(classify_candidate_pair(""), PATH_DIRECT);
+        assert_eq!(
+            classify_candidate_pair("something else entirely"),
+            PATH_DIRECT
+        );
+    }
 }

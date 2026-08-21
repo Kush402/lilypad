@@ -50,6 +50,7 @@ describe('QrOverlay', () => {
       current_room_id: 'r',
       pending_request: null,
       plugin_health: {},
+      connection_path: null,
     });
 
     screen.getByText('New code').click();
@@ -75,6 +76,7 @@ describe('QrOverlay', () => {
       current_room_id: 'r',
       pending_request: null,
       plugin_health: {},
+      connection_path: null,
     });
 
     screen.getByText('New code').click();
@@ -101,6 +103,7 @@ describe('QrOverlay', () => {
       current_room_id: 'r',
       pending_request: null,
       plugin_health: {},
+      connection_path: null,
     });
 
     screen.getByText('New code').click();

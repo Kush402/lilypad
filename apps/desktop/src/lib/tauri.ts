@@ -35,6 +35,10 @@ export interface AppStateDto {
   current_room_id: string | null;
   pending_request: PendingRequestDto | null;
   plugin_health: Record<string, string>;
+  /** How the last session's media actually travelled. `null` until one has
+   * connected. Kept after the session ends — "was that relayed?" is asked
+   * after hanging up. */
+  connection_path: 'lan' | 'direct' | 'relay' | null;
 }
 
 export const api = {
@@ -78,6 +82,10 @@ export const api = {
   accountConfirmPasswordReset: (email: string, code: string, password: string) =>
     invoke<AccountStateDto>('account_confirm_password_reset', { email, code, password }),
   accountSignOut: () => invoke<void>('account_sign_out'),
+  /** Permanent. Takes the address the USER typed, not the stored one — the
+   * server's confirmation check is only worth anything if a human did it. */
+  accountDelete: (confirmEmail: string, password: string) =>
+    invoke<void>('account_delete', { confirmEmail, password }),
 };
 
 /** Mirrors the Rust `AccountState`. */

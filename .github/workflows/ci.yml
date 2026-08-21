@@ -64,6 +64,17 @@ jobs:
     permissions:
       contents: read
       security-events: write
+      # CodeQL's `analyze` step calls the workflow-runs API to attach its
+      # results to this run. Without this it uploads the SARIF successfully —
+      # the CodeQL check goes green — and then fails the JOB on the follow-up
+      # call, which is how a passing analysis produced a red build:
+      #
+      #   ##[error]Resource not accessible by integration -
+      #   https://docs.github.com/rest/actions/workflow-runs#get-a-workflow-run
+      #
+      # Read-only, and scoped to Actions metadata; it grants nothing this job
+      # could write with.
+      actions: read
     steps:
       - uses: actions/checkout@v4
 

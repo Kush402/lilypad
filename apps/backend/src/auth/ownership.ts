@@ -1,6 +1,6 @@
 import { and, eq } from 'drizzle-orm';
 import { db } from '../db/client.js';
-import { devices, trustedDevices } from '../db/schema.js';
+import { devices, trustedDevices, users } from '../db/schema.js';
 import { deviceState } from './deviceState.js';
 import type { DeviceState } from '@lilypad/protocol';
 
@@ -20,6 +20,24 @@ import type { DeviceState } from '@lilypad/protocol';
  * A caller that cannot distinguish "not yours" from "does not exist" is a
  * caller that cannot leak the difference, and both must answer 404.
  */
+
+/**
+ * Whether the account a token names still exists.
+ *
+ * Its own function rather than a join onto the device lookup because it is
+ * needed exactly where there is no device to join to: an ACCOUNT-scoped token,
+ * on the routes that accept one. A device-scoped token needs no separate check
+ * — `devices.user_id` is a foreign key, so a device row that still exists
+ * proves its owner does.
+ */
+export async function accountExists(userId: string, database = db): Promise<boolean> {
+  const rows = await database
+    .select({ id: users.id })
+    .from(users)
+    .where(eq(users.id, userId))
+    .limit(1);
+  return rows.length > 0;
+}
 
 export interface DeviceOwnership {
   deviceId: string;

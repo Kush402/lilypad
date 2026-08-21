@@ -6,17 +6,29 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react-nativ
 import type { AccountDevice } from '@lilypad/protocol';
 import { AccountDevicesScreen } from './AccountDevicesScreen';
 import {
+  AccountDeleteConfirmationError,
+  deleteAccount,
   listAccountDevices,
   renameAccountDevice,
   revokeAccountDevice,
 } from '../lib/accountDevices';
 import type { RootStackParamList } from '../types';
 
-jest.mock('../lib/accountDevices', () => ({
-  listAccountDevices: jest.fn(),
-  renameAccountDevice: jest.fn(),
-  revokeAccountDevice: jest.fn(),
-}));
+jest.mock('../lib/accountDevices', () => {
+  class AccountDeviceError extends Error {}
+  // The real subclass relationship, not a stub: the screen distinguishes a
+  // mistyped address from a failure it can do nothing about, and a mock that
+  // flattened them would make that distinction untestable.
+  class AccountDeleteConfirmationError extends AccountDeviceError {}
+  return {
+    AccountDeviceError,
+    AccountDeleteConfirmationError,
+    listAccountDevices: jest.fn(),
+    renameAccountDevice: jest.fn(),
+    revokeAccountDevice: jest.fn(),
+    deleteAccount: jest.fn(),
+  };
+});
 
 jest.mock('../lib/auth', () => {
   class DeviceAuthError extends Error {
@@ -218,5 +230,87 @@ describe('AccountDevicesScreen', () => {
     expect(await screen.findByText(/Removed\./)).toBeTruthy();
     expect(screen.queryByText('Remove')).toBeNull();
     expect(screen.queryByText('Rename')).toBeNull();
+  });
+
+  describe('deleting the account', () => {
+    /**
+     * The only irreversible thing in the app. A phone is also the only device
+     * a user still has when their Mac is lost, so this is the recovery path as
+     * well as the destruction one — which is why it exists here and not only
+     * on the desktop.
+     */
+    beforeEach(() => {
+      (listAccountDevices as jest.Mock).mockResolvedValue([device()]);
+    });
+
+    it('is not one press away', async () => {
+      renderScreen();
+      await screen.findByTestId('delete-account');
+
+      expect(screen.queryByTestId('delete-account-panel')).toBeNull();
+      expect(screen.queryByTestId('delete-confirm')).toBeNull();
+    });
+
+    it('says what will happen before asking for anything', async () => {
+      renderScreen();
+      fireEvent.press(await screen.findByTestId('delete-account'));
+
+      expect(await screen.findByText(/cannot be undone/i)).toBeTruthy();
+    });
+
+    it('sends the typed address, trimmed', async () => {
+      (deleteAccount as jest.Mock).mockResolvedValue(undefined);
+      renderScreen();
+      fireEvent.press(await screen.findByTestId('delete-account'));
+      fireEvent.changeText(screen.getByTestId('delete-confirm-email'), '  ada@example.com ');
+      fireEvent.press(screen.getByTestId('delete-confirm'));
+
+      await waitFor(() => expect(deleteAccount).toHaveBeenCalledWith(API, 'ada@example.com'));
+    });
+
+    it('does not call the API with an empty confirmation', async () => {
+      renderScreen();
+      fireEvent.press(await screen.findByTestId('delete-account'));
+      fireEvent.press(screen.getByTestId('delete-confirm'));
+
+      expect(deleteAccount).not.toHaveBeenCalled();
+    });
+
+    it('sends the user to sign-in once the account is gone', async () => {
+      // Every screen behind this one is about data that no longer exists.
+      (deleteAccount as jest.Mock).mockResolvedValue(undefined);
+      renderScreen();
+      fireEvent.press(await screen.findByTestId('delete-account'));
+      fireEvent.changeText(screen.getByTestId('delete-confirm-email'), 'ada@example.com');
+      fireEvent.press(screen.getByTestId('delete-confirm'));
+
+      expect(await screen.findByText('sign-in-screen')).toBeTruthy();
+    });
+
+    it('keeps the form open on a mistyped address so the typo can be fixed', async () => {
+      (deleteAccount as jest.Mock).mockRejectedValue(
+        new AccountDeleteConfirmationError('That is not the email address on this account.'),
+      );
+      renderScreen();
+      fireEvent.press(await screen.findByTestId('delete-account'));
+      fireEvent.changeText(screen.getByTestId('delete-confirm-email'), 'wrong@example.com');
+      fireEvent.press(screen.getByTestId('delete-confirm'));
+
+      expect(await screen.findByText(/not the email address on this account/i)).toBeTruthy();
+      expect(screen.getByTestId('delete-confirm')).toBeTruthy();
+      expect(screen.queryByText('sign-in-screen')).toBeNull();
+    });
+
+    it('cancelling forgets what was typed', async () => {
+      renderScreen();
+      fireEvent.press(await screen.findByTestId('delete-account'));
+      fireEvent.changeText(screen.getByTestId('delete-confirm-email'), 'ada@example.com');
+      fireEvent.press(screen.getByTestId('delete-cancel'));
+
+      expect(screen.queryByTestId('delete-account-panel')).toBeNull();
+      fireEvent.press(screen.getByTestId('delete-account'));
+      expect(screen.getByTestId('delete-confirm-email').props.value).toBe('');
+      expect(deleteAccount).not.toHaveBeenCalled();
+    });
   });
 });

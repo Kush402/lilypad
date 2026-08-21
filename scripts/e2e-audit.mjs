@@ -18,14 +18,16 @@
  * repeatedly within a minute WILL produce 429s. That is the product working,
  * not a failure — wait out the window and re-run.
  *
- * **It leaves an account behind, and there is no way to remove it through the
- * API.** Every run signs up `audit-<random>@example.test` and there is no
- * account-deletion route in the product — for this script or for a customer.
- * Against a throwaway backend that costs nothing. Against production it means
- * one permanent row per run, removable only with SQL on the host, so prefer a
- * local backend and treat a production run as something you clean up after.
- * `.test` is reserved by RFC 6761, so the address can never collide with a
- * real one, which is what makes the cleanup query safe to write.
+ * **It cleans up after itself.** Every run signs up
+ * `audit-<random>@example.test` and deletes that account again at the end, via
+ * the same `DELETE /account` a customer uses — which is also the last check in
+ * the file, because a deletion route that only the tests believe in is not a
+ * deletion route. `.test` is reserved by RFC 6761, so the address can never
+ * collide with a real one.
+ *
+ * If the run fails partway the account survives, and removing it then needs SQL
+ * on the host. That is the honest boundary: a script that force-deleted on the
+ * way out of a failure would destroy the state you wanted to look at.
  */
 import { randomBytes, generateKeyPairSync, sign as nodeSign } from 'node:crypto';
 
@@ -346,6 +348,61 @@ check(
   'a credential older than the revocation cannot re-enroll the device',
   selfReEnroll.status === 403 && selfReEnroll.json.error === 'device_revoked',
   `HTTP ${selfReEnroll.status} ${selfReEnroll.json.error ?? ''} — a 200 means revocation can be undone by the device it revoked`,
+);
+
+// ── Deletion: the account, and everything it owns ───────────────────────────
+//
+// Last on purpose. It is both the cleanup and a real check: the audit fixture
+// is the only account in existence whose whole life this script watched, so it
+// is the only one that can prove the delete removed exactly what it claimed.
+const wrongConfirmation = await req('DELETE', '/account', { confirmEmail: 'someone@else.test' },
+  login.json.accessToken);
+check(
+  'deletion refuses a confirmation that names another account',
+  wrongConfirmation.status === 400 && wrongConfirmation.json.error === 'confirmation_mismatch',
+  `HTTP ${wrongConfirmation.status} ${wrongConfirmation.json.error ?? ''}`,
+);
+
+const unauthenticated = await req('DELETE', '/account', { confirmEmail: email });
+check(
+  'deletion refuses an unauthenticated caller',
+  unauthenticated.status === 401,
+  `HTTP ${unauthenticated.status}`,
+);
+
+const deleted = await req('DELETE', '/account', { confirmEmail: email }, login.json.accessToken);
+check(
+  'the account deletes itself, and says how many devices went with it',
+  deleted.status === 200 && typeof deleted.json.devicesRemoved === 'number',
+  `HTTP ${deleted.status} devicesRemoved=${deleted.json.devicesRemoved}`,
+);
+
+// The token is still syntactically valid — it was minted minutes ago and is
+// signed, not stored. What must have changed is that the account behind it is
+// gone, and every route that reads the database now says so.
+const afterDelete = await req('GET', '/devices', undefined, restored.json.accessToken);
+check(
+  'a device token for a deleted account stops working immediately',
+  afterDelete.status === 401,
+  `HTTP ${afterDelete.status} — a 200 means deletion waits for a token to expire`,
+);
+
+const enrollAfterDelete = await post(
+  '/devices/enroll',
+  { ...(await proof(phone)), kind: 'mobile', fingerprint: `phone-after-${tag}`, platform: 'ios' },
+  login.json.accessToken,
+);
+check(
+  'an account token for a deleted account cannot enroll a new device',
+  enrollAfterDelete.status === 401,
+  `HTTP ${enrollAfterDelete.status} — a 500 means the FK caught it instead of the gate`,
+);
+
+const signInAfterDelete = await post('/auth/password', { email, password });
+check(
+  'the deleted account cannot sign back in',
+  signInAfterDelete.status === 401,
+  `HTTP ${signInAfterDelete.status}`,
 );
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : `\n${failures} CHECK(S) FAILED`);

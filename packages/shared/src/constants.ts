@@ -41,6 +41,17 @@ export interface HealthReport {
   checks: {
     postgres: 'up' | 'down';
     redis: 'up' | 'down';
+    /**
+     * Whether outbound email is configured (`RESEND_API_KEY` + `MAIL_FROM`).
+     *
+     * Deliberately NOT part of `status`. A deployment with no mailer signs
+     * devices in, pairs them and relays sessions perfectly well — degrading
+     * health would take the API out of rotation over a feature that was still
+     * working. But it is not something an operator should have to discover
+     * from a user's support ticket either: with no mailer, password reset and
+     * magic-link sign-in answer 503, and nothing else says so out loud.
+     */
+    mail: 'configured' | 'unconfigured';
   };
   version: string;
   /** The commit the running image was built from, or `unknown` for a build

@@ -207,8 +207,16 @@ issued to, so it cannot be backfilled.
 | ip                  | inet        |                                                                                                                          |
 | created_at          | timestamptz |                                                                                                                          |
 
-The one unbounded table, and the only one that needs a retention policy — see
-[ADR-0007](adr/0007-cloud-is-control-plane-only.md).
+**Retention: 2 days.** This was the one unbounded table
+([ADR-0007](adr/0007-cloud-is-control-plane-only.md)) and it no longer is:
+[`services/auditRetention.ts`](../apps/backend/src/services/auditRetention.ts)
+deletes every row whose `created_at` is more than 48 hours old, once at boot and
+hourly after that. The window is measured from the row, not from the last run,
+so a pruner that misses an hour reaches exactly the same state on its next tick.
+
+Deleting an account does **not** delete its audit rows — `user_id` and
+`device_id` are `ON DELETE SET NULL`, so the rows survive without the person and
+then expire on the same clock as everyone else's.
 
 ## Redis keys (ephemeral)
 

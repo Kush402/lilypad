@@ -31,6 +31,7 @@ function mockState(session: string) {
     current_room_id: null,
     pending_request: null,
     plugin_health: {},
+    connection_path: null,
   });
 }
 
