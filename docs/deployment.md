@@ -1,7 +1,7 @@
 ---
 status: In Progress
 owner: @kushsharma024
-last-verified: 2026-08-16
+last-verified: 2026-08-20
 summary: How the control plane is deployed, what it costs, how it scales, and how to recover it.
 ---
 
@@ -383,17 +383,17 @@ JSON, not the file.
 Deployment is blocked on accounts, not on work. Everything below needs a human
 with a payment method and an identity; none of it can be created from this repo.
 
-| #   | What to create                                                                               | Why it is needed                                                                                                                                                                                                                                                                 | Cost        | What to hand over                                         |
-| --- | -------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------- | --------------------------------------------------------- |
-| 1   | **A VM** — Oracle Always Free (2 OCPU/12 GB ARM, Frankfurt or Singapore) **or** Hetzner CX22 | Runs backend + Postgres + Redis. Nothing else can be deployed until this exists.                                                                                                                                                                                                 | $0 / ~€4–5  | SSH host + key                                            |
-| 2   | **A second VM for coturn** (skip at Stage 0 — co-locate)                                     | TURN needs UDP on a public IP; a tunnel cannot carry it. Separate so a relay flood cannot starve the API.                                                                                                                                                                        | ~€4–5       | SSH host + key, public IP                                 |
-| 3   | **Cloudflare API token** (Pages: Edit; DNS: Edit on `takedia.com`)                           | Deploy `apps/site`; create `api.` / `turn.` / `dl.` records. The tunnel credential already on this machine authorizes tunnels only.                                                                                                                                              | $0          | `CLOUDFLARE_API_TOKEN`                                    |
-| 4   | **Resend account + verified sending domain** — _and code_                                    | `POST /auth/magic-link/request` and password reset answer **503 in production**. Not only a missing key: `createMailSender()` returns `null` outside development, so no provider is wired at all. The account unblocks writing that sender; it does not by itself turn email on. | $0 to 3k/mo | `RESEND_API_KEY`, from-address                            |
-| 5   | **Sentry project (optional)**                                                                | Nothing reports crashes today.                                                                                                                                                                                                                                                   | $0          | DSN                                                       |
-| 6   | **GitHub Actions secrets**                                                                   | `deploy.yml` exists and has never run.                                                                                                                                                                                                                                           | $0          | `SSH_HOST`, `SSH_KEY`, `GHCR` scope on the existing token |
-| 7   | **Stripe account**                                                                           | Only for [ADR-0013](adr/0013-connectivity-is-the-paid-boundary.md)'s paid tier. Not needed to launch the free tier.                                                                                                                                                              | —           | Publishable + secret keys                                 |
-| 8   | **Prices for `pro` / `team`**                                                                | Not an account — a decision. `$XXXX` everywhere until it is made.                                                                                                                                                                                                                | —           | Two numbers                                               |
-| 9   | **Apple Developer Program membership**                                                       | A free personal team cannot sign Sign in with Apple, which the App Store requires wherever Google sign-in is offered. Blocks installing the real entitlements on a phone **today**, not only TestFlight/App Store.                                                               | $99/yr      | Team enrolled; the Mac signed in to it                    |
+| #   | What to create                                                                               | Why it is needed                                                                                                                                                                                                                                                                                                                       | Cost        | What to hand over                                         |
+| --- | -------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------- | --------------------------------------------------------- |
+| 1   | **A VM** — Oracle Always Free (2 OCPU/12 GB ARM, Frankfurt or Singapore) **or** Hetzner CX22 | Runs backend + Postgres + Redis. Nothing else can be deployed until this exists.                                                                                                                                                                                                                                                       | $0 / ~€4–5  | SSH host + key                                            |
+| 2   | **A second VM for coturn** (skip at Stage 0 — co-locate)                                     | TURN needs UDP on a public IP; a tunnel cannot carry it. Separate so a relay flood cannot starve the API.                                                                                                                                                                                                                              | ~€4–5       | SSH host + key, public IP                                 |
+| 3   | **Cloudflare API token** (Pages: Edit; DNS: Edit on `takedia.com`)                           | Deploy `apps/site`; create `api.` / `turn.` / `dl.` records. The tunnel credential already on this machine authorizes tunnels only.                                                                                                                                                                                                    | $0          | `CLOUDFLARE_API_TOKEN`                                    |
+| 4   | **Resend account + verified sending domain**                                                 | `POST /auth/magic-link/request` and password reset answer **503 in production**. The sender is written and tested (`auth/resendMailer.ts`) — the account is all that is missing. Set `RESEND_API_KEY` and `MAIL_FROM` in the host env file and redeploy; `GET /health` reports `checks.mail` and the watchdog warns while it is unset. | $0 to 3k/mo | `RESEND_API_KEY`, from-address                            |
+| 5   | **Sentry project (optional)**                                                                | Nothing reports crashes today.                                                                                                                                                                                                                                                                                                         | $0          | DSN                                                       |
+| 6   | **GitHub Actions secrets**                                                                   | `deploy.yml` exists and has never run.                                                                                                                                                                                                                                                                                                 | $0          | `SSH_HOST`, `SSH_KEY`, `GHCR` scope on the existing token |
+| 7   | **Stripe account**                                                                           | Only for [ADR-0013](adr/0013-connectivity-is-the-paid-boundary.md)'s paid tier. Not needed to launch the free tier.                                                                                                                                                                                                                    | —           | Publishable + secret keys                                 |
+| 8   | **Prices for `pro` / `team`**                                                                | Not an account — a decision. `$XXXX` everywhere until it is made.                                                                                                                                                                                                                                                                      | —           | Two numbers                                               |
+| 9   | **Apple Developer Program membership**                                                       | A free personal team cannot sign Sign in with Apple, which the App Store requires wherever Google sign-in is offered. Blocks installing the real entitlements on a phone **today**, not only TestFlight/App Store.                                                                                                                     | $99/yr      | Team enrolled; the Mac signed in to it                    |
 
 Items 1, 3 and 4 are the minimum for a public deployment. Items 7–8 are only for
 charging money, which [ADR-0013](adr/0013-connectivity-is-the-paid-boundary.md)
@@ -983,3 +983,166 @@ two Rust targets and seven JavaScript suites at once. `wait_for` returns the
 moment its condition holds, so the budget was free to raise — the file still
 finishes in about 1.4 seconds. A suite that only passes on an idle laptop makes
 `main` randomly red, and that teaches people to re-run instead of read.
+
+## Pre-launch pass (2026-08-20, later the same day)
+
+The audit above answered "is what we deployed correct?" This one answers "is
+what a customer touches finished?" Four things came out of it, and one of them
+was a launch blocker hiding in plain sight.
+
+### The iPhone app was pointing at a developer's laptop
+
+`apps/mobile/src/config/backend.ts` shipped
+`DEFAULT_API_BASE_URL = 'https://lilypad.takedia.com'`. That is not production.
+It is the **local-development tunnel** (see [Domains](#domains) above and
+`infra/cloudflared/lilypad.yml`), which forwards to `localhost:8080` on a
+developer's Mac. The comment on the constant even said it was temporary and
+would move "with the deployment milestone (M13)". M13 shipped; the constant did
+not move.
+
+So every iPhone build created its account, signed in, and listed its devices
+against whichever backend happened to be running on that laptop — one with none
+of this month's revocation, ownership or deletion behaviour. Proved by asking
+both hosts the same question:
+
+```
+$ curl -s https://api.takedia.com/health
+{"status":"ok","uptimeSeconds":3387,…,"revision":"2435111aa5257c885dfd1d0166953fd94bda155b"}
+
+$ curl -s https://lilypad.takedia.com/health
+{"status":"ok","uptimeSeconds":445893,…}          # no `revision` field at all
+```
+
+No revision field means the image predates the `GIT_SHA` build arg entirely,
+and 445,893 seconds is five days of uptime against production's fifty-six
+minutes. Two different deployments, and the phone was talking to the wrong one.
+
+This is the same bug as _"v0.1.0 shipped pointing at a developer's laptop"_,
+found on the desktop and never checked on the phone. It is now
+`https://api.takedia.com`, with
+[`backend.test.ts`](../apps/mobile/src/config/backend.test.ts) asserting the
+value directly — including that it is not the dev tunnel and not the marketing
+site, because both of those answer 200 and neither is the API.
+
+Pairing was never affected: a QR carries its own `apiBaseUrl`, and production
+advertises itself correctly (`{"apiBaseUrl":"https://api.takedia.com",
+"signalingUrl":"wss://api.takedia.com/ws/signal"}`). Only the pre-QR
+default — sign-in, signup, the account device list — was wrong.
+
+### Account deletion exists
+
+`DELETE /account`, documented in [api.md](api.md), reachable from the Mac at
+**Your account → Delete account**. The cascade was already correct; what did
+not exist was any way for a customer to trigger it, or any way for the audit
+script to clean up after itself.
+
+Two details worth recording because they look like over-engineering and are not:
+
+- The desktop asks for the **password**, not because deletion needs a second
+  factor by policy, but because the desktop _has no account credential to reuse_
+  — it deliberately stores none. A stolen laptop therefore cannot delete its
+  owner's account, and that falls out of an earlier decision rather than being
+  bolted on.
+- The typed email is passed to the server **verbatim** rather than filled in
+  from the keychain. Filling it in would satisfy the server's confirmation check
+  without a human ever confirming anything.
+
+A signed access token cannot be revoked, so deletion is made immediate the same
+way device revocation is: `rejectRevokedActor` now also refuses a token whose
+**account** is gone. That costs one indexed primary-key read, and only on
+account-scoped tokens — a device-scoped token already resolves its device row,
+and `devices.user_id` is a foreign key, so an existing device proves an existing
+owner.
+
+### Audit logs now expire
+
+**Retention is 2 days.** [`auditRetention.ts`](../apps/backend/src/services/auditRetention.ts)
+deletes rows past the window on boot and hourly after that. Started from
+`index.ts` rather than `buildServer` so that constructing a server in a test
+does not start a timer that talks to Postgres.
+
+Two days rather than thirty because of what the rows hold: an IP address, an
+account, a device and a metadata blob for every sign-in, pairing and session —
+a movement log of a person's machines. The questions that need them are
+same-day questions.
+
+`audit_logs` was the one table in the schema that grew without bound
+([ADR-0007](adr/0007-cloud-is-control-plane-only.md)), and the threat model has
+carried "data retention policy for audit logs" as an open item since M3. Both
+are now closed.
+
+### Sessions: deliberately not built
+
+The `sessions` table stays in the schema and stays mostly unwritten. There is no
+session history feature, no metering, and no plan to add rows so the table looks
+busy. Building either would mean inventing what a session record is _for_ before
+anybody has asked a question it would answer — and metering in particular is
+downstream of pricing, which is still `$XXXX`
+([ADR-0013](adr/0013-connectivity-is-the-paid-boundary.md)). Deferred until
+there is real usage and a real requirement.
+
+### Two things a person still has to do
+
+Neither can be done from this repo, and both are the difference between "the
+code is right" and "the product works".
+
+**1. Cloudflare Pages.** The marketing site has been stale for weeks. The
+repository has the fix — `apps/site/index.html` no longer claims the product is
+unreleased, and `claims.test.ts` asserts it — but `.github/workflows/site.yml`
+cannot deploy without credentials, so `lilypadhome.takedia.com` has kept serving
+the old build. The Pages project is real and already named `lilypad-site`
+(`https://lilypad-site.pages.dev` serves the same stale bytes as the custom
+domain, which is how we know they are the same deployment).
+
+What is needed: a Cloudflare API token scoped to **Cloudflare Pages: Edit** and
+nothing else, plus the account id, added as repository secrets
+`CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`. Nothing in the workflow
+needs editing — it turns green on the next push to `main`.
+
+The workflow now also (a) passes `--branch=main` explicitly, because wrangler
+infers the branch from CI and any branch that is not the project's _production_
+branch publishes a **preview** deployment that leaves the custom domain
+untouched and still reports success; and (b) fetches
+`https://lilypadhome.takedia.com/` after deploying and compares it byte-for-byte
+with the file it just built. A semantic check ("does it still say unreleased?")
+would pass just as happily on last month's deployment.
+
+The watchdog carries the same tripwire from the other side: a `site-stale`
+critical alert if the live page ever says the product is not released again.
+
+**2. Resend.** Password reset and magic-link sign-in answer **503** in
+production. The code is complete and has been for a while
+([`resendMailer.ts`](../apps/backend/src/auth/resendMailer.ts)); what is missing
+is the account. Exactly two environment variables, read at
+[`magicLink.ts`](../apps/backend/src/auth/magicLink.ts):
+
+| Variable         | Value                                                                                                            |
+| ---------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `RESEND_API_KEY` | An API key from a Resend account.                                                                                |
+| `MAIL_FROM`      | e.g. `Lilypad <no-reply@takedia.com>` — the domain must be **verified in Resend**, or every message is rejected. |
+
+Both go in `/opt/lilypad/.env.production` on the VM (never in the repo), then
+`docker compose up -d backend`. Both are required together: a key without a
+sender is a half-configured deployment that fails on every message while looking
+configured, and `createResendMailSender` returns `null` rather than pretend
+otherwise.
+
+`GET /health` now reports `checks.mail: "configured" | "unconfigured"`, and the
+watchdog raises a `mail` warning while it is unconfigured. It deliberately does
+**not** affect `status` — a deployment with no mailer still signs devices in,
+pairs them and relays sessions, and degrading health would take a working API
+out of rotation over a feature that is merely absent.
+
+### Which transport a session actually used
+
+Section 4 of [the manual device test](manual-device-test.md) asks the tester to
+record whether a session went over the LAN, direct over the internet, or through
+TURN. Until now that was unanswerable: `ConnectionState: "connected"` is
+identical for all three, the candidate logs say what each side _offered_ rather
+than what ICE _picked_, and a Finder-launched `.app` has nowhere to write stderr
+anyway.
+
+The desktop now reads the selected candidate pair once the connection settles
+and shows it in **tray → Diagnostics… → Last connection**, in words. It is kept
+after the session ends, because "was that relayed?" is a question asked after
+hanging up.
