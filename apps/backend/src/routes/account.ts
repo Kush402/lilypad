@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { AccountDeleteRequestSchema } from '@lilypad/protocol';
 import { requireAuth, actorOf } from '../auth/requireAuth.js';
 import { rejectRevokedActor } from '../auth/liveDevice.js';
-import { confirmsDeletion, purgeAccount, summarizeAccount } from '../services/accountDeletion.js';
+import { accountEmail, confirmsDeletion, purgeAccount } from '../services/accountDeletion.js';
 import { AuditLogService, createDrizzleAuditLogStore } from '../services/auditLog.js';
 import type { SignalingHub } from '../signaling/hub.js';
 import { log } from '../logging.js';
@@ -36,10 +36,11 @@ export async function accountRoutes(
    * names, never against a value from the body, so it cannot be used to aim
    * the delete at somebody else.
    *
-   * Order matters. The devices are read before the delete because afterwards
-   * there is nothing left to ask; the rooms are closed after it, because a
+   * Order matters. The rooms are closed AFTER the delete, not before: a
    * disconnect the database might still roll back would tell the user their
-   * account was gone before it was.
+   * account was gone before it was. Which rooms to close comes from
+   * `purgeAccount`'s own return value rather than a read taken a moment
+   * earlier, so a device that enrolled in between is still disconnected.
    */
   app.delete(
     '/account',
@@ -55,13 +56,13 @@ export async function accountRoutes(
       if (!body.success) return reply.code(400).send({ error: 'invalid_request' });
 
       const actor = actorOf(req);
-      const account = await summarizeAccount(actor.userId);
+      const email = await accountEmail(actor.userId);
       // A valid token for an account that no longer exists. `rejectRevokedActor`
       // normally catches this first; reaching here means the account went away
       // between the two reads, and the answer is the same either way.
-      if (!account) return reply.code(404).send({ error: 'not_found' });
+      if (email === null) return reply.code(404).send({ error: 'not_found' });
 
-      if (!confirmsDeletion(body.data.confirmEmail, account.email)) {
+      if (!confirmsDeletion(body.data.confirmEmail, email)) {
         return reply.code(400).send({
           error: 'confirmation_mismatch',
           message: 'type the email address on this account to confirm deletion',

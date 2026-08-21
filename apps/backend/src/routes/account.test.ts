@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Fastify, { type FastifyInstance } from 'fastify';
+import type * as AccountDeletion from '../services/accountDeletion.js';
 
 /**
  * `DELETE /account` — the route a product that stores someone's machines has
@@ -13,14 +14,14 @@ import Fastify, { type FastifyInstance } from 'fastify';
  * user's live sessions running.
  */
 
-const summarizeAccount = vi.fn();
+const accountEmail = vi.fn();
 const purgeAccount = vi.fn();
 
 vi.mock('../services/accountDeletion.js', async (importOriginal) => {
   // `confirmsDeletion` is the real one on purpose. Stubbing the comparison
   // would make the mismatch test pass without ever testing the comparison.
-  const actual = await importOriginal<typeof import('../services/accountDeletion.js')>();
-  return { ...actual, summarizeAccount, purgeAccount };
+  const actual = await importOriginal<typeof AccountDeletion>();
+  return { ...actual, accountEmail, purgeAccount };
 });
 
 const accountExists = vi.fn(async () => true);
@@ -77,10 +78,7 @@ describe('DELETE /account', () => {
       userId: OWNER,
       state: 'linked',
     });
-    summarizeAccount.mockResolvedValue({
-      email: EMAIL,
-      deviceFingerprints: ['mac-01', 'phone-01'],
-    });
+    accountEmail.mockResolvedValue(EMAIL);
     purgeAccount.mockResolvedValue(['mac-01', 'phone-01']);
     hub.endRoomsForDevice.mockReturnValue(1);
   });
@@ -102,7 +100,7 @@ describe('DELETE /account', () => {
     const app = await buildApp();
     await del(app, { confirmEmail: EMAIL }, { userId: OWNER, deviceId: 'dev-mac' });
 
-    expect(summarizeAccount).toHaveBeenCalledWith(OWNER);
+    expect(accountEmail).toHaveBeenCalledWith(OWNER);
     expect(purgeAccount).toHaveBeenCalledWith(OWNER);
     await app.close();
   });
@@ -233,7 +231,7 @@ describe('DELETE /account', () => {
   });
 
   it('answers 404, not 500, when the token names an account that is not there', async () => {
-    summarizeAccount.mockResolvedValue(null);
+    accountEmail.mockResolvedValue(null);
     const app = await buildApp();
     const res = await del(app, { confirmEmail: EMAIL });
 

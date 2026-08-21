@@ -32,14 +32,6 @@ import { devices, users } from '../db/schema.js';
  * "immediate within ten minutes".
  */
 
-export interface AccountSummary {
-  /** The address the caller must type back to confirm. */
-  email: string;
-  /** Wire ids of the account's devices — needed BEFORE the delete, because
-   * afterwards there is nothing left to ask which rooms to close. */
-  deviceFingerprints: string[];
-}
-
 /**
  * Whether the address a caller typed names the account they are signed in to.
  *
@@ -52,22 +44,18 @@ export function confirmsDeletion(typed: string, email: string): boolean {
   return typed.trim().toLowerCase() === email.trim().toLowerCase();
 }
 
-/** The account's address and devices, or null if the id names nothing. */
-export async function summarizeAccount(
-  userId: string,
-  database = defaultDb,
-): Promise<AccountSummary | null> {
+/** The address on an account, or null if the id names nothing.
+ *
+ * Only the address, because only the address is needed before the delete:
+ * `purgeAccount` returns the devices it actually removed, which is a better
+ * list than one read a moment earlier could be. */
+export async function accountEmail(userId: string, database = defaultDb): Promise<string | null> {
   const [account] = await database
     .select({ email: users.email })
     .from(users)
     .where(eq(users.id, userId))
     .limit(1);
-  if (!account) return null;
-  const owned = await database
-    .select({ fingerprint: devices.fingerprint })
-    .from(devices)
-    .where(eq(devices.userId, userId));
-  return { email: account.email, deviceFingerprints: owned.map((d) => d.fingerprint) };
+  return account?.email ?? null;
 }
 
 /**
