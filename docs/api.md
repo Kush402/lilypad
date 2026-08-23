@@ -96,7 +96,6 @@ Liveness + dependency checks.
     "redis": "up",
     "mail": "configured"       // or "unconfigured" — see below
   },
-  "version": "0.1.0",
   "revision": "<git sha>"      // "unknown" on a local build
 }
 ```

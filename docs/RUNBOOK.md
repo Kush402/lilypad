@@ -46,8 +46,10 @@ Verify a machine anytime with `pnpm doctor`.
 ## Off-LAN / cellular testing — the named tunnel
 
 `lilypad.takedia.com` is a **permanent** hostname served by a named cloudflared
-tunnel. Use it for anything that has to work off wifi. Production is unchanged
-and still targets AWS (M13) — **a tunnel is not a deployment.**
+tunnel. Use it for anything that has to work off wifi. It is a _development_
+hostname: production is the Oracle VM behind its own tunnel, deployed by
+`.github/workflows/deploy.yml` and reachable at `https://api.takedia.com` —
+**a tunnel is not a deployment.**
 
 ```bash
 # 1. terminal one — the tunnel (config is versioned in the repo)
@@ -115,6 +117,25 @@ Targeted variants: `pnpm clean:build`, `pnpm clean:cargo`, `pnpm clean:mobile`,
 To resume development on the same or a new machine, just re-run the **section 1**
 steps. Because the lockfiles are committed, the rebuilt dependency tree is
 byte-for-byte the versions the release was cut from.
+
+### If the checkout lives in an iCloud-synced folder
+
+`~/Desktop` and `~/Documents` are synced when iCloud Drive's "Desktop &
+Documents" is on, and a Rust target directory is the worst possible thing to
+put in one. Measured on 2026-08-23 in `~/Desktop/lilypad`: 34 GB of build
+artifacts, `fileproviderd` at 67% CPU and `bird` at 33% doing nothing but
+trying to sync object files that are regenerated on the next build.
+
+`pnpm clean:cargo` reclaims it, but it grows back. To stop it recurring, put
+the build output outside the synced tree:
+
+```bash
+export CARGO_TARGET_DIR=~/.cache/lilypad-target   # add to ~/.zshrc
+```
+
+Deliberately not committed to `.cargo/config.toml`: the path is per-machine,
+and CI's `Swatinem/rust-cache` expects the default location. The same folder is
+why iOS codesigning fails from `~/Desktop` — see `apps/mobile/README.md`.
 
 ---
 

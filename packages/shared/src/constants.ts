@@ -53,7 +53,6 @@ export interface HealthReport {
      */
     mail: 'configured' | 'unconfigured';
   };
-  version: string;
   /** The commit the running image was built from, or `unknown` for a build
    * that was not given one. This is the only way to tell from outside the VM
    * which code is actually serving. */

@@ -4,8 +4,6 @@ import { pingPostgres } from '../db/client.js';
 import { pingRedis } from '../redis.js';
 import { config } from '../config.js';
 
-const VERSION = '0.1.0';
-
 /** The commit this image was built from. Baked in by the Dockerfile's
  * `GIT_SHA` build arg, so a deploy can be verified from outside the VM rather
  * than by SSHing in and reading a shell variable that nothing recorded.
@@ -28,7 +26,6 @@ export async function healthRoutes(app: FastifyInstance): Promise<void> {
         // applies.
         mail: config.env.RESEND_API_KEY && config.env.MAIL_FROM ? 'configured' : 'unconfigured',
       },
-      version: VERSION,
       revision: REVISION,
     };
 

@@ -48,6 +48,37 @@ let failures = 0;
  * exists to catch. */
 let createdAccount = false;
 let deletedAccount = false;
+
+/**
+ * Fail on an unreachable target with a sentence instead of a stack trace.
+ *
+ * Without this the first `fetch` rejects and Node prints
+ * `[TypeError: fetch failed] … ECONNREFUSED 127.0.0.1:8099`, which names the
+ * default port rather than the mistake: this script reads `BASE`, and the
+ * neighbouring `e2e-local.mjs` reads `LILYPAD_API`. Pointing it at production
+ * with the wrong variable is the easiest error to make here and the least
+ * legible one to read — it already cost one debugging round (L-32).
+ */
+async function requireReachable() {
+  try {
+    const res = await fetch(`${BASE}/health`, { signal: AbortSignal.timeout(15_000) });
+    // A degraded backend still answers every route this script drives, so 503
+    // is a reason to warn, not to refuse to run.
+    if (res.status === 503) console.log(`note: ${BASE} reports degraded health; running anyway\n`);
+    else if (!res.ok) throw new Error(`/health answered HTTP ${res.status}`);
+  } catch (err) {
+    console.error(`Cannot reach a Lilypad backend at ${BASE}`);
+    console.error(`  ${err instanceof Error ? err.message : String(err)}`);
+    console.error('');
+    console.error('This script targets the BASE environment variable:');
+    console.error('  BASE=https://api.takedia.com node scripts/e2e-audit.mjs   # production');
+    console.error('  BASE=http://127.0.0.1:8080  node scripts/e2e-audit.mjs   # a local backend');
+    console.error('');
+    console.error('(`scripts/e2e-local.mjs` is the one that reads LILYPAD_API.)');
+    process.exit(1);
+  }
+}
+await requireReachable();
 const check = (name, ok, detail = '') => {
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? '  — ' + detail : ''}`);
   if (!ok) failures++;
