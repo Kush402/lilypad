@@ -16,7 +16,7 @@ This file exists because the list used to live only in a conversation. Six rows
 (L-20, L-38 through L-42) were reconstructed from later summaries after the
 earlier record was compacted away, which is the argument for the file.
 
-**Status counts:** 43 fixed · 3 not a bug · 3 deliberately unchanged ·
+**Status counts:** 44 fixed · 3 not a bug · 3 deliberately unchanged ·
 7 blocked on something outside the code.
 
 | ID   | Finding                                                                                                                                                                                                                                                                                  | Status                                                                                                                             |
@@ -76,6 +76,7 @@ earlier record was compacted away, which is the argument for the file.
 | L-54 | The watchdog never fetched the download. The failure with the worst history here — every install and update 404ing — was invisible between deploys.                                                                                                                                      | Fixed                                                                                                                              |
 | L-55 | The API had no `setErrorHandler`, so Fastify's default put the raw exception message in the response body. Reproduced: `POST /auth/signup` against a missing database answered an anonymous caller with `Failed query: insert into "users" ("id", "email", "name", "password_hash", …)`. | Fixed                                                                                                                              |
 | L-56 | No `.dockerignore`, on a build with `context: .`. The build context was 37 GB, and `tsconfig.tsbuildinfo` riding along made `tsc` skip emitting — so a local `docker build` shipped the developer's compiled output instead of compiling.                                                | Fixed                                                                                                                              |
+| L-57 | An API key pasted with a line break in it turned into a second `security -i` command, because that tool is line-oriented and `quote` can only escape what the argument parser sees. The Ask card also printed `security(1) failed: SecKeychainAddGenericPassword: …` verbatim.           | Fixed                                                                                                                              |
 | L-47 | `openh264` 0.6 carries a heap-overflow advisory (GHSA, HIGH) fixed in 0.8. The advisory is in the **decoding** functions; this codebase only encodes.                                                                                                                                    | Open — not reachable, bump needs real-device video validation                                                                      |
 
 ## What is left, and who it needs
