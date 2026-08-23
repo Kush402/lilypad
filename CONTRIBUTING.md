@@ -3,7 +3,7 @@
 ## Getting set up
 
 ```bash
-pnpm doctor      # verifies every prerequisite with repair steps
+pnpm env:check      # verifies every prerequisite with repair steps
 pnpm bootstrap   # installs deps, starts infra, runs migrations — idempotent
 ```
 

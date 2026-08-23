@@ -29,7 +29,7 @@ if (existsSync(cargoExe)) {
     '\x1b[31mcargo not found at ' + cargoExe + '.\x1b[0m\n' +
       'Install the Rust toolchain, then retry:\n' +
       "  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh\n" +
-      'Diagnose anytime with: pnpm doctor',
+      'Diagnose anytime with: pnpm env:check',
   );
   process.exit(1);
 }

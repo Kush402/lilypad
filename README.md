@@ -69,7 +69,7 @@ docs/        architecture, technical design, schema, API, protocols, threat mode
   > **zsh + rustup gotcha:** rustup adds its PATH line to `~/.profile`, which
   > **zsh does not source** — so `cargo` is installed but invisible, and
   > `tauri dev` fails with `failed to run 'cargo metadata'`. `pnpm bootstrap`
-  > auto-fixes this (adds the source to `~/.zshenv`); `pnpm doctor` diagnoses it.
+  > auto-fixes this (adds the source to `~/.zshenv`); `pnpm env:check` diagnoses it.
 - **Mobile** (to run on a device/simulator): Xcode + CocoaPods (iOS) or Android
   Studio + JDK 17. See [apps/mobile/README.md](apps/mobile/README.md).
 
@@ -77,7 +77,7 @@ docs/        architecture, technical design, schema, API, protocols, threat mode
 
 ```bash
 # 0. Diagnose your machine (✅/⚠/❌ with exact repair steps for every tool)
-pnpm doctor
+pnpm env:check
 
 # 1. One command to prepare everything: validates prerequisites, self-heals the
 #    zsh/cargo PATH, installs deps, starts infra, runs migrations, verifies the
@@ -117,7 +117,7 @@ LILYPAD_SIGNALING=ws://localhost:8080/ws/signal LILYPAD_ROOM=demo \
 
 | Command                        | Does                                                                                |
 | ------------------------------ | ----------------------------------------------------------------------------------- |
-| `pnpm doctor`                  | Check every prerequisite (✅/⚠/❌ + repair steps)                                   |
+| `pnpm env:check`               | Check every prerequisite (✅/⚠/❌ + repair steps)                                   |
 | `pnpm bootstrap`               | Prepare a clean machine end-to-end (self-healing)                                   |
 | `pnpm build`                   | Turborepo build across the workspace                                                |
 | `pnpm typecheck`               | Typecheck all TS packages                                                           |

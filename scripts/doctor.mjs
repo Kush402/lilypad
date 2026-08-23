@@ -1,10 +1,17 @@
 #!/usr/bin/env node
 /**
- * `pnpm doctor` — inspect the dev environment and report every prerequisite as
+ * `pnpm env:check` — inspect the dev environment and report every prerequisite as
  * OK / MISSING / BROKEN with exact repair instructions. Dependency-free (Node
  * builtins only) so it runs before `pnpm install` has a chance to fail.
  *
  * Exit code: non-zero if any REQUIRED check is BROKEN, so CI/bootstrap can gate.
+ *
+ * NOT named `doctor`. `pnpm doctor` is one of pnpm's own commands, so a script
+ * by that name is shadowed: `pnpm doctor` ran pnpm's built-in, printed a config
+ * warning and exited 0, while every document in the repo told people that was
+ * how to check their machine. A diagnostic that silently diagnoses nothing is
+ * worse than none. `env:check` also matches the repo's other gates —
+ * `docs:check`, `workflows:check`, `apple:check`, `rust:check`.
  */
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';

@@ -263,7 +263,7 @@ pnpm typecheck && pnpm lint && pnpm format:check && pnpm docs:check && pnpm test
 cd apps/desktop/src-tauri && cargo test && cargo fmt --check && cargo clippy --all-targets
 
 # Development
-pnpm doctor           # check prerequisites with repair steps
+pnpm env:check           # check prerequisites with repair steps
 pnpm bootstrap        # prepare a clean machine end-to-end
 pnpm infra:up         # Postgres + Redis + coturn
 pnpm --filter @lilypad/backend dev

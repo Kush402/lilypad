@@ -41,7 +41,7 @@ pnpm --filter @lilypad/desktop tauri dev           # desktop bubble
 cd apps/mobile && pnpm pods && pnpm ios            # mobile (needs full Xcode)
 ```
 
-Verify a machine anytime with `pnpm doctor`.
+Verify a machine anytime with `pnpm env:check`.
 
 ## Off-LAN / cellular testing — the named tunnel
 

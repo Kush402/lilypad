@@ -146,5 +146,5 @@ if (!cargo.onPath) {
   console.log(`\n${C.yellow}NOTE:${C.reset} cargo is not on this shell's PATH yet, but the desktop launch`);
   console.log('      (`pnpm --filter @lilypad/desktop tauri dev`) self-heals PATH and works anyway.');
   console.log('      For bare `cargo` commands, open a NEW terminal or run: source ~/.cargo/env');
-  console.log('      Verify anytime with: pnpm doctor');
+  console.log('      Verify anytime with: pnpm env:check');
 }
