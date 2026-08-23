@@ -210,3 +210,56 @@ jobs:
           done
 
           echo "signed: $(codesign -d -r- "$app" 2>&1 | tail -1)"
+
+      # Signing is the input. Notarization is the OUTCOME, and only the outcome
+      # decides what a customer sees on first open.
+      #
+      # The step above proves a signature exists and that both slices carry it.
+      # It says nothing about whether Apple was asked to notarize, whether the
+      # ticket came back, or whether it was stapled into the bundle — so a
+      # release could be correctly signed with the Developer ID certificate,
+      # skip or fail notarization, publish, and still show the customer the
+      # unidentified-developer dialog the certificate was bought to remove.
+      #
+      # `stapler validate` proves the ticket is IN the bundle, which is what
+      # makes a first open work for someone with no internet connection.
+      # `spctl` is Gatekeeper itself, asked the same question it will be asked
+      # on the customer's Mac, and it is the only one of the two that can say
+      # "accepted".
+      #
+      # Gated on the notarize preflight: an ad-hoc build is expected to fail
+      # both, and failing the release for a state the workflow already warned
+      # about would be noise.
+      - name: Verify Gatekeeper will actually accept it
+        if: steps.preflight.outputs.notarize == 'true'
+        run: |
+          set -euo pipefail
+          app="apps/desktop/src-tauri/target/universal-apple-darwin/release/bundle/macos/Lilypad.app"
+
+          if ! xcrun stapler validate "$app"; then
+            echo "::error::the notarization ticket is not stapled into the app. A customer opening it offline still gets the unidentified-developer dialog."
+            exit 1
+          fi
+
+          # `-t install` is the assessment a downloaded app gets, which is the
+          # one that matters here. Anything but "accepted" is the dialog.
+          verdict=$(spctl --assess --verbose=4 --type install "$app" 2>&1 || true)
+          echo "$verdict"
+          case "$verdict" in
+            *accepted*) ;;
+            *) echo "::error::Gatekeeper does not accept this build: $verdict"; exit 1 ;;
+          esac
+          case "$verdict" in
+            *"Notarized Developer ID"*) ;;
+            *) echo "::error::accepted, but not as a notarized Developer ID build — that is what removes the warning for a stranger."; exit 1 ;;
+          esac
+
+          # The DMG is the file a customer actually downloads, and it carries
+          # its own ticket. A stapled app inside an unstapled DMG still warns.
+          for dmg in apps/desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg; do
+            [ -e "$dmg" ] || continue
+            xcrun stapler validate "$dmg" || {
+              echo "::error::$dmg is not stapled — the download itself is what Gatekeeper checks first."
+              exit 1
+            }
+          done
