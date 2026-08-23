@@ -65,7 +65,11 @@ describe('/devices/enroll — desktops cannot self-link', () => {
     publicKey: 'a'.repeat(43),
     signature: 'b'.repeat(86),
     kind,
-    fingerprint: 'fingerprint-1',
+    // A real wire device id. `fingerprint-1` used to be enough, and stopped
+    // being once `/devices/enroll` started applying the same shape rule
+    // `/connect/request` always had — a 400 for a malformed body arrives
+    // before this guard, which is the right order and not what this is about.
+    fingerprint: 'desktop-11111111-1111-4111-8111-111111111111',
     name: 'Ada’s MacBook',
     platform: 'macos',
   });

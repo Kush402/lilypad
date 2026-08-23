@@ -2,7 +2,10 @@ import { describe, it, expect } from 'vitest';
 import {
   ConnectRequestSchema,
   DesktopEnrollmentApprovedSchema,
+  DeviceEnrollRequestSchema,
   DevicePairsQuerySchema,
+  PairingCreateRequestSchema,
+  PairingRedeemRequestSchema,
   UnpairRequestSchema,
   WireDeviceIdSchema,
 } from './index.js';
@@ -85,5 +88,55 @@ describe('the approve response', () => {
     // Such a phone links the laptop and cannot remember it — degraded, but it
     // must not fail to parse and lose the link entirely.
     expect(DesktopEnrollmentApprovedSchema.safeParse(base).success).toBe(true);
+  });
+});
+
+/**
+ * The rule has to hold where the id ENTERS, not only where it is resolved.
+ *
+ * It did not. `/connect/request`, `/devices/unpair` and `/devices/pairs` all
+ * checked the shape; `/devices/enroll`, `/pairing/create` and `/pairing/redeem`
+ * took `z.string().min(8)`. So a client could enroll as `mac-abc123`, pair,
+ * and show up on the account as linked — and then never connect, because
+ * `/connect/request` answered `400 invalid_request` to the exact id enrollment
+ * had accepted. `scripts/e2e-audit.mjs` was minting that shape and carrying
+ * four unexplained failures because of it.
+ *
+ * Production held two devices when this was tightened, `desktop-e066…` and
+ * `mobile-kqmqm…`, so nothing real was excluded.
+ */
+describe('the routes where a wire id first arrives', () => {
+  const proof = {
+    challenge: 'c'.repeat(32),
+    publicKey: 'p'.repeat(43),
+    signature: 's'.repeat(86),
+  };
+  const enroll = (fingerprint: string) => ({ ...proof, kind: 'desktop' as const, fingerprint });
+
+  it('refuse a shape that a later route would reject', () => {
+    // `mac-` is not a namespace this product has. It parsed here and failed at
+    // the one place it mattered.
+    expect(DeviceEnrollRequestSchema.safeParse(enroll('mac-abc12345')).success).toBe(false);
+    expect(PairingCreateRequestSchema.safeParse({ deviceId: 'mac-abc12345' }).success).toBe(false);
+    expect(
+      PairingRedeemRequestSchema.safeParse({ token: 't'.repeat(20), deviceId: 'phone-abc12345' })
+        .success,
+    ).toBe(false);
+  });
+
+  it('refuse a devices.id uuid, the failure that started all of this', () => {
+    expect(DeviceEnrollRequestSchema.safeParse(enroll(ROW_UUID)).success).toBe(false);
+    expect(PairingCreateRequestSchema.safeParse({ deviceId: ROW_UUID }).success).toBe(false);
+  });
+
+  it('accept what both clients mint, which is what production holds', () => {
+    expect(DeviceEnrollRequestSchema.safeParse(enroll(FINGERPRINT)).success).toBe(true);
+    expect(PairingCreateRequestSchema.safeParse({ deviceId: FINGERPRINT }).success).toBe(true);
+    expect(
+      PairingRedeemRequestSchema.safeParse({
+        token: 't'.repeat(20),
+        deviceId: 'mobile-kqmqmoiq6vfff6e9msutl',
+      }).success,
+    ).toBe(true);
   });
 });

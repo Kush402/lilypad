@@ -103,7 +103,7 @@ const enrolled = await post(
   {
     ...(await proof(phone)),
     kind: 'mobile',
-    fingerprint: `phone-${tag}`,
+    fingerprint: `mobile-${tag}`,
     name: 'Audit iPhone',
     platform: 'ios',
   },
@@ -116,7 +116,7 @@ const phoneToken = enrolled.json.accessToken;
 const laptop = newKey();
 const selfLink = await post(
   '/devices/enroll',
-  { ...(await proof(laptop)), kind: 'desktop', fingerprint: `mac-${tag}` },
+  { ...(await proof(laptop)), kind: 'desktop', fingerprint: `desktop-${tag}` },
   login.json.accessToken,
 );
 check(
@@ -128,7 +128,7 @@ check(
 // ── 4. Linking: laptop shows a code, phone approves it ───────────────────────
 const code = await post('/devices/enrollment-code', {
   ...(await proof(laptop)),
-  fingerprint: `mac-${tag}`,
+  fingerprint: `desktop-${tag}`,
   name: 'Audit MacBook',
   platform: 'macos',
 });
@@ -176,12 +176,12 @@ check('the device list refuses an anonymous caller', anon.status === 401, `HTTP 
 // ── 6. Pairing (phone ↔ linked computer) ─────────────────────────────────────
 const pairing = await post(
   '/pairing/create',
-  { deviceId: `mac-${tag}`, deviceName: 'Audit MacBook', platform: 'macos' },
+  { deviceId: `desktop-${tag}`, deviceName: 'Audit MacBook', platform: 'macos' },
   laptopToken,
 );
 check('linked laptop mints a pairing QR', pairing.status === 201, `HTTP ${pairing.status}`);
 
-const stolen = await post('/pairing/create', { deviceId: `mac-${tag}`, deviceName: 'x' });
+const stolen = await post('/pairing/create', { deviceId: `desktop-${tag}`, deviceName: 'x' });
 check(
   'a linked laptop’s pairing surface refuses an untokened caller',
   stolen.status === 404,
@@ -192,7 +192,7 @@ const redeem = await post(
   '/pairing/redeem',
   {
     token: pairing.json.token,
-    deviceId: `phone-${tag}`,
+    deviceId: `mobile-${tag}`,
     deviceName: 'Audit iPhone',
     platform: 'ios',
   },
@@ -206,7 +206,7 @@ check(
 
 const reuse = await post(
   '/pairing/redeem',
-  { token: pairing.json.token, deviceId: `phone-${tag}`, platform: 'ios' },
+  { token: pairing.json.token, deviceId: `mobile-${tag}`, platform: 'ios' },
   phoneToken,
 );
 check('the pairing token is single-use', reuse.status === 410, `HTTP ${reuse.status}`);
@@ -215,8 +215,8 @@ check('the pairing token is single-use', reuse.status === 410, `HTTP ${reuse.sta
 const ring = await post(
   '/connect/request',
   {
-    desktopDeviceId: `mac-${tag}`,
-    mobileDeviceId: `phone-${tag}`,
+    desktopDeviceId: `desktop-${tag}`,
+    mobileDeviceId: `mobile-${tag}`,
     pairSecret: approved.json.pairSecret,
   },
   phoneToken,
@@ -229,7 +229,7 @@ check(
 
 const badSecret = await post(
   '/connect/request',
-  { desktopDeviceId: `mac-${tag}`, mobileDeviceId: `phone-${tag}`, pairSecret: 'x'.repeat(32) },
+  { desktopDeviceId: `desktop-${tag}`, mobileDeviceId: `mobile-${tag}`, pairSecret: 'x'.repeat(32) },
   phoneToken,
 );
 check(
@@ -239,8 +239,8 @@ check(
 );
 
 const noToken = await post('/connect/request', {
-  desktopDeviceId: `mac-${tag}`,
-  mobileDeviceId: `phone-${tag}`,
+  desktopDeviceId: `desktop-${tag}`,
+  mobileDeviceId: `mobile-${tag}`,
   pairSecret: approved.json.pairSecret,
 });
 check(
@@ -264,8 +264,8 @@ check(
 const ringRevoked = await post(
   '/connect/request',
   {
-    desktopDeviceId: `mac-${tag}`,
-    mobileDeviceId: `phone-${tag}`,
+    desktopDeviceId: `desktop-${tag}`,
+    mobileDeviceId: `mobile-${tag}`,
     pairSecret: approved.json.pairSecret,
   },
   phoneToken,
@@ -302,7 +302,7 @@ check(
 
 const reLink = await post('/devices/enrollment-code', {
   ...(await proof(laptop)),
-  fingerprint: `mac-${tag}`,
+  fingerprint: `desktop-${tag}`,
   platform: 'macos',
 });
 const reApprove = await post(
@@ -341,7 +341,7 @@ check(
 
 const selfReEnroll = await post(
   '/devices/enroll',
-  { ...(await proof(phone)), kind: 'mobile', fingerprint: `phone-${tag}`, platform: 'ios' },
+  { ...(await proof(phone)), kind: 'mobile', fingerprint: `mobile-${tag}`, platform: 'ios' },
   login.json.accessToken,
 );
 check(
@@ -389,7 +389,7 @@ check(
 
 const enrollAfterDelete = await post(
   '/devices/enroll',
-  { ...(await proof(phone)), kind: 'mobile', fingerprint: `phone-after-${tag}`, platform: 'ios' },
+  { ...(await proof(phone)), kind: 'mobile', fingerprint: `mobile-after-${tag}`, platform: 'ios' },
   login.json.accessToken,
 );
 check(

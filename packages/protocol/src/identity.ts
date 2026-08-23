@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { DeviceKindSchema, PlatformSchema } from './pairing.js';
+import { DeviceKindSchema, PlatformSchema, WireDeviceIdSchema } from './pairing.js';
 
 /**
  * REST contract for device identity (M8,
@@ -16,28 +16,13 @@ import { DeviceKindSchema, PlatformSchema } from './pairing.js';
  * grants device access to whoever copies it.
  */
 
-/**
- * A device's WIRE id — `devices.fingerprint`, the string clients put in a
- * request body. Never `devices.id`, which is an internal Postgres uuid.
- *
- * The two are both strings of similar length, and confusing them is not
- * hypothetical: `/devices/enrollment-code/approve` returned the uuid under a
- * field the phone stored as the wire id, so every later `/connect/request`
- * and `/devices/unpair` looked up a fingerprint that could not exist. The
- * backend answered `404 not_trusted` — "this laptop hasn't trusted this
- * phone" — about a pair that was live in the database, and the phone's
- * Forget reported success while severing nothing. Both clients have always
- * minted `desktop-<uuid>` / `mobile-<random>`, so requiring the kind prefix
- * costs nothing and turns that silent 404 into a 400 that names the mistake.
- */
-export const WireDeviceIdSchema = z
-  .string()
-  .min(8)
-  .max(128)
-  .regex(
-    /^(desktop|mobile)-/,
-    'must be a wire device id (desktop-… / mobile-…), not a devices.id uuid',
-  );
+// `WireDeviceIdSchema` lives in `pairing.ts` — the module with no imports of
+// its own — and is re-exported here, where it was declared and is still
+// imported from. `identity.ts` already imports `pairing.ts`, so declaring it
+// here and importing it there would be a cycle, and a cycle whose failure mode
+// is a schema that is `undefined` at module-init time depending on which entry
+// point loaded first.
+export { WireDeviceIdSchema } from './pairing.js';
 
 /** Raw Ed25519 public key, base64url, 32 bytes → 43 base64url characters. */
 export const PublicKeySchema = z
@@ -157,8 +142,17 @@ export const DeviceEnrollRequestSchema = z.object({
   ...proofFields,
   kind: DeviceKindSchema,
   /** The device's existing self-asserted id, kept as `devices.fingerprint` so
-   * historical trust rows still resolve. */
-  fingerprint: z.string().min(8).max(128),
+   * historical trust rows still resolve.
+   *
+   * The SAME rule `/connect/request` applies, and it did not used to be. Three
+   * routes take a wire device id and only `connect.ts` checked its shape, so a
+   * device could enroll as `mac-abc123`, pair, appear on the account as linked
+   * — and then be permanently unable to connect, because `/connect/request`
+   * answered `400 invalid_request` to the id enrollment had just accepted.
+   * Proved by `scripts/e2e-audit.mjs`, which was minting exactly that shape and
+   * had four failing checks nobody could explain. A boundary that admits an
+   * identifier the next boundary refuses is not a boundary. */
+  fingerprint: WireDeviceIdSchema,
   name: z.string().min(1).max(120).nullish(),
   platform: PlatformSchema.nullish(),
 });

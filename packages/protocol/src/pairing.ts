@@ -15,13 +15,36 @@ export const PlatformSchema = z.enum(['macos', 'windows', 'linux', 'ios', 'andro
 export type Platform = z.infer<typeof PlatformSchema>;
 
 /** Permission scope requested/granted for a session. */
+/**
+ * A device's WIRE id — `devices.fingerprint`, the string clients put in a
+ * request body. Never `devices.id`, which is an internal Postgres uuid.
+ *
+ * The two are both strings of similar length, and confusing them is not
+ * hypothetical: `/devices/enrollment-code/approve` returned the uuid under a
+ * field the phone stored as the wire id, so every later `/connect/request`
+ * and `/devices/unpair` looked up a fingerprint that could not exist. The
+ * backend answered `404 not_trusted` — "this laptop hasn't trusted this
+ * phone" — about a pair that was live in the database, and the phone's
+ * Forget reported success while severing nothing. Both clients have always
+ * minted `desktop-<uuid>` / `mobile-<random>`, so requiring the kind prefix
+ * costs nothing and turns that silent 404 into a 400 that names the mistake.
+ */
+export const WireDeviceIdSchema = z
+  .string()
+  .min(8)
+  .max(128)
+  .regex(
+    /^(desktop|mobile)-/,
+    'must be a wire device id (desktop-… / mobile-…), not a devices.id uuid',
+  );
+
 export const SessionScopeSchema = z.enum(['view', 'control']);
 export type SessionScope = z.infer<typeof SessionScopeSchema>;
 
 // ── POST /pairing/create (called by the desktop) ─────────────────────────────
 export const PairingCreateRequestSchema = z.object({
-  /** Locally generated stable id for this desktop (dev mode; real auth in M5). */
-  deviceId: z.string().min(8),
+  /** This desktop's wire deviceId — `devices.fingerprint`. */
+  deviceId: WireDeviceIdSchema,
   deviceName: z.string().min(1).max(120).optional(),
   platform: PlatformSchema.optional(),
   /** Scopes the desktop is willing to grant. Defaults to ['view','control']. */
@@ -41,8 +64,8 @@ export type PairingCreateResponse = z.infer<typeof PairingCreateResponseSchema>;
 // ── POST /pairing/redeem (called by the mobile app) ──────────────────────────
 export const PairingRedeemRequestSchema = z.object({
   token: z.string().min(16),
-  /** Locally generated stable id for this phone. */
-  deviceId: z.string().min(8),
+  /** This phone's wire deviceId — `devices.fingerprint`. */
+  deviceId: WireDeviceIdSchema,
   deviceName: z.string().min(1).max(120).optional(),
   platform: PlatformSchema.optional(),
 });
