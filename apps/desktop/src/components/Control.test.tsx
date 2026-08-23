@@ -269,6 +269,65 @@ describe('Control', () => {
       await waitFor(() => expect(api.revokePair).toHaveBeenCalledWith('p42'));
     });
 
+    /**
+     * A revoke that fails must never look like one that worked.
+     *
+     * Both mutations here were `.then(refresh).catch(refresh)` — refresh
+     * either way, say nothing either way. Someone presses Revoke because a
+     * phone was lost, confirms a destructive action, watches the row stay
+     * exactly where it was, and has no way to know the phone still has access.
+     * Silence there is not a missing message, it is a false one.
+     */
+    it('says so when a revoke fails, and says the phone still has access', async () => {
+      vi.mocked(api.listTrustedDevices).mockResolvedValue([pair({ pairId: 'p42' })]);
+      vi.mocked(api.revokePair).mockRejectedValue(new Error('could not reach backend: timed out'));
+      render(<Control />);
+
+      await waitFor(() => expect(screen.getByText("Kush's iPhone")).toBeInTheDocument());
+      screen.getByText("Kush's iPhone").click();
+      await waitFor(() => expect(screen.getByText('Revoke')).toBeInTheDocument());
+      screen.getByText('Revoke').click();
+      await waitFor(() => expect(screen.getByText('Confirm')).toBeInTheDocument());
+      screen.getByText('Confirm').click();
+
+      const message = await screen.findByTestId('trusted-devices-action-error');
+      expect(message).toHaveTextContent(/still has access/i);
+      expect(message).toHaveTextContent(/Kush's iPhone/);
+      // The raw error is a reqwest string carrying the request URL, which
+      // includes this machine's fingerprint. It stays in the log.
+      expect(message.textContent ?? '').not.toMatch(/backend|timed out/i);
+    });
+
+    it('says so when the auto-approve toggle fails, since the setting did not change', async () => {
+      // Auto-approve decides whether a phone's session starts WITHOUT anyone
+      // pressing Approve. A checkbox that silently snaps back on this control
+      // is a security setting the user believes they changed.
+      vi.mocked(api.listTrustedDevices).mockResolvedValue([pair({ autoApprove: true })]);
+      vi.mocked(api.setPairAutoApprove).mockRejectedValue(new Error('could not reach backend'));
+      render(<Control />);
+
+      await waitFor(() => expect(screen.getByText("Kush's iPhone")).toBeInTheDocument());
+      screen.getByText("Kush's iPhone").click();
+      // By test id, not by role: this dashboard has another checkbox
+      // ("Launch at login") and `getByRole('checkbox')` reached that one.
+      (await screen.findByTestId('auto-approve')).click();
+
+      const message = await screen.findByTestId('trusted-devices-action-error');
+      expect(message).toHaveTextContent(/It is unchanged/i);
+    });
+
+    it('offers a way back when the list itself cannot be loaded', async () => {
+      // The previous copy asked "is the backend running?" — a question about a
+      // word a customer has never seen, that they could not answer either way.
+      vi.mocked(api.listTrustedDevices).mockRejectedValue(new Error('network'));
+      render(<Control />);
+
+      const box = await screen.findByTestId('trusted-devices-error');
+      expect(box).toHaveTextContent(/may be out of date/i);
+      expect(box.textContent ?? '').not.toMatch(/backend/i);
+      expect(screen.getByTestId('retry-trusted')).toBeInTheDocument();
+    });
+
     it('Cancel aborts without calling api.revokePair', async () => {
       vi.mocked(api.listTrustedDevices).mockResolvedValue([pair()]);
       render(<Control />);

@@ -56,6 +56,24 @@ pnpm ios             # or: pnpm android
 
 ## Notes
 
+- **`ios/build/` holds build INPUTS, not only outputs.** React Native's
+  `ReactCodegen` pod writes its generated `.mm`/`.cpp` files to
+  `ios/build/generated/ios/`, which is a fixed path inside the repo rather than
+  anything under `-derivedDataPath`. The directory is gitignored, so a fresh
+  clone has none of it and `pod install` creates it — but deleting it in an
+  existing tree, which is the obvious thing to do when clearing build
+  artifacts, leaves Xcode failing with
+  `Build input file cannot be found: …/build/generated/ios/…-generated.mm`
+  until `pod install` runs again. Nothing is broken; the fix is always
+  `bundle exec pod install`.
+
+- **`PrivacyInfo.xcprivacy` is machine-managed.** `pod install` rewrites it to
+  aggregate required-reason API declarations from every pod, and that rewrite
+  strips XML comments and reorders keys. Anything hand-added survives, but any
+  explanation of _why_ does not — so the reasoning for what Lilypad declares
+  lives in `src/lib/__tests__/iosBundle.test.ts`, which also fails if a rewrite
+  ever drops a declaration.
+
 - **Connecting from a real phone:** the QR embeds `apiBaseUrl` from the backend
   `.env` `PUBLIC_BASE_URL`. On a phone that must be reachable from the device —
   your machine's LAN IP for same-Wi-Fi dev, or a public URL for true

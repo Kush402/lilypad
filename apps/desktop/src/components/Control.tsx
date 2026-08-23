@@ -385,13 +385,47 @@ function TrustedDevices({ linked }: { linked: boolean }) {
     // never look again once the answer arrived.
   }, [refresh, linked]);
 
+  /**
+   * What went wrong with the last thing the user pressed.
+   *
+   * Both actions below used to be `.then(refresh).catch(refresh)`, which
+   * refreshes either way and says nothing either way. For the toggle that
+   * means a checkbox that snaps back with no explanation — on the control that
+   * decides whether a phone's session starts WITHOUT anyone clicking Approve.
+   *
+   * For Revoke it is worse. Someone presses it because a phone is lost or
+   * because they want a device off their account, confirms a destructive
+   * action, watches the row stay exactly where it was, and has no way to know
+   * that the phone still has access. Silence there is not a missing message,
+   * it is a false one.
+   */
+  const [actionError, setActionError] = useState<string | null>(null);
+
   const toggle = (pair: TrustedPairDto) => {
-    void api.setPairAutoApprove(pair.pairId, !pair.autoApprove).then(refresh).catch(refresh);
+    setActionError(null);
+    void api
+      .setPairAutoApprove(pair.pairId, !pair.autoApprove)
+      .then(refresh)
+      .catch(() => {
+        setActionError(
+          'Couldn’t change that setting — Lilypad couldn’t be reached. It is unchanged.',
+        );
+        refresh();
+      });
   };
 
   const revoke = (pair: TrustedPairDto) => {
     setConfirmingRevokeId(null);
-    void api.revokePair(pair.pairId).then(refresh).catch(refresh);
+    setActionError(null);
+    void api
+      .revokePair(pair.pairId)
+      .then(refresh)
+      .catch(() => {
+        setActionError(
+          `Couldn’t remove ${pair.displayName ?? 'that phone'} — Lilypad couldn’t be reached, and it still has access. Try again.`,
+        );
+        refresh();
+      });
   };
 
   return (
@@ -402,8 +436,24 @@ function TrustedDevices({ linked }: { linked: boolean }) {
           This computer isn’t on an account yet, so it has no trusted phones. Link it above first.
         </p>
       ) : null}
+      {/* "is the backend running?" was the previous copy — a question a
+          customer has no way to answer, about a word they have never seen. The
+          list is a cache of something a server knows, so the honest thing to
+          say is that it might be stale, and to offer the one action that helps. */}
       {linked && error ? (
-        <p className="muted">Couldn’t load trusted devices — is the backend running?</p>
+        <div data-testid="trusted-devices-error">
+          <p className="muted">Couldn’t reach Lilypad just now, so this list may be out of date.</p>
+          <div className="row">
+            <button className="btn btn--small" data-testid="retry-trusted" onClick={refresh}>
+              Try again
+            </button>
+          </div>
+        </div>
+      ) : null}
+      {actionError ? (
+        <p className="error" data-testid="trusted-devices-action-error">
+          {actionError}
+        </p>
       ) : null}
       {linked && pairs !== null && pairs.length === 0 ? (
         <p className="muted">
@@ -452,7 +502,12 @@ function TrustedDevices({ linked }: { linked: boolean }) {
                 </div>
                 <p className="muted device-row__meta">{pairedLabel(pair.createdAt)}</p>
                 <label className="device-row__toggle" title="Connect without approval">
-                  <input type="checkbox" checked={pair.autoApprove} onChange={() => toggle(pair)} />
+                  <input
+                    type="checkbox"
+                    data-testid="auto-approve"
+                    checked={pair.autoApprove}
+                    onChange={() => toggle(pair)}
+                  />
                   <span>Auto-connect</span>
                 </label>
                 {confirmingRevokeId === pair.pairId ? (
