@@ -1,0 +1,56 @@
+# What `docker build` must NOT carry.
+#
+# `deploy.yml` builds with `context: .`, so without this file the daemon hashes
+# the entire working tree. On a developer's machine that is 37 GB — 34 GB of it
+# `apps/desktop/src-tauri/target`, 2.6 GB of iOS build output — none of which
+# the backend image has any use for. CI's checkout is clean, so this was
+# invisible there and painful everywhere else.
+#
+# It also means a `.env` kept beside the code can never enter a build context,
+# and therefore never enter the GitHub Actions layer cache. The published image
+# is already clean — inspected 2026-08-23, only PATH, NODE_VERSION,
+# YARN_VERSION, NODE_ENV and GIT_SHA, no key material — and this keeps it that
+# way by construction rather than by luck.
+#
+# Deliberately NOT excluding `apps/desktop`, `apps/mobile` or `apps/admin`
+# wholesale: the Dockerfile COPYs each of their `package.json` files, because
+# `pnpm install --frozen-lockfile` against a workspace lockfile needs every
+# workspace's manifest to resolve. Only their heavy subdirectories go.
+
+# Dependency trees and build output. `apps/backend` is COPY'd wholesale and
+# rebuilt inside the image, so anything here is overwritten at best, stale at
+# worst — and is a different platform's binaries at least some of the time.
+**/node_modules
+**/dist
+**/.turbo
+
+# `*.tsbuildinfo` is not housekeeping — it is the reason this file had to exist
+# before anyone noticed it was missing. `tsc -p tsconfig.json` is incremental:
+# with the host's `tsconfig.tsbuildinfo` in the context it decides the project
+# is already built and emits nothing, and the build only survived because the
+# host's `dist/` came along too. So a local `docker build` was shipping the
+# developer's compiled output rather than compiling. CI never saw it — a fresh
+# checkout has neither file. Excluding `dist` without this turns that silent
+# substitution into a loud `TS7016: Could not find a declaration file`.
+**/*.tsbuildinfo
+
+# The two directories that account for ~36 of the 37 GB.
+apps/desktop/src-tauri/target
+apps/desktop/src-tauri/gen
+apps/mobile/ios
+apps/mobile/android
+apps/mobile/vendor
+
+.git
+coverage
+*.log
+
+# Secrets and local state, belt and braces. None of these are tracked, which is
+# exactly why a build context is where they would otherwise turn up.
+.env
+.env.*
+!.env.example
+**/*.pem
+**/*.p8
+**/*.p12
+**/*.keystore
