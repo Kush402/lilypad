@@ -36,6 +36,7 @@ const CARGO_TOML = join(repoRoot, 'apps/desktop/src-tauri/Cargo.toml');
 const PKG_JSON = join(repoRoot, 'apps/desktop/package.json');
 const MOBILE_PKG_JSON = join(repoRoot, 'apps/mobile/package.json');
 const MOBILE_VERSION_TS = join(repoRoot, 'apps/mobile/src/config/version.ts');
+const SITE_INDEX = join(repoRoot, 'apps/site/index.html');
 const IOS_PBXPROJ = join(repoRoot, 'apps/mobile/ios/LilypadMobile.xcodeproj/project.pbxproj');
 const ANDROID_GRADLE = join(repoRoot, 'apps/mobile/android/app/build.gradle');
 
@@ -133,6 +134,14 @@ function main() {
     'android build.gradle',
   );
 
+  // The website advertises the version a visitor is about to download, in two
+  // places: the hero line and the download button. `apps/site/src/claims.test.ts`
+  // reads the shipped version out of tauri.conf.json and asserts the page names
+  // it — which is what caught this: cutting v0.1.5 turned the site build red
+  // because the page still said v0.1.4. The page once advertised v0.1.1 for
+  // forty-two commits, so the guard stays and the bump comes here.
+  replaceExactly(SITE_INDEX, `v${current}`, `v${next}`, 'site index.html', 2);
+
   // Cargo.lock records the workspace member's own version, and bumping
   // Cargo.toml without it leaves the two disagreeing. They did: at tag v0.1.4
   // Cargo.toml said 0.1.4 and the committed Cargo.lock still said 0.1.3, so
@@ -165,6 +174,7 @@ function main() {
   console.log('  apps/mobile/src/config/version.ts');
   console.log('  apps/mobile/ios/LilypadMobile.xcodeproj/project.pbxproj');
   console.log('  apps/mobile/android/app/build.gradle');
+  console.log('  apps/site/index.html');
   console.log('\nNext:');
   console.log(`  git commit -am "chore(release): v${next}"`);
   console.log(`  git tag v${next} && git push && git push --tags`);
