@@ -27,13 +27,28 @@ import {
  *   revoking. Any device of the owning account qualifies, which is what lets a
  *   phone manage its laptop's pairs in P2.
  *
- * **The unowned lane.** A device row with no `user_id` is a pre-accounts
- * device: it predates M8, or it has simply never been linked. There is no
- * account to protect and no cross-user boundary to cross, so it keeps the
- * behaviour it shipped with. That is not a hole left open — it is the only
- * answer that exists when nothing owns the row, and it closes per-device the
- * moment that device enrols. Once P1 makes enrolment mandatory in both
- * clients, `lane: 'unowned'` becomes unreachable and this branch is deleted.
+ * **There is no unowned lane.** A device row with no `user_id` may do nothing
+ * at all.
+ *
+ * This branch used to ALLOW. The reasoning was that a row nobody owns has no
+ * account to protect and no cross-user boundary to cross, so it should keep
+ * the behaviour it shipped with before accounts existed — and that the branch
+ * would become unreachable once enrolment was mandatory. Enrolment never
+ * became mandatory (P1 chose "linking is offered, not demanded"), so what was
+ * written as a migration ramp had quietly become permanent: knowing a
+ * fingerprint was sufficient to act as any unlinked device, forever.
+ *
+ * The product model is now **account → devices**: an account is established
+ * first, and every device hangs beneath one. A device that belongs to no
+ * account is therefore not a device with reduced privileges — it is a device
+ * that cannot act, because there is no one on whose behalf it would be acting.
+ * The only remaining `allow` is `lane: 'owner'`.
+ *
+ * What this does NOT gate, deliberately, is the ceremony that creates the
+ * ownership in the first place: `/devices/challenge`, `/devices/token` and
+ * `/devices/enrollment-code` consult none of these decisions, so a brand-new
+ * computer can still mint the code a phone approves. Linking remains possible;
+ * only ACTING while unlinked does not.
  *
  * A denied caller must never be able to tell "not yours" from "does not
  * exist", so every caller maps `allow: false` to the same 404 it would return
@@ -41,14 +56,10 @@ import {
  */
 
 export type Access =
-  /** The actor owns (or is) the resource. */
-  | { allow: true; lane: 'owner' }
-  /** Nothing owns the resource — pre-accounts behaviour, no boundary to cross. */
-  | { allow: true; lane: 'unowned' }
-  | { allow: false };
+  /** The actor owns (or is) the resource. The only way to be allowed. */
+  { allow: true; lane: 'owner' } | { allow: false };
 
 const DENY: Access = { allow: false };
-const UNOWNED: Access = { allow: true, lane: 'unowned' };
 const OWNER: Access = { allow: true, lane: 'owner' };
 
 /**
@@ -59,11 +70,14 @@ const OWNER: Access = { allow: true, lane: 'owner' };
  * answers that, not this.
  */
 export function actAsDevice(actor: Actor | null, device: DeviceOwnership | null): Access {
-  if (device === null) return UNOWNED;
+  // A device nobody has heard of cannot be acted as. The route's own not-found
+  // handling is what tells the caller so; this only refuses to authorize it.
+  if (device === null) return DENY;
   // A revoked device may not act, whoever asks. Revocation exists precisely
   // for the machine that is no longer in the owner's hands.
   if (device.state === 'revoked') return DENY;
-  if (device.userId === null) return UNOWNED;
+  // On no account, so acting on nobody's behalf.
+  if (device.userId === null) return DENY;
   if (actor === null) return DENY;
   // Both halves: the token must have been minted FOR this device row, and its
   // subject must still be the account that owns it.
@@ -79,8 +93,8 @@ export function actAsDevice(actor: Actor | null, device: DeviceOwnership | null)
  * it". What revocation stops is the device acting, which is the check above.
  */
 export function manageDevice(actor: Actor | null, device: DeviceOwnership | null): Access {
-  if (device === null) return UNOWNED;
-  if (device.userId === null) return UNOWNED;
+  if (device === null) return DENY;
+  if (device.userId === null) return DENY;
   if (actor === null) return DENY;
   return ownsDevice(actor.userId, device) ? OWNER : DENY;
 }
@@ -88,13 +102,16 @@ export function manageDevice(actor: Actor | null, device: DeviceOwnership | null
 /**
  * May this caller manage this pair?
  *
- * A pair is unowned only when NEITHER side has an owner. One owned side is
- * enough to make the relationship someone's business, and `canManagePair`
- * then decides whose.
+ * One owned side is enough to make the relationship someone's business, and
+ * `canManagePair` then decides whose. With neither side owned there is nobody
+ * it could be the business of.
  */
 export function managePair(actor: Actor | null, pair: PairOwnership | null): Access {
-  if (pair === null) return UNOWNED;
-  if (pair.desktop.userId === null && pair.mobile.userId === null) return UNOWNED;
+  if (pair === null) return DENY;
+  // Neither side on an account: there is no owner to authorize against, so
+  // nobody may manage it. Such a pair can no longer be created — both
+  // ceremonies now require owned devices — and any that survive are inert.
+  if (pair.desktop.userId === null && pair.mobile.userId === null) return DENY;
   if (actor === null) return DENY;
   return canManagePair(actor.userId, pair) ? OWNER : DENY;
 }

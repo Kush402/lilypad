@@ -139,10 +139,12 @@ machines the account **owns**, not which phone may reach which laptop. Revoking
 here is strictly stronger than severing a pairing — the device can no longer
 authenticate at all, so it loses every pairing at once.
 
-`requireDevice`, not the conditional gate the pairing routes use: there is no
-unowned lane, because the resource _is_ an account's device list. Without an
-account there is nothing to list, so an anonymous caller gets **401**, not an
-empty array. Handlers:
+`requireDevice`, not the `optionalAuth` gate the pairing routes use — though
+since 2026-08-22 the difference is only in the status code, not in who gets
+through: the unowned lane is closed everywhere, so a caller with no account is
+refused on every route. Here the resource _is_ an account's device list, so an
+anonymous caller gets **401** rather than the **404** the pairing routes return
+to avoid confirming a resource exists. Handlers:
 [`routes/devices.ts`](../apps/backend/src/routes/devices.ts).
 
 | Route                       | Purpose                                                                                                                                                      |
@@ -270,12 +272,13 @@ token of the phone it names. Mutating routes are rate-limited
 **30/minute per IP**.
 Handlers: [`routes/devices.ts`](../apps/backend/src/routes/devices.ts).
 
-| Route                                  | Purpose                                                                                                                                                                                                    |
-| -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GET /devices/pairs?desktopDeviceId=…` | Every pair for a desktop → `{ pairs: TrustedPairListing[] }`.                                                                                                                                              |
-| `PATCH /devices/pairs/:pairId`         | Flip "connect without approval" — body `{ "autoApprove": bool }` → `{ ok: true }`.                                                                                                                         |
-| `DELETE /devices/pairs/:pairId`        | Desktop-side **Revoke**. Row kept as audit trail; the connect gate fails closed and any live session for the pair is ended immediately with reason `revoked`.                                              |
-| `POST /devices/unpair`                 | Mobile-side **Forget** — body `{ desktopDeviceId, mobileDeviceId }`. Idempotent. Ends a live session with the neutral reason `unpaired` (not `revoked`, which is reserved for the desktop-initiated case). |
+| Route                                  | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `GET /devices/pairs?desktopDeviceId=…` | Every pair for a desktop → `{ pairs: TrustedPairListing[] }`.                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `GET /devices/pairs/mine`              | Every pair THIS PHONE holds → `{ pairs: MobilePairListing[] }`. `requireDevice`, because the resource is defined by the caller — a device id in a query string would let anyone enumerate any phone's laptops. Revoked pairs are **included**: the phone needs to be told, in order to drop them. The desktop id is unmasked here, unlike the mobile fingerprint above, because the caller has proved it is one side of these pairs and cannot reconcile without matching ids. |
+| `PATCH /devices/pairs/:pairId`         | Flip "connect without approval" — body `{ "autoApprove": bool }` → `{ ok: true }`.                                                                                                                                                                                                                                                                                                                                                                                             |
+| `DELETE /devices/pairs/:pairId`        | Desktop-side **Revoke**. Row kept as audit trail; the connect gate fails closed and any live session for the pair is ended immediately with reason `revoked`.                                                                                                                                                                                                                                                                                                                  |
+| `POST /devices/unpair`                 | Mobile-side **Forget** — body `{ desktopDeviceId, mobileDeviceId }`. Idempotent. Ends a live session with the neutral reason `unpaired` (not `revoked`, which is reserved for the desktop-initiated case).                                                                                                                                                                                                                                                                     |
 
 A `TrustedPairListing` is
 `{ pairId, mobileFingerprint, displayName, autoApprove, revoked, lastConnectedAt, createdAt }`.
@@ -555,7 +558,9 @@ the rule is enforced here rather than by client convention.
 // request
 { "challenge": "…", "publicKey": "…", "signature": "…",
   "kind": "mobile", "fingerprint": "phone-…",
-  "name": "Ada’s iPhone", "platform": "ios" }   // name/platform optional
+  "name": "Ada’s iPhone", "platform": "ios",    // name/platform optional
+  "appVersion": "0.1.4",                        // optional; see /devices/token
+  "proofOrigin": "api.takedia.com" }            // optional; see /devices/token
 // 200 OK
 { "accessToken": "eyJ…", "expiresInSeconds": 600,
   "deviceId": "uuid",       // devices.id — a real server-side uuid
@@ -579,11 +584,52 @@ itself back in after a restart, with no user interaction. Rate-limited to
 **60/minute** per IP.
 
 ```jsonc
-{ "challenge": "…", "publicKey": "…", "signature": "…" }
+{
+  "challenge": "…",
+  "publicKey": "…",
+  "signature": "…",
+  "appVersion": "0.1.4", // optional
+  "proofOrigin": "api.takedia.com",
+} // optional; selects the v2 message
 // 200 OK — same shape as /devices/enroll
 // 401 { "error": "invalid_signature" }
 // 403 { "error": "device_revoked" }   // or "device_not_enrolled"
 ```
+
+`appVersion` is bookkeeping, **not part of the signed proof** — signing over it
+would only make an older client unable to talk to a newer server, and it is
+read by a person, never by a policy. It rides on this route because this is the
+one request every client makes on launch and every renewal, so
+`devices.app_version` stays current without a heartbeat. Free-form and capped
+at 40 characters; an older client's version format is not something a newer
+server gets to reject.
+
+`proofOrigin`, when present, is the host the client is talking to — and the
+host it signed. Its presence selects the origin-bound message
+([ADR-0002](adr/0002-device-identity.md) § the proof names its server):
+
+```
+v1   lilypad-device-auth:v1:<challenge>
+v2   lilypad-device-auth:v2:<hostLength>:<host>:<challenge>
+```
+
+The server checks the host is one of its own **before** verifying anything — a
+signature over `evil.example` verifies fine against the key that made it, so
+the refusal is the security property, not the signing. A proof naming a host
+this server does not answer to gets `401 invalid_signature`, the same answer as
+a bad signature: telling a caller which half was wrong tells an attacker which
+half to fix. The rejected host is logged, which is how a relayed proof is told
+apart from a deployment whose advertised address is wrong.
+
+Requests without `proofOrigin` are checked against the v1 message, so clients
+that predate the change keep working. `GET /metrics` publishes the effective
+allow-list as `deviceProofHosts`; **the server must be deployed and that list
+confirmed before shipping any client that sends `proofOrigin`.**
+
+Two client-side rules complete it, because the QR that names a backend is
+attacker-controlled input: a device credential is only ever presented to the
+backend the client is enrolled on (`assertHomeBackend`), and the client refuses
+to sign a challenge from anywhere else at all.
 
 403 rather than 401 for the last two: the credential is valid, the _device_ is
 not allowed. Retrying with the same key will never help, and a client that

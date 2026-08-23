@@ -220,7 +220,10 @@ export async function signInWithPassword(
     // `invalid_credentials` for an unknown address, a wrong password, and an
     // account with no password alike; a UI that guessed between them would
     // rebuild the enumeration oracle the backend just refused to be.
-    throw new SignInError('rejected', 'That email and password do not match an account.');
+    throw new SignInError(
+      'rejected',
+      'That email and password do not match an account. Check the password, or create an account.',
+    );
   }
   return completeSignIn(apiBaseUrl, JSON.parse(text) as AuthSession, {
     email: input.email.trim().toLowerCase(),

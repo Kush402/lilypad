@@ -72,9 +72,24 @@ describe('actAsDevice — the caller must BE the device it names', () => {
     expect(allowed(actAsDevice(asDevice(BOB, aliceLaptop.deviceId), aliceLaptop))).toBe(false);
   });
 
-  it('allows the unowned lane: nothing owns the row, so there is no boundary', () => {
-    expect(actAsDevice(null, unowned)).toEqual({ allow: true, lane: 'unowned' });
-    expect(actAsDevice(null, null)).toEqual({ allow: true, lane: 'unowned' });
+  /**
+   * The product model is account -> devices: a device that belongs to no
+   * account is not a device with fewer privileges, it is a device that cannot
+   * act, because there is nobody on whose behalf it would act.
+   *
+   * This used to ALLOW, described in the source as a migration ramp that would
+   * close "once P1 makes enrolment mandatory". P1 chose the opposite
+   * ("linking is offered, not demanded"), so the ramp had become permanent and
+   * knowing a fingerprint was enough to act as any unlinked device.
+   */
+  it('refuses a device on no account, even to itself', () => {
+    expect(actAsDevice(null, unowned)).toEqual({ allow: false });
+    expect(actAsDevice(alicePhone, unowned)).toEqual({ allow: false });
+  });
+
+  it('refuses a device it has never heard of', () => {
+    expect(actAsDevice(null, null)).toEqual({ allow: false });
+    expect(actAsDevice(alicePhone, null)).toEqual({ allow: false });
   });
 });
 
@@ -97,8 +112,10 @@ describe('manageDevice — the caller must OWN the device', () => {
     );
   });
 
-  it('allows the unowned lane', () => {
-    expect(manageDevice(null, unowned)).toEqual({ allow: true, lane: 'unowned' });
+  it('refuses to manage a device on no account, or one that does not exist', () => {
+    expect(manageDevice(null, unowned)).toEqual({ allow: false });
+    expect(manageDevice(alicePhone, unowned)).toEqual({ allow: false });
+    expect(manageDevice(alicePhone, null)).toEqual({ allow: false });
   });
 });
 
@@ -133,9 +150,16 @@ describe('managePair — either side of the relationship', () => {
     expect(allowed(managePair(null, halfOwned))).toBe(false);
   });
 
-  it('allows the unowned lane only when NEITHER side has an owner', () => {
-    expect(managePair(null, orphan)).toEqual({ allow: true, lane: 'unowned' });
-    expect(managePair(null, null)).toEqual({ allow: true, lane: 'unowned' });
+  it('refuses a pair with an owner on neither side', () => {
+    expect(managePair(null, orphan)).toEqual({ allow: false });
+    expect(managePair(alicePhone, orphan)).toEqual({ allow: false });
+    expect(managePair(alicePhone, null)).toEqual({ allow: false });
+  });
+
+  // Half-owned must keep working: it is the shape a pair takes the instant one
+  // side links, and the owned side's account is entitled to manage it.
+  it('still lets the owned side manage a half-owned pair', () => {
+    expect(managePair(alicePhone, halfOwned)).toEqual({ allow: true, lane: 'owner' });
   });
 });
 

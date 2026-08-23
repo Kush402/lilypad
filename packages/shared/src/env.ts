@@ -90,6 +90,38 @@ const EnvSchema = z.object({
   // deploy pressure. See docs/audit/m3/backend-security.md Finding 14.
   ALLOWED_ORIGINS: z.string().default(''),
 
+  // Extra hosts a device proof may name, comma-separated, beyond the ones this
+  // server already advertises (`PUBLIC_BASE_URL` and the live advertised URL).
+  //
+  // A v2 device proof signs the host it is for, and the server refuses hosts
+  // that are not its own — that refusal is what stops a hostile server
+  // relaying a challenge and replaying the signature. Deployments reached at a
+  // name the server does not advertise (a LAN address in development, a second
+  // hostname in front of one origin) list it here. Empty is the normal case
+  // and is NOT a fallback to "anything": an unlisted host is refused.
+  //
+  // Deliberately not `ALLOWED_ORIGINS`, which is a browser CORS allowlist. The
+  // two answer different questions and sharing one value would mean widening
+  // an authentication check to admit a web client.
+  DEVICE_PROOF_HOSTS: z.string().default(''),
+
+  // Refuse a device proof that does not name the server it is for — i.e. drop
+  // the v1 message entirely ([ADR-0002](../../../docs/adr/0002-device-identity.md)).
+  //
+  // v2 is only worth what the weakest accepted form is worth: while v1 is
+  // still accepted, an attacker holding a relayed v1 signature can simply
+  // present that instead. Requiring v2 is what actually closes it.
+  //
+  // Off by default, and that is a deployment-ordering fact rather than a
+  // preference: a client that has not been updated cannot produce a v2 proof
+  // at all, so turning this on before those builds are installed signs every
+  // existing device out permanently. Deploy the server, ship the clients,
+  // confirm `devices.app_version`, then flip this. See docs/operations.md.
+  REQUIRE_DEVICE_PROOF_ORIGIN: z
+    .string()
+    .default('false')
+    .transform((v) => v === 'true'),
+
   // Static bearer token gating GET /metrics in production (an unauthenticated
   // metrics endpoint hands an attacker load/timing recon for free — see
   // docs/audit/m3/backend-security.md Finding 13). Optional in dev so

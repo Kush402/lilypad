@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { api, type AccountStateDto, type LinkStateDto, type TrustedPairDto } from '../lib/tauri';
+import {
+  api,
+  type AccountStateDto,
+  type LinkStateDto,
+  type PresenceDto,
+  type TrustedPairDto,
+} from '../lib/tauri';
 import { useAppState } from '../lib/useAppState';
 import { useLiveResource } from '../lib/useLiveResource';
 import { STATUS_LABEL } from '../lib/status';
@@ -65,17 +71,17 @@ export function Control() {
   const pairable =
     link.value === null || !['unlinked', 'revoked', 'no_identity'].includes(link.value.state);
 
-  // Re-ask while this computer is not yet on an account: linking is approved
-  // on the PHONE, so there is nothing local to react to, and the "+" has to
-  // come alive on its own the moment it does. Matches `AccountPanel`'s cadence
-  // against endpoints budgeted at 60/minute.
+  // Read once, then again only when `AccountPanel` reports the transition.
+  //
+  // This used to poll every 3s for as long as the dashboard was open on an
+  // unlinked machine. Each poll is a challenge plus a signed token exchange,
+  // and on an unlinked Mac the token half can only ever answer 403 — measured
+  // in production on 2026-08-21 as 64 challenges and 61 rejected tokens in the
+  // three minutes before linking, stopping the second it completed. Nothing was
+  // learned by any of them: only `AccountPanel` can cause this transition, and
+  // it already polls for exactly the window in which one is possible.
   const refreshLink = link.refresh;
-  useEffect(() => {
-    refreshLink();
-    if (pairable) return;
-    const id = setInterval(refreshLink, 3_000);
-    return () => clearInterval(id);
-  }, [refreshLink, pairable]);
+  useEffect(refreshLink, [refreshLink]);
 
   return (
     <div className="page control dashboard">
@@ -182,10 +188,66 @@ export function Control() {
           waits for the first, because offering a live enrollment QR to someone
           who has not said who they are puts the last step before the first. */}
       <AccountSignIn onChange={setAccount} />
-      <LinkStep signedIn={account?.signedIn ?? false} />
-      <TrustedDevices />
+      <LinkStep signedIn={account?.signedIn ?? false} onLinked={refreshLink} />
+      <Reachability presence={state?.presence ?? null} linked={link.value?.state === 'linked'} />
+      <TrustedDevices linked={link.value?.state === 'linked'} />
       <SystemPanel backendUrl={state?.backend_base_url ?? null} />
     </div>
+  );
+}
+
+/**
+ * Can a phone actually reach this Mac?
+ *
+ * A separate question from "is it linked", and the product could only answer
+ * the second one. On 2026-08-22 this machine's presence register was refused
+ * 56 times over six hours while its device row was owned and unrevoked: the
+ * phone said "the laptop is offline", the Mac said "Linked", and nothing
+ * anywhere said what was actually wrong or what to do about it.
+ *
+ * Silent while everything is fine. A reachability badge that is always on
+ * screen becomes furniture, and the one state worth interrupting someone for
+ * is the one where their phone cannot get through.
+ */
+function Reachability({ presence, linked }: { presence: PresenceDto | null; linked: boolean }) {
+  // Nothing useful to say before the first attempt resolves, and nothing at
+  // all to say about an unlinked machine — no phone is trying to reach it, and
+  // `LinkStep` above is already asking for the step that matters.
+  if (!presence || !linked) return null;
+  if (presence.state === 'online' || presence.state === 'starting') return null;
+
+  // `connecting` is a normal blip: the loop reconnects on wake, on a deploy,
+  // and on any dropped socket. Saying so is honest; alarming about it is not.
+  const transient = presence.state === 'connecting';
+
+  const COPY: Record<string, { title: string; body: string }> = {
+    connecting: {
+      title: 'Reconnecting…',
+      body: 'Your phone may not be able to reach this Mac for a moment.',
+    },
+    unreachable: {
+      title: 'Your phone can’t reach this Mac',
+      body: 'This Mac can’t reach Lilypad’s server. Check its internet connection — the phone will work again on its own once it’s back.',
+    },
+    refused: {
+      title: 'Your phone can’t reach this Mac',
+      body: 'Lilypad’s server won’t accept this Mac right now. If you removed it from your account, link it again above.',
+    },
+    no_identity: {
+      title: 'Your phone can’t reach this Mac',
+      body: 'This Mac can’t prove who it is — macOS may have denied Lilypad access to the keychain. Allow it and this will clear on its own.',
+    },
+  };
+  const copy = COPY[presence.state];
+  if (!copy) return null;
+
+  return (
+    <section className="control__reachability card" data-testid="reachability">
+      <p className={transient ? 'muted' : 'error'}>
+        <strong>{copy.title}</strong>
+      </p>
+      <p className="muted">{copy.body}</p>
+    </section>
   );
 }
 
@@ -237,13 +299,23 @@ function pairedLabel(iso: string): string {
  * array index), so a 15s poll refresh — which hands back a brand-new
  * `pairs` array reference every time — never collapses an open row.
  */
-function TrustedDevices() {
+/**
+ * `linked` is not decoration. Under the account -> devices model a computer on
+ * no account has no pairs to list, and `GET /devices/pairs` now answers 404 to
+ * it rather than an empty array. `list_trusted_devices` turns any non-2xx into
+ * an `Err`, which this rendered as "Couldn't load trusted devices - is the
+ * backend running?" - false, and alarming, on a machine whose only problem is
+ * that nobody has linked it yet.
+ */
+function TrustedDevices({ linked }: { linked: boolean }) {
   const {
     value: pairs,
     error,
     refresh,
   } = useLiveResource(() =>
-    api.listTrustedDevices().then((p) => p.filter((pair) => !pair.revoked)),
+    linked
+      ? api.listTrustedDevices().then((p) => p.filter((pair) => !pair.revoked))
+      : Promise.resolve([]),
   );
   const [expandedId, setExpandedId] = useState<string | null>(null);
   // Which pair's Revoke is in its "are you sure" second step. `window.confirm`
@@ -253,11 +325,42 @@ function TrustedDevices() {
   // inline two-step confirm works deterministically in any webview.
   const [confirmingRevokeId, setConfirmingRevokeId] = useState<string | null>(null);
 
+  // Poll only while somebody is actually looking at this list.
+  //
+  // Every mutation below already refreshes on its own, so the timer exists
+  // solely for changes made elsewhere — a phone pairing over the signaling
+  // hub, or unpairing itself. Both only matter once the user looks back at
+  // this window, so a hidden dashboard needs no polling at all: this is a tray
+  // app, and background is where it spends most of its life. Measured in
+  // production on 2026-08-21, the old unconditional 15s timer kept running
+  // straight through two live sessions.
+  //
+  // `visibilitychange` is the platform's own answer to "is this being read?",
+  // and refreshing on the way back in makes the list correct the moment it is
+  // seen rather than up to fifteen seconds later.
   useEffect(() => {
-    refresh();
-    const id = setInterval(refresh, 15_000);
-    return () => clearInterval(id);
-  }, [refresh]);
+    let id: ReturnType<typeof setInterval> | null = null;
+    const stop = () => {
+      if (id !== null) clearInterval(id);
+      id = null;
+    };
+    const sync = () => {
+      stop();
+      if (document.visibilityState === 'hidden') return;
+      refresh();
+      id = setInterval(refresh, 15_000);
+    };
+    sync();
+    document.addEventListener('visibilitychange', sync);
+    return () => {
+      stop();
+      document.removeEventListener('visibilitychange', sync);
+    };
+    // `linked` belongs in here, not just in the fetcher. `refresh` is stable
+    // by design, so without it the first render — where the link state has not
+    // resolved yet and `linked` is still false — would fetch an empty list and
+    // never look again once the answer arrived.
+  }, [refresh, linked]);
 
   const toggle = (pair: TrustedPairDto) => {
     void api.setPairAutoApprove(pair.pairId, !pair.autoApprove).then(refresh).catch(refresh);
@@ -271,10 +374,15 @@ function TrustedDevices() {
   return (
     <section className="control__devices card">
       <h2 className="section-title">Trusted devices</h2>
-      {error ? (
+      {!linked ? (
+        <p className="muted" data-testid="trusted-devices-unlinked">
+          This computer isn’t on an account yet, so it has no trusted phones. Link it above first.
+        </p>
+      ) : null}
+      {linked && error ? (
         <p className="muted">Couldn’t load trusted devices — is the backend running?</p>
       ) : null}
-      {pairs !== null && pairs.length === 0 ? (
+      {linked && pairs !== null && pairs.length === 0 ? (
         <p className="muted">
           No trusted phones yet. Pair once with the QR and leave “Trust this device” checked.
         </p>

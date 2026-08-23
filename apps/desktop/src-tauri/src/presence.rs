@@ -17,7 +17,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::auth::DesktopAuth;
 use crate::signaling::{connect, messages::ConnectRequestPayload, Envelope};
@@ -92,6 +92,26 @@ pub fn spawn(app: AppHandle) {
     });
 }
 
+/// Publish where presence stands, and wake the UI.
+///
+/// Nothing reported this before, so "your phone cannot reach this Mac" was a
+/// fact only the backend's logs held. The event reuses `lilypad://session`
+/// because `useAppState` already treats that as "re-fetch the snapshot" — a
+/// second channel would be a second thing to keep in sync for no gain.
+fn set_presence(app: &AppHandle, next: crate::state::PresenceState) {
+    {
+        let state = app.state::<SharedState>();
+        let mut s = state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if s.presence == next {
+            return; // Nothing changed; do not wake every window on a retry.
+        }
+        s.presence = next;
+    }
+    let _ = app.emit("lilypad://session", ());
+}
+
 async fn run(app: AppHandle) {
     let (device_id, base_url) = {
         let state = app.state::<SharedState>();
@@ -111,6 +131,23 @@ async fn run(app: AppHandle) {
         // is normal for a computer no account has linked yet — the backend
         // still admits it, on the same terms it always has.
         let token = app.state::<Arc<DesktopAuth>>().bearer().await;
+
+        // Connecting without a token used to be normal — the backend admitted
+        // an unowned computer on the same terms it always had. It is not
+        // normal any more: under account → devices the hub refuses a presence
+        // register it cannot attribute, so this would spend a connection to
+        // earn a 4403 and then do it again forever. Report it and back off
+        // instead; `DesktopAuth` retries the keychain on the next call.
+        if token.is_none() {
+            set_presence(&app, crate::state::PresenceState::NoIdentity);
+            log::warn!(
+                target: "lilypad::presence",
+                "no device token — this Mac cannot be reached by a phone until it has one",
+            );
+        } else {
+            set_presence(&app, crate::state::PresenceState::Connecting);
+        }
+
         match connect(&url, token.as_deref()).await {
             Ok((handle, mut inbound)) => {
                 if handle.send(Envelope::register(&room, &device_id)).is_ok() {
@@ -148,6 +185,7 @@ async fn run(app: AppHandle) {
                                 if !registered && proves_registered(&env.msg_type) {
                                     registered = true;
                                     attempt = 0;
+                                    set_presence(&app, crate::state::PresenceState::Online);
                                     log::info!(target: "lilypad::presence", "presence online ({room})");
                                 }
                                 handle_inbound(&app, &url, env);
@@ -155,8 +193,14 @@ async fn run(app: AppHandle) {
                         }
                     }
                     if registered {
+                        set_presence(&app, crate::state::PresenceState::Connecting);
                         log::info!(target: "lilypad::presence", "presence socket closed — reconnecting");
                     } else {
+                        // Seated by nobody. `Refused` rather than
+                        // `Unreachable`: the socket opened, so the network is
+                        // fine and the hub said no — which is a different
+                        // problem with a different remedy.
+                        set_presence(&app, crate::state::PresenceState::Refused);
                         // The hub never seated us. Distinguished in the log
                         // because the two cases have different causes: a closed
                         // socket is the network, an unseated one is almost
@@ -171,8 +215,13 @@ async fn run(app: AppHandle) {
                 }
             }
             Err(e) => {
-                // Quiet: an offline backend at launch is normal; the loop
-                // keeps trying at the capped cadence.
+                // Quiet in the log: an offline backend at launch is normal and
+                // the loop keeps trying at the capped cadence. Not quiet in
+                // the UI, because from the phone's side this is indistinguishable
+                // from the Mac being switched off.
+                if token.is_some() {
+                    set_presence(&app, crate::state::PresenceState::Unreachable);
+                }
                 log::debug!(target: "lilypad::presence", "presence connect failed: {e}");
             }
         }

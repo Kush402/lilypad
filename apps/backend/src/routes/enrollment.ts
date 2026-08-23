@@ -23,6 +23,8 @@ import {
 import { TrustService, createDrizzleTrustStore } from '../services/trust.js';
 import { AuditLogService, createDrizzleAuditLogStore } from '../services/auditLog.js';
 import { advertisedUrls } from '../services/advertisedUrls.js';
+import { allowedProofHosts, isProofOriginAllowed } from '../auth/proofOrigin.js';
+import { config } from '../config.js';
 import { log } from '../logging.js';
 
 /**
@@ -72,7 +74,17 @@ export async function enrollmentRoutes(app: FastifyInstance): Promise<void> {
       if (!parsed.success) {
         return reply.code(400).send({ error: 'invalid_request', issues: parsed.error.issues });
       }
-      const { challenge, publicKey, signature, kind, fingerprint, name, platform } = parsed.data;
+      const {
+        challenge,
+        publicKey,
+        signature,
+        kind,
+        fingerprint,
+        name,
+        platform,
+        appVersion,
+        proofOrigin,
+      } = parsed.data;
       const actor = actorOf(req);
 
       // A computer may NEVER put itself on an account, however well it proves
@@ -90,7 +102,7 @@ export async function enrollmentRoutes(app: FastifyInstance): Promise<void> {
         });
       }
 
-      if (!(await proofHolds(challenge, publicKey, signature))) {
+      if (!(await proofHolds(challenge, publicKey, signature, proofOrigin))) {
         return invalidSignature(reply, req.ip, { userId: actor.userId, step: 'enroll' });
       }
 
@@ -130,7 +142,9 @@ export async function enrollmentRoutes(app: FastifyInstance): Promise<void> {
         });
       }
 
-      return reply.code(200).send(await deviceSession(enrolled.deviceId, actor.userId, req.ip));
+      return reply
+        .code(200)
+        .send(await deviceSession(enrolled.deviceId, actor.userId, req.ip, appVersion));
     },
   );
 
@@ -147,9 +161,9 @@ export async function enrollmentRoutes(app: FastifyInstance): Promise<void> {
       if (!parsed.success) {
         return reply.code(400).send({ error: 'invalid_request', issues: parsed.error.issues });
       }
-      const { challenge, publicKey, signature } = parsed.data;
+      const { challenge, publicKey, signature, appVersion, proofOrigin } = parsed.data;
 
-      if (!(await proofHolds(challenge, publicKey, signature))) {
+      if (!(await proofHolds(challenge, publicKey, signature, proofOrigin))) {
         return invalidSignature(reply, req.ip, { step: 'device_token' });
       }
 
@@ -186,7 +200,9 @@ export async function enrollmentRoutes(app: FastifyInstance): Promise<void> {
 
       return reply
         .code(200)
-        .send(await deviceSession(authenticated.deviceId, authenticated.userId, req.ip));
+        .send(
+          await deviceSession(authenticated.deviceId, authenticated.userId, req.ip, appVersion),
+        );
     },
   );
 
@@ -207,8 +223,9 @@ export async function enrollmentRoutes(app: FastifyInstance): Promise<void> {
       if (!parsed.success) {
         return reply.code(400).send({ error: 'invalid_request', issues: parsed.error.issues });
       }
-      const { challenge, publicKey, signature, fingerprint, name, platform } = parsed.data;
-      if (!(await proofHolds(challenge, publicKey, signature))) {
+      const { challenge, publicKey, signature, fingerprint, name, platform, proofOrigin } =
+        parsed.data;
+      if (!(await proofHolds(challenge, publicKey, signature, proofOrigin))) {
         return invalidSignature(reply, req.ip, { step: 'desktop_enrollment_code' });
       }
       const minted = await createDesktopEnrollmentCode({
@@ -322,14 +339,65 @@ export async function enrollmentRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
-  /** Burn the challenge, then check the signature — in that order. */
+  /**
+   * Burn the challenge, then check the signature — in that order.
+   *
+   * `proofOrigin` is the host the client says it is talking to, and its
+   * presence selects the v2 message (ADR-0002, L-30). Two checks, and the
+   * order matters:
+   *
+   * 1. **Is that host one of ours?** If it is not, this is either a relay
+   *    forwarding a proof a device made for someone else's server, or a
+   *    deployment whose advertised address does not match what clients use.
+   *    Both must be refused; the log line below is what tells them apart.
+   * 2. **Do the bytes verify?** Only then, and over exactly the host claimed.
+   *
+   * Skipping (1) would make v2 pointless: a signature over `evil.example`
+   * verifies perfectly well against the key that made it. The refusal is the
+   * security property, not the signing.
+   *
+   * A request with no `proofOrigin` is checked against the v1 message, so
+   * every client already installed keeps working. Both are accepted until the
+   * fleet has moved — `devices.app_version` (L-25) is how that becomes a fact
+   * rather than a guess.
+   */
   async function proofHolds(
     challenge: string,
     publicKey: string,
     signature: string,
+    proofOrigin?: string | null,
   ): Promise<boolean> {
     if (!(await consumeDeviceChallenge(challenge))) return false;
-    return verifyDeviceSignature(publicKey, challenge, signature);
+    if (proofOrigin == null && config.env.REQUIRE_DEVICE_PROOF_ORIGIN) {
+      // v2 is only worth what the weakest accepted form is worth. While v1 is
+      // still allowed, a relayed v1 signature can be presented instead of the
+      // v2 one it could not forge — so refusing v1 is the step that actually
+      // closes the relay, not adding v2.
+      log.audit.warn(
+        { step: 'device_proof' },
+        'refused a proof that names no server (REQUIRE_DEVICE_PROOF_ORIGIN)',
+      );
+      return false;
+    }
+    if (proofOrigin != null) {
+      const allowed = allowedProofHosts({
+        publicBaseUrl: config.env.PUBLIC_BASE_URL,
+        advertisedApiBaseUrl: advertisedUrls().apiBaseUrl,
+        extraHosts: config.env.DEVICE_PROOF_HOSTS,
+      });
+      if (!isProofOriginAllowed(proofOrigin, allowed)) {
+        // Warn, not error: a relayed proof is an attack and a mismatched
+        // deployment is a misconfiguration, and this one line is what
+        // distinguishes them. The client is told only `invalid_signature` —
+        // naming which half was wrong tells an attacker which half to fix.
+        log.audit.warn(
+          { proofOrigin, allowed: [...allowed] },
+          'device proof named a host this server does not answer to',
+        );
+        return false;
+      }
+    }
+    return verifyDeviceSignature(publicKey, challenge, signature, proofOrigin);
   }
 
   function invalidSignature(
@@ -349,8 +417,18 @@ export async function enrollmentRoutes(app: FastifyInstance): Promise<void> {
     deviceId: string,
     userId: string,
     ip: string,
+    appVersion?: string | null,
   ): Promise<DeviceSession> {
     const accessToken = await signAccessToken({ userId, deviceId });
+    // Every path that hands out a device token comes through here, which makes
+    // it the one place "this device was just seen" is true for all of them.
+    // `DeviceRegistry.authenticate` marks the renew path; enrolment did not,
+    // so a freshly enrolled phone read as never seen while its owner held it.
+    // Fire-and-forget for the same reason as the audit write below: a
+    // bookkeeping column must never fail the sign-in it describes.
+    void registry
+      .markSeen(deviceId, appVersion)
+      .catch((err) => log.audit.warn({ err }, 'failed to mark device as seen'));
     void auditLog
       .login({ userId, deviceId, ip, metadata: { subject: 'device' } })
       .catch((err) => log.audit.error({ err }, 'failed to write login audit log'));

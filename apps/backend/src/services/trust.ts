@@ -73,6 +73,23 @@ export interface PairListing {
   createdAt: string;
 }
 
+/**
+ * A pair as the PHONE sees it — joined with the desktop device row, so the
+ * phone can tell which laptop each row is and match it against its keychain.
+ *
+ * The desktop fingerprint is NOT masked here, unlike `PairListing`'s mobile
+ * fingerprint: the caller has proved with a device token that it is one side
+ * of these pairs, and a phone that cannot match ids cannot reconcile.
+ */
+export interface MobilePairListing {
+  pairId: string;
+  desktopDeviceId: string;
+  name: string | null;
+  revoked: boolean;
+  lastConnectedAt: string | null;
+  createdAt: string;
+}
+
 /** Minimal DB surface — satisfied by the real Drizzle adapter below and by
  * an in-memory fake in tests (the `AuditLogStore`/`KvStore` pattern). */
 export interface TrustStore {
@@ -86,6 +103,9 @@ export interface TrustStore {
   upsertPair(desktopId: string, mobileId: string, connectSecretHash: string): Promise<TrustedPair>;
   /** Every pair for one desktop, joined with each mobile device row. */
   listPairsForDesktop(desktopId: string): Promise<PairListing[]>;
+  /** Every pair for one PHONE, joined with each desktop device row. Backed by
+   * `trusted_devices_mobile_idx`. */
+  listPairsForMobile(mobileId: string): Promise<MobilePairListing[]>;
   /** Patch mutable pair fields. Absent fields are left untouched. */
   updatePair(
     pairId: string,
@@ -105,6 +125,78 @@ export interface TrustStore {
   getPairFingerprints(
     pairId: string,
   ): Promise<{ desktopFingerprint: string; mobileFingerprint: string } | null>;
+}
+
+/** The shape `listPairsForDesktop`'s query returns, before presentation. */
+export interface PairListingRow {
+  pairId: string;
+  mobileFingerprint: string;
+  displayName: string | null;
+  /** The phone's own `devices.name`. */
+  deviceName: string | null;
+  autoApprove: boolean;
+  revokedAt: Date | null;
+  lastConnectedAt: Date | null;
+  createdAt: Date;
+}
+
+/**
+ * One joined row as the dashboard should see it.
+ *
+ * Pure and exported so the two decisions it makes are testable without a
+ * Postgres — the same split as `parseAllowedOrigins` and `trustProxy`. Both
+ * decisions have been wrong in production:
+ *
+ * - **Which name to show.** `trusted_devices.display_name` is written by
+ *   nothing, so it was NULL for every row (checked 2026-08-21) and the
+ *   dashboard fell through to the literal string "Phone" for every entry.
+ *   Two paired phones were indistinguishable except by a masked fingerprint.
+ *   A pair nickname still wins if one is ever set; the phone's own name is
+ *   the fallback.
+ * - **How much of the fingerprint to leak.** Masked, because the full
+ *   self-asserted id should not be readable by any caller that knows a
+ *   desktop id (2026-07-19 audit). A short suffix stays, to disambiguate.
+ */
+export function toPairListing(r: PairListingRow): PairListing {
+  return {
+    pairId: r.pairId,
+    mobileFingerprint: maskFingerprint(r.mobileFingerprint),
+    displayName: r.displayName ?? r.deviceName,
+    autoApprove: r.autoApprove,
+    revoked: r.revokedAt !== null,
+    lastConnectedAt: r.lastConnectedAt ? r.lastConnectedAt.toISOString() : null,
+    createdAt: r.createdAt.toISOString(),
+  };
+}
+
+/** The shape `listPairsForMobile`'s query returns, before presentation. */
+export interface MobilePairListingRow {
+  pairId: string;
+  desktopDeviceId: string;
+  name: string | null;
+  displayName: string | null;
+  revokedAt: Date | null;
+  lastConnectedAt: Date | null;
+  createdAt: Date;
+}
+
+/**
+ * One joined row as the phone should see it. Pure, for the same reason as
+ * `toPairListing`: the in-memory store fake never exercises the real mapper.
+ *
+ * A nickname set on the pair wins over the laptop's own name, matching the
+ * desktop side's precedence exactly — the two lists should not disagree about
+ * what a machine is called.
+ */
+export function toMobilePairListing(r: MobilePairListingRow): MobilePairListing {
+  return {
+    pairId: r.pairId,
+    desktopDeviceId: r.desktopDeviceId,
+    name: r.displayName ?? r.name,
+    revoked: r.revokedAt !== null,
+    lastConnectedAt: r.lastConnectedAt ? r.lastConnectedAt.toISOString() : null,
+    createdAt: r.createdAt.toISOString(),
+  };
 }
 
 export class TrustService {
@@ -202,6 +294,21 @@ export class TrustService {
     const desktop = await this.store.getDeviceByFingerprint('desktop', desktopFingerprint);
     if (!desktop) return [];
     return this.store.listPairsForDesktop(desktop.id);
+  }
+
+  /**
+   * Every pair this PHONE holds, by its `devices.id` uuid — the authoritative
+   * answer to "which laptops can I still ring".
+   *
+   * The phone's own list lives in its keychain and, before this existed, was
+   * never checked against anything: a laptop revoked from the other side, or
+   * belonging to a deleted account, kept appearing until the user tapped it
+   * and the connect failed. Revoked rows are RETURNED rather than filtered,
+   * because "this pairing was revoked" is exactly what the phone needs to be
+   * told in order to drop it.
+   */
+  async listForMobile(mobileId: string): Promise<MobilePairListing[]> {
+    return this.store.listPairsForMobile(mobileId);
   }
 
   /** Flip a pair's "connect without approval" setting. */
@@ -325,6 +432,14 @@ export function createDrizzleTrustStore(database: typeof defaultDb = defaultDb):
           pairId: trustedDevices.id,
           mobileFingerprint: devices.fingerprint,
           displayName: trustedDevices.displayName,
+          // The phone's own name, for when the pair has no nickname of its
+          // own. `trusted_devices.display_name` is written by nothing (checked
+          // repo-wide) and was NULL for every row in production on
+          // 2026-08-21, so the dashboard fell through to the literal string
+          // "Phone" for every entry — two paired phones rendered identically,
+          // distinguishable only by a masked fingerprint. This column is
+          // already populated at enrollment, and this join already exists.
+          deviceName: devices.name,
           autoApprove: trustedDevices.autoApprove,
           revokedAt: trustedDevices.revokedAt,
           lastConnectedAt: trustedDevices.lastConnectedAt,
@@ -333,18 +448,23 @@ export function createDrizzleTrustStore(database: typeof defaultDb = defaultDb):
         .from(trustedDevices)
         .innerJoin(devices, eq(trustedDevices.mobileDeviceId, devices.id))
         .where(eq(trustedDevices.desktopDeviceId, desktopId));
-      return rows.map((r) => ({
-        pairId: r.pairId,
-        // Mask the raw fingerprint — the dashboard shows displayName; leaking
-        // the full self-asserted id to any caller that knows a desktop id is
-        // needless (2026-07-19 audit). Keep a short suffix to disambiguate.
-        mobileFingerprint: maskFingerprint(r.mobileFingerprint),
-        displayName: r.displayName,
-        autoApprove: r.autoApprove,
-        revoked: r.revokedAt !== null,
-        lastConnectedAt: r.lastConnectedAt ? r.lastConnectedAt.toISOString() : null,
-        createdAt: r.createdAt.toISOString(),
-      }));
+      return rows.map(toPairListing);
+    },
+    async listPairsForMobile(mobileId) {
+      const rows = await database
+        .select({
+          pairId: trustedDevices.id,
+          desktopDeviceId: devices.fingerprint,
+          name: devices.name,
+          displayName: trustedDevices.displayName,
+          revokedAt: trustedDevices.revokedAt,
+          lastConnectedAt: trustedDevices.lastConnectedAt,
+          createdAt: trustedDevices.createdAt,
+        })
+        .from(trustedDevices)
+        .innerJoin(devices, eq(trustedDevices.desktopDeviceId, devices.id))
+        .where(eq(trustedDevices.mobileDeviceId, mobileId));
+      return rows.map(toMobilePairListing);
     },
     async updatePair(pairId, patch) {
       const set: Partial<typeof trustedDevices.$inferInsert> = {};

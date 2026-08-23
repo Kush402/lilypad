@@ -1,17 +1,43 @@
 import { redeemToken, requestUnpair, requestConnect } from './api';
 import { RedeemError } from './errors';
-import { accessToken } from './auth';
+import { accessToken, DeviceAuthError } from './auth';
 
 // The device-token exchange is `auth.ts`'s job and has its own tests. Mocking
 // it keeps these about `api.ts` — and keeps a single `fetch` mock from having
 // to serve two unrelated conversations.
-jest.mock('./auth', () => ({ accessToken: jest.fn() }));
+jest.mock('./auth', () => {
+  // Mirrors the real constructor: it takes a reason CODE, not a message, so a
+  // test written against this shape stays honest about the real signature.
+  // A parameter property (`readonly code`) is rejected by babel's mock-factory
+  // guard, so the field is assigned explicitly.
+  class FakeDeviceAuthError extends Error {
+    code: 'device_not_enrolled' | 'device_revoked';
+    constructor(reason: 'device_not_enrolled' | 'device_revoked') {
+      super(
+        reason === 'device_revoked'
+          ? 'This phone was removed from the account. Sign in to add it again.'
+          : 'This phone is not signed in yet.',
+      );
+      this.code = reason;
+      this.name = 'DeviceAuthError';
+    }
+  }
+  return { accessToken: jest.fn(), DeviceAuthError: FakeDeviceAuthError };
+});
 
 const accessTokenMock = accessToken as jest.MockedFunction<typeof accessToken>;
 
-/** The default state until P1 lands sign-in: this phone has no account. */
+/**
+ * The default state is now SIGNED IN.
+ *
+ * It used to be the opposite — "the un-enrolled majority until P1" — because
+ * the backend accepted a pairing request from a phone no account owned. The
+ * product model is account → devices now: that lane is closed, so a phone
+ * reaching these calls has an account, and the un-enrolled case is the
+ * exception each surface handles explicitly below.
+ */
 beforeEach(() => {
-  accessTokenMock.mockRejectedValue(new Error('This phone is not signed in yet.'));
+  accessTokenMock.mockResolvedValue('a-device-token');
 });
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -193,18 +219,38 @@ describe('device token on the pairing surface', () => {
 
       expect(headersOf(fetchMock).authorization).toBe('Bearer a-device-token');
     });
+  }
 
-    // The un-enrolled majority until P1. A phone with no account has nothing
-    // to prove, and pairing one must work exactly as it always has — an auth
-    // failure here must never become a pairing failure.
-    it(`${name} still works, with no header, when this phone has no account`, async () => {
+  /**
+   * A phone on no account can no longer pair or connect: `authorize.ts` denies
+   * it, and the 404 that comes back is indistinguishable from "no such
+   * laptop". So these two must not send the request at all — they surface
+   * `DeviceAuthError` so the scanner can route to sign-in, which is the only
+   * thing that actually fixes it.
+   */
+  for (const [name, call] of [calls[0], calls[1]] as const) {
+    it(`${name} reports the missing account instead of sending a doomed request`, async () => {
+      accessTokenMock.mockRejectedValue(new DeviceAuthError('device_not_enrolled'));
       const fetchMock = jest.fn().mockResolvedValue(jsonResponse({ ok: true }));
       globalThis.fetch = fetchMock;
 
-      await call();
-
-      expect(headersOf(fetchMock).authorization).toBeUndefined();
-      expect(fetchMock).toHaveBeenCalledTimes(1);
+      await expect(call()).rejects.toBeInstanceOf(DeviceAuthError);
+      expect(fetchMock).not.toHaveBeenCalled();
     });
   }
+
+  /**
+   * `requestUnpair` is the exception, and deliberately: forgetting a laptop
+   * must succeed locally even offline, with a stale address, or signed out.
+   * It is best-effort by contract and returns false rather than throwing.
+   */
+  it('requestUnpair still succeeds with no account, because forgetting must always work', async () => {
+    accessTokenMock.mockRejectedValue(new DeviceAuthError('device_not_enrolled'));
+    const fetchMock = jest.fn().mockResolvedValue(jsonResponse({ ok: true }));
+    globalThis.fetch = fetchMock;
+
+    await expect(requestUnpair('http://api', 'desktop-1')).resolves.toBe(true);
+    expect(headersOf(fetchMock).authorization).toBeUndefined();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
 });

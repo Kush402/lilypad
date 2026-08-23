@@ -8,6 +8,34 @@ import { TrustService, createDrizzleTrustStore } from '../services/trust.js';
 import { redis } from '../redis.js';
 import { log } from '../logging.js';
 import { config } from '../config.js';
+import { attributeSession, deviceOwnershipByFingerprint } from '../auth/ownership.js';
+
+/**
+ * Turn the two wire fingerprints a session is between into the single
+ * account + device an audit row can name. See `attributeSession` for which,
+ * and why.
+ *
+ * Never rejects: attribution is a nicety on a row that must be written either
+ * way, so a database blip degrades this to the old behaviour (both fields
+ * null) rather than losing the audit entry entirely.
+ */
+async function resolveSessionActor(
+  // Both are nullable on the hub's own types: a room can reach `onSessionStart`
+  // with a seat it has not learned the device id for yet.
+  desktopFingerprint: string | null,
+  mobileFingerprint: string | null,
+): Promise<{ userId: string | null; deviceId: string | null }> {
+  try {
+    const [desktop, mobile] = await Promise.all([
+      desktopFingerprint ? deviceOwnershipByFingerprint('desktop', desktopFingerprint) : null,
+      mobileFingerprint ? deviceOwnershipByFingerprint('mobile', mobileFingerprint) : null,
+    ]);
+    return attributeSession(desktop, mobile);
+  } catch (err) {
+    log.audit.warn({ err }, 'could not attribute session audit row');
+    return { userId: null, deviceId: null };
+  }
+}
 
 export interface SignalingHubBundle {
   hub: SignalingHub;
@@ -54,24 +82,36 @@ export function createSignalingHubBundle(): SignalingHubBundle {
       // Repudiation mitigation (docs/threat-model.md). Fire-and-forget, same
       // as the persistence call above: an audit-log blip must never block
       // or fail ICE issuance.
-      void auditLog
-        .sessionStart({
-          metadata: {
-            sessionId: info.sessionId,
-            roomId: info.roomId,
-            desktopDeviceId: info.desktopDeviceId,
-            mobileDeviceId: info.mobileDeviceId,
-            scopes: info.scopes,
-          },
-        })
+      void resolveSessionActor(info.desktopDeviceId, info.mobileDeviceId)
+        .then((actor) =>
+          auditLog.sessionStart({
+            ...actor,
+            metadata: {
+              sessionId: info.sessionId,
+              roomId: info.roomId,
+              desktopDeviceId: info.desktopDeviceId,
+              mobileDeviceId: info.mobileDeviceId,
+              scopes: info.scopes,
+            },
+          }),
+        )
         .catch((err) => log.audit.error({ err }, 'failed to write session_start audit log'));
     },
     onSessionEnd: (sessionId, reason) => {
       void sessions
         .end(sessionId, reason)
         .catch((err) => log.session.error({ err }, 'failed to end session'));
-      void auditLog
-        .sessionEnd({ metadata: { sessionId, reason } })
+      // The hook is handed only an id, so the devices come back from the
+      // session record — which `end` deliberately keeps for another 60s
+      // precisely so late readers like this one still find it. A record that
+      // has already expired costs the attribution, not the audit row.
+      void sessions
+        .get(sessionId)
+        .then((record) =>
+          record ? resolveSessionActor(record.desktopDeviceId, record.mobileDeviceId) : {},
+        )
+        .catch(() => ({}))
+        .then((actor) => auditLog.sessionEnd({ ...actor, metadata: { sessionId, reason } }))
         .catch((err) => log.audit.error({ err }, 'failed to write session_end audit log'));
     },
     onStateChange: (roomId, sessionId, from, to) =>

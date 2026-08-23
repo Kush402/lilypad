@@ -24,7 +24,18 @@ import { useLiveResource } from '../lib/useLiveResource';
  * minute) leaves ample headroom while still feeling immediate. */
 const POLL_MS = 3_000;
 
-export function AccountPanel() {
+export interface AccountPanelProps {
+  /**
+   * Fired once this computer becomes linked.
+   *
+   * This panel is the ONLY thing that can cause that transition — see the
+   * comment on the poll below — so screens that need to re-read the link state
+   * are told by it rather than each running a poll of their own.
+   */
+  onLinked?: () => void;
+}
+
+export function AccountPanel({ onLinked }: AccountPanelProps = {}) {
   const { value: link, refresh } = useLiveResource<LinkStateDto>(() => api.getLinkState());
   const [enrollment, setEnrollment] = useState<EnrollmentQrDto | null>(null);
   const [dataUrl, setDataUrl] = useState('');
@@ -40,19 +51,39 @@ export function AccountPanel() {
   // Poll only while a code is showing. Approval happens on the PHONE, so
   // there is nothing local to react to — but polling a machine nobody is
   // trying to link would be a request every 3s, forever, for no reason.
+  //
+  // This is not merely an optimisation, it is the whole rule: a desktop can
+  // become linked ONLY inside the 120s life of a code minted here.
+  // `/devices/enroll` answers 403 `desktop_enrollment_requires_approval` for
+  // `kind: "desktop"`, so a Mac cannot enrol itself, and the only other path
+  // burns a code bound at mint time to this machine's public key. Outside that
+  // window no transition can happen, so a poll cannot observe one.
+  //
+  // `expired` is part of the guard, not just the badge. The code dies
+  // server-side after `DESKTOP_ENROLLMENT_TTL_SECONDS` (120s), but
+  // `enrollment` is only cleared on SUCCESS — so a user who opened this step,
+  // did not scan, and walked away left the poll running every 3s forever,
+  // against a code the backend had already forgotten. Nothing it asked could
+  // ever change.
+  const expired = enrollment !== null && secondsLeft <= 0;
   useEffect(() => {
-    if (!enrollment || linked) return;
+    if (!enrollment || linked || expired) return;
     const id = setInterval(refresh, POLL_MS);
     return () => clearInterval(id);
-  }, [enrollment, linked, refresh]);
+  }, [enrollment, linked, expired, refresh]);
 
   // The code stops being useful the moment the phone approves.
   useEffect(() => {
     if (linked) {
       setEnrollment(null);
       setDataUrl('');
+      // Tell whoever is hosting this panel, so they can re-read instead of
+      // polling for a transition only this component can cause. The re-read is
+      // free: the Rust side has cached the identity by now, so `get_link_state`
+      // answers without touching the network.
+      onLinked?.();
     }
-  }, [linked]);
+  }, [linked, onLinked]);
 
   useEffect(() => {
     if (secondsLeft <= 0) return;
@@ -90,8 +121,6 @@ export function AccountPanel() {
     }
   }, []);
 
-  const expired = enrollment !== null && secondsLeft <= 0;
-
   return (
     <section className="control__account card" data-testid="account-panel">
       <h2 className="section-title">This computer</h2>
@@ -103,10 +132,24 @@ export function AccountPanel() {
           <strong>Linked</strong> — this computer belongs to your account.
         </p>
       ) : link.state === 'no_identity' ? (
-        <p className="error" data-testid="link-state-no-identity">
-          This computer has no secure identity, so it cannot be linked. Lilypad could not store a
-          key in the keychain.
-        </p>
+        // A dead end until 2026-08-22, and reachable by accident: this is what
+        // a dismissed or not-yet-unlocked login keychain looks like, and the
+        // access prompt returns on every update while the app is ad-hoc
+        // signed. The failure is no longer remembered for the life of the
+        // process (`DesktopAuth::device_auth`), so a second attempt can
+        // genuinely succeed — but only if something asks for one, and nothing
+        // on this screen did.
+        <div data-testid="link-state-no-identity">
+          <p className="error">
+            Lilypad couldn’t save this computer’s key to the macOS keychain, so it can’t be linked
+            yet. If a keychain permission box appeared, allow it and try again.
+          </p>
+          <div className="row">
+            <button className="btn" data-testid="retry-identity" onClick={refresh}>
+              Try again
+            </button>
+          </div>
+        </div>
       ) : link.state === 'unknown' ? (
         // NOT "not linked": we do not know, and saying the wrong one invites a
         // linked user to redo a ceremony they already completed.

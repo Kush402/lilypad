@@ -742,8 +742,11 @@ in 9 ms, and a fresh forced-relay session opened and echoed.
 
 **Every authorization boundary holds, tested with a real owned device.** An
 earlier probe claimed another device's presence seat and succeeded, which
-proved nothing: `authorize.ts` has a deliberate unowned lane for device rows
+proved nothing: `authorize.ts` HAD a deliberate unowned lane for device rows
 with no account, and production had zero devices, so every id was unowned.
+(That lane was closed on 2026-08-22 — see
+[ADR-0010](adr/0010-explicit-device-linking.md) — so the same probe today is
+refused rather than admitted.)
 Distinguishing "open by design" from "broken" needed a row that IS owned, so
 the whole linking ceremony was driven against production over the API — signup,
 phone enrolment with a real Ed25519 challenge signature, enrolment code, phone

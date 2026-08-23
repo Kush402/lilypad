@@ -233,13 +233,13 @@ These are the reason the product is not yet consumer-ready. Each is verified.
 
 ### Platform gaps
 
-| Gap                              | State                                                            |
-| -------------------------------- | ---------------------------------------------------------------- |
-| Android release signing          | ⚠️ signed with the **committed `debug.keystore`** — ship-blocker |
-| Android field validation         | ⚠️ builds and ships to Play in CI; never validated on hardware   |
-| Windows input backend            | ⚠️ compiles, never executed                                      |
-| Windows Media Foundation encoder | 🔜 stub                                                          |
-| `single_instance.rs`             | ⚠️ Unix-only (`AsRawFd`); will not compile on Windows as wired   |
+| Gap                              | State                                                                                                                                                                                                           |
+| -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Android release signing          | ✅ fixed — release yields an **unsigned APK** when no credentials are configured, instead of falling back to the committed `debug.keystore` (`android/app/build.gradle`). CI injects real signing via fastlane. |
+| Android field validation         | ⚠️ builds and ships to Play in CI; never validated on hardware                                                                                                                                                  |
+| Windows input backend            | ⚠️ compiles, never executed                                                                                                                                                                                     |
+| Windows Media Foundation encoder | 🔜 stub                                                                                                                                                                                                         |
+| `single_instance.rs`             | ⚠️ Unix-only (`AsRawFd`); will not compile on Windows as wired                                                                                                                                                  |
 
 ### Deferred by decision
 

@@ -24,6 +24,7 @@ export interface AccountDeviceRow {
   publicKey: string | null;
   revokedAt: Date | null;
   lastSeenAt: Date | null;
+  appVersion: string | null;
   createdAt: Date;
 }
 
@@ -65,6 +66,7 @@ export function toAccountDevice(
     fingerprint: maskFingerprint(row.fingerprint),
     state: deviceState(row),
     lastSeenAt: row.lastSeenAt ? row.lastSeenAt.toISOString() : null,
+    appVersion: row.appVersion,
     createdAt: row.createdAt.toISOString(),
     activeSession: opts.activeSession,
     isCurrentDevice: opts.isCurrentDevice,
@@ -133,6 +135,7 @@ export function createDrizzleAccountDeviceStore(
           publicKey: devices.publicKey,
           revokedAt: devices.revokedAt,
           lastSeenAt: devices.lastSeenAt,
+          appVersion: devices.appVersion,
           createdAt: devices.createdAt,
         })
         .from(devices)

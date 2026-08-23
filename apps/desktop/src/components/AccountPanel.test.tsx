@@ -97,6 +97,27 @@ describe('AccountPanel — what it is willing to claim', () => {
     expect(await screen.findByTestId('link-state-no-identity')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Link this computer' })).not.toBeInTheDocument();
   });
+
+  // ...but it must not be a dead end. This is what a login keychain that is
+  // locked, or an access prompt dismissed by accident, looks like — and that
+  // prompt returns on every update while the app is ad-hoc signed. The Rust
+  // side no longer remembers the failure, so a second attempt can succeed;
+  // this is what asks for one.
+  it('offers a retry, and clears once the keychain works', async () => {
+    vi.mocked(api.getLinkState)
+      .mockResolvedValueOnce(linkState({ state: 'no_identity' }))
+      .mockResolvedValue(linkState({ state: 'unlinked' }));
+
+    render(<AccountPanel />);
+    const retry = await screen.findByTestId('retry-identity');
+
+    await act(async () => {
+      retry.click();
+    });
+
+    expect(await screen.findByTestId('link-state-unlinked')).toBeInTheDocument();
+    expect(screen.queryByTestId('link-state-no-identity')).not.toBeInTheDocument();
+  });
 });
 
 describe('AccountPanel — the enrollment code', () => {

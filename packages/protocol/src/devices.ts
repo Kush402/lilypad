@@ -34,6 +34,10 @@ export const AccountDeviceSchema = z.object({
   fingerprint: z.string(),
   state: DeviceStateSchema,
   lastSeenAt: z.string().nullable(),
+  /** The build this device last reported. `null` until it next signs in —
+   * every device enrolled before the column existed reads that way, and a
+   * guess would be worse than a blank. */
+  appVersion: z.string().nullable(),
   createdAt: z.string(),
   /** Whether this device is in a live session RIGHT NOW, from the signaling
    * hub rather than a table — the `sessions` table is not written yet, and an

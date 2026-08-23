@@ -30,6 +30,7 @@ describe('Diagnostics', () => {
       pending_request: null,
       plugin_health: { ScreenCapture: 'ok', Accessibility: 'degraded: not granted' },
       connection_path: null,
+      presence: { state: 'online' } as const,
     } satisfies AppStateDto);
 
     render(<Diagnostics />);
@@ -56,6 +57,7 @@ describe('Diagnostics', () => {
       pending_request: null,
       plugin_health: {},
       connection_path: path,
+      presence: { state: 'online' } as const,
     } satisfies AppStateDto);
 
     render(<Diagnostics />);
@@ -71,6 +73,7 @@ describe('Diagnostics', () => {
       pending_request: null,
       plugin_health: {},
       connection_path: null,
+      presence: { state: 'online' } as const,
     } satisfies AppStateDto);
 
     render(<Diagnostics />);

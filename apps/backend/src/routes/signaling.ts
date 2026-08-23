@@ -22,6 +22,7 @@ import { deviceOwnershipByFingerprint } from '../auth/ownership.js';
 import { bearerToken, verifyAccessToken, type Actor } from '../auth/tokens.js';
 import type { SignalingHubBundle } from '../signaling/hubBundle.js';
 import { advertisedUrls } from '../services/advertisedUrls.js';
+import { allowedProofHosts } from '../auth/proofOrigin.js';
 import { log } from '../logging.js';
 import { config } from '../config.js';
 import { isAuthorizedMetricsRequest } from '../metricsAuth.js';
@@ -89,7 +90,26 @@ export async function signalingRoutes(
     // counters answer "is the API working". A scraper that can only see the
     // first cannot tell a healthy idle server from one returning 500 to
     // everything.
-    return { ...hub.metricsSnapshot(), ...serverMetrics.snapshot() };
+    //
+    // `deviceProofHosts` is not a counter, and is here on purpose. A v2 device
+    // proof names the host it is for and this server refuses any other
+    // (`proofOrigin.ts`), so a deployment whose advertised address does not
+    // match what clients actually use would reject every updated client with
+    // an opaque `invalid_signature`. Publishing the effective set turns
+    // "deploy the server first, then the clients" from a hope into a check:
+    // curl this after deploying, confirm the host the apps use is listed, and
+    // only then cut the client builds. Token-gated like everything else here.
+    return {
+      ...hub.metricsSnapshot(),
+      ...serverMetrics.snapshot(),
+      deviceProofHosts: [
+        ...allowedProofHosts({
+          publicBaseUrl: config.env.PUBLIC_BASE_URL,
+          advertisedApiBaseUrl: advertisedUrls().apiBaseUrl,
+          extraHosts: config.env.DEVICE_PROOF_HOSTS,
+        }),
+      ],
+    };
   });
 
   // M5.4 no-QR reconnect: a trusted phone asks the backend to ring its

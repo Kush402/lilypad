@@ -348,7 +348,9 @@ describe('password sign-in', () => {
     mockBackend({ oauthStatus: 401, oauthBody: JSON.stringify({ error: 'invalid_credentials' }) });
     await expect(
       signInWithPassword(API, { email: 'ada@example.com', password: 'wrong' }),
-    ).rejects.toThrow('That email and password do not match an account.');
+    ).rejects.toThrow(
+      'That email and password do not match an account. Check the password, or create an account.',
+    );
   });
 
   /**

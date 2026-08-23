@@ -153,6 +153,27 @@ describe('ScannerScreen', () => {
       expect(await screen.findByText('viewer-screen')).toBeTruthy();
     });
 
+    /**
+     * Under the account → devices model a phone on no account cannot pair
+     * either — `authorize.ts` denies it and the 404 that comes back is
+     * indistinguishable from "no such laptop". Showing that would be a dead
+     * end; sign-in is the only thing that fixes it, and the link path next to
+     * this one has always done exactly that.
+     */
+    it('sends an unsigned-in phone to sign in rather than showing a dead end', async () => {
+      const { DeviceAuthError } = jest.requireMock('../lib/auth') as {
+        DeviceAuthError: new () => Error;
+      };
+      jest.mocked(redeemToken).mockRejectedValue(new DeviceAuthError());
+
+      renderScanner();
+      scan(VALID_QR);
+      fireEvent.press(await screen.findByText('Connect'));
+
+      await waitFor(() => expect(screen.getByText('sign-in-screen')).toBeTruthy());
+      expect(screen.queryByText('viewer-screen')).toBeNull();
+    });
+
     it('shows classified, human copy for a token_expired error and disables retry', async () => {
       jest.mocked(redeemToken).mockRejectedValue(new RedeemError(appError('token_expired')));
       renderScanner();

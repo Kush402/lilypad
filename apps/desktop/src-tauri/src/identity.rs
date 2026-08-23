@@ -87,8 +87,8 @@ impl DeviceIdentity {
     /// The domain-separation prefix is not decoration: the same key will bind
     /// this device's LAN TLS certificate (ADR-0006), and without a prefix a
     /// signature made for one purpose would authenticate the other.
-    pub fn sign_challenge(&self, challenge: &str) -> String {
-        let message = format!("{DEVICE_AUTH_PREFIX}{challenge}");
+    pub fn sign_challenge(&self, challenge: &str, origin: Option<&str>) -> String {
+        let message = device_proof_message(challenge, origin);
         b64(self.key_pair.sign(message.as_bytes()).as_ref())
     }
 }
@@ -97,6 +97,67 @@ impl DeviceIdentity {
 /// are hand-mirrored like the signaling envelopes, and
 /// `tests/protocol_contract.rs` is where cross-language drift gets caught.
 pub const DEVICE_AUTH_PREFIX: &str = "lilypad-device-auth:v1:";
+
+/// Mirrors `DEVICE_AUTH_PREFIX_V2`. A v2 proof names the server it is for, so
+/// a signature obtained by a hostile host cannot be replayed at the real one.
+pub const DEVICE_AUTH_PREFIX_V2: &str = "lilypad-device-auth:v2:";
+
+/// Exactly the bytes a device signs — the Rust half of `deviceProofMessage`
+/// in `packages/protocol/src/identity.ts`. The host is length-prefixed so the
+/// encoding is canonical whatever it contains.
+pub fn device_proof_message(challenge: &str, origin: Option<&str>) -> String {
+    match origin {
+        Some(origin) => format!(
+            "{DEVICE_AUTH_PREFIX_V2}{}:{origin}:{challenge}",
+            origin.len()
+        ),
+        None => format!("{DEVICE_AUTH_PREFIX}{challenge}"),
+    }
+}
+
+/// The host to sign, from a base URL — the Rust half of `proofOriginOf`.
+///
+/// Hand-written rather than pulling in the `url` crate for one field, and
+/// written to match `new URL(...).host` where it matters: userinfo dropped,
+/// path/query/fragment cut, lowercased, and **the default port removed**,
+/// because `https://h:443` and `https://h` are the same host to the server and
+/// a disagreement here means every signature is rejected.
+///
+/// `None` when there is no host to speak of; the caller then sends no
+/// `proofOrigin` and signs the v1 message, which a server still accepts.
+pub fn proof_origin_of(api_base_url: &str) -> Option<String> {
+    let rest = api_base_url.split_once("://")?.1;
+    let authority = rest
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or_default()
+        // Userinfo, if any, is not part of the host.
+        .rsplit('@')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if authority.is_empty() {
+        return None;
+    }
+    let scheme = api_base_url
+        .split_once("://")
+        .map(|(s, _)| s.to_ascii_lowercase())
+        .unwrap_or_default();
+    let default_port = match scheme.as_str() {
+        "https" | "wss" => ":443",
+        "http" | "ws" => ":80",
+        _ => "",
+    };
+    let host = match authority.strip_suffix(default_port) {
+        Some(stripped) if !default_port.is_empty() && !stripped.is_empty() => stripped.to_owned(),
+        _ => authority,
+    };
+    if host.is_empty() {
+        None
+    } else {
+        Some(host)
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -111,10 +172,109 @@ mod tests {
         let Ok(sig) = engine.decode(signature_b64) else {
             return false;
         };
-        let message = format!("{DEVICE_AUTH_PREFIX}{challenge}");
+        let message = device_proof_message(challenge, None);
         signature::UnparsedPublicKey::new(&signature::ED25519, &public_key)
             .verify(message.as_bytes(), &sig)
             .is_ok()
+    }
+
+    /// `proof_origin_of` must agree with `new URL(...).host` on the phone and
+    /// the server, byte for byte. A disagreement is not a subtle bug: the
+    /// server refuses a host it does not recognise, so every signature this
+    /// app makes would be rejected and the Mac could never sign in.
+    #[test]
+    fn proof_origin_matches_what_new_url_would_produce() {
+        let cases = [
+            ("https://api.takedia.com", Some("api.takedia.com")),
+            ("https://api.takedia.com/", Some("api.takedia.com")),
+            (
+                "https://api.takedia.com/v1/path?q=1#f",
+                Some("api.takedia.com"),
+            ),
+            ("http://192.168.1.50:8080", Some("192.168.1.50:8080")),
+            ("http://localhost:8080/", Some("localhost:8080")),
+            // Case folded: DNS does not care, and the two sides must match.
+            ("HTTPS://API.Takedia.COM", Some("api.takedia.com")),
+            // Default ports are dropped by `new URL`, so they must be here too.
+            ("https://api.takedia.com:443", Some("api.takedia.com")),
+            ("http://api.takedia.com:80", Some("api.takedia.com")),
+            // ...but a non-default port is part of the host.
+            ("https://api.takedia.com:8443", Some("api.takedia.com:8443")),
+            // Userinfo is not part of the host.
+            ("https://user:pw@api.takedia.com", Some("api.takedia.com")),
+            // Nothing to name: sign the older message rather than nonsense.
+            ("not a url", None),
+            ("", None),
+            ("https://", None),
+            ("https:///path", None),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(
+                proof_origin_of(input).as_deref(),
+                expected,
+                "proof_origin_of({input:?})"
+            );
+        }
+    }
+
+    /// The exact bytes, pinned. `packages/protocol/src/identity.ts` builds the
+    /// same string, and `tests/protocol_contract.rs` is where drift is caught.
+    #[test]
+    fn the_signed_message_is_length_prefixed_and_version_tagged() {
+        assert_eq!(
+            device_proof_message("nonce", None),
+            "lilypad-device-auth:v1:nonce"
+        );
+        assert_eq!(
+            device_proof_message("nonce", Some("h.example")),
+            "lilypad-device-auth:v2:9:h.example:nonce"
+        );
+        // The length prefix is what stops one signature meaning two things.
+        assert_ne!(
+            device_proof_message("n", Some("a:1")),
+            device_proof_message("1:n", Some("a"))
+        );
+    }
+
+    /// A signature made for one server must not verify at another — the whole
+    /// point of naming the host inside it.
+    #[test]
+    fn a_proof_made_for_one_host_does_not_verify_at_another() {
+        let identity = DeviceIdentity::generate_ephemeral().unwrap();
+        let challenge = "a-server-issued-nonce";
+
+        fn verify_with(public_key_b64: &str, message: &str, signature_b64: &str) -> bool {
+            let engine = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+            let (Ok(public_key), Ok(sig)) =
+                (engine.decode(public_key_b64), engine.decode(signature_b64))
+            else {
+                return false;
+            };
+            signature::UnparsedPublicKey::new(&signature::ED25519, &public_key)
+                .verify(message.as_bytes(), &sig)
+                .is_ok()
+        }
+
+        let signed_for_evil = identity.sign_challenge(challenge, Some("evil.example"));
+        let key = identity.public_key_base64url();
+
+        assert!(verify_with(
+            &key,
+            &device_proof_message(challenge, Some("evil.example")),
+            &signed_for_evil
+        ));
+        // Replayed at the real backend:
+        assert!(!verify_with(
+            &key,
+            &device_proof_message(challenge, Some("api.takedia.com")),
+            &signed_for_evil
+        ));
+        // And it is not a valid v1 proof either, so it cannot be downgraded.
+        assert!(!verify_with(
+            &key,
+            &device_proof_message(challenge, None),
+            &signed_for_evil
+        ));
     }
 
     #[test]
@@ -128,7 +288,7 @@ mod tests {
     #[test]
     fn signature_is_64_raw_bytes_as_86_base64url_chars() {
         let identity = DeviceIdentity::generate_ephemeral().unwrap();
-        assert_eq!(identity.sign_challenge("a-challenge").len(), 86);
+        assert_eq!(identity.sign_challenge("a-challenge", None).len(), 86);
     }
 
     #[test]
@@ -138,7 +298,7 @@ mod tests {
         assert!(verify(
             &identity.public_key_base64url(),
             challenge,
-            &identity.sign_challenge(challenge),
+            &identity.sign_challenge(challenge, None),
         ));
     }
 
@@ -148,7 +308,7 @@ mod tests {
         assert!(!verify(
             &identity.public_key_base64url(),
             "challenge-b",
-            &identity.sign_challenge("challenge-a"),
+            &identity.sign_challenge("challenge-a", None),
         ));
     }
 
@@ -160,7 +320,7 @@ mod tests {
         assert!(!verify(
             &identity.public_key_base64url(),
             challenge,
-            &impostor.sign_challenge(challenge),
+            &impostor.sign_challenge(challenge, None),
         ));
     }
 
@@ -170,7 +330,7 @@ mod tests {
     fn signing_is_domain_separated() {
         let identity = DeviceIdentity::generate_ephemeral().unwrap();
         let challenge = "a-server-issued-challenge";
-        let signed = identity.sign_challenge(challenge);
+        let signed = identity.sign_challenge(challenge, None);
         let engine = base64::engine::general_purpose::URL_SAFE_NO_PAD;
         let public_key = engine.decode(identity.public_key_base64url()).unwrap();
         let sig = engine.decode(&signed).unwrap();

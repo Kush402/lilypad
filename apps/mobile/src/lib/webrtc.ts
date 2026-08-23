@@ -24,7 +24,7 @@ import { MobileSignaling, type SignalingLifecycleEvent } from './signaling';
 import { AppLifecycleController } from './lifecycle';
 import { InputSender, MAX_BUFFERED_AMOUNT_BYTES } from './input';
 import { getDeviceId } from './device';
-import { appError, type AppError } from './errors';
+import { appError, classifyHubError, type AppError } from './errors';
 import { classifyQuality, QUALITY_POLL_MS, type ConnectionQuality } from './quality';
 
 export type ViewerState =
@@ -415,7 +415,13 @@ export class ViewerConnection {
         this.close();
         break;
       case 'error':
-        this.cb.onError(appError('unknown', m.payload.message));
+        // Not `appError('unknown', m.payload.message)`. The hub's words went
+        // straight to the screen, and for the commonest of these —
+        // `unauthorized_room`, which is what a re-register into a room the
+        // laptop has already dropped out of looks like — those words were
+        // "this device is not authorized to join this room": alarming, and
+        // about the wrong thing.
+        this.cb.onError(classifyHubError(m.payload.code, m.payload.message));
         break;
       default:
         break;

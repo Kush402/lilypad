@@ -204,7 +204,7 @@ impl Account {
             // `invalid_credentials` for an unknown address, a wrong password,
             // and an account with no password alike, and a client that guessed
             // between them would rebuild the oracle the backend refuses to be.
-            401 => bail!("That email and password do not match an account."),
+            401 => bail!("That email and password do not match an account. Check the password, or create an account."),
             _ => bail!("Sign-in could not be completed."),
         }
     }

@@ -42,7 +42,8 @@ import {
 } from '../lib/viewport';
 import { PressRepeater } from '../lib/pressRepeat';
 import { agentFeedReducer, INITIAL_AGENT_FEED } from '../lib/agentFeed';
-import { forgetPair, setPairSecret } from '../lib/pairs';
+import { forgetPair, loadPairs, setPairSecret } from '../lib/pairs';
+import { requestConnect } from '../lib/api';
 import { AgentPanel } from './AgentPanel';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Viewer'>;
@@ -439,9 +440,50 @@ export function ViewerScreen({ route, navigation }: Props) {
     }, CONFIRM_DISCONNECT_MS);
   }, [confirmingDisconnect, disconnect]);
 
+  /**
+   * Get back into a session with this laptop.
+   *
+   * Bumping `reconnectAttempt` alone re-runs the effect against the SAME
+   * `roomId`, and a room does not outlive the laptop leaving it: once the
+   * desktop is reaped, its authorization record goes with it and every
+   * re-register earns `unauthorized_room`. Retrying that is retrying
+   * something that cannot succeed — observed on production as three attempts
+   * in four seconds, then nothing.
+   *
+   * So: ring the laptop again first, exactly as the laptop list does, and
+   * carry the phone into the NEW room. Falling back to the in-place retry is
+   * still right for the cases a fresh ring cannot serve — a QR session for a
+   * laptop this phone never saved, where there is no secret to ring with, and
+   * where the honest instruction is to scan again.
+   */
   const reconnect = useCallback(() => {
-    setReconnectAttempt((n) => n + 1);
-  }, []);
+    void (async () => {
+      if (!desktopDeviceId) {
+        setReconnectAttempt((n) => n + 1);
+        return;
+      }
+      const pair = (await loadPairs()).find((p) => p.desktopDeviceId === desktopDeviceId);
+      if (!pair?.connectSecret) {
+        setReconnectAttempt((n) => n + 1);
+        return;
+      }
+      try {
+        const res = await requestConnect(pair.apiBaseUrl, pair.desktopDeviceId, pair.connectSecret);
+        // `replace`, not `navigate`: the old room is gone, and leaving a
+        // screen pointed at it in the stack means Back returns to a session
+        // that can only fail.
+        navigation.replace('Viewer', {
+          roomId: res.roomId,
+          signalingUrl: res.signalingUrl,
+          scopes: res.scopes,
+          desktopDeviceName: res.desktopDeviceName ?? pair.name,
+          desktopDeviceId: pair.desktopDeviceId,
+        });
+      } catch (e) {
+        setError(toAppError(e));
+      }
+    })();
+  }, [desktopDeviceId, navigation]);
 
   // Types into the remote session via a hidden, off-screen TextInput — this
   // preserves the OS keyboard's autocorrect/IME/predictive-text instead of

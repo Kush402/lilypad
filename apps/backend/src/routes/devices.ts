@@ -167,6 +167,46 @@ export async function deviceRoutes(
     },
   );
 
+  /**
+   * Every pair THIS PHONE holds — the authoritative answer to "which laptops
+   * can I still ring", for the phone's own list.
+   *
+   * Registered before `GET /devices/pairs` so the literal path is matched
+   * ahead of it rather than swallowed by the query-string route.
+   *
+   * `requireDevice`, not `optionalAuth`: the resource is defined BY the caller
+   * — "my pairs" is meaningless without knowing which device is asking, and a
+   * device id in a query string would let anyone enumerate any phone's
+   * laptops. The actor's `deviceId` is the `devices.id` uuid, so nothing here
+   * is self-asserted.
+   *
+   * A desktop actor calling this gets an empty list rather than an error: no
+   * pair names a desktop on its mobile side, so the honest answer is "none".
+   *
+   * Revoked pairs are INCLUDED. The phone stores its laptops in its keychain
+   * and, before this route existed, checked them against nothing — a laptop
+   * revoked from the other side kept appearing until the user tapped it and
+   * the connect failed. Telling the phone a pair is revoked is what lets it
+   * drop the row.
+   */
+  app.get(
+    '/devices/pairs/mine',
+    {
+      preHandler: [requireDevice, rejectRevokedActor],
+      // Deliberately the server-wide 120/minute rather than the 30 its
+      // siblings in this file use, and stated so the choice is visible. Those
+      // are mutations, where 30 is generous; this is a read the phone runs
+      // every time the laptop list comes into focus, and a user moving
+      // between screens would trip 30 without doing anything unusual.
+      config: { rateLimit: { max: 120, timeWindow: '1 minute' } },
+    },
+    async (req, reply) => {
+      const actor = deviceActorOf(req);
+      const pairs = await trust.listForMobile(actor.deviceId);
+      return reply.code(200).send({ pairs });
+    },
+  );
+
   /** Every pair for a desktop, for its Trusted Devices list. */
   app.get(
     '/devices/pairs',

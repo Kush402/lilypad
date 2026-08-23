@@ -315,3 +315,111 @@ describe('P2 account-device route authorization', () => {
     expect(res.json()).toMatchObject({ error: 'not_trusted' });
   });
 });
+
+/**
+ * The unowned lane, closed.
+ *
+ * `authorize.ts` used to ALLOW any request naming a device that belonged to no
+ * account, described in the source as a migration ramp that would close "once
+ * P1 makes enrolment mandatory". P1 chose the opposite — linking stayed
+ * optional — so the ramp had quietly become permanent, and knowing a
+ * fingerprint was sufficient to act as any unlinked device on every route
+ * below.
+ *
+ * The product model is now account -> devices, so a device on no account may
+ * do nothing. These run the same route table as above against UNOWNED
+ * resources, and against a real token as well as an anonymous caller, because
+ * the old behaviour let both through.
+ */
+describe('a device that belongs to no account', () => {
+  const UNOWNED_LAPTOP = { deviceId: 'dev-laptop', userId: null, state: 'unlinked' as const };
+  const UNOWNED_PHONE = { deviceId: 'dev-phone', userId: null, state: 'unlinked' as const };
+  const ORPHAN_PAIR = { pairId: PAIR_ID, desktop: UNOWNED_LAPTOP, mobile: UNOWNED_PHONE };
+
+  let app: FastifyInstance;
+
+  beforeEach(async () => {
+    vi.mocked(deviceOwnershipByFingerprint).mockReset();
+    vi.mocked(pairOwnership).mockReset();
+    app = await buildApp();
+  });
+
+  for (const route of routes) {
+    it(`is refused ${route.name}`, async () => {
+      vi.mocked(deviceOwnershipByFingerprint).mockResolvedValue(
+        route.named[0] === 'desktop' ? UNOWNED_LAPTOP : UNOWNED_PHONE,
+      );
+      vi.mocked(pairOwnership).mockResolvedValue(ORPHAN_PAIR);
+
+      const res = await app.inject(route.request);
+
+      expect(res.statusCode).toBe(404);
+    });
+  }
+
+  /**
+   * A device the backend has never seen is not a lesser-privileged device
+   * either. This was the second half of the old lane: `device === null`
+   * returned allow, on the reasoning that the route's own not-found handling
+   * would answer instead.
+   */
+  for (const route of routes) {
+    it(`is refused ${route.name} even when the row does not exist at all`, async () => {
+      vi.mocked(deviceOwnershipByFingerprint).mockResolvedValue(null);
+      vi.mocked(pairOwnership).mockResolvedValue(null);
+
+      const res = await app.inject(route.request);
+
+      expect(res.statusCode).toBe(404);
+    });
+  }
+});
+
+/**
+ * `GET /devices/pairs/mine` — the phone's own list, added for L-10.
+ *
+ * `requireDevice` rather than the `optionalAuth` gate the routes above use,
+ * because the resource is defined BY the caller: "my pairs" is meaningless
+ * without knowing which device is asking, and a device id in a query string
+ * would let anyone enumerate any phone's laptops.
+ */
+describe('GET /devices/pairs/mine', () => {
+  let app: FastifyInstance;
+
+  beforeEach(async () => {
+    vi.mocked(deviceOwnershipByFingerprint).mockReset();
+    vi.mocked(pairOwnership).mockReset();
+    app = await buildApp();
+  });
+
+  it('refuses an anonymous caller outright, rather than answering an empty list', async () => {
+    // An empty list would be a lie with a specific shape: "you have paired
+    // nothing", to someone who has not said who they are.
+    const res = await app.inject({ method: 'GET', url: '/devices/pairs/mine' });
+    expect(res.statusCode).toBe(401);
+  });
+
+  it('refuses a present-but-invalid token', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: '/devices/pairs/mine',
+      headers: { authorization: 'Bearer not-a-real-token' },
+    });
+    expect(res.statusCode).toBe(401);
+  });
+
+  /**
+   * `mine` is a literal segment sitting where `:pairId` also matches. If the
+   * parameterised route won, every phone asking for its list would instead hit
+   * the pair handler with a pairId of "mine".
+   */
+  it('does not swallow the pairId route it shares a prefix with', async () => {
+    vi.mocked(pairOwnership).mockResolvedValue(ALICES_PAIR);
+
+    const res = await app.inject({ method: 'DELETE', url: `/devices/pairs/${PAIR_ID}` });
+
+    // 404 from the ownership gate, which means the pairId handler ran at all.
+    expect(res.statusCode).toBe(404);
+    expect(pairOwnership).toHaveBeenCalledWith(PAIR_ID);
+  });
+});

@@ -66,7 +66,21 @@ while `sub` stays fixed.
 | public_key   | text nullable, **unique**                       | base64url raw Ed25519 (32 bytes)           |
 | revoked_at   | timestamptz nullable                            | per-device revocation ("I lost my laptop") |
 | last_seen_at | timestamptz                                     |                                            |
+| app_version  | text nullable                                   | the build this device last reported        |
 | created_at   | timestamptz                                     |                                            |
+
+`app_version` (`0010`) is written on every device token exchange, which every
+client makes on launch and every renewal — so it stays current without a
+heartbeat of its own. A client that sends nothing leaves the stored value
+alone rather than clearing it, because "I did not say" is not "I do not know":
+every build installed before the column existed sends nothing, and clearing on
+those writes would blank the field exactly when it matters. `NULL` therefore
+means genuinely unreported. The question it answers — _which version is this
+customer running?_ — had no answer at all before it, and every iOS build
+called itself `1.0` besides.
+
+    select platform, app_version, count(*)
+      from devices where revoked_at is null group by 1, 2 order by 3 desc;
 
 Two uniqueness rules, both added in `0003`:
 

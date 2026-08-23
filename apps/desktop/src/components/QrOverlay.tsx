@@ -116,7 +116,10 @@ export function QrOverlay() {
         {expired ? <div className="qr__expired-badge">Expired</div> : null}
       </div>
 
-      {error ? <p className="error">Could not reach backend: {error}</p> : null}
+      {/* No prefix. The Rust side now returns a whole sentence written for
+          the reader, and "Could not reach backend: …" on top of it named the
+          wrong cause twice — a 429 is not an unreachable backend. */}
+      {error ? <p className="error">{error}</p> : null}
 
       {payload ? (
         <dl className="qr__meta">

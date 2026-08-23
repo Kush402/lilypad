@@ -64,6 +64,7 @@ import {
   approveDesktopEnrollment,
   resetAuthState,
 } from './auth';
+import { saveSession, resetSessionCacheForTests } from './session';
 
 ed.hashes.sha512 = sha512;
 
@@ -155,6 +156,7 @@ run('device flow against a live backend', () => {
   beforeAll(async () => {
     mockKeychainStore.clear();
     resetDeviceKeyCache();
+    resetSessionCacheForTests();
     resetAuthState();
     accountToken = await signInByEmail(`e2e-${Date.now()}@example.test`);
   });
@@ -165,6 +167,14 @@ run('device flow against a live backend', () => {
     expect(session.userId).toBeTruthy();
     userId = session.userId;
     phoneDeviceId = session.deviceId;
+
+    // What `completeSignIn` does next, and the reason it does it in this
+    // order: the record is written only once enrollment has actually
+    // succeeded. Every later call here needs it, because a device credential
+    // is only ever used against the backend the phone is signed in to
+    // (`assertHomeBackend`) — the guard that stops a scanned QR from
+    // redirecting this phone's token to a stranger's server.
+    await saveSession({ userId: session.userId, apiBaseUrl: base });
   });
 
   // The point of ADR-0002: a restart re-authenticates by signing, holding no

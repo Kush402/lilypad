@@ -123,8 +123,17 @@ export function ScannerScreen({ navigation }: Props) {
       });
     } catch (e) {
       if (myRequest !== requestSeq.current) return;
-      setError(toAppError(e));
       setConnecting(false);
+      // Same remedy, same route as linking below: under the account → devices
+      // model a phone on no account cannot pair either, and the backend now
+      // answers the attempt with the same 404 it gives for an unknown laptop.
+      // Showing that would be a dead end; sign-in is what actually fixes it.
+      // Pushed ON TOP, so coming back finds this card with the same code.
+      if (e instanceof DeviceAuthError) {
+        navigation.navigate('SignIn', { apiBaseUrl: payload.apiBaseUrl });
+        return;
+      }
+      setError(toAppError(e));
     }
   }, [scanned, navigation]);
 

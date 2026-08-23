@@ -30,8 +30,8 @@ import { AccountPanel } from './AccountPanel';
  * backend's unowned lane as a migration allowance that ends "when P1 makes
  * enrolment mandatory". Pairing now waits for linking, and the copy says so.
  */
-export function LinkStep({ signedIn }: { signedIn: boolean }) {
-  if (signedIn) return <AccountPanel />;
+export function LinkStep({ signedIn, onLinked }: { signedIn: boolean; onLinked?: () => void }) {
+  if (signedIn) return <AccountPanel onLinked={onLinked} />;
 
   return (
     <section className="control__account card" data-testid="link-step-locked">

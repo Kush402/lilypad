@@ -63,6 +63,28 @@ export function initDeviceIdentity(): Promise<string> {
   return initPromise;
 }
 
+/**
+ * Throw this phone's id away so the next load mints a new one. The partner of
+ * `clearDeviceKey` — `devices` is unique on the key AND on (kind,
+ * fingerprint), so resetting only one of them would land on the same row and
+ * be refused all over again.
+ */
+export async function clearDeviceId(): Promise<void> {
+  cached = null;
+  initPromise = null;
+  try {
+    await Keychain.resetGenericPassword({ service: SERVICE });
+  } catch {
+    /* best effort — the cache is already cleared, so this run mints a new id */
+  }
+}
+
+/** Test seam: drop the memoized id so a fresh keychain state can be loaded. */
+export function resetDeviceIdCacheForTests(): void {
+  cached = null;
+  initPromise = null;
+}
+
 /** Synchronous read for post-init call sites. Falls back to a per-launch id
  * if somehow read before `initDeviceIdentity` resolved — same behavior the
  * app always had, never a crash. */

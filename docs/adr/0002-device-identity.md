@@ -117,6 +117,57 @@ window between sign-in and enrollment.
   ([ADR-0006](0006-lan-first-connectivity.md)) and one purpose's signature must
   not be valid for the other.
 
+## Amendment (2026-08-22): the proof names its server
+
+v1 binds a signature to a purpose and a nonce, and to nothing else. Nothing in
+the signed bytes says which server the proof was for — so a host that can get a
+device to sign a challenge can fetch one from the real backend, pass it off as
+its own, and replay the signature there. The phone reaches a hostile host by
+the most ordinary route this product has: a scanned QR names the backend.
+
+**v2 puts the host inside the signature.**
+
+```
+v1   lilypad-device-auth:v1:<challenge>
+v2   lilypad-device-auth:v2:<hostLength>:<host>:<challenge>
+```
+
+`<host>` is the lowercased `host[:port]` of the base URL the client is talking
+to — `new URL(base).host`, so a default port is dropped. The length prefix
+makes the encoding canonical: joined with a bare colon, `host "a:1"` with
+challenge `"n"` and `host "a"` with challenge `"1:n"` produced identical bytes,
+which is one signature meaning two things.
+
+A separate prefix, not an extra field inside the v1 message, so neither form
+can ever be read as the other — including by an attacker presenting a v1
+signature and claiming it was origin-bound.
+
+Three parts, and all three are load-bearing:
+
+1. **The client signs the host** and sends it as `proofOrigin`. Its presence is
+   what selects v2; there is no version field, because "did you name a server?"
+   is the only question.
+2. **The server refuses hosts that are not its own**, from a set built out of
+   `PUBLIC_BASE_URL`, the live advertised URL, and `DEVICE_PROOF_HOSTS`. Without
+   this step v2 is decorative: a signature over `evil.example` verifies
+   perfectly well against the key that made it. The set is never derived from
+   the request — in particular not from the `Host` header, which an attacker
+   replaying a proof chooses.
+3. **Both forms are accepted**, so every build already installed keeps working.
+   `devices.app_version` is how "the fleet has moved" becomes a fact rather
+   than a guess; requiring `proofOrigin` is a later, separate decision.
+
+### Deploy order
+
+**The server must ship before any client that sends `proofOrigin`.** A client
+that names a host an older server does not understand is rejected with an
+opaque `invalid_signature`, and cannot sign in at all.
+
+`GET /metrics` publishes the effective set as `deviceProofHosts`. That turns
+the ordering from a hope into a check: deploy the backend, curl metrics, confirm
+the host the apps actually use is listed, and only then cut client builds. If it
+is missing, set `DEVICE_PROOF_HOSTS` and re-check before shipping anything.
+
 ## Status
 
 Accepted (2026-08-12). Implemented in milestone M8; amended during that

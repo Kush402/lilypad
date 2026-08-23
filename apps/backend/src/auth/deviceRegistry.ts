@@ -74,7 +74,11 @@ export interface DeviceIdentityStore {
       credentialIssuedAt?: Date | null;
     },
   ): Promise<boolean>;
-  touchLastSeen(id: string): Promise<void>;
+  /** Stamp "seen just now", and what the device says it is running. An
+   * absent `appVersion` leaves the stored one alone rather than clearing it:
+   * a client that does not send one knows nothing, and knowing nothing is not
+   * grounds to forget what the last one told us. */
+  touchLastSeen(id: string, appVersion?: string | null): Promise<void>;
 }
 
 export type DevicePlatform = 'macos' | 'windows' | 'linux' | 'ios' | 'android';
@@ -198,6 +202,20 @@ export class DeviceRegistry {
     await this.store.touchLastSeen(row.id);
     return { ok: true, deviceId: row.id, userId: row.userId };
   }
+
+  /**
+   * Record that a device was just seen.
+   *
+   * `authenticate` above does this for the renew path, which used to be the
+   * only one — so a device that had just ENROLLED, and was holding a token
+   * minted seconds ago, still read as never seen until its first renewal. A
+   * phone enrolled during a real first run on 2026-08-21 sat at
+   * `last_seen_at IS NULL` while its owner was holding it, and "Your devices"
+   * had to describe it as never having connected.
+   */
+  async markSeen(deviceId: string, appVersion?: string | null): Promise<void> {
+    await this.store.touchLastSeen(deviceId, appVersion);
+  }
 }
 
 /** Adapts the real Drizzle client to `DeviceIdentityStore`. */
@@ -270,8 +288,17 @@ export function createDrizzleDeviceIdentityStore(
         .returning({ id: devices.id });
       return claimed.length > 0;
     },
-    async touchLastSeen(id) {
-      await database.update(devices).set({ lastSeenAt: new Date() }).where(eq(devices.id, id));
+    async touchLastSeen(id, appVersion) {
+      await database
+        .update(devices)
+        .set({
+          lastSeenAt: new Date(),
+          // Spread, not `appVersion: appVersion ?? null`: writing the null
+          // through would erase a known version every time a client that does
+          // not send one signs in — including every build already installed.
+          ...(appVersion == null ? {} : { appVersion }),
+        })
+        .where(eq(devices.id, id));
     },
   };
 }

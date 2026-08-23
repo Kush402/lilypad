@@ -136,7 +136,14 @@ impl DeviceAuth {
 
     /// Ask the backend for a nonce and sign it. Every authenticated exchange
     /// starts here.
-    async fn signed_proof(&self) -> Result<(String, String, String)> {
+    /// Returns `(challenge, public key, signature, proof origin)`.
+    ///
+    /// The origin is the host this app is configured to talk to, signed along
+    /// with the challenge so the proof cannot be replayed at another server
+    /// (L-30). `None` when the base URL has no parseable host — the v1 message
+    /// is signed instead, which a server still accepts, rather than leaving
+    /// the app unable to authenticate at all.
+    async fn signed_proof(&self) -> Result<(String, String, String, Option<String>)> {
         let response = self
             .http
             .post(self.url("/devices/challenge"))
@@ -144,17 +151,28 @@ impl DeviceAuth {
             .await
             .context("could not reach the backend for a device challenge")?;
         if !response.status().is_success() {
-            bail!(
-                "backend returned HTTP {} for a device challenge",
-                response.status()
+            // Same reasoning as `enrollment_code_failure`: this surfaces
+            // through `start_enrollment` onto the dashboard, so it is written
+            // for the person reading it. The status goes to the log.
+            log::warn!(
+                target: "lilypad::auth",
+                "device challenge refused (HTTP {})",
+                response.status(),
             );
+            bail!("Lilypad’s server isn’t responding properly. Try again in a moment.");
         }
         let ChallengeResponse { challenge } = response
             .json()
             .await
             .context("the backend's device challenge was not valid JSON")?;
-        let signature = self.identity.sign_challenge(&challenge);
-        Ok((challenge, self.identity.public_key_base64url(), signature))
+        let origin = crate::identity::proof_origin_of(&self.base_url);
+        let signature = self.identity.sign_challenge(&challenge, origin.as_deref());
+        Ok((
+            challenge,
+            self.identity.public_key_base64url(),
+            signature,
+            origin,
+        ))
     }
 
     // `enroll()` used to live here: a desktop enrolling ITSELF with an account
@@ -192,7 +210,7 @@ impl DeviceAuth {
         name: &str,
         platform: &str,
     ) -> Result<EnrollmentCode> {
-        let (challenge, public_key, signature) = self.signed_proof().await?;
+        let (challenge, public_key, signature, proof_origin) = self.signed_proof().await?;
         let response = self
             .http
             .post(self.url("/devices/enrollment-code"))
@@ -200,6 +218,7 @@ impl DeviceAuth {
                 "challenge": challenge,
                 "publicKey": public_key,
                 "signature": signature,
+                "proofOrigin": proof_origin,
                 "fingerprint": fingerprint,
                 "name": name,
                 "platform": platform,
@@ -211,7 +230,17 @@ impl DeviceAuth {
         let status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
-            bail!("could not start enrollment (HTTP {status}): {body}");
+            // The raw status and body go to the log, not to the dashboard.
+            // `start_enrollment` turns this error into a string with
+            // `e.to_string()` and `AccountPanel` renders it verbatim, so
+            // whatever is written here is what a person reads on the one
+            // screen that makes their computer theirs. It used to be
+            // `could not start enrollment (HTTP 429): {"statusCode":429,…}`.
+            log::warn!(
+                target: "lilypad::auth",
+                "enrollment code refused (HTTP {status}): {body}",
+            );
+            bail!("{}", enrollment_code_failure(status.as_u16()));
         }
         response
             .json()
@@ -238,7 +267,7 @@ impl DeviceAuth {
     /// Prove key possession and take a fresh device token. This is how the app
     /// authenticates after a restart, with no user interaction.
     pub async fn sign_in(&self) -> Result<DeviceSession> {
-        let (challenge, public_key, signature) = self.signed_proof().await?;
+        let (challenge, public_key, signature, proof_origin) = self.signed_proof().await?;
         let response = self
             .http
             .post(self.url("/devices/token"))
@@ -246,6 +275,16 @@ impl DeviceAuth {
                 "challenge": challenge,
                 "publicKey": public_key,
                 "signature": signature,
+                // Names the server this proof is for. Its presence is what
+                // selects the origin-bound form; omitted, the server checks
+                // the older message instead.
+                "proofOrigin": proof_origin,
+                // Bookkeeping, not part of the signed proof. This call happens
+                // on every launch and every token renewal, which makes it the
+                // one place `devices.app_version` can stay current without a
+                // heartbeat of its own — and the only way to answer "which
+                // build is this customer running?" at all.
+                "appVersion": env!("CARGO_PKG_VERSION"),
             }))
             .send()
             .await
@@ -328,7 +367,18 @@ pub struct DesktopAuth {
     /// unauthenticated, which the backend accepts only for a computer no
     /// account owns — the honest outcome, and better than enrolling under an
     /// ephemeral key that the next launch would lose, orphaning the device row.
+    ///
+    /// Only ever populated on SUCCESS. See `device_auth`.
     inner: OnceLock<Option<DeviceAuth>>,
+    /// How the key is obtained. A plain function pointer so tests can inject a
+    /// keychain that fails once and then works — the behaviour below exists for
+    /// exactly that case and is otherwise unobservable.
+    load: fn() -> Result<DeviceIdentity>,
+    /// Serialises retries. Two threads that both found no entry would each
+    /// GENERATE and store a key, and the loser would be left holding one the
+    /// keychain no longer has — a machine that silently changes identity. The
+    /// old `get_or_init` gave this for free; retrying means providing it.
+    retry: Mutex<()>,
 }
 
 impl DesktopAuth {
@@ -336,22 +386,52 @@ impl DesktopAuth {
         Self {
             base_url,
             inner: OnceLock::new(),
+            load: DeviceIdentity::load_or_create,
+            retry: Mutex::new(()),
         }
     }
 
+    /// Load the identity, retrying on a later call if this one fails.
+    ///
+    /// It used to be `get_or_init`, which stores whatever the first attempt
+    /// produced — including a failure. One unlucky keychain read therefore
+    /// disabled the app for the whole process: `link_state` answers
+    /// `NoIdentity`, and the dashboard says "this computer has no secure
+    /// identity, so it cannot be linked" and hides the linking UI entirely.
+    /// There is no retry in that screen, so the only way out was to quit and
+    /// reopen, which the screen does not say either.
+    ///
+    /// Keychain failures here are transient and ordinary: a login keychain not
+    /// yet unlocked, a first-unlock race, or an access prompt dismissed by
+    /// accident — and the prompt reappears on every update while the app is
+    /// ad-hoc signed, because the code requirement changes with the cdhash.
+    /// `identity.ts` on the phone already refuses to memoize a failure for
+    /// these exact reasons; this is the same rule on the other client.
     fn device_auth(&self) -> Option<&DeviceAuth> {
-        self.inner
-            .get_or_init(|| match DeviceIdentity::load_or_create() {
-                Ok(identity) => Some(DeviceAuth::new(identity, self.base_url.clone())),
-                Err(e) => {
-                    log::warn!(
-                        target: "lilypad::auth",
-                        "no durable device identity ({e}) — backend calls will be unauthenticated",
-                    );
-                    None
-                }
-            })
-            .as_ref()
+        if let Some(cached) = self.inner.get() {
+            return cached.as_ref();
+        }
+        let _serialised = self.retry.lock().unwrap_or_else(|e| e.into_inner());
+        // Re-read: a racer may have succeeded while this thread waited.
+        if let Some(cached) = self.inner.get() {
+            return cached.as_ref();
+        }
+        match (self.load)() {
+            Ok(identity) => {
+                let _ = self
+                    .inner
+                    .set(Some(DeviceAuth::new(identity, self.base_url.clone())));
+                self.inner.get().and_then(Option::as_ref)
+            }
+            Err(e) => {
+                log::warn!(
+                    target: "lilypad::auth",
+                    "no durable device identity ({e}) — backend calls will be unauthenticated, \
+                     and the next call will try again",
+                );
+                None
+            }
+        }
     }
 
     /// Whether an account has linked this computer, for the dashboard to
@@ -447,6 +527,24 @@ pub enum LinkState {
     Unknown(String),
 }
 
+/// What to tell someone whose "Link this computer" just failed.
+///
+/// One sentence about what happened and one about what to do, per status. The
+/// two that are actually reachable in ordinary use are 429 — the panel mints a
+/// fresh code on every "New code" press, against a route budgeted at 20 a
+/// minute — and 401, which is what a proof this server will not accept looks
+/// like.
+fn enrollment_code_failure(status: u16) -> &'static str {
+    match status {
+        429 => "Too many attempts just now. Wait a minute, then try again.",
+        401 | 403 => {
+            "This computer couldn’t prove its identity to Lilypad’s server.              Try again in a moment."
+        }
+        400 => "Lilypad’s server rejected this request. Please update the app.",
+        _ => "Lilypad’s server couldn’t give out a code right now. Try again in a moment.",
+    }
+}
+
 /// Attach a bearer token to a request when there is one to attach.
 pub fn with_bearer(req: reqwest::RequestBuilder, token: Option<String>) -> reqwest::RequestBuilder {
     match token {
@@ -533,6 +631,92 @@ mod tests {
         );
     }
 
+    /// What "Link this computer" says when it fails.
+    ///
+    /// `start_enrollment` stringifies this error and `AccountPanel` renders it
+    /// verbatim, so these ARE the product's words. The old text was
+    /// `could not start enrollment (HTTP 429): {"statusCode":429,…}` on the
+    /// one screen that turns a laptop into the user's own — and 429 is not
+    /// exotic: the panel mints a fresh code on every "New code" press against
+    /// a route budgeted at 20 a minute.
+    #[test]
+    fn a_failed_linking_attempt_is_explained_in_words() {
+        for status in [400u16, 401, 403, 429, 500, 502, 503] {
+            let message = enrollment_code_failure(status);
+            assert!(
+                !message.contains("HTTP")
+                    && !message.contains('{')
+                    && !message.contains(&status.to_string()),
+                "HTTP {status} leaks implementation: {message}"
+            );
+            assert!(
+                message.ends_with('.') && message.chars().next().unwrap().is_uppercase(),
+                "HTTP {status} is not a sentence: {message}"
+            );
+        }
+
+        // The two that actually happen say what to do about them.
+        assert!(enrollment_code_failure(429).contains("Wait a minute"));
+        assert!(enrollment_code_failure(401).contains("Try again"));
+        // A client too old for the server is the one case where retrying is
+        // not the answer, so it must not say "try again".
+        assert!(!enrollment_code_failure(400).contains("Try again"));
+    }
+
+    /// Which build is this customer running?
+    ///
+    /// Unanswerable until 2026-08-22: no client sent a version at all. It
+    /// rides on the token exchange because that is the one request the app
+    /// makes on every launch and every renewal — so the stored value stays
+    /// current without a heartbeat of its own. This asserts it is actually on
+    /// the wire, not merely in the source.
+    #[tokio::test]
+    async fn the_token_request_says_which_build_is_asking() {
+        let bodies = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let seen = bodies.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    return;
+                };
+                let seen = seen.clone();
+                tokio::spawn(async move {
+                    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                    let mut buf = vec![0u8; 4096];
+                    let n = socket.read(&mut buf).await.unwrap_or(0);
+                    let req = String::from_utf8_lossy(&buf[..n]).to_string();
+                    let body = if req.contains("/devices/challenge") {
+                        r#"{"challenge":"nonce-abcdefgh"}"#.to_owned()
+                    } else {
+                        seen.lock().unwrap().push(req);
+                        r#"{"accessToken":"tok","expiresInSeconds":600,"deviceId":"d-1","userId":"u-1"}"#.to_owned()
+                    };
+                    let res = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    let _ = socket.write_all(res.as_bytes()).await;
+                    let _ = socket.shutdown().await;
+                });
+            }
+        });
+
+        let auth = DeviceAuth::new(
+            DeviceIdentity::generate_ephemeral().unwrap(),
+            format!("http://{addr}"),
+        );
+        assert_eq!(auth.access_token().await.unwrap(), "tok");
+
+        let sent = bodies.lock().unwrap().join("\n");
+        assert!(
+            sent.contains(&format!(r#""appVersion":"{}""#, env!("CARGO_PKG_VERSION"))),
+            "the token request must carry this build's version; sent: {sent}"
+        );
+    }
+
     /// The gate must not outlive its purpose: once the token is cached, callers
     /// take the fast path and never queue behind the mutex at all.
     #[tokio::test]
@@ -610,6 +794,48 @@ mod tests {
         let auth = DesktopAuth::new("http://localhost:8080".to_owned());
         auth.inner.set(None).ok();
         assert!(auth.bearer().await.is_none());
+    }
+
+    /// A keychain read that fails must not disable the app for the whole
+    /// process.
+    ///
+    /// `get_or_init` stored whatever the first attempt produced, failure
+    /// included — so one dismissed access prompt left the dashboard saying
+    /// "this computer has no secure identity, so it cannot be linked", with
+    /// the linking UI hidden and no retry anywhere on screen. The prompt
+    /// reappears on every update while the app is ad-hoc signed, which makes
+    /// this the ordinary case rather than the unlucky one.
+    #[test]
+    fn a_failed_keychain_read_is_retried_rather_than_remembered() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static ATTEMPTS: AtomicUsize = AtomicUsize::new(0);
+
+        fn flaky() -> Result<DeviceIdentity> {
+            // Fails once, then works — a locked login keychain, or a prompt
+            // the user dismissed and then allowed.
+            if ATTEMPTS.fetch_add(1, Ordering::SeqCst) == 0 {
+                anyhow::bail!("the keychain is locked");
+            }
+            DeviceIdentity::generate_ephemeral()
+        }
+
+        ATTEMPTS.store(0, Ordering::SeqCst);
+        let mut auth = DesktopAuth::new("http://localhost:8080".to_owned());
+        auth.load = flaky;
+
+        assert!(
+            auth.device_auth().is_none(),
+            "the first read failed, so there is no identity yet"
+        );
+        assert!(
+            auth.device_auth().is_some(),
+            "the second read succeeds — a transient failure must not be permanent"
+        );
+        assert_eq!(ATTEMPTS.load(Ordering::SeqCst), 2);
+
+        // And once it HAS succeeded, it is cached: no further keychain reads.
+        assert!(auth.device_auth().is_some());
+        assert_eq!(ATTEMPTS.load(Ordering::SeqCst), 2);
     }
 
     /// The keychain must not be opened until something actually needs a token —

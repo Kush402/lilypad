@@ -1,4 +1,9 @@
-import type { AccountDevice, AccountDeviceList } from '@lilypad/protocol';
+import type {
+  AccountDevice,
+  AccountDeviceList,
+  MobilePairListing,
+  MobilePairListResponse,
+} from '@lilypad/protocol';
 import { accessToken, DeviceAuthError } from './auth';
 
 /**
@@ -114,4 +119,29 @@ export async function deleteAccount(apiBaseUrl: string, confirmEmail: string): P
     );
   }
   if (!res.ok) throw new AccountDeviceError('Could not delete your account. Try again.');
+}
+
+/**
+ * Every pair THIS phone holds, according to the backend
+ * (`GET /devices/pairs/mine`).
+ *
+ * Distinct from `listAccountDevices` above: that answers "what does my account
+ * own", this answers "which laptops may I still ring". A laptop can be on the
+ * account and not paired with this particular phone.
+ *
+ * Throws rather than returning `[]` on any failure, because the caller uses
+ * the result to DELETE local rows: an empty list from a failed request would
+ * read as "you have no pairs" and wipe every laptop off the phone.
+ */
+export async function listMyPairs(apiBaseUrl: string): Promise<MobilePairListing[]> {
+  let res: Response;
+  try {
+    res = await request(apiBaseUrl, '/devices/pairs/mine', { method: 'GET' });
+  } catch (err) {
+    if (err instanceof DeviceAuthError) throw err;
+    throw new AccountDeviceError('Could not reach Lilypad. Check your connection.');
+  }
+  if (!res.ok) throw new AccountDeviceError(`Could not load your laptops (HTTP ${res.status}).`);
+  const body = (await res.json()) as MobilePairListResponse;
+  return body.pairs;
 }

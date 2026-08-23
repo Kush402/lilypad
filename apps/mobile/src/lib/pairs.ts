@@ -137,3 +137,68 @@ export async function forgetPair(desktopDeviceId: string): Promise<void> {
 export async function forgetAllPairs(): Promise<void> {
   await persist([]);
 }
+
+/**
+ * What the backend says about the pairs this phone holds, for one backend.
+ * Mirrors `MobilePairListing` without importing the protocol package into the
+ * keychain module.
+ */
+export interface RemotePair {
+  desktopDeviceId: string;
+  name: string | null;
+  revoked: boolean;
+}
+
+/**
+ * Reconcile the local list against the backend's answer — the decision half of
+ * L-10, kept pure so its rules are testable without a keychain or a network.
+ *
+ * Before this existed the phone's list was checked against nothing: a laptop
+ * revoked from the other side, or belonging to a deleted account, kept
+ * appearing under "Your laptops" until the user tapped it and the connect
+ * failed with `not_trusted`.
+ *
+ * Three rules, and the first is the one that makes this safe:
+ *
+ * 1. **Only pairs belonging to `apiBaseUrl` are judged.** A phone may hold
+ *    pairs on several backends — that is what makes self-hosting work — and
+ *    one backend has no idea what another's pairs are. Pruning across them
+ *    would delete a perfectly good self-hosted laptop because takedia.com had
+ *    never heard of it.
+ * 2. **Revoked, or absent, means gone.** Both are the backend saying this
+ *    phone can no longer ring that laptop, and the honest list is one that
+ *    does not offer it.
+ * 3. **A remote pair the phone does not hold is NOT added.** The per-pair
+ *    connect secret lives only on this phone, so a row restored from the
+ *    backend alone could never connect; adding it would put a button on
+ *    screen that always fails. Re-scanning the QR is what restores it.
+ *
+ * The caller must only pass a list it actually received. Calling this after a
+ * failed request would read "the backend returned nothing" as "you have no
+ * pairs" and wipe the list — see `DeviceListScreen`.
+ */
+export function reconcile(
+  local: PairedDesktop[],
+  remote: RemotePair[],
+  apiBaseUrl: string,
+): PairedDesktop[] {
+  const base = apiBaseUrl.replace(/\/$/, '');
+  const live = new Map(remote.filter((r) => !r.revoked).map((r) => [r.desktopDeviceId, r]));
+  return local.flatMap((pair) => {
+    if (pair.apiBaseUrl.replace(/\/$/, '') !== base) return [pair]; // another backend's business
+    const still = live.get(pair.desktopDeviceId);
+    if (!still) return [];
+    // A laptop renamed on the other side should read correctly here too.
+    return [{ ...pair, name: still.name ?? pair.name }];
+  });
+}
+
+/** Apply `reconcile` to the stored list. Returns the list as it now stands. */
+export async function reconcilePairs(
+  remote: RemotePair[],
+  apiBaseUrl: string,
+): Promise<PairedDesktop[]> {
+  const next = reconcile(await loadPairs(), remote, apiBaseUrl);
+  await persist(next);
+  return next;
+}

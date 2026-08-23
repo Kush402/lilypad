@@ -1,15 +1,32 @@
 import { accessToken, signInDevice, enrollDevice, DeviceAuthError, resetAuthState } from '../auth';
 import { resetDeviceKeyCache } from '../identity';
+import { saveSession, resetSessionCacheForTests } from '../session';
 
+/**
+ * Keyed by `service`, because the real module is — and because this file now
+ * stores a session record alongside the device key. A single-slot mock would
+ * have the session overwrite the key, and the next signature would fail
+ * parsing JSON as base64url.
+ */
 jest.mock('react-native-keychain', () => {
-  let stored: { username: string; password: string } | null = null;
+  const store = new Map<string, { username: string; password: string }>();
+  const key = (options?: { service?: string }) => options?.service ?? 'default';
   return {
     ACCESSIBLE: { WHEN_UNLOCKED_THIS_DEVICE_ONLY: 'WhenUnlockedThisDeviceOnly' },
-    getGenericPassword: jest.fn(() => Promise.resolve(stored ?? false)),
-    setGenericPassword: jest.fn((username: string, password: string) => {
-      stored = { username, password };
+    getGenericPassword: jest.fn((options?: { service?: string }) =>
+      Promise.resolve(store.get(key(options)) ?? false),
+    ),
+    setGenericPassword: jest.fn(
+      (username: string, password: string, options?: { service?: string }) => {
+        store.set(key(options), { username, password });
+        return Promise.resolve(true);
+      },
+    ),
+    resetGenericPassword: jest.fn((options?: { service?: string }) => {
+      store.delete(key(options));
       return Promise.resolve(true);
     }),
+    __reset: () => store.clear(),
   };
 });
 
@@ -46,10 +63,16 @@ function mockBackend(options: { tokenStatus?: number; tokenBody?: string; ttl?: 
   return counts;
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   resetAuthState();
   resetDeviceKeyCache();
+  resetSessionCacheForTests();
   jest.clearAllMocks();
+  // A device token is only ever taken against the backend this phone is
+  // signed in to (`assertHomeBackend`), so every test here needs to be signed
+  // in to `API` — which is the state any code path that reaches `accessToken`
+  // is in, since the app has no route to it while signed out.
+  await saveSession({ userId: 'user-uuid', apiBaseUrl: API });
 });
 
 describe('device access tokens', () => {
@@ -98,7 +121,23 @@ describe('device access tokens', () => {
 
   it('surfaces an unexpected status rather than pretending to be signed in', async () => {
     mockBackend({ tokenStatus: 500, tokenBody: 'boom' });
-    await expect(signInDevice(API)).rejects.toThrow(/HTTP 500/);
+    // It must still FAIL — but in words. This assertion used to be
+    // `toThrow(/HTTP 500/)`, and that string went straight onto the sign-in
+    // screen, which renders `err.message` verbatim.
+    const err = await signInDevice(API).then(
+      () => null,
+      (e: unknown) => e as Error,
+    );
+    expect(err).toBeInstanceOf(Error);
+    expect(err!.message).not.toMatch(/HTTP|500|boom/);
+    expect(err!.message).toMatch(/try again/i);
+  });
+
+  it('says how long to wait when the server is rate-limiting', async () => {
+    // 60/minute per address on the challenge and token routes, so a shared
+    // network reaches this without anyone doing anything unusual.
+    mockBackend({ tokenStatus: 429, tokenBody: '{"statusCode":429}' });
+    await expect(signInDevice(API)).rejects.toThrow(/wait a minute/i);
   });
 
   it('lets a later call retry after a failed exchange', async () => {
@@ -129,7 +168,7 @@ describe('a phone with no account behind it', () => {
   // would leave the phone unable to prove itself for the rest of the run.
   it('keeps retrying after a transient failure', async () => {
     mockBackend({ tokenStatus: 500, tokenBody: 'boom' });
-    await expect(accessToken(API)).rejects.toThrow(/HTTP 500/);
+    await expect(accessToken(API)).rejects.toThrow(/try again/i);
     const counts = mockBackend();
     await expect(accessToken(API)).resolves.toBe('token-1');
     expect(counts.token).toBe(1);

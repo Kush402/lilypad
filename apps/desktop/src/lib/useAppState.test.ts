@@ -22,6 +22,7 @@ function dto(overrides: Partial<AppStateDto> = {}): AppStateDto {
     pending_request: null,
     plugin_health: {},
     connection_path: null,
+    presence: { state: 'online' } as const,
     ...overrides,
   };
 }

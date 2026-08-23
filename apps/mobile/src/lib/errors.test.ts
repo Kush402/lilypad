@@ -28,16 +28,39 @@ describe('classifyHttpStatus', () => {
     expect(err.retryable).toBe(false);
   });
 
+  it('treats 404 the same way — the remedy is identical', () => {
+    // A code from another backend, or one whose session is long gone. "Ask
+    // for a new one on the laptop" is the true instruction for both, and a
+    // separate code would only be a second way of saying it.
+    expect(classifyHttpStatus(404, 'not found').code).toBe('token_expired');
+  });
+
+  it('classifies 429 as retryable, and says how long to wait', () => {
+    // Reachable by a person who scans twice — the route is rate-limited.
+    const err = classifyHttpStatus(429, '{"statusCode":429}');
+    expect(err.code).toBe('rate_limited');
+    expect(err.retryable).toBe(true);
+    expect(err.message).toMatch(/wait a minute/i);
+  });
+
   it('classifies 5xx as a retryable server error', () => {
     expect(classifyHttpStatus(500, '').code).toBe('server_error');
     expect(classifyHttpStatus(503, '').retryable).toBe(true);
   });
 
-  it('falls back to unknown for other statuses, preserving the body in the message', () => {
-    const err = classifyHttpStatus(400, 'bad request');
-    expect(err.code).toBe('unknown');
-    expect(err.message).toContain('400');
-    expect(err.message).toContain('bad request');
+  it('never puts a status line or a response body on screen', () => {
+    // This replaces a test that asserted the OPPOSITE — it required the body
+    // to be preserved in the message, which is how `HTTP 400: bad request`
+    // came to be shown on the scanner. Nothing a server sends is copy this
+    // app is willing to display; the backend logs its own 4xx, which is where
+    // that answer actually lives.
+    for (const status of [400, 401, 403, 409, 418]) {
+      const err = classifyHttpStatus(status, '{"error":"internal_detail"}');
+      expect(err.code).toBe('unknown');
+      expect(err.message).not.toContain(String(status));
+      expect(err.message).not.toContain('internal_detail');
+      expect(err.message).not.toContain('HTTP');
+    }
   });
 });
 

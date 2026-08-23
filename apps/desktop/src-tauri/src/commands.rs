@@ -93,6 +93,24 @@ pub fn get_state(state: State<'_, SharedState>) -> AppStateDto {
         pending_request: s.pending_request.clone(),
         plugin_health: crate::health::plugin_health(),
         connection_path: s.connection_path.clone(),
+        presence: s.presence.clone(),
+    }
+}
+
+/// What the pairing window says when the backend refuses a code.
+///
+/// `QrOverlay` renders this string as-is, so it is the product's words, not a
+/// developer's. It used to be `backend returned HTTP 429`, rendered under a
+/// second prefix as "Could not reach backend: backend returned HTTP 429" —
+/// which named the wrong cause twice.
+fn pairing_failure(status: u16) -> &'static str {
+    match status {
+        429 => "Too many codes requested just now. Wait a minute, then try again.",
+        401 | 403 => {
+            "Lilypad couldn’t confirm this computer with the server. Try again in a moment."
+        }
+        400 => "Lilypad’s server rejected this request. Please update the app.",
+        _ => "Lilypad’s server couldn’t create a code right now. Try again in a moment.",
     }
 }
 
@@ -163,16 +181,27 @@ pub async fn create_pairing(
     )
     .send()
     .await
-    .map_err(|e| format!("could not reach backend at {url}: {e}"))?;
+    .map_err(|e| {
+        // The URL and the transport error go to the log. `QrOverlay` renders
+        // whatever comes back here verbatim, so this string is what someone
+        // trying to pair their phone actually reads.
+        log::warn!(target: "lilypad::pairing", "could not reach {url}: {e}");
+        "Couldn’t reach Lilypad’s server. Check this Mac’s internet connection.".to_owned()
+    })?;
 
     if !resp.status().is_success() {
-        return Err(format!("backend returned HTTP {}", resp.status()));
+        log::warn!(
+            target: "lilypad::pairing",
+            "pairing code refused (HTTP {})",
+            resp.status(),
+        );
+        return Err(pairing_failure(resp.status().as_u16()).to_owned());
     }
 
-    let parsed: BackendPairingResponse = resp
-        .json()
-        .await
-        .map_err(|e| format!("bad backend response: {e}"))?;
+    let parsed: BackendPairingResponse = resp.json().await.map_err(|e| {
+        log::warn!(target: "lilypad::pairing", "unreadable pairing response: {e}");
+        "Lilypad’s server sent something this app could not read. Please update the app.".to_owned()
+    })?;
 
     let payload = QrPayloadDto {
         v: 2,
@@ -1149,4 +1178,34 @@ pub async fn account_delete(
 #[tauri::command]
 pub fn account_sign_out() -> Result<(), String> {
     account::Account::sign_out().map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// What the pairing window puts in front of someone adding their phone.
+    ///
+    /// `QrOverlay` renders these strings verbatim. The old text was
+    /// `backend returned HTTP 429`, shown under a "Could not reach backend:"
+    /// prefix — implementation detail, and the wrong cause named twice.
+    #[test]
+    fn a_refused_pairing_code_is_explained_in_words() {
+        for status in [400u16, 401, 403, 429, 500, 502, 503] {
+            let message = pairing_failure(status);
+            assert!(
+                !message.contains("HTTP")
+                    && !message.contains("backend returned")
+                    && !message.contains(&status.to_string()),
+                "HTTP {status} leaks implementation: {message}"
+            );
+            assert!(
+                message.ends_with('.') && message.chars().next().unwrap().is_uppercase(),
+                "HTTP {status} is not a sentence: {message}"
+            );
+        }
+        assert!(pairing_failure(429).contains("Wait a minute"));
+        // Too old for the server is the one case retrying cannot fix.
+        assert!(!pairing_failure(400).contains("Try again"));
+    }
 }

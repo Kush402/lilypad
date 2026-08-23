@@ -399,3 +399,32 @@ describe('DeviceRegistry.authenticate', () => {
     });
   });
 });
+
+describe('marking a device as seen', () => {
+  /**
+   * `last_seen_at` was written only by `authenticate`, the renew path. A device
+   * that had just enrolled therefore read as never seen while holding a token
+   * minted seconds earlier — observed in production on 2026-08-21, where a
+   * phone the owner was physically holding sat at `last_seen_at IS NULL`.
+   */
+  it('touches last-seen for a device that never renewed', async () => {
+    const store = fakeStore();
+    const registry = new DeviceRegistry(store);
+    const enrolled = await registry.enroll({
+      userId: 'user-1',
+      kind: 'mobile',
+      fingerprint: 'mobile-abc',
+      publicKey: 'key-1',
+    });
+    expect(enrolled.ok).toBe(true);
+
+    const seen: string[] = [];
+    store.touchLastSeen = async (id: string) => {
+      seen.push(id);
+    };
+    if (!enrolled.ok) throw new Error('enroll failed');
+    await registry.markSeen(enrolled.deviceId);
+
+    expect(seen).toEqual([enrolled.deviceId]);
+  });
+});

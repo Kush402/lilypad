@@ -39,6 +39,8 @@ export interface AppStateDto {
    * connected. Kept after the session ends — "was that relayed?" is asked
    * after hanging up. */
   connection_path: 'lan' | 'direct' | 'relay' | null;
+  /** Whether a phone can ring this Mac right now — see `PresenceDto`. */
+  presence: PresenceDto;
 }
 
 export const api = {
@@ -136,6 +138,19 @@ export interface AgentConfigDto {
  * Telling a linked user to redo the linking ceremony because their wifi
  * dropped would be worse than saying nothing.
  */
+/**
+ * Whether a phone can ring this Mac right now.
+ *
+ * Deliberately NOT the same question as `LinkStateDto`. Linked means an
+ * account owns this computer; reachable means the signaling hub is currently
+ * holding a seat for it. Production spent six hours on 2026-08-22 linked and
+ * unreachable at the same time, and the dashboard could only report the half
+ * that was fine.
+ */
+export interface PresenceDto {
+  state: 'starting' | 'connecting' | 'online' | 'unreachable' | 'refused' | 'no_identity';
+}
+
 export interface LinkStateDto {
   state: 'unlinked' | 'linked' | 'revoked' | 'no_identity' | 'unknown';
   user_id: string | null;

@@ -64,6 +64,32 @@ export const TrustedPairListingSchema = z.object({
 });
 export type TrustedPairListing = z.infer<typeof TrustedPairListingSchema>;
 
+/**
+ * One pair as `GET /devices/pairs/mine` returns it — the PHONE's view of which
+ * laptops it can ring.
+ *
+ * The desktop id is the full wire fingerprint, not masked like the mobile
+ * fingerprint in `TrustedPairListingSchema`. That masking exists because any
+ * caller who knew a desktop id could list its phones; here the caller has
+ * proved with a device token that it IS one side of these pairs, and it needs
+ * the full id to match rows against the ones in its own keychain. A phone that
+ * cannot match cannot reconcile, which is the entire purpose of the route.
+ */
+export const MobilePairListingSchema = z.object({
+  pairId: z.string().uuid(),
+  desktopDeviceId: WireDeviceIdSchema,
+  name: z.string().nullable(),
+  revoked: z.boolean(),
+  lastConnectedAt: z.string().nullable(),
+  createdAt: z.string(),
+});
+export type MobilePairListing = z.infer<typeof MobilePairListingSchema>;
+
+export const MobilePairListResponseSchema = z.object({
+  pairs: z.array(MobilePairListingSchema),
+});
+export type MobilePairListResponse = z.infer<typeof MobilePairListResponseSchema>;
+
 export const DevicePairsQuerySchema = z.object({
   desktopDeviceId: WireDeviceIdSchema,
 });

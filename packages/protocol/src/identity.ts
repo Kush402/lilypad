@@ -57,6 +57,59 @@ export const SignatureSchema = z
  * other. Clients sign `DEVICE_AUTH_PREFIX + challenge` as UTF-8 bytes. */
 export const DEVICE_AUTH_PREFIX = 'lilypad-device-auth:v1:';
 
+/**
+ * The same, but naming the server the proof is for.
+ *
+ * v1 binds a signature to a purpose and a nonce, and to nothing else — so a
+ * host that can get a device to sign a challenge can relay one it obtained
+ * from the real backend and replay the signature there. The remedy is to put
+ * the server inside the signed bytes: a signature made for `evil.example`
+ * says so, and `api.takedia.com` will not accept it.
+ *
+ * A separate prefix rather than an extra field inside the v1 message, so no
+ * v2 message can ever be reinterpreted as a v1 message or the reverse.
+ */
+export const DEVICE_AUTH_PREFIX_V2 = 'lilypad-device-auth:v2:';
+
+/**
+ * Exactly the bytes a device signs — the one definition both clients and the
+ * server build from, because a disagreement here is an outage, not a bug
+ * report.
+ *
+ * `origin` is the lowercased host (with port, when the URL carries one) of the
+ * backend the client is talking to. Omitted, this produces the v1 message, so
+ * a client that has not been updated keeps working unchanged.
+ */
+export function deviceProofMessage(challenge: string, origin?: string | null): string {
+  // Length-prefixed, so the encoding is canonical whatever the host contains.
+  // Joining with a bare colon was ambiguous — `host "a:1" + challenge "n"` and
+  // `host "a" + challenge "1:n"` produced the same bytes, which is a signature
+  // that means two things. Unreachable in practice (a challenge is base64url
+  // and a host comes from a fixed allow-list), but "unreachable in practice"
+  // is how protocol bugs are written, and the fix costs one number.
+  return origin
+    ? `${DEVICE_AUTH_PREFIX_V2}${origin.length}:${origin}:${challenge}`
+    : `${DEVICE_AUTH_PREFIX}${challenge}`;
+}
+
+/**
+ * The host to sign, from a base URL. `null` when the input is not a URL with a
+ * host — the caller then sends no `proofOrigin` and stays on v1 rather than
+ * signing something meaningless.
+ *
+ * Lowercased because DNS is case-insensitive and the two sides must agree
+ * byte-for-byte; the port is kept because `:8080` and `:443` are different
+ * servers.
+ */
+export function proofOriginOf(apiBaseUrl: string): string | null {
+  try {
+    const { host } = new URL(apiBaseUrl);
+    return host ? host.toLowerCase() : null;
+  } catch {
+    return null;
+  }
+}
+
 /** A server-issued, single-use, short-lived nonce. */
 export const DeviceChallengeSchema = z.object({
   /** base64url; the exact string to append to `DEVICE_AUTH_PREFIX`. */
@@ -65,11 +118,34 @@ export const DeviceChallengeSchema = z.object({
 });
 export type DeviceChallenge = z.infer<typeof DeviceChallengeSchema>;
 
-/** The three fields every proof-of-possession carries. */
+/**
+ * The fields every proof-of-possession carries.
+ *
+ * `appVersion` is not part of the proof and is deliberately optional: it is
+ * bookkeeping, and a client that omits it must still be able to sign in. It
+ * rides along here because `/devices/token` is the one request every client
+ * makes on every launch and every ten minutes thereafter, which makes it the
+ * only place a version can be kept current without inventing a heartbeat.
+ * Free-form rather than semver-validated — an older client's format is not
+ * something a newer server gets to reject, and the value is only ever read by
+ * a person.
+ */
 const proofFields = {
   challenge: z.string().min(16).max(128),
   publicKey: PublicKeySchema,
   signature: SignatureSchema,
+  appVersion: z.string().min(1).max(40).nullish(),
+  /**
+   * The host this client believes it is talking to, and therefore the host it
+   * signed ([`deviceProofMessage`](#)). Its PRESENCE selects v2 — there is no
+   * separate version field, because "did you name a server?" is the only
+   * question that matters.
+   *
+   * The server does not take this on trust: it checks the host is one of its
+   * own before verifying anything, so an attacker cannot simply claim the
+   * host they wish they had a signature for.
+   */
+  proofOrigin: z.string().min(1).max(255).nullish(),
 };
 
 /**

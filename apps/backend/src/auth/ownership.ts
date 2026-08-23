@@ -45,6 +45,36 @@ export interface DeviceOwnership {
   state: DeviceState;
 }
 
+/**
+ * Who an audit row for a SESSION should name.
+ *
+ * `audit_logs` has one `user_id` and one `device_id`, and a session has two
+ * devices, so this picks. Both fingerprints stay in `metadata`, so nothing is
+ * lost by choosing.
+ *
+ * - **`deviceId` is the phone.** It is the actor — the thing that reached out
+ *   and connected. The question a user asks of an audit log is "what connected
+ *   to my Mac", and the Mac is the constant in that sentence.
+ * - **`userId` falls back to the desktop's owner.** A session that reaches an
+ *   owned Mac belongs to that Mac's owner even when the phone is unowned,
+ *   which `authorize.ts`'s unowned lane still permits. Reporting null there
+ *   would hide the session from the one person entitled to see it.
+ *
+ * Both `session_start` and `session_end` rows were written with neither field
+ * before this existed: 21 of 21 rows in production carried `user_id IS NULL`
+ * and `device_id IS NULL` on 2026-08-21, which made "who connected to my Mac"
+ * unanswerable from the audit log of a product sold on being auditable.
+ */
+export function attributeSession(
+  desktop: DeviceOwnership | null,
+  mobile: DeviceOwnership | null,
+): { userId: string | null; deviceId: string | null } {
+  return {
+    userId: mobile?.userId ?? desktop?.userId ?? null,
+    deviceId: mobile?.deviceId ?? null,
+  };
+}
+
 /** Resolve a device by its WIRE id (`devices.fingerprint`) — what clients
  * send — to its owner and lifecycle state. */
 export async function deviceOwnershipByFingerprint(

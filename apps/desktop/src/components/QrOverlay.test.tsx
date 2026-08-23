@@ -51,6 +51,7 @@ describe('QrOverlay', () => {
       pending_request: null,
       plugin_health: {},
       connection_path: null,
+      presence: { state: 'online' } as const,
     });
 
     screen.getByText('New code').click();
@@ -77,6 +78,7 @@ describe('QrOverlay', () => {
       pending_request: null,
       plugin_health: {},
       connection_path: null,
+      presence: { state: 'online' } as const,
     });
 
     screen.getByText('New code').click();
@@ -104,6 +106,7 @@ describe('QrOverlay', () => {
       pending_request: null,
       plugin_health: {},
       connection_path: null,
+      presence: { state: 'online' } as const,
     });
 
     screen.getByText('New code').click();

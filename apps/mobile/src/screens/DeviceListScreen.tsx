@@ -4,10 +4,11 @@ import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { RootStackParamList } from '../types';
 import { theme } from '../theme';
-import { loadPairs, forgetPair, touchPair, type PairedDesktop } from '../lib/pairs';
+import { loadPairs, forgetPair, touchPair, reconcilePairs, type PairedDesktop } from '../lib/pairs';
 import { requestConnect, requestUnpair } from '../lib/api';
 import { toAppError } from '../lib/errors';
 import { useSession } from '../lib/sessionContext';
+import { listMyPairs } from '../lib/accountDevices';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Devices'>;
 
@@ -42,11 +43,50 @@ export function DeviceListScreen({ navigation }: Props) {
     void loadPairs().then(setPairs);
   }, []);
 
+  /**
+   * Ask the backend which of these laptops still exist, and drop the ones that
+   * do not.
+   *
+   * The local list is the keychain's, and until now it was checked against
+   * nothing: a laptop revoked from the other side, or on a deleted account,
+   * kept sitting here until the user tapped it and the connect failed with
+   * `not_trusted`. That is the wrong place to learn it.
+   *
+   * **Every failure is swallowed on purpose.** This function DELETES rows, so
+   * the only safe reading of "the request did not succeed" is "I know
+   * nothing", never "you have no laptops". Offline, a lapsed token, a moved
+   * backend and a 500 all leave the list exactly as it was; the user still
+   * sees their laptops and Connect still gives them the specific error it
+   * always did.
+   *
+   * Reconciliation runs per backend, because a phone may hold pairs on several
+   * — that is what makes self-hosting work — and each one can only speak for
+   * its own.
+   */
+  const reconcile = useCallback(async () => {
+    const local = await loadPairs();
+    const bases = [...new Set(local.map((p) => p.apiBaseUrl))];
+    for (const base of bases) {
+      try {
+        const remote = await listMyPairs(base);
+        setPairs(await reconcilePairs(remote, base));
+      } catch {
+        /* see above: never prune on an answer we did not get */
+      }
+    }
+  }, []);
+
   // Refresh on focus: the scanner adds pairs behind this screen's back.
+  // The local read paints immediately; reconciliation follows and can only
+  // remove rows the backend says are gone.
   useEffect(() => {
-    refresh();
-    return navigation.addListener('focus', refresh);
-  }, [navigation, refresh]);
+    const onFocus = () => {
+      refresh();
+      void reconcile();
+    };
+    onFocus();
+    return navigation.addListener('focus', onFocus);
+  }, [navigation, refresh, reconcile]);
 
   const connect = useCallback(
     async (pair: PairedDesktop) => {

@@ -126,7 +126,7 @@ describe('AccountSignIn', () => {
 
   it('surfaces a rejected credential instead of failing silently', async () => {
     vi.mocked(api.accountSignIn).mockRejectedValue(
-      'That email and password do not match an account.',
+      'That email and password do not match an account. Check the password, or create an account.',
     );
     render(<AccountSignIn />);
     await screen.findByTestId('account-sign-in');
@@ -278,6 +278,35 @@ describe('AccountSignIn', () => {
       expect(await screen.findByTestId('delete-confirm-email')).toHaveValue('');
       expect(screen.getByTestId('delete-password')).toHaveValue('');
       expect(api.accountDelete).not.toHaveBeenCalled();
+    });
+  });
+
+  /**
+   * A brand-new customer's first act should not be a rejection.
+   *
+   * Production, 2026-08-21: `login_failed … reason=password_no_account` at
+   * 20:54:41 on a first run, forty-six seconds before the signup that should
+   * have come first. The wizard opened on Sign in, so the customer typed
+   * credentials that could not exist yet.
+   */
+  describe('which form it opens on', () => {
+    it('opens on Sign in by default — the dashboard is for people who have an account', async () => {
+      render(<AccountSignIn />);
+      expect(await screen.findByTestId('account-sign-in-submit')).toBeInTheDocument();
+      expect(screen.queryByTestId('account-sign-up-submit')).toBeNull();
+    });
+
+    it('opens on Create account when asked, for the first-run wizard', async () => {
+      render(<AccountSignIn initialMode="signup" />);
+      expect(await screen.findByTestId('account-sign-up-submit')).toBeInTheDocument();
+      expect(screen.queryByTestId('account-sign-in-submit')).toBeNull();
+    });
+
+    it('still offers the other door, so neither audience is trapped', async () => {
+      render(<AccountSignIn initialMode="signup" />);
+      await screen.findByTestId('account-sign-up-submit');
+      fireEvent.click(screen.getByText('Sign in instead'));
+      expect(await screen.findByTestId('account-sign-in-submit')).toBeInTheDocument();
     });
   });
 });

@@ -73,6 +73,46 @@ deployment:
 4. Migrations: `pnpm --filter @lilypad/backend db:migrate` against the
    production `DATABASE_URL` before first boot and on every schema change.
 
+### Releasing a client that sends `proofOrigin` (ADR-0002 v2 device proof)
+
+**Backend first, clients second — in that order, with a check in between.**
+
+A v2 proof names the host it is for, and a server that has not been updated
+does not know to check the origin-bound message. It rejects such a proof as
+`invalid_signature`, which on the client looks like "this device is not
+enrolled" — an installed app that can no longer sign in at all.
+
+1. Deploy the backend. It accepts **both** message forms, so every client
+   already in the field is unaffected.
+2. Confirm the server will accept the host the apps actually use:
+
+   ```
+   curl -s -H "authorization: Bearer $METRICS_BEARER_TOKEN" \
+     https://<backend>/metrics | jq .deviceProofHosts
+   ```
+
+   The list must contain the host from `apps/mobile/src/config/backend.ts`
+   (`DEFAULT_API_BASE_URL`) and the desktop's `DEFAULT_BACKEND_URL`. It is
+   built from `PUBLIC_BASE_URL`, the live advertised URL, and
+   `DEVICE_PROOF_HOSTS`.
+
+3. Missing? Add it to `DEVICE_PROOF_HOSTS` (comma-separated hosts or URLs) and
+   restart, then re-check. Do not ship clients until this list is right.
+4. Only then cut the client builds.
+
+A rejected origin logs at `warn` with the host it saw and the set it allowed:
+
+    device proof named a host this server does not answer to
+
+If that appears for a host you recognise, it is step 3 that was missed — not an
+attack.
+
+Requiring `proofOrigin` (dropping v1) is a **separate, later** change. Check
+what the field is actually running first:
+
+    select app_version, count(*) from devices where revoked_at is null
+      group by 1 order by 2 desc;
+
 ## Backup & recovery
 
 - **Postgres** is the only stateful store that matters: standard `pg_dump`
@@ -82,6 +122,34 @@ deployment:
 - **Backend crash/deploy**: safe at any time. Established sessions continue
   peer-to-peer; the hub resurrects room records from Redis on boot; clients
   reconnect signaling with backoff.
+
+## Diagnosing one customer
+
+    pnpm support <email>
+
+Read-only. Prints the account, every device on it (state, platform, **app
+version**, last seen, and both device ids labelled), every pair and which
+direction it runs, and the last fifteen audit events. Run it against the
+production `DATABASE_URL`.
+
+It answers the question every support conversation opens with without anyone
+having to remember the joins — in particular that `devices.fingerprint` is the
+wire id `/connect/request` resolves while `devices.id` is what the
+account-scoped routes take. Getting those two the wrong way round is a bug this
+product has already shipped once.
+
+What it cannot tell you is whether a laptop is reachable **right now**:
+presence rooms live in the signaling hub's memory and are never persisted. The
+report gives the honest approximation instead — how many devices exchanged a
+token in the last fifteen minutes — and labels it as one. Clients
+re-authenticate on launch and roughly every nine minutes, so that is close to
+"the app is running".
+
+Deliberately a script, not an admin API. An endpoint that reads any user's
+devices needs an admin auth model this product does not have, and getting that
+wrong is worse than typing a command. `apps/admin` is still the M6 placeholder
+it has always been — six cards that say "M6" and a `/health` probe — and is
+deployed nowhere.
 
 ## Incident quick reference
 

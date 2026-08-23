@@ -1,7 +1,7 @@
 import { Platform } from 'react-native';
 import type { ConnectResponse, PairingRedeemResponse } from '@lilypad/protocol';
 import { initDeviceIdentity } from './device';
-import { accessToken } from './auth';
+import { accessToken, DeviceAuthError } from './auth';
 import { RedeemError, appError, classifyHttpStatus, classifyFetchError } from './errors';
 
 /** Bounded so a slow/dead network surfaces as a classified, actionable error
@@ -10,19 +10,28 @@ import { RedeemError, appError, classifyHttpStatus, classifyFetchError } from '.
 const REDEEM_TIMEOUT_MS = 8_000;
 
 /**
- * Headers proving WHICH phone this is, when it can prove it (M9,
+ * Headers proving WHICH phone this is (M9,
  * [ADR-0010](../../../../docs/adr/0010-explicit-device-linking.md)).
  *
- * Best-effort ON PURPOSE, and never throws. A phone no account owns has no
- * identity to prove, and pairing one must keep working exactly as it always
- * has. The backend applies the mirror-image rule — it demands a token only for
- * a device an account owns — so the two halves meet without a flag day: the
- * moment this phone enrols, these calls start carrying a token and the backend
- * starts requiring one.
+ * **Throws `DeviceAuthError` when this phone is on no account**, and callers
+ * are expected to route to sign-in rather than send the request anyway.
+ *
+ * This used to be best-effort: it swallowed the failure and sent no header,
+ * because the backend applied a mirror-image rule and demanded a token only
+ * for a device an account already owned. That lane is gone — the product model
+ * is account → devices, so a phone on no account may not pair, connect or
+ * unpair at all. Sending the request regardless would now earn a 404 that the
+ * client cannot tell apart from "no such laptop", and the user would be shown
+ * a dead end instead of the sign-in screen that actually fixes it.
  */
 async function deviceAuthHeaders(apiBaseUrl: string): Promise<Record<string, string>> {
+  return { authorization: `Bearer ${await accessToken(apiBaseUrl)}` };
+}
+
+/** The best-effort variant, for the one call that must succeed offline. */
+async function optionalDeviceAuthHeaders(apiBaseUrl: string): Promise<Record<string, string>> {
   try {
-    return { authorization: `Bearer ${await accessToken(apiBaseUrl)}` };
+    return await deviceAuthHeaders(apiBaseUrl);
   } catch {
     return {};
   }
@@ -83,6 +92,9 @@ export async function redeemToken(
     return (await res.json()) as PairingRedeemResponse;
   } catch (err) {
     if (err instanceof RedeemError) throw err;
+    // A phone with no account has a specific remedy — sign in — so it must
+    // reach the caller as itself, not flattened into a network error.
+    if (err instanceof DeviceAuthError) throw err;
     throw new RedeemError(classifyFetchError(timedOut));
   } finally {
     clearTimeout(timer);
@@ -129,6 +141,7 @@ export async function requestConnect(
     return (await res.json()) as ConnectResponse;
   } catch (err) {
     if (err instanceof RedeemError) throw err;
+    if (err instanceof DeviceAuthError) throw err;
     throw new RedeemError(classifyFetchError(timedOut));
   } finally {
     clearTimeout(timer);
@@ -153,7 +166,10 @@ export async function requestUnpair(apiBaseUrl: string, desktopDeviceId: string)
     const mobileDeviceId = await initDeviceIdentity();
     const res = await fetch(`${apiBaseUrl.replace(/\/$/, '')}/devices/unpair`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', ...(await deviceAuthHeaders(apiBaseUrl)) },
+      headers: {
+        'content-type': 'application/json',
+        ...(await optionalDeviceAuthHeaders(apiBaseUrl)),
+      },
       body: JSON.stringify({ desktopDeviceId, mobileDeviceId }),
       signal: controller.signal,
     });

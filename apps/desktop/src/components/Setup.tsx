@@ -56,10 +56,6 @@ const RELAUNCH_THRESHOLD = 3;
  */
 const RESTART_TRIED_KEY = 'lilypad.permission.restart-tried';
 
-/** How often to re-ask whether a phone has adopted this computer. Matches
- * `AccountPanel`'s cadence, against endpoints budgeted at 60/minute. */
-const LINK_POLL_MS = 3_000;
-
 /**
  * First run, end to end: **your account → permissions → link this computer →
  * pair a phone**, in that order, in one window.
@@ -202,12 +198,12 @@ export function Setup() {
     }
   }, [allGranted]);
 
-  useEffect(() => {
-    refreshLink();
-    if (!allGranted || linked) return;
-    const id = setInterval(refreshLink, LINK_POLL_MS);
-    return () => clearInterval(id);
-  }, [refreshLink, allGranted, linked]);
+  // Read once, then again only when `AccountPanel` reports the transition —
+  // see the same change in `Control.tsx`. This used to poll for the whole
+  // stretch between granting the permissions and linking, which on a first run
+  // is however long the user takes to pick up their phone, at two rejected
+  // round-trips every three seconds.
+  useEffect(refreshLink, [refreshLink]);
 
   const grant = async (kind: PermissionKind) => {
     const granted = await invoke<boolean>('request_permission', { kind });
@@ -243,7 +239,7 @@ export function Setup() {
           model of what Lilypad is. Same component as the dashboard's: one
           sign-in form, two places it is reachable. */}
       <h2 className="section-title">1 · Your account</h2>
-      <AccountSignIn onChange={setAccount} />
+      <AccountSignIn onChange={setAccount} initialMode="signup" />
 
       <h2 className="section-title">2 · Permissions</h2>
       {!signedIn ? (
@@ -333,7 +329,7 @@ export function Setup() {
             Linking is what puts this Mac on your account, so you can see it — and remove it — from
             your phone. Pairing comes after it.
           </p>
-          <LinkStep signedIn={signedIn} />
+          <LinkStep signedIn={signedIn} onLinked={refreshLink} />
 
           <h2 className="section-title">4 · Pair a phone</h2>
           {linked ? (

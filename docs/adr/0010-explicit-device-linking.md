@@ -93,15 +93,29 @@ Accepted (2026-08-13). Implemented in full: device states
 authorization decision (`auth/authorize.ts`), every HTTP route, the WebSocket
 presence `register` gate, and both clients.
 
-**How the gate is conditional, and why that is not a hole.** Authorization keys
-on the RESOURCE, not the route: a device an account owns demands a matching
-token; a device NOBODY owns has no account to protect and keeps its
-pre-accounts behaviour. The alternative — demanding a token everywhere at
-once — would have broken pairing for every existing install, since the sign-in
-UI does not exist until P1. Instead both clients send a device token whenever
-they can mint one, and the backend requires one whenever the resource is owned,
-so the two halves meet per-device with no flag day. When P1 makes enrolment
-mandatory, `lane: 'unowned'` becomes unreachable and is deleted.
+**The gate was conditional, and is not any more (2026-08-22).** It used to key
+on the RESOURCE: a device an account owned demanded a matching token, while a
+device nobody owned kept its pre-accounts behaviour. That was a migration ramp
+— demanding a token everywhere at once would have broken pairing for every
+existing install, since the sign-in UI did not exist yet — and it was written
+to close "when P1 makes enrolment mandatory".
+
+P1 decided the opposite: linking is offered, not demanded. So the ramp had
+quietly become permanent, and knowing a fingerprint stayed sufficient to act as
+any unlinked device.
+
+The product model is now **account → devices**: an account is established
+first, and every device hangs beneath one. A device on no account is therefore
+not a device with reduced privileges — it is a device that cannot act, because
+there is nobody on whose behalf it would act. `lane: 'unowned'` is deleted and
+`lane: 'owner'` is the only `allow`.
+
+What this deliberately does NOT gate is the ceremony that creates ownership:
+`/devices/challenge`, `/devices/token` and `/devices/enrollment-code` consult
+none of these decisions, so a brand-new computer can still mint the code a
+phone approves. Linking remains possible; only ACTING while unlinked does not.
+Both clients route a caller with no account to sign-in rather than sending a
+request that can only 404.
 
 **Two questions, deliberately not one.** _Acting as_ a device (ringing a
 laptop, redeeming a QR, unpairing, claiming a presence room) requires that

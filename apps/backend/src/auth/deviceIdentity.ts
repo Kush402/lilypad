@@ -1,6 +1,6 @@
 import { createPublicKey, randomBytes, verify } from 'node:crypto';
 import { redisKeys } from '@lilypad/shared';
-import { DEVICE_AUTH_PREFIX } from '@lilypad/protocol';
+import { deviceProofMessage } from '@lilypad/protocol';
 import { redis } from '../redis.js';
 
 /**
@@ -64,18 +64,29 @@ export async function consumeDeviceChallenge(
  * caller's only correct response to "this did not verify" is the same either
  * way, and distinguishing "bad key encoding" from "bad signature" tells an
  * attacker which half to fix.
+ *
+ * `proofOrigin`, when given, is the host the client named and therefore signed
+ * (v2 — see `deviceProofMessage`). **The caller must already have checked that
+ * the host is one of this server's own** (`isProofOriginAllowed`); this
+ * function only decides whether the bytes verify, and verifying a signature
+ * over `evil.example` would succeed perfectly well.
+ *
+ * Absent, the v1 message is checked instead, so a client that predates the
+ * change keeps working. Both are accepted until the fleet has moved — which
+ * `devices.app_version` now makes measurable.
  */
 export function verifyDeviceSignature(
   publicKeyBase64Url: string,
   challenge: string,
   signatureBase64Url: string,
+  proofOrigin?: string | null,
 ): boolean {
   try {
     const key = createPublicKey({
       key: { kty: 'OKP', crv: 'Ed25519', x: publicKeyBase64Url },
       format: 'jwk',
     });
-    const message = Buffer.from(`${DEVICE_AUTH_PREFIX}${challenge}`, 'utf8');
+    const message = Buffer.from(deviceProofMessage(challenge, proofOrigin), 'utf8');
     const signature = Buffer.from(signatureBase64Url, 'base64url');
     // Ed25519 signatures are exactly 64 bytes. base64url decoding is lenient
     // about trailing garbage, so an explicit length check stops a malformed

@@ -12,8 +12,10 @@ export type AppErrorCode =
   | 'token_expired'
   | 'network_unreachable'
   | 'request_timeout'
+  | 'rate_limited'
   | 'server_error'
   | 'signaling_lost'
+  | 'session_gone'
   | 'peer_denied'
   | 'ice_failed'
   // M5.4 no-QR reconnect (`POST /connect/request`) failures:
@@ -33,8 +35,10 @@ const COPY: Record<AppErrorCode, string> = {
   token_expired: 'This QR code has expired. Ask for a new one on the laptop and scan again.',
   network_unreachable: "Couldn't reach the laptop. Check your Wi-Fi or cellular connection.",
   request_timeout: 'That took too long. Check your connection and try again.',
+  rate_limited: 'Too many attempts just now. Wait a minute, then try again.',
   server_error: 'The pairing server had a problem. Try again in a moment.',
   signaling_lost: 'Lost the connection to the laptop.',
+  session_gone: 'That session ended. Reconnecting to the laptop…',
   peer_denied: 'The laptop denied this request.',
   ice_failed: 'Could not establish a connection to the laptop.',
   not_trusted: "This laptop hasn't trusted this phone yet. Scan its QR code once to pair.",
@@ -48,8 +52,10 @@ const RETRYABLE: Record<AppErrorCode, boolean> = {
   token_expired: false,
   network_unreachable: true,
   request_timeout: true,
+  rate_limited: true,
   server_error: true,
   signaling_lost: true,
+  session_gone: true,
   peer_denied: false,
   ice_failed: true,
   not_trusted: false,
@@ -76,11 +82,47 @@ export class RedeemError extends Error implements AppError {
   }
 }
 
-/** Classify an HTTP error response from `/pairing/redeem`. */
+/**
+ * Classify an HTTP error response from `/pairing/redeem`.
+ *
+ * The last line used to be `appError('unknown', \`HTTP ${status}: ${body}\`)`,
+ * which put a status line and a JSON body on the scanner screen. Two of the
+ * statuses that fell through to it happen in ordinary use: **429**, because
+ * the route is rate-limited and a person who scans twice can reach it, and
+ * **404**, which is what a code from another backend or a long-dead session
+ * looks like.
+ *
+ * `body` is no longer interpolated anywhere. It stays a parameter because the
+ * caller has it and a future classification may need to read it — but nothing
+ * a server sends is copy this app is willing to show.
+ */
 export function classifyHttpStatus(status: number, body: string): AppError {
-  if (status === 410) return appError('token_expired');
+  void body;
+  // Gone, not expired-and-gone: the same remedy either way, and "ask for a new
+  // one on the laptop" is the true instruction for both.
+  if (status === 410 || status === 404) return appError('token_expired');
+  if (status === 429) return appError('rate_limited');
   if (status >= 500) return appError('server_error');
-  return appError('unknown', `HTTP ${status}${body ? `: ${body}` : ''}`);
+  return appError('unknown');
+}
+
+/**
+ * Classify an `error` frame from the signaling hub.
+ *
+ * `unauthorized_room` is the one that matters, and it is not the security
+ * problem its name suggests. It is what a phone gets when it re-registers into
+ * a room whose authorization record is gone — the ordinary consequence of the
+ * laptop dropping (a lid closing is enough) and the phone reconnecting a couple
+ * of minutes later. Observed four times in 48 hours on production with a single
+ * user.
+ *
+ * Passing the hub's own words through put "this device is not authorized to
+ * join this room" on screen: alarming, and about the wrong thing. The session
+ * is simply over, and the fix is a new one.
+ */
+export function classifyHubError(code: string, message: string): AppError {
+  if (code === 'unauthorized_room') return appError('session_gone');
+  return appError('unknown', message);
 }
 
 /** Classify a fetch that never got an HTTP response at all — a network

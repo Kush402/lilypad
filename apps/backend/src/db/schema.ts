@@ -114,6 +114,15 @@ export const devices = pgTable(
      * treating an unknown device as a new one. */
     revokedAt: timestamp('revoked_at', { withTimezone: true }),
     lastSeenAt: timestamp('last_seen_at', { withTimezone: true }),
+    /** Which build this device was last running, as the client reported it.
+     *
+     * Written on every token exchange, so it stays current on its own. It
+     * exists to answer the first question any support conversation has —
+     * "which version are you on?" — which was previously unanswerable: no
+     * client sent a version, and every iOS build called itself `1.0`. NULL
+     * for a device that has not been seen since this column existed, which is
+     * a truthful "unknown" rather than a guess. */
+    appVersion: text('app_version'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [

@@ -2,7 +2,7 @@ import 'react-native-get-random-values';
 import * as ed from '@noble/ed25519';
 import { sha512 } from '@noble/hashes/sha2.js';
 import * as Keychain from 'react-native-keychain';
-import { DEVICE_AUTH_PREFIX } from '@lilypad/protocol';
+import { deviceProofMessage } from '@lilypad/protocol';
 
 /**
  * This phone's Ed25519 identity ([ADR-0002](../../../../docs/adr/0002-device-identity.md)).
@@ -158,11 +158,35 @@ export async function devicePublicKey(): Promise<string> {
  * The domain-separation prefix is not decoration: the same key binds the
  * desktop's LAN TLS certificate in ADR-0006, so without a prefix a signature
  * made for one purpose would authenticate the other.
+ *
+ * `origin` names the server the proof is for, and putting it inside the
+ * signature is what stops a hostile host relaying a challenge from the real
+ * backend and replaying what this phone signs (L-30). Omitted, this produces
+ * the v1 message — which is what a server that has not been updated still
+ * expects, so the two must not drift apart. `deviceProofMessage` is the single
+ * definition both sides build from, for exactly that reason.
  */
-export async function signChallenge(challenge: string): Promise<string> {
+export async function signChallenge(challenge: string, origin?: string | null): Promise<string> {
   const secret = await initDeviceKey();
-  const message = utf8(`${DEVICE_AUTH_PREFIX}${challenge}`);
+  const message = utf8(deviceProofMessage(challenge, origin));
   return toBase64Url(ed.sign(message, secret));
+}
+
+/**
+ * Throw this phone's key away so the next use mints a new one.
+ *
+ * The one legitimate reason to do this: `/devices/enroll` refuses a key that
+ * already names a device on somebody else's account, and that refusal is
+ * correct — a device row that changed hands would carry the previous owner's
+ * pairings with it. But the key lives in the Keychain, which survives deleting
+ * the app, so without this the phone could never be used with another account
+ * again. A new key is a new device: it inherits nothing, which is exactly why
+ * it is safe to offer.
+ */
+export async function clearDeviceKey(): Promise<void> {
+  cached = null;
+  initPromise = null;
+  await Keychain.resetGenericPassword({ service: SERVICE });
 }
 
 /** Test seam: drop the memoized key so a fresh keychain state can be loaded. */

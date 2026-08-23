@@ -223,6 +223,10 @@ export function AccountDevicesScreen({ route, navigation }: Props): React.JSX.El
               )}
               <Text style={styles.cardMeta}>
                 {item.fingerprint} · {lastSeenLabel(item)}
+                {/* The first question any support conversation asks, put where
+                    the person answering it can read it out. Omitted rather
+                    than guessed when the device has not reported one. */}
+                {item.appVersion ? ` · v${item.appVersion}` : ''}
               </Text>
             </View>
 

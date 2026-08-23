@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen, fireEvent, act } from '@testing-library/react-native';
+import { render, screen, fireEvent, act, waitFor } from '@testing-library/react-native';
 import { Alert } from 'react-native';
 import { SafeAreaProvider, type Metrics } from 'react-native-safe-area-context';
 import Clipboard from '@react-native-clipboard/clipboard';
@@ -60,7 +60,10 @@ jest.mock('@react-native-clipboard/clipboard', () => ({
 jest.mock('../lib/pairs', () => ({
   setPairSecret: jest.fn().mockResolvedValue(undefined),
   forgetPair: jest.fn().mockResolvedValue(undefined),
+  loadPairs: jest.fn().mockResolvedValue([]),
 }));
+
+jest.mock('../lib/api', () => ({ requestConnect: jest.fn() }));
 
 const { __instances } = jest.requireMock('../lib/webrtc') as { __instances: any[] };
 function lastConn() {
@@ -448,5 +451,73 @@ describe('ViewerScreen', () => {
 
       alertSpy.mockRestore();
     });
+  });
+});
+
+describe('reconnecting after the laptop drops', () => {
+  const { loadPairs } = jest.requireMock('../lib/pairs') as { loadPairs: jest.Mock };
+  const { requestConnect } = jest.requireMock('../lib/api') as { requestConnect: jest.Mock };
+
+  // The module mocks outlive each test; without this the first test's
+  // `requestConnect` call is still recorded when the second asserts it never
+  // happened — a green that would have meant nothing.
+  beforeEach(() => {
+    loadPairs.mockReset().mockResolvedValue([]);
+    requestConnect.mockReset();
+  });
+
+  /**
+   * The room does not outlive the laptop leaving it. Once the desktop is
+   * reaped its authorization record goes too, and every re-register earns
+   * `unauthorized_room` — seen on production as three attempts in four
+   * seconds, then nothing. Reconnect has to ring the laptop again, not retry
+   * a room that cannot come back.
+   */
+  it('rings the laptop again and moves to the new room', async () => {
+    loadPairs.mockResolvedValue([
+      {
+        desktopDeviceId: 'desktop-1',
+        name: 'MacBook',
+        apiBaseUrl: 'https://api.example',
+        connectSecret: 'secret',
+      },
+    ]);
+    requestConnect.mockResolvedValue({
+      roomId: 'room-2',
+      signalingUrl: 'wss://api.example/ws',
+      scopes: ['view', 'control'],
+      desktopDeviceName: 'MacBook',
+    });
+    const { navigation } = renderViewer(['view', 'control'], TEST_SAFE_AREA_METRICS, 'desktop-1');
+
+    act(() => lastConn().cb.onState('ended'));
+    fireEvent.press(await screen.findByText('Reconnect'));
+
+    await waitFor(() =>
+      expect(requestConnect).toHaveBeenCalledWith('https://api.example', 'desktop-1', 'secret'),
+    );
+    // `replace`: leaving the dead room in the stack means Back returns to a
+    // session that can only fail.
+    await waitFor(() =>
+      expect(navigation.replace).toHaveBeenCalledWith(
+        'Viewer',
+        expect.objectContaining({ roomId: 'room-2', desktopDeviceId: 'desktop-1' }),
+      ),
+    );
+  });
+
+  it('falls back to retrying in place when there is no secret to ring with', async () => {
+    // A QR session for a laptop this phone never saved. There is nothing to
+    // ring with, so the in-place retry — and the instruction to scan again —
+    // is all that is left.
+    loadPairs.mockResolvedValue([]);
+    const { navigation } = renderViewer(['view'], TEST_SAFE_AREA_METRICS, 'desktop-unknown');
+
+    act(() => lastConn().cb.onState('ended'));
+    fireEvent.press(await screen.findByText('Reconnect'));
+
+    await waitFor(() => expect(loadPairs).toHaveBeenCalled());
+    expect(requestConnect).not.toHaveBeenCalled();
+    expect(navigation.replace).not.toHaveBeenCalled();
   });
 });

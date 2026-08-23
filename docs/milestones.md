@@ -305,12 +305,14 @@ SEC-7.
 - ✅ Table-driven cross-user isolation suite + route-wiring suite (SEC-7)
 - ✅ Purge legacy `connect_secret_hash = NULL` pairs (SEC-5, migration `0005`)
 
-**The unowned lane is deliberate, and it is what P1 closes.** A device row with
-no `user_id` has no owner to protect, so it keeps its pre-accounts behaviour;
-every route demands a matching token the moment a device is linked. Both halves
-meet without a flag day — clients send a token whenever they can mint one, the
-backend requires one whenever the resource is owned. When P1 makes enrolment
-mandatory in both clients, the unowned branch becomes unreachable and is deleted.
+**The unowned lane was a migration ramp, and it is now closed (2026-08-22).** A
+device row with no `user_id` used to keep its pre-accounts behaviour, on the
+plan that P1 would make enrolment mandatory. P1 chose the opposite — linking is
+offered, not demanded — so the ramp had become permanent. With the product
+model settled as **account → devices**, a device on no account may do nothing:
+`lane: 'unowned'` is deleted and `lane: 'owner'` is the only `allow`. The
+linking ceremony itself is ungated, so a new computer can still mint the code a
+phone approves. See [ADR-0010](adr/0010-explicit-device-linking.md).
 
 ## M9.5 — LAN-direct connectivity (no internet required) 🔜
 
@@ -689,11 +691,10 @@ built app rather than the tests:
    devices" list and can be revoked from nowhere, which
    [ADR-0010](adr/0010-explicit-device-linking.md) rejected and which
    `docs/api.md` said would end "when P1 makes enrolment mandatory". This is the
-   client half of that; the backend's unowned lane is still open and still needs
-   its own pass.
+   client half of that; the backend half followed on 2026-08-22, when the
+   unowned lane was closed.
 
-**Open:** the backend still accepts pairing from an unowned device (above).
-Password reset is implemented and tested but not deliverable until M13
+**Open:** password reset is implemented and tested but not deliverable until M13
 provides a mail sender — it answers 503 in production, exactly as magic link
 does. `DEFAULT_API_BASE_URL` points at the existing tunnel and moves with M13.
 Setting a password on an account created by OAuth is not offered anywhere; it is

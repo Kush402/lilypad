@@ -26,11 +26,23 @@ export interface AccountSignInProps {
   /** Told whenever the signed-in state changes, so the dashboard can order the
    * steps that follow this one. */
   onChange?: (account: AccountStateDto) => void;
+  /**
+   * Which form to open on. Defaults to `signin`, which is right on the
+   * dashboard — a returning user.
+   *
+   * The first-run wizard passes `signup`, because there the default was
+   * actively wrong: a brand-new customer's first act was typing credentials
+   * they did not have yet into a Sign in form and being rejected. Observed in
+   * production on 2026-08-21 — `login_failed … password_no_account` at
+   * 20:54:41, forty-six seconds before the signup that should have been first.
+   * Both buttons stay on screen either way, so neither audience is trapped.
+   */
+  initialMode?: Mode;
 }
 
-export function AccountSignIn({ onChange }: AccountSignInProps = {}) {
+export function AccountSignIn({ onChange, initialMode = 'signin' }: AccountSignInProps = {}) {
   const [account, setAccount] = useState<AccountStateDto | null>(null);
-  const [mode, setMode] = useState<Mode>('signin');
+  const [mode, setMode] = useState<Mode>(initialMode);
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');

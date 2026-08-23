@@ -87,6 +87,8 @@ pub struct AppState {
     /// await. Starts `Unknown`, which is honest: nothing has asked yet, and
     /// `Unknown` is deliberately NOT treated as "not linked" anywhere.
     pub link_state: crate::auth::LinkState,
+    /// Whether a phone can ring this Mac right now — see `PresenceState`.
+    pub presence: PresenceState,
     /// Which way the last (or current) session's media actually travelled:
     /// `lan`, `direct`, or `relay`. `None` until a session has connected.
     ///
@@ -109,9 +111,41 @@ impl AppState {
             auto_approve_room: None,
             session_task: None,
             link_state: crate::auth::LinkState::Unknown("not checked yet".to_owned()),
+            presence: PresenceState::Starting,
             connection_path: None,
         }
     }
+}
+
+/// Whether a phone can actually ring this Mac right now.
+///
+/// Being linked and being reachable are different facts, and the product
+/// showed only the first. Measured on production 2026-08-22: this machine's
+/// presence register was refused 56 times between 03:22 and 09:29 UTC while
+/// the device row was owned and unrevoked — six hours during which the phone
+/// would have been told "the laptop is offline" and the Mac's own dashboard
+/// said "Linked — this computer belongs to your account". Both statements
+/// were true; neither was the one the user needed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case", tag = "state", content = "detail")]
+pub enum PresenceState {
+    /// Nothing has been attempted yet this run.
+    Starting,
+    /// Trying to reach the signaling hub.
+    Connecting,
+    /// The hub seated us. This is the only state in which a phone's Connect
+    /// can reach this machine without a QR.
+    Online,
+    /// The hub could not be reached at all — network, DNS, backend down.
+    Unreachable,
+    /// The hub refused the register. Almost always this computer no longer
+    /// being authorized for its own presence room: unlinked, revoked, or
+    /// holding no device token.
+    Refused,
+    /// There is no device token to present, so a register would be refused
+    /// before it was tried. Kept apart from `Refused` because the remedy is
+    /// different and local.
+    NoIdentity,
 }
 
 pub type SharedState = Mutex<AppState>;
@@ -130,4 +164,6 @@ pub struct AppStateDto {
     pub plugin_health: std::collections::BTreeMap<String, String>,
     /// `lan`, `direct` or `relay` — how the last session's media travelled.
     pub connection_path: Option<String>,
+    /// Whether a phone can ring this Mac right now — see `PresenceState`.
+    pub presence: PresenceState,
 }

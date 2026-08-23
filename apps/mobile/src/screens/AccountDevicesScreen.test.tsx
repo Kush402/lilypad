@@ -61,6 +61,7 @@ function device(over: Partial<AccountDevice> = {}): AccountDevice {
     fingerprint: '…123456',
     state: 'linked',
     lastSeenAt: new Date().toISOString(),
+    appVersion: null,
     createdAt: new Date().toISOString(),
     activeSession: false,
     isCurrentDevice: false,
@@ -312,5 +313,22 @@ describe('AccountDevicesScreen', () => {
       expect(screen.getByTestId('delete-confirm-email').props.value).toBe('');
       expect(deleteAccount).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe('the version a support conversation asks for', () => {
+  it('shows the build a device reported', async () => {
+    (listAccountDevices as jest.Mock).mockResolvedValue([device({ appVersion: '0.1.5' })]);
+    renderScreen();
+    expect(await screen.findByText(/v0\.1\.5/)).toBeTruthy();
+  });
+
+  it('says nothing rather than guessing when a device has not reported one', async () => {
+    // Every build installed before this column existed reports nothing. A
+    // default here would invent the one fact the line exists to carry.
+    (listAccountDevices as jest.Mock).mockResolvedValue([device({ appVersion: null })]);
+    renderScreen();
+    await screen.findByText(/…123456/);
+    expect(screen.queryByText(/ · v/)).toBeNull();
   });
 });

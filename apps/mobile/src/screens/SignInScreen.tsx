@@ -1,6 +1,7 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Platform,
   Pressable,
   ScrollView,
@@ -21,6 +22,7 @@ import {
   confirmPasswordReset,
   SignInError,
 } from '../lib/signIn';
+import { DeviceTakenError, resetDeviceIdentity } from '../lib/auth';
 import { isGoogleConfigured } from '../config/oauth';
 import { defaultApiBaseUrl } from '../config/backend';
 import { theme, radius } from '../theme';
@@ -60,6 +62,13 @@ export interface SignInScreenProps {
   onSignedIn: (session: DeviceSession) => void;
 }
 
+/** Just the host, which is the part a person can judge. A full URL invites
+ * skimming past everything after the scheme. */
+function hostOf(url: string): string {
+  const match = /^[a-z]+:\/\/([^/?#]+)/i.exec(url);
+  return match?.[1] ?? url;
+}
+
 type Busy = 'google' | 'apple' | 'password' | 'email' | null;
 /** Which of the email-based flows the form is currently showing. */
 type Mode = 'signin' | 'signup' | 'reset' | 'magic-link';
@@ -69,6 +78,19 @@ export function SignInScreen({ apiBaseUrl, onSignedIn }: SignInScreenProps): Rea
   const [mode, setMode] = useState<Mode>('signin');
   const [busy, setBusy] = useState<Busy>(null);
   const [error, setError] = useState<string | null>(null);
+  /**
+   * True once the backend has refused this phone's key because it names a
+   * device on somebody else's account. A dead end without a way out: the key
+   * lives in the Keychain, which survives deleting the app, so no amount of
+   * retrying, reinstalling, or trying a different account will ever get past
+   * it. The one remedy is a new identity, and it is offered here rather than
+   * applied automatically because it abandons the device row on the old
+   * account.
+   */
+  const [deviceTaken, setDeviceTaken] = useState(false);
+  /** The attempt that failed, so "start over" can finish what the user asked
+   * for instead of returning them to a form they already filled in. */
+  const lastAttempt = useRef<{ which: Busy; action: () => Promise<DeviceSession> } | null>(null);
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -80,12 +102,15 @@ export function SignInScreen({ apiBaseUrl, onSignedIn }: SignInScreenProps): Rea
     async (which: Busy, action: () => Promise<DeviceSession>) => {
       setBusy(which);
       setError(null);
+      setDeviceTaken(false);
+      lastAttempt.current = { which, action };
       try {
         onSignedIn(await action());
       } catch (err) {
         // A cancelled sign-in is a choice, not a failure — showing an error for
         // it makes the app feel broken when nothing went wrong.
         if (err instanceof SignInError && err.code === 'cancelled') return;
+        if (err instanceof DeviceTakenError) setDeviceTaken(true);
         setError(err instanceof Error ? err.message : 'Sign-in failed. Please try again.');
       } finally {
         setBusy(null);
@@ -93,6 +118,34 @@ export function SignInScreen({ apiBaseUrl, onSignedIn }: SignInScreenProps): Rea
     },
     [onSignedIn],
   );
+
+  /** The escape from `deviceTaken`. Confirmed first, and in the user's terms:
+   * what they gain, what they lose, and what is left behind on the old
+   * account. */
+  const startOver = useCallback(() => {
+    Alert.alert(
+      'Set this phone up as new?',
+      'This phone joins the account you are signing in to, as a new device. ' +
+        'It stays listed on the other account until you remove it there, and any ' +
+        'laptops paired on this phone will need to be scanned again.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Set up as new',
+          style: 'destructive',
+          onPress: () => {
+            void (async () => {
+              const again = lastAttempt.current;
+              await resetDeviceIdentity();
+              setDeviceTaken(false);
+              setError(null);
+              if (again) await run(again.which, again.action);
+            })();
+          },
+        },
+      ],
+    );
+  }, [run]);
 
   /** Both "email me a code" flows: same shape, same deliberate silence about
    * whether the address exists. */
@@ -138,6 +191,21 @@ export function SignInScreen({ apiBaseUrl, onSignedIn }: SignInScreenProps): Rea
         Signing in tells us who you are. You add each computer separately, by scanning the code it
         shows.
       </Text>
+
+      {/* Which server this is about to create an account on.
+       *
+       * Shown only when it is NOT Lilypad's own, because the address comes
+       * from a scanned QR whenever this screen is pushed by the scanner —
+       * and a code can name any host at all. Someone whose password is about
+       * to be typed into `not-lilypad.example` should be told so before they
+       * type it, not after. Silent when it is the normal case, so the warning
+       * keeps its meaning. */}
+      {baseUrl !== defaultApiBaseUrl() && (
+        <Text testID="foreign-backend-notice" style={styles.foreignBackend}>
+          This is a different Lilypad server: {hostOf(baseUrl)}. An account here is separate from
+          any other, and this phone can be signed in to one server at a time.
+        </Text>
+      )}
 
       {Platform.OS === 'ios' && (
         <Pressable
@@ -337,6 +405,17 @@ export function SignInScreen({ apiBaseUrl, onSignedIn }: SignInScreenProps): Rea
         <Text testID="sign-in-error" style={styles.error}>
           {error}
         </Text>
+      )}
+
+      {deviceTaken && (
+        <Pressable
+          testID="start-over-as-new-device"
+          style={styles.startOver}
+          disabled={disabled}
+          onPress={startOver}
+        >
+          <Text style={styles.link}>Set this phone up as new</Text>
+        </Pressable>
       )}
     </ScrollView>
   );
@@ -549,5 +628,13 @@ const styles = StyleSheet.create({
   // glyphs is the most commonly missed one.
   linkHit: { minHeight: 44, justifyContent: 'center' },
   link: { color: theme.accent, fontSize: 15, textAlign: 'center' },
+  startOver: { marginTop: 12, minHeight: 44, justifyContent: 'center' },
   error: { color: theme.danger, textAlign: 'center', marginTop: 8 },
+  foreignBackend: {
+    color: theme.danger,
+    fontSize: 13,
+    textAlign: 'center',
+    marginBottom: 12,
+    lineHeight: 18,
+  },
 });
