@@ -643,20 +643,35 @@ Stated explicitly so nothing here reads as more finished than it is.
   boundary. Its three foreign keys are deliberately left unindexed while it
   stays empty.
 - ~~No backup cron is installed.~~ It runs nightly, and the watchdog alerts if
-  the newest dump is over 36 hours old or the directory is empty. Restore was
-  exercised 2026-08-20.
+  the newest dump is over 36 hours old or the directory is empty. Restore is
+  exercised, not assumed — most recently 2026-08-23, after the migrations that
+  landed since the previous test:
+
+  ```
+  gunzip -c lilypad-20260823T054333Z.sql.gz | psql -d restore_check
+  7 tables · 0 errors
+  users 1/1 · devices 2/2 · trusted_devices 1/1 · audit_logs 159/159
+  refresh_tokens 2/2 · oauth_identities 0/0 · sessions 0/0
+  22 indexes / 22
+  ```
+
+  Restored into a scratch database on the same instance and dropped afterwards,
+  so the test never touches the live one. A backup nobody has restored is not a
+  backup, and the schema moves.
+
 - ~~Backups have no off-host copy.~~ Each verified dump is now copied to the
   relay VM (see below). Still true, and the residual risk: **both machines are
   Always Free instances in the same Oracle tenancy and region.** A disk failure,
   a bad migration, or losing one VM is covered; losing the tenancy is not.
 - No staging environment exists yet — the workflow supports it, nothing runs it.
-- **The website is not deployed by CI.** `site.yml` builds and tests but cannot
-  publish: `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` are not set. It
-  used to report SUCCESS anyway, which is how the live page kept saying "Not
-  yet released publicly" through three green runs while the fix sat on `main`.
-  It now fails on a push to `main`, so the signal means what it says. **Whoever
-  updates the site is doing it by hand, and the live page can lag `main`
-  silently until those two secrets exist.**
+- ~~**The website is not deployed by CI.**~~ It is, since 2026-08-23.
+  `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` were added 2026-08-21 and
+  the workflow could not run until the repository went public two days later;
+  its first green run deployed the privacy and terms pages that had been sitting
+  on `main`. The workflow re-fetches the live page and the live installer
+  anonymously and compares bytes, so "deployed" means served, not accepted. It
+  used to report SUCCESS while skipping the deploy entirely, which is how the
+  live page kept saying "Not yet released publicly" through three green runs.
 - ~~No crash reporting or metrics scraping.~~ Metrics are scraped by the
   watchdog every ten minutes. Crash reporting (Sentry or equivalent) is still
   absent: an unhandled exception is visible only as a 5xx rate and a line in
