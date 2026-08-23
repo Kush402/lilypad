@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { createPrivateKey, generateKeyPairSync, sign as edSign } from 'node:crypto';
+import { generateKeyPairSync, sign as edSign, type createPrivateKey } from 'node:crypto';
 import { deviceProofMessage, DEVICE_AUTH_PREFIX, DEVICE_AUTH_PREFIX_V2 } from '@lilypad/protocol';
 import { verifyDeviceSignature } from './deviceIdentity.js';
 

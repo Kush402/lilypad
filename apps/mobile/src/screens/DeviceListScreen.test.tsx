@@ -53,7 +53,6 @@ function renderScreen() {
     <NavigationContainer>
       <Stack.Navigator>
         <Stack.Screen name="Devices" component={DeviceListScreen} />
-        {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
         <Stack.Screen name="AccountDevices" component={AccountDevicesStub as any} />
       </Stack.Navigator>
     </NavigationContainer>,
