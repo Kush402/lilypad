@@ -109,6 +109,23 @@ export function AgentPanel({ feed, onSend, onStop, onDecide }: AgentPanelProps):
         <View style={styles.holdCard} testID="agent-hold">
           <Text style={styles.holdTitle}>Allow this action?</Text>
           <Text style={styles.holdSummary}>{held.summary}</Text>
+          {/* Why this is being asked at all.
+           *
+           * Only `Consequential` actions are ever held — `security.rs` runs
+           * everything the model proposes through a deterministic gate, lets
+           * `Safe` and `Sensitive` through, hard-refuses `Forbidden` without
+           * offering it, and defaults anything it cannot positively recognise
+           * to `Consequential`. So every card a person sees here is one the Mac
+           * declined to do on its own.
+           *
+           * Saying so is the difference between a decision and a habit. The
+           * card used to be a summary and two buttons, which trains a customer
+           * to tap Approve — and the summary is written by a model, so it is
+           * the least trustworthy thing on screen. */}
+          <Text style={styles.holdWhy}>
+            Your Mac won’t do this on its own. Lilypad asks before anything it can’t confirm is
+            routine.
+          </Text>
           <View style={styles.holdBtns}>
             <Pressable
               testID="agent-deny"
@@ -139,7 +156,6 @@ export function AgentPanel({ feed, onSend, onStop, onDecide }: AgentPanelProps):
               <Text style={[styles.glyph, { color: stateColor(s) }]}>{stateGlyph(s)}</Text>
               <Text style={styles.stepText} numberOfLines={2}>
                 {s.summary}
-                {s.tier ? <Text style={styles.tier}> · {s.tier}</Text> : null}
               </Text>
             </View>
           ))
@@ -206,6 +222,7 @@ const styles = StyleSheet.create({
   },
   holdTitle: { color: theme.pending, fontWeight: '700', fontSize: 14 },
   holdSummary: { color: theme.ink, fontSize: 14 },
+  holdWhy: { color: theme.muted, fontSize: 13, marginTop: 6 },
   holdBtns: { flexDirection: 'row', gap: 8 },
   feed: { maxHeight: 130 },
   feedContent: { gap: 6, paddingVertical: 2 },
@@ -213,7 +230,6 @@ const styles = StyleSheet.create({
   stepRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 8 },
   glyph: { fontSize: 14, width: 16, textAlign: 'center' },
   stepText: { color: theme.ink, fontSize: 13, flex: 1 },
-  tier: { color: theme.muted, fontSize: 12 },
   outcome: { color: theme.accent, fontWeight: '700', fontSize: 13, marginTop: 4 },
   outcomeBad: { color: theme.danger },
 });
