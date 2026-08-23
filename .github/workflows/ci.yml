@@ -197,6 +197,38 @@ jobs:
         with:
           category: '/language:javascript-typescript'
 
+  # The native half of the product had no dependency-advisory gate while the
+  # JavaScript half has had one since CI existed (`pnpm audit` in `security`
+  # above). That asymmetry ran the wrong way round: the Rust binary is the part
+  # that captures the screen and injects input, and it carries 643 crates.
+  #
+  # Runs on Linux and never compiles anything — `cargo audit` reads Cargo.lock,
+  # so the audit is platform-independent even though the crate only builds on
+  # macOS.
+  #
+  # BLOCKING on vulnerabilities. Unmaintained/unsound warnings do not fail the
+  # build: 18 of them are GTK3 bindings Tauri lists for Linux and this target
+  # never compiles, and a gate that is red for something nobody can act on is
+  # the watchdog mistake (L-64) in another costume.
+  rust-audit:
+    name: Rust — dependency advisories
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          working-directory: apps/desktop/src-tauri
+          # RUSTSEC-2025-0008 — heap overflow in openh264's DECODING functions.
+          # Tracked as L-47. This codebase only ever encodes: `openh264` is
+          # reached through the encoder path alone, and no decode entry point is
+          # called anywhere in `src/`. The fix is a bump to >=0.8, which changes
+          # the encoder and therefore needs real-device video validation before
+          # it can ship. Re-check when that validation happens; do not extend
+          # this list without writing down the same kind of reasoning.
+          ignore: RUSTSEC-2025-0008
+
   rust:
     # ScreenCaptureKit + VideoToolbox are macOS-only (see apps/desktop/src-tauri/Cargo.toml
     # target.'cfg(target_os = "macos")' deps) — the desktop crate will not compile on Linux.
