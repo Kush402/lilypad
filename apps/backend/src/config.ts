@@ -35,11 +35,55 @@ if (!process.env.PUBLIC_BASE_URL || !process.env.SIGNALING_URL) {
   }
 }
 
+// A v2 device proof names the server it is for, and the server refuses any host
+// it does not answer to (`auth/proofOrigin.ts`, ADR-0002). The allow-set comes
+// from what this server ADVERTISES — and outside production that is the LAN
+// address derived above, while the thing actually connecting is usually
+// `localhost`: the desktop's development default is `http://localhost:8080`,
+// and the end-to-end suite drives `http://127.0.0.1:8099`.
+//
+// The result was every device proof refused, with `device proof named a host
+// this server does not answer to` as the only clue — proved on 2026-08-23, when
+// CI could run the eleven device-identity tests for the first time and six of
+// them failed here.
+//
+// So loopback is added to the SAME escape hatch an operator would use, rather
+// than through a second mechanism. Production is untouched: it pins
+// `PUBLIC_BASE_URL` explicitly, `loadEnv` already refuses a non-HTTPS one
+// there, and this block is skipped entirely.
+if (process.env.NODE_ENV !== 'production') {
+  const port = process.env.BACKEND_PORT ?? '8080';
+  process.env.DEVICE_PROOF_HOSTS = [
+    process.env.DEVICE_PROOF_HOSTS,
+    `localhost:${port}`,
+    `127.0.0.1:${port}`,
+  ]
+    .filter(Boolean)
+    .join(',');
+}
+
 export const env: Env = loadEnv();
 
 export const config = {
   env,
   isDev: env.NODE_ENV === 'development',
+  /**
+   * Not the negation of `isDev`. `NODE_ENV` has three values, and `test` is
+   * neither — so the two flags disagree about it deliberately.
+   *
+   * `isDev` gates things that must stay OFF anywhere but a developer's own
+   * machine: pretty logs, and `cors({ origin: true })`. `test` gets the strict
+   * behaviour there.
+   *
+   * `isProduction` gates the opposite kind of decision — refusing to serve
+   * because a real deployment is missing real configuration. Under
+   * `NODE_ENV=test` there is no Resend key and there never will be, so the
+   * old `isDev ? consoleMailSender : null` answered 503 to every sign-in and
+   * the eleven device-identity end-to-end tests failed the moment CI could
+   * actually run them (2026-08-23, first green Actions run after the repository
+   * went public).
+   */
+  isProduction: env.NODE_ENV === 'production',
   pairingTokenTtlSeconds: env.PAIRING_TOKEN_TTL_SECONDS,
 } as const;
 

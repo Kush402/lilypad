@@ -85,3 +85,28 @@ describe('isProofOriginAllowed', () => {
     expect(isProofOriginAllowed('api.takedia.com', new Set())).toBe(false);
   });
 });
+
+/**
+ * The shape `config.ts` writes into `DEVICE_PROOF_HOSTS` outside production.
+ *
+ * `localhost:8080` and `127.0.0.1:8099` are host:port pairs, not URLs, and the
+ * two go through `new URL()` differently: the first PARSES, as protocol
+ * `localhost:` with an empty host, and the second throws. Both must end up in
+ * the set as written. This is not hypothetical tidiness — it is the only reason
+ * a developer running the desktop app against a local backend, and the eleven
+ * device-identity end-to-end tests in CI, can authenticate at all.
+ */
+describe('a bare host:port, which is what loopback configuration looks like', () => {
+  it('keeps the port, whether URL parsing throws or silently yields nothing', () => {
+    const allowed = allowedProofHosts({
+      publicBaseUrl: 'http://10.0.1.4:8099',
+      extraHosts: 'localhost:8099,127.0.0.1:8099',
+    });
+    expect([...allowed].sort()).toEqual(['10.0.1.4:8099', '127.0.0.1:8099', 'localhost:8099']);
+    expect(isProofOriginAllowed('127.0.0.1:8099', allowed)).toBe(true);
+    expect(isProofOriginAllowed('localhost:8099', allowed)).toBe(true);
+    // Still a set of exact hosts: a different port is a different server.
+    expect(isProofOriginAllowed('localhost:8080', allowed)).toBe(false);
+    expect(isProofOriginAllowed('127.0.0.1', allowed)).toBe(false);
+  });
+});

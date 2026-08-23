@@ -5,8 +5,11 @@ import {
   redeemMagicLink,
   createPasswordReset,
   redeemPasswordReset,
+  chooseMailSender,
+  consoleMailSender,
   MAGIC_LINK_TTL_SECONDS,
   type MagicLinkRedis,
+  type MailSender,
 } from './magicLink.js';
 
 /** Fake Redis modelling the one behaviour that matters: `getdel` is atomic, so
@@ -114,5 +117,41 @@ describe('password reset tokens', () => {
     // …and neither was consumed by the other's failed attempt.
     expect(await redeemPasswordReset(reset.token, redis)).toBe('ada@example.com');
     expect(await redeemMagicLink(signIn.token, redis)).toBe('ada@example.com');
+  });
+});
+
+/**
+ * Which sender a deployment gets.
+ *
+ * `NODE_ENV` has three values and this rule only has two branches, so the
+ * middle one has to be stated rather than assumed. It was assumed: the code
+ * read `config.isDev`, which is `NODE_ENV === 'development'`, so a backend
+ * booted under `NODE_ENV=test` — what CI sets — had no sender at all and
+ * answered 503 to every sign-in. The eleven device-identity end-to-end tests
+ * all failed on their first line for that reason on 2026-08-23, the first run
+ * after GitHub Actions could execute again.
+ */
+describe('choosing a mail sender', () => {
+  const resend: MailSender = {
+    sendMagicLink: () => Promise.resolve(),
+    sendPasswordReset: () => Promise.resolve(),
+  };
+
+  it('prefers a configured provider everywhere, production included', () => {
+    expect(chooseMailSender(resend, true)).toBe(resend);
+    expect(chooseMailSender(resend, false)).toBe(resend);
+  });
+
+  it('logs the code rather than refusing, anywhere that is not production', () => {
+    // The failing case: `test` is not `development`, and a suite that cannot
+    // sign in cannot check anything that comes after signing in.
+    expect(chooseMailSender(null, false)).toBe(consoleMailSender);
+  });
+
+  it('refuses in production rather than writing a sign-in code to the log', () => {
+    // The security half. A real deployment missing its key answers 503; it
+    // does NOT fall back to a sender whose whole implementation is
+    // `log.server.info({ to, token })`.
+    expect(chooseMailSender(null, true)).toBeNull();
   });
 });

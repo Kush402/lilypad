@@ -61,13 +61,31 @@ export const consoleMailSender: MailSender = {
  *
  * Resend wins wherever it is configured, including development — a developer
  * testing real delivery should not have to edit code to get it. Without it,
- * development still logs the code to the server, and production answers 503
- * rather than accepting a sign-in whose email will never arrive.
+ * anything that is not production logs the code to the server, and production
+ * answers 503 rather than accepting a sign-in whose email will never arrive.
+ *
+ * `isProduction`, not `isDev`: `NODE_ENV=test` is neither, and it is what CI
+ * sets. Under `isDev` the end-to-end suite booted a backend that answered 503
+ * to `/auth/magic-link/request`, so all eleven of its tests failed on the sign
+ * -in step before reaching anything they exist to check.
  */
 export function createMailSender(): MailSender | null {
-  const resend = createResendMailSender(env.RESEND_API_KEY, env.MAIL_FROM);
+  return chooseMailSender(
+    createResendMailSender(env.RESEND_API_KEY, env.MAIL_FROM),
+    config.isProduction,
+  );
+}
+
+/** The decision, separated from the module-level configuration that feeds it.
+ * `createMailSender` reads `env` and `config` once at import, which makes the
+ * rule above unreachable from a test without resetting the module graph — and
+ * an unreachable rule is how it came to be wrong. */
+export function chooseMailSender(
+  resend: MailSender | null,
+  isProduction: boolean,
+): MailSender | null {
   if (resend) return resend;
-  return config.isDev ? consoleMailSender : null;
+  return isProduction ? null : consoleMailSender;
 }
 
 /** Mint a single-use sign-in token for an address. */

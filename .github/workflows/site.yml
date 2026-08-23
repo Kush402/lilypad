@@ -205,14 +205,26 @@ jobs:
       #
       # Byte-for-byte, because a semantic check ("does it still say
       # unreleased?") passes just as happily on last month's deployment.
+      #
+      # With exactly one normalisation, and it is named rather than fuzzy:
+      # Cloudflare's Email Obfuscation reader CONSUMES the `<!--email_off-->`
+      # directive and leaves `<!--email_on-->` behind, so those two comments are
+      # stripped from both sides. Everything else still has to match exactly.
+      #
+      # The directive is not decoration — without it, Cloudflare rewrites
+      # `mailto:support@takedia.com` into a JavaScript-only
+      # `/cdn-cgi/l/email-protection` link with a key that is re-randomised per
+      # request. That made the privacy page's contact address unreadable without
+      # JS, and made this comparison fail six different ways in six attempts.
       - name: Verify the live site is serving this build
         if: steps.creds.outputs.present == 'true'
         run: |
           set -euo pipefail
-          expected=$(shasum -a 256 apps/site/dist/index.html | cut -d' ' -f1)
+          strip() { sed -e 's/<!--email_off-->//g' -e 's/<!--email_on-->//g'; }
+          expected=$(strip < apps/site/dist/index.html | shasum -a 256 | cut -d' ' -f1)
           for attempt in 1 2 3 4 5 6; do
             live=$(curl -fsSL --max-time 20 https://lilypadhome.takedia.com/ \
-              | shasum -a 256 | cut -d' ' -f1) || live="unreachable"
+              | strip | shasum -a 256 | cut -d' ' -f1) || live="unreachable"
             if [ "$live" = "$expected" ]; then
               echo "lilypadhome.takedia.com is serving this build ($expected)"
               exit 0
