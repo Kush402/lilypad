@@ -16,8 +16,14 @@ This file exists because the list used to live only in a conversation. Six rows
 (L-20, L-38 through L-42) were reconstructed from later summaries after the
 earlier record was compacted away, which is the argument for the file.
 
-**Status counts:** 64 fixed · 3 not a bug · 3 deliberately unchanged ·
-7 blocked on something outside the code.
+**Status counts:** 64 fixed · 6 blocked on something outside the code ·
+3 deliberately unchanged · 2 not a bug · 1 open (L-47) · 1 unrecoverable
+(L-20). 77 rows.
+
+Counted from the rows rather than kept by hand — the previous header said
+"3 not a bug · 7 blocked", which folded L-47 (open, not blocked) and L-20
+(unrecoverable) into categories they do not belong to. A tally that drifts from
+what it is tallying is the failure this file was created to stop.
 
 | ID   | Finding                                                                                                                                                                                                                                                                                                                                                                                                            | Status                                                                                                                             |
 | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------- |
