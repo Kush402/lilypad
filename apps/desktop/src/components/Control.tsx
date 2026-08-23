@@ -18,6 +18,29 @@ const SCOPE_LABEL: Record<string, string> = {
   control: 'Control',
 };
 
+/**
+ * What this device is actually asking for, as a sentence.
+ *
+ * The prompt used to read "wants to view and control this Mac" for every
+ * request, whatever `requested_scopes` said, with the true scopes shown only as
+ * chips underneath. On the highest-privilege action in the product, the
+ * sentence a person reads before pressing Approve described a grant the request
+ * had not asked for.
+ *
+ * An unrecognised scope falls back to the vaguer sentence rather than being
+ * dropped: claiming less than is being asked for is the one failure this must
+ * not have.
+ */
+function scopeSentence(scopes: readonly string[]): string {
+  const view = scopes.includes('view');
+  const control = scopes.includes('control');
+  const known = scopes.every((scope) => scope === 'view' || scope === 'control');
+  if (!known || scopes.length === 0) return 'wants to connect to this Mac';
+  if (view && control) return 'wants to view and control this Mac';
+  if (control) return 'wants to control this Mac';
+  return 'wants to view this Mac’s screen';
+}
+
 function timeSince(epochMs: number, nowMs: number): string {
   const seconds = Math.max(0, Math.round((nowMs - epochMs) / 1000));
   if (seconds < 5) return 'just now';
@@ -120,8 +143,8 @@ export function Control() {
       {session === 'awaiting_approval' ? (
         <section className="control__approve card">
           <p className="control__approve-title">
-            <strong>{pending?.device_name ?? 'An unknown device'}</strong> wants to view and control
-            this Mac
+            <strong>{pending?.device_name ?? 'An unknown device'}</strong>{' '}
+            {scopeSentence(pending?.requested_scopes ?? [])}
           </p>
           {pending && pending.requested_scopes.length > 0 ? (
             <div className="row scope-row">

@@ -98,6 +98,40 @@ describe('Control', () => {
     expect(screen.getByText('Control')).toBeInTheDocument();
   });
 
+  /**
+   * The sentence, not just the chips.
+   *
+   * It read "wants to view and control this Mac" for every request regardless
+   * of `requested_scopes`, with the truth relegated to two chips underneath. On
+   * the one screen where a person grants a stranger's phone access to their
+   * computer, the sentence they read described a grant that had not been asked
+   * for.
+   */
+  it.each([
+    [['view'], /wants to view this Mac’s screen/, /view and control/],
+    [['view', 'control'], /wants to view and control this Mac/, /screen/],
+    [['control'], /wants to control this Mac/, /view and control/],
+    // An unrecognised scope must not be silently dropped from the sentence, so
+    // it falls back to the vaguer one rather than under-describing the ask.
+    [['view', 'clipboard'], /wants to connect to this Mac/, /view and control/],
+    [[], /wants to connect to this Mac/, /view and control/],
+  ] as const)('describes %j as itself', (scopes, expected, notExpected) => {
+    vi.mocked(useAppState).mockReturnValue(
+      dto({
+        session: 'awaiting_approval',
+        pending_request: {
+          device_name: 'Ben’s iPhone',
+          requested_scopes: [...scopes],
+          requested_at: Date.now(),
+        },
+      }),
+    );
+    render(<Control />);
+    const prompt = screen.getByText(/wants to/).textContent ?? '';
+    expect(prompt).toMatch(expected);
+    expect(prompt).not.toMatch(notExpected);
+  });
+
   it('falls back to "An unknown device" when device_name is null', () => {
     vi.mocked(useAppState).mockReturnValue(
       dto({

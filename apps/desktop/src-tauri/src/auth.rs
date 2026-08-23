@@ -225,7 +225,10 @@ impl DeviceAuth {
             }))
             .send()
             .await
-            .context("could not reach the backend for an enrollment code")?;
+            // Reaches the dashboard verbatim: `start_enrollment` stringifies
+            // this and `AccountPanel` renders it. Written for the person who is
+            // offline, not for the person reading the stack.
+            .context("Couldn’t reach Lilypad. Check your internet connection and try again.")?;
 
         let status = response.status();
         if !status.is_success() {
@@ -242,10 +245,9 @@ impl DeviceAuth {
             );
             bail!("{}", enrollment_code_failure(status.as_u16()));
         }
-        response
-            .json()
-            .await
-            .context("the backend's enrollment-code response was not valid JSON")
+        response.json().await.context(
+            "Lilypad’s server sent something this app didn’t understand. Please update the app.",
+        )
     }
 
     /// A valid access token, re-authenticating if the cached one is missing or
@@ -538,7 +540,12 @@ fn enrollment_code_failure(status: u16) -> &'static str {
     match status {
         429 => "Too many attempts just now. Wait a minute, then try again.",
         401 | 403 => {
-            "This computer couldn’t prove its identity to Lilypad’s server.              Try again in a moment."
+            // Two literals concatenated rather than one long line: rustfmt
+            // wrapped this and left fourteen spaces INSIDE the string, which
+            // is what a person read on the screen that makes their computer
+            // theirs. `every_message_reads_like_a_sentence` below is the guard.
+            "This computer couldn’t prove its identity to Lilypad’s server. \
+             Try again in a moment."
         }
         400 => "Lilypad’s server rejected this request. Please update the app.",
         _ => "Lilypad’s server couldn’t give out a code right now. Try again in a moment.",
@@ -555,6 +562,39 @@ pub fn with_bearer(req: reqwest::RequestBuilder, token: Option<String>) -> reqwe
 
 #[cfg(test)]
 mod tests {
+    /// The copy a customer reads when linking fails.
+    ///
+    /// `AccountPanel` renders whatever `start_enrollment` stringifies, so these
+    /// four strings ARE the product's words on the screen that makes a computer
+    /// yours. One of them shipped as "…to Lilypad’s server.              Try
+    /// again in a moment." — rustfmt wrapped the literal and left fourteen
+    /// spaces inside it. Nothing failed; it just looked broken.
+    #[test]
+    fn every_message_reads_like_a_sentence() {
+        for status in [400_u16, 401, 403, 404, 429, 500, 503] {
+            let message = super::enrollment_code_failure(status);
+            assert!(
+                !message.contains("  "),
+                "{status}: doubled spacing inside the message: {message:?}"
+            );
+            assert!(
+                !message.contains('\n'),
+                "{status}: newline in a UI string: {message:?}"
+            );
+            assert!(
+                message.ends_with('.'),
+                "{status}: not a finished sentence: {message:?}"
+            );
+            // No status codes, no JSON, no internal nouns.
+            for leak in ["HTTP", "{", "statusCode", "backend", "endpoint", "null"] {
+                assert!(
+                    !message.contains(leak),
+                    "{status}: {leak:?} leaked into a customer message: {message:?}"
+                );
+            }
+        }
+    }
+
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
