@@ -256,6 +256,29 @@ jobs:
             console.log("manifest v" + m.version + " -> " + [...new Set(urls)].join(", "));
           '
           archive=$(echo "$manifest" | node -e 'const m=JSON.parse(require("fs").readFileSync(0,"utf8"));console.log(Object.values(m.platforms)[0].url)')
-          code=$(curl -s -o /dev/null -w '%{http_code}' -L "$archive") || code=000
-          [ "$code" = "200" ] || { echo "::error::latest.json names $archive, which answers $code"; exit 1; }
-          echo "update archive reachable: $archive"
+
+          # A status code proves nothing on this host. Cloudflare Pages serves
+          # the SPA fallback — HTTP 200, content-type text/html — for every path
+          # it does not have, so `/download/anything-at-all.tar.gz` answers 200
+          # exactly like a real asset. Measured 2026-08-21. A status-only check
+          # here would stay green while every installed copy's updater silently
+          # fetched an HTML page.
+          #
+          # So compare the bytes, the same way the installer above does. The
+          # archive was just built into dist/, so the hash is right there.
+          expected_archive=$(shasum -a 256 apps/site/dist/download/Lilypad.app.tar.gz | cut -d' ' -f1)
+          live_archive=$(curl -fsSL "$archive" | shasum -a 256 | cut -d' ' -f1) || live_archive=none
+          [ "$live_archive" = "$expected_archive" ] || {
+            echo "::error::latest.json names $archive, but the bytes served there are not the archive that was built ($live_archive != $expected_archive)"
+            exit 1
+          }
+          echo "update archive verified: $expected_archive"
+
+          # A control, so a green run cannot mean "the check cannot fail".
+          # If a path that certainly does not exist looks like a real download,
+          # the two assertions above are worthless and must not be trusted.
+          missing=$(curl -s -o /dev/null -w '%{content_type}' -L "$base/download/definitely-not-a-real-asset.tar.gz") || missing=unknown
+          case "$missing" in
+            text/html*) echo "control ok: a missing asset is distinguishable ($missing)" ;;
+            *) echo "::error::a nonexistent download answered content-type '$missing' — this host no longer behaves as the checks above assume"; exit 1 ;;
+          esac

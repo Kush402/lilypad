@@ -1,3 +1,4 @@
+import { resolve } from 'node:path';
 import { defineConfig } from 'vite';
 
 export default defineConfig({
@@ -15,5 +16,18 @@ export default defineConfig({
     host: true,
     allowedHosts: ['lilypadhome.takedia.com'],
   },
-  build: { target: 'es2022', outDir: 'dist' },
+  build: {
+    target: 'es2022',
+    outDir: 'dist',
+    // Every page must be named here or Vite emits only index.html and the
+    // footer links 404 — which on Cloudflare Pages is a 200 serving the
+    // homepage, so nothing looks broken until someone actually reads it.
+    rollupOptions: {
+      input: {
+        index: resolve(__dirname, 'index.html'),
+        privacy: resolve(__dirname, 'privacy.html'),
+        terms: resolve(__dirname, 'terms.html'),
+      },
+    },
+  },
 });

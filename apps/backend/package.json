@@ -1,7 +1,7 @@
 {
   "name": "@lilypad/backend",
   "version": "0.1.0",
-  "description": "Lilypad backend — Fastify REST + WebSocket signaling, Redis pairing, Postgres",
+  "description": "Lilypad backend \u2014 Fastify REST + WebSocket signaling, Redis pairing, Postgres",
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
@@ -15,7 +15,8 @@
     "clean": "rm -rf dist *.tsbuildinfo",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx src/db/migrate.ts",
-    "db:studio": "drizzle-kit studio"
+    "db:studio": "drizzle-kit studio",
+    "support": "tsx src/support.ts"
   },
   "dependencies": {
     "@fastify/cors": "^10.0.2",

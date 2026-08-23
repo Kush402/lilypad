@@ -21,6 +21,8 @@ import { describe, it, expect } from 'vitest';
  */
 
 const html = readFileSync(fileURLToPath(new URL('../index.html', import.meta.url)), 'utf8');
+const privacy = readFileSync(fileURLToPath(new URL('../privacy.html', import.meta.url)), 'utf8');
+const terms = readFileSync(fileURLToPath(new URL('../terms.html', import.meta.url)), 'utf8');
 
 /** The same HTML with runs of whitespace collapsed. Prettier line-wraps prose,
  * so a phrase-level assertion must not depend on where the wrap landed. */
@@ -146,10 +148,13 @@ describe('what the page must not say', () => {
     expect(html).not.toMatch(/\bP[1-4]\b\s*(skills|codegen|accessibility|vision)/i);
   });
 
-  // Linking a policy that does not exist is worse than not linking one.
-  it('links no legal pages, because none are written', () => {
-    expect(html).not.toMatch(/href="[^"]*(privacy|terms|legal)[^"]*"/i);
-    expect(html).toMatch(/not written yet/i);
+  // This used to assert the OPPOSITE — that no legal page was linked, because
+  // linking a policy that does not exist is worse than not linking one. They
+  // exist now, so the guard becomes: they are reachable, and they do not lie.
+  it('links the legal pages it now has', () => {
+    expect(html).toMatch(/href="\/privacy\.html"/);
+    expect(html).toMatch(/href="\/terms\.html"/);
+    expect(html).not.toMatch(/not written yet/i);
   });
 
   // The product's own non-negotiable, and the reason the security section leads
@@ -184,5 +189,63 @@ describe('release status', () => {
 
   it('still tells iPhone users there is no install path', () => {
     expect(html).toMatch(/built from source/i);
+  });
+});
+
+/**
+ * The legal pages describe what the code does. A page that drifts from the
+ * code is worse than no page: it is a claim, in public, that is false.
+ *
+ * These check the handful of statements that are checkable from here. The
+ * rest — retention windows, what the relay can see — are pinned against the
+ * constants that implement them.
+ */
+describe('the legal pages', () => {
+  it('ship as real pages, not placeholders', () => {
+    for (const [name, page] of [
+      ['privacy', privacy],
+      ['terms', terms],
+    ] as const) {
+      // The `$XXXX` problem, generalised: a placeholder that reaches
+      // production is a promise nobody made.
+      expect(page, name).not.toMatch(/XXXX|TODO|TBD|Lorem ipsum|\[insert/i);
+      expect(page, name).toMatch(/Last updated \d{1,2} \w+ 20\d\d/);
+    }
+  });
+
+  it('gives a way to make contact, on a domain that is ours', () => {
+    // A policy with no contact is not a policy. A contact on someone else's
+    // domain is a different problem.
+    for (const page of [privacy, terms, html]) {
+      expect(page).toMatch(/mailto:[^"]+@takedia\.com/);
+    }
+  });
+
+  it('states the retention windows the code actually implements', () => {
+    // `AUDIT_RETENTION_DAYS = 2` in the backend; `-mtime +7` in backup.sh.
+    // If either moves, this page becomes a false statement about real data.
+    expect(privacy).toMatch(/2 days/);
+    expect(privacy).toMatch(/7 days/);
+  });
+
+  it('does not claim the server cannot see something it could', () => {
+    // The honest claim is that media is end-to-end encrypted and the relay
+    // forwards packets it has no key for — NOT that traffic never passes
+    // through the operator's infrastructure, which would be false whenever
+    // TURN is used.
+    expect(privacy).toMatch(/relay/i);
+    expect(privacy).not.toMatch(/never (passes|goes) through (our|the) (server|relay)/i);
+  });
+
+  it('does not overstate the maturity of a one-person service', () => {
+    expect(terms).toMatch(/no uptime guarantee|no warranty/i);
+    expect(privacy).toMatch(/one person/i);
+  });
+
+  it('links back to each other and home, so neither is a dead end', () => {
+    expect(privacy).toMatch(/href="\/terms\.html"/);
+    expect(terms).toMatch(/href="\/privacy\.html"/);
+    expect(privacy).toMatch(/href="\/"/);
+    expect(terms).toMatch(/href="\/"/);
   });
 });

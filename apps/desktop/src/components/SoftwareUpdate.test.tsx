@@ -89,3 +89,62 @@ describe('SoftwareUpdate — banner (launch prompt)', () => {
     expect(screen.getByText(/Download & install/i)).toBeInTheDocument();
   });
 });
+
+describe('SoftwareUpdate — when a step fails', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(updater.currentVersion).mockResolvedValue('0.1.0');
+  });
+
+  it('names the check when the check is what failed', async () => {
+    vi.mocked(updater.check).mockRejectedValue(new Error('no network'));
+
+    render(<SoftwareUpdate variant="banner" />);
+
+    expect(await screen.findByText(/Couldn’t check for updates — no network/)).toBeInTheDocument();
+  });
+
+  it('names the download when the download is what failed', async () => {
+    // The bug this replaces: both steps collapsed into one phase, so a
+    // download that died halfway was reported as "Update check failed" —
+    // the wrong step, sending the reader to look in the wrong place.
+    const update = fakeUpdate();
+    update.downloadAndInstall.mockRejectedValue(new Error('disk full'));
+    vi.mocked(updater.check).mockResolvedValue(update as never);
+
+    render(<SoftwareUpdate variant="banner" />);
+    (await screen.findByRole('button', { name: 'Download & install' })).click();
+
+    expect(await screen.findByText(/Couldn’t download the update — disk full/)).toBeInTheDocument();
+  });
+
+  it('offers a retry rather than leaving a dead end', async () => {
+    // Previously the error state rendered a message and no buttons at all, so
+    // the update stayed unavailable until the app was restarted.
+    const update = fakeUpdate();
+    update.downloadAndInstall.mockRejectedValueOnce(new Error('disk full'));
+    vi.mocked(updater.check).mockResolvedValue(update as never);
+
+    render(<SoftwareUpdate variant="banner" />);
+    (await screen.findByRole('button', { name: 'Download & install' })).click();
+    (await screen.findByTestId('update-retry')).click();
+
+    // Retried the DOWNLOAD, not the check: the update already found is still
+    // the right one, and re-checking would make the user wait on the feed
+    // again for an answer already in hand.
+    await waitFor(() => expect(update.downloadAndInstall).toHaveBeenCalledTimes(2));
+    expect(updater.check).toHaveBeenCalledTimes(1);
+    expect(await screen.findByRole('button', { name: 'Restart to update' })).toBeInTheDocument();
+  });
+
+  it('re-checks when it was the check that failed', async () => {
+    vi.mocked(updater.check).mockRejectedValueOnce(new Error('no network'));
+    vi.mocked(updater.check).mockResolvedValueOnce(fakeUpdate() as never);
+
+    render(<SoftwareUpdate variant="banner" />);
+    (await screen.findByTestId('update-retry')).click();
+
+    expect(await screen.findByText(/Lilypad 0\.2\.0/)).toBeInTheDocument();
+    expect(updater.check).toHaveBeenCalledTimes(2);
+  });
+});

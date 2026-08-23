@@ -27,6 +27,41 @@ jobs:
   typescript:
     name: TypeScript — typecheck, lint, format, test
     runs-on: ubuntu-latest
+
+    # Postgres and Redis, matching infra/docker-compose.yml.
+    #
+    # CI ran with neither until 2026-08-22, which meant no test that touched
+    # the database could exist — so none did, and the authorization rules that
+    # ARE database rows were provable only through hand-written fakes. A fake
+    # cannot prove a partial UPDATE leaves an untouched column alone
+    # (`devices.app_version`), because a fake that models it is a restatement
+    # of the code it is checking.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: lilypad
+          POSTGRES_PASSWORD: lilypad_dev_password
+          POSTGRES_DB: lilypad
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U lilypad -d lilypad"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+
+    env:
+      # The same default the code falls back to, stated here so a change to
+      # either is visible as a change.
+      DATABASE_URL: postgres://lilypad:lilypad_dev_password@localhost:5432/lilypad
+      REDIS_URL: redis://localhost:6379
+
     steps:
       - uses: actions/checkout@v4
 
@@ -55,8 +90,37 @@ jobs:
       - name: Docs check
         run: pnpm docs:check
 
+      # The schema the tests run against is the migrations, not a snapshot of
+      # them — so a migration that does not apply fails CI here rather than in
+      # production.
+      - name: Migrate the test database
+        run: pnpm --filter @lilypad/backend db:migrate
+
       - name: Test
         run: pnpm turbo run test
+
+      # `deviceFlow.e2e.test.ts` drives the app's REAL identity and auth code
+      # against a REAL backend — genuine Ed25519 keys, the genuine wire format,
+      # Redis's single-use challenge semantics, Postgres rows. It guards the
+      # replay and cross-key refusals that the whole device-identity model
+      # rests on.
+      #
+      # It skipped itself unless two env vars were set, and nothing ever set
+      # them: not CI, not a script, not a package.json entry. Eleven tests had
+      # never run anywhere. They pass — which is the point: a check nobody runs
+      # is not a check, and this one was guarding the security boundary.
+      - name: Device-identity end-to-end (real backend, real Postgres/Redis)
+        run: |
+          pnpm --filter @lilypad/backend build
+          BACKEND_PORT=8099 node apps/backend/dist/index.js > /tmp/lilypad-e2e.log 2>&1 &
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:8099/health >/dev/null && break
+            sleep 1
+          done
+          curl -sf http://127.0.0.1:8099/health >/dev/null || { cat /tmp/lilypad-e2e.log; exit 1; }
+          LILYPAD_E2E_BASE_URL=http://127.0.0.1:8099 \
+          LILYPAD_E2E_LOG=/tmp/lilypad-e2e.log \
+            pnpm --filter @lilypad/mobile exec jest src/lib/deviceFlow.e2e.test.ts
 
   security:
     name: Security — CodeQL + dependency audit

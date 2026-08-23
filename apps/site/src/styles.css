@@ -383,3 +383,30 @@ a {
 .foot__legal {
   max-width: var(--measure);
 }
+
+/* ── Legal pages ─────────────────────────────────────────────────────────
+   Long-form prose, so a measure narrow enough to read comfortably rather
+   than the full-width sections the landing page uses. */
+.legal {
+  max-width: 42rem;
+  margin: 0 auto;
+  padding: 3rem 1.25rem 4rem;
+  line-height: 1.65;
+}
+.legal h1 {
+  margin-bottom: 0.25rem;
+}
+.legal h2 {
+  margin-top: 2.25rem;
+}
+.legal__updated {
+  opacity: 0.7;
+  font-size: 0.9rem;
+  margin-top: 0;
+}
+.legal ul {
+  padding-left: 1.25rem;
+}
+.legal li {
+  margin-bottom: 0.6rem;
+}

@@ -22,6 +22,16 @@ export interface UpdaterState {
   progress: number | null;
   /** Human-readable failure reason when `phase === 'error'`. */
   error: string | null;
+  /**
+   * Which step failed, when one did.
+   *
+   * Both steps used to collapse into a bare `error` phase, so a download that
+   * died halfway was reported as "Update check failed" — the wrong step named,
+   * and no way to retry the one that actually broke. Inferring it from
+   * `newVersion` would be wrong too: a check that fails after an earlier one
+   * succeeded still has a version sitting in state.
+   */
+  failedStep: 'check' | 'download' | null;
 }
 
 const INITIAL: UpdaterState = {
@@ -30,6 +40,7 @@ const INITIAL: UpdaterState = {
   notes: null,
   progress: null,
   error: null,
+  failedStep: null,
 };
 
 /**
@@ -54,7 +65,7 @@ export function useUpdater(options: { auto?: boolean } = {}) {
   }, []);
 
   const check = useCallback(async () => {
-    setState((s) => ({ ...s, phase: 'checking', error: null }));
+    setState((s) => ({ ...s, phase: 'checking', error: null, failedStep: null }));
     try {
       const update = await updater.check();
       if (!alive.current) return null;
@@ -66,6 +77,7 @@ export function useUpdater(options: { auto?: boolean } = {}) {
           notes: update.body ?? null,
           progress: null,
           error: null,
+          failedStep: null,
         });
         return update;
       }
@@ -73,7 +85,7 @@ export function useUpdater(options: { auto?: boolean } = {}) {
       return null;
     } catch (e) {
       if (!alive.current) return null;
-      setState((s) => ({ ...s, phase: 'error', error: errorText(e) }));
+      setState((s) => ({ ...s, phase: 'error', error: errorText(e), failedStep: 'check' }));
       return null;
     }
   }, []);
@@ -83,7 +95,13 @@ export function useUpdater(options: { auto?: boolean } = {}) {
     if (!update) return;
     let total = 0;
     let received = 0;
-    setState((s) => ({ ...s, phase: 'downloading', progress: null, error: null }));
+    setState((s) => ({
+      ...s,
+      phase: 'downloading',
+      progress: null,
+      error: null,
+      failedStep: null,
+    }));
     try {
       await update.downloadAndInstall((event) => {
         if (!alive.current) return;
@@ -108,17 +126,28 @@ export function useUpdater(options: { auto?: boolean } = {}) {
       setState((s) => ({ ...s, phase: 'ready', progress: 1 }));
     } catch (e) {
       if (!alive.current) return;
-      setState((s) => ({ ...s, phase: 'error', error: errorText(e) }));
+      // `pending.current` is deliberately left in place: the update is still
+      // the right one to install, so retrying is one call rather than another
+      // round trip to the feed.
+      setState((s) => ({ ...s, phase: 'error', error: errorText(e), failedStep: 'download' }));
     }
   }, []);
 
   const relaunch = useCallback(() => updater.relaunch(), []);
 
+  /** Retry whichever step failed. A failed download retries the download —
+   * re-checking would throw away a perfectly good update and make the user
+   * wait for the feed again. */
+  const retry = useCallback(async () => {
+    if (pending.current) await downloadAndInstall();
+    else await check();
+  }, [check, downloadAndInstall]);
+
   useEffect(() => {
     if (auto) void check();
   }, [auto, check]);
 
-  return { state, check, downloadAndInstall, relaunch };
+  return { state, check, downloadAndInstall, relaunch, retry };
 }
 
 function errorText(e: unknown): string {

@@ -32,7 +32,8 @@
     "verify": "pnpm typecheck && pnpm lint && pnpm format:check && pnpm test && pnpm docs:check && pnpm rust:check",
     "infra:up": "docker compose -f infra/docker-compose.yml up -d",
     "infra:down": "docker compose -f infra/docker-compose.yml down",
-    "infra:logs": "docker compose -f infra/docker-compose.yml logs -f"
+    "infra:logs": "docker compose -f infra/docker-compose.yml logs -f",
+    "support": "pnpm --filter @lilypad/backend support"
   },
   "devDependencies": {
     "@eslint/js": "^9.18.0",
