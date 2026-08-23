@@ -65,10 +65,18 @@ const RESTART_TRIED_KEY = 'lilypad.permission.restart-tried';
  * desktop announcing it is ready before a phone has approved it. Permissions
  * let the machine capture and type; they say nothing about whose machine it is.
  *
- * **Linking is offered, not demanded.** Pairing genuinely works on an unlinked
- * computer, so a wizard that blocked on linking would be lying in the other
- * direction. Step 3 is therefore skippable and the final card tells the truth
- * either way — set up and owned, or set up and on no account yet
+ * **Linking is required, and the words here have to say so.** They did not.
+ * `/pairing/create` resolves the desktop's ownership and refuses a computer
+ * that belongs to no account — `actAsDevice`'s only `allow` is `owner`, since
+ * the unowned lane closed. An unlinked Mac holds no device token at all
+ * (`/devices/enroll` answers 403 `desktop_enrollment_requires_approval` to a
+ * desktop trying to link itself), so it is refused before it can ask. Verified
+ * against a running backend: `POST /pairing/create` with no token answers
+ * `404 not_found`.
+ *
+ * Step 4 already waited for step 3. The closing card did not, and told an
+ * unlinked user "you can pair a phone" four lines below the panel explaining
+ * that they could not
  * ([ADR-0010](../../../../docs/adr/0010-explicit-device-linking.md)).
  *
  * Sign-in used to have no step here at all, because the desktop had no way to
@@ -371,13 +379,14 @@ export function Setup() {
             </p>
           ) : linkUnknown ? (
             <p data-testid="setup-done-unknown">
-              ✓ Permissions are done, so you can pair a phone. We could not check whether this
-              computer is on an account — if you have already linked it, it stays linked.
+              Permissions are done. We could not check whether this computer is on an account — if
+              you have already linked it, it stays linked, and pairing will work. If you have not,
+              step 3 comes first.
             </p>
           ) : (
             <p data-testid="setup-done-unlinked">
-              ✓ Permissions are done, so you can pair a phone. This computer is not on an account
-              yet — step 3 is what changes that.
+              Permissions are done, but this computer is not on an account yet, so it can’t pair a
+              phone. Step 3 is what changes that.
             </p>
           )}
           <div className="row">

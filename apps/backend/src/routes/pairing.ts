@@ -22,8 +22,9 @@ export async function pairingRoutes(app: FastifyInstance): Promise<void> {
   const notFound = (reply: FastifyReply) => reply.code(404).send({ error: 'not_found' });
 
   // Desktop mints a single-use QR token (60s TTL in Redis). Tighter than the
-  // generic global limiter (`server.ts`) since an unlinked desktop reaches this
-  // without a token and it mints real Redis-backed state on every call
+  // generic global limiter (`server.ts`) since it mints real Redis-backed state
+  // on every call — an unlinked desktop no longer reaches it at all, but a
+  // linked one with the pairing window open still refreshes about once a minute
   // — see docs/audit/m3/backend-security.md Finding 10. The budget must
   // still absorb LEGITIMATE churn: tokens expire every 60s, so a desktop
   // with its pairing window open refreshes ~1/min baseline, plus bursts of

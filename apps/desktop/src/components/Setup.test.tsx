@@ -283,6 +283,28 @@ describe('Setup', () => {
   });
 
   /**
+   * The closing card used to say "✓ Permissions are done, so you can pair a
+   * phone" to an unlinked user — four lines below the step that explains they
+   * cannot, and contrary to the backend.
+   *
+   * `/pairing/create` resolves the desktop's ownership and refuses a computer
+   * on no account: `actAsDevice`'s only `allow` is `owner` since the unowned
+   * lane closed, and an unlinked Mac holds no device token to be an actor with.
+   * Verified against a running backend — no token, `404 not_found`. Telling a
+   * first-run customer to go and do the one thing that cannot work is how a
+   * setup wizard loses them at the last card.
+   */
+  it('does not tell an unlinked computer it can pair', async () => {
+    render(<Setup />);
+    await waitFor(() => expect(listen).toHaveBeenCalled());
+    grantAll(eventHandler);
+
+    const done = await screen.findByTestId('setup-done-unlinked');
+    expect(done).toHaveTextContent(/can’t pair a phone/i);
+    expect(done.textContent ?? '').not.toMatch(/so you can pair/i);
+  });
+
+  /**
    * Regression: the final card derived "not on an account" from
    * `state !== 'linked'`, which lumps in `unknown` — the state that means the
    * backend could not be asked, not that nobody owns this machine. A linked

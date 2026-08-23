@@ -161,7 +161,7 @@ export function AccountPanel({ onLinked }: AccountPanelProps = {}) {
           <strong>Not linked</strong> —{' '}
           {link.state === 'revoked'
             ? 'access to this computer was revoked. Link it again to restore it.'
-            : 'no account owns this computer yet. Pairing still works; linking is what makes it yours.'}
+            : 'no account owns this computer yet, so it can’t pair a phone. Linking is what makes it yours.'}
         </p>
       )}
 
