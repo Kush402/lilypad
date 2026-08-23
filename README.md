@@ -16,22 +16,28 @@ No custom video protocol, **no silent remote access**, and no cloud dependency
 for a session between two devices on the same network. See
 [docs/NETWORKING.md](docs/NETWORKING.md).
 
-> **Status (2026-08-12, post-M5.4 + release engineering)** — working end-to-end
-> on real hardware over cellular: **pair once with a QR, reconnect forever
-> without one** (My Devices → Connect rings the Mac; trusted devices
-> auto-connect), live H.264 streaming (ScreenCaptureKit → VideoToolbox →
-> WebRTC) with self-healing recovery machinery, touch/keyboard/clipboard input,
-> pinch-zoom viewer, a trusted-devices dashboard on the desktop, and the **Ask**
-> AI operator (tiered, sandboxed, model-agnostic) driving the Mac from the
-> phone. Shipping is automated: a `v*` tag builds a **signed + notarized
-> universal macOS bundle** published to GitHub Releases, and installed apps
-> **auto-update** from it; mobile ships to TestFlight / Play internal via
-> fastlane. See [docs/RUNBOOK.md](docs/RUNBOOK.md).
+> **Status (2026-08-23, pre-launch)** — working end-to-end on real hardware over
+> cellular: **pair once with a QR, reconnect forever without one** (My Devices →
+> Connect rings the Mac), live H.264 streaming (ScreenCaptureKit → VideoToolbox
+> → WebRTC) with self-healing recovery, touch/keyboard/clipboard input,
+> pinch-zoom viewer, accounts with Ed25519 device identity
+> ([ADR-0002](docs/adr/0002-device-identity.md)), explicit device linking
+> ([ADR-0010](docs/adr/0010-explicit-device-linking.md)), a device dashboard on
+> both clients, and the **Ask** AI operator (tiered, sandboxed, model-agnostic)
+> driving the Mac from the phone.
 >
-> **Verified green at `fa1581a`:** 537 JS/TS tests (backend 288 · mobile 189 ·
-> desktop UI 44 · shared 16) plus 277 Rust tests — and lint, typecheck,
-> formatting, and clippy all clean. Next up (M6): billing, admin dashboard,
-> observability overlay, and the Ed25519 device-identity upgrade.
+> **Not yet true, and stated here because a README is a claim:** the macOS
+> bundle is **ad-hoc signed and not notarized** — there is no Apple Developer
+> Program subscription, so Gatekeeper shows the unidentified-developer warning
+> on first launch. Sign in with Apple, TestFlight and the App Store are blocked
+> on the same purchase.
+>
+> Installers and updates are served from **lilypadhome.takedia.com**, not from
+> GitHub Releases: a customer-facing URL should not depend on a repository
+> setting. Releases remain the build record. See
+> [docs/RUNBOOK.md](docs/RUNBOOK.md), and
+> [docs/kanban.md](docs/kanban.md) for everything found in the pre-launch review
+> and what happened to it.
 
 ## Monorepo layout
 

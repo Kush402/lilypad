@@ -21,6 +21,10 @@ import { describe, it, expect } from 'vitest';
  */
 
 const html = readFileSync(fileURLToPath(new URL('../index.html', import.meta.url)), 'utf8');
+const repoFile = (name: string) =>
+  readFileSync(fileURLToPath(new URL(`../../../${name}`, import.meta.url)), 'utf8');
+const readme = repoFile('README.md');
+const securityPolicy = repoFile('SECURITY.md');
 const privacy = readFileSync(fileURLToPath(new URL('../privacy.html', import.meta.url)), 'utf8');
 const terms = readFileSync(fileURLToPath(new URL('../terms.html', import.meta.url)), 'utf8');
 
@@ -278,5 +282,61 @@ describe('the legal pages', () => {
     expect(terms).toMatch(/href="\/privacy\.html"/);
     expect(privacy).toMatch(/href="\/"/);
     expect(terms).toMatch(/href="\/"/);
+  });
+});
+
+/**
+ * The repository became public on 2026-08-23, which turned `README.md` and
+ * `SECURITY.md` into customer-facing pages. They had been written for an
+ * audience that already knew the project, and they said things that were no
+ * longer true:
+ *
+ *  - the README advertised "a signed + notarized universal macOS bundle
+ *    published to GitHub Releases, and installed apps auto-update from it".
+ *    Nothing is notarized — there is no Apple Developer Program — and updates
+ *    come from this site, which `lib.rs` has a test asserting.
+ *  - `SECURITY.md` listed "no user accounts yet (M5): possession of a QR +
+ *    desktop approval is the whole trust model" under known gaps. Accounts,
+ *    device identity and explicit linking had all shipped, and the
+ *    unowned-device lane was closed. A security policy that understates what
+ *    exists hands a researcher the wrong scope.
+ *  - it published a contact address on a different domain from the one the
+ *    privacy policy and terms name for the same purpose.
+ *
+ * The site's claims are checked here; the repository's public pages get the
+ * same treatment, for the same reason.
+ */
+describe('the repository’s own public pages', () => {
+  it('publishes one contact address, on our domain, everywhere', () => {
+    const fromLegal = /mailto:([^"]+@takedia\.com)/.exec(privacy)?.[1];
+    expect(fromLegal, 'the privacy page must publish an address').toBeTruthy();
+    // Not "an address on takedia.com" — the SAME one. The terms name this
+    // address for security reports, so a second one is a second promise.
+    expect(securityPolicy).toContain(fromLegal!);
+    expect(securityPolicy).not.toMatch(/[\w.+-]+@(?!takedia\.com)[\w-]+\.[a-z]{2,}/i);
+  });
+
+  it('sends nobody to a host that requires an account, here either', () => {
+    // Same rule as the marketing page and the updater config: a download or
+    // update URL must not depend on a repository setting someone can flip.
+    for (const [name, page] of [
+      ['README.md', readme],
+      ['SECURITY.md', securityPolicy],
+    ] as const) {
+      expect(page, name).not.toMatch(/github\.com/i);
+    }
+  });
+
+  it('does not describe a trust model the code left behind', () => {
+    // `devices.user_id` is NOT NULL in effect — the unowned lane is a deny.
+    expect(securityPolicy).not.toMatch(/no user accounts/i);
+  });
+
+  it('does not claim a notarized build while nothing notarizes one', () => {
+    // `release.yml` warns "APPLE_API_KEY_P8 not set — skipping notarization"
+    // and that secret is not configured. Saying otherwise on the front page is
+    // the `$XXXX` problem with a security shape.
+    expect(readme).not.toMatch(/signed \+ notarized/i);
+    expect(readme).toMatch(/not notarized/i);
   });
 });

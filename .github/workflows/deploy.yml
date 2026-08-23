@@ -125,8 +125,12 @@ jobs:
         with:
           context: .
           file: apps/backend/Dockerfile
-          # arm64 is not optional: the $0 tier (Oracle Ampere) is ARM, and the
-          # paid fallback (Hetzner CX) is x86. One image must serve both.
+          # Production today is x86_64 — `uname -m` on the Oracle host, checked
+          # 2026-08-23, not inferred from the tier name. arm64 is built anyway
+          # so the Ampere instances in the same free tier stay a move that costs
+          # a `docker compose pull`, and because the paid fallback (Hetzner CX)
+          # is x86 while its ARM line is not. The GHA cache below is what keeps
+          # the second architecture from costing a second build.
           platforms: linux/amd64,linux/arm64
           push: true
           # Baked into the image and reported by /health, so "which commit is

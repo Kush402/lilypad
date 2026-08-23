@@ -2,9 +2,14 @@
 
 ## Reporting a vulnerability
 
-Email **kush.sharma@lofty.com** with a description, reproduction steps, and
+Email **support@takedia.com** with a description, reproduction steps, and
 impact assessment. You will get an acknowledgment within 72 hours. Please do
 not open public issues for security reports.
+
+This is the same address the [privacy policy](https://lilypadhome.takedia.com/privacy)
+and [terms](https://lilypadhome.takedia.com/terms) publish, and those already
+name security reports as one of the things it is for. Two different addresses
+for the same promise is one address too many.
 
 ## Scope & model (summary)
 
@@ -30,6 +35,19 @@ The load-bearing guarantees:
 
 ## Known gaps (pre-1.x, tracked)
 
-- No user accounts yet (M5): possession of a QR + desktop approval is the
-  whole trust model. Suitable for personal/single-operator use only.
-- Desktop/mobile builds are not yet notarized/App Store distributed.
+- **Builds are not notarized or store-distributed.** The macOS bundle is
+  ad-hoc signed, so Gatekeeper warns on first launch; iOS ships no store build.
+  Both wait on an Apple Developer Program subscription.
+- **One person, one server.** No dedicated security team, no third-party audit,
+  and the control plane is a single machine. Stated the same way on the
+  [privacy policy](https://lilypadhome.takedia.com/privacy).
+- **Rate limits are per-IP.** Everyone behind one NAT — a dorm, an office —
+  shares a budget. Deliberate: loosening an abuse control ahead of evidence is
+  how a safeguard becomes a hole ([docs/kanban.md](docs/kanban.md), L-31).
+
+Accounts are no longer a gap, and this section listed them as one until
+2026-08-23 — describing possession of a QR plus desktop approval as the whole
+trust model. That had not been true for some time: accounts, Ed25519 device
+identity and explicit device linking all shipped, and the unowned-device lane,
+where a device belonging to nobody could still act, was closed. A security
+policy that understates what exists hands a researcher the wrong scope.
