@@ -27,7 +27,11 @@
  *
  * If the run fails partway the account survives, and removing it then needs SQL
  * on the host. That is the honest boundary: a script that force-deleted on the
- * way out of a failure would destroy the state you wanted to look at.
+ * way out of a failure would destroy the state you wanted to look at. What it
+ * does now is SAY so — naming the address it left and the statement that
+ * removes it — because a boundary nobody is told about is a trap. One run
+ * against production on 2026-08-23 died on a rate limit and orphaned an
+ * account that was found by counting rows, not by reading this output.
  */
 import { randomBytes, generateKeyPairSync, sign as nodeSign } from 'node:crypto';
 
@@ -37,6 +41,13 @@ const b64u = (b) => Buffer.from(b).toString('base64url');
 const tag = randomBytes(4).toString('hex');
 
 let failures = 0;
+/** Set by the signup and deletion checks, so the residue notice at the end is
+ * accurate rather than a guess about how far the run got. Both are needed: a
+ * run that 429s ON signup created nothing, and telling someone to delete an
+ * account that was never made is the same kind of false statement this script
+ * exists to catch. */
+let createdAccount = false;
+let deletedAccount = false;
 const check = (name, ok, detail = '') => {
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? '  — ' + detail : ''}`);
   if (!ok) failures++;
@@ -78,7 +89,20 @@ async function proof(key) {
 const email = `audit-${tag}@example.test`;
 const password = 'a-perfectly-ordinary-passphrase';
 const signup = await post('/auth/signup', { name: 'Audit User', email, password });
+createdAccount = signup.status === 201;
 check('signup with name + email + password', signup.status === 201, `HTTP ${signup.status}`);
+if (signup.status === 429) {
+  // Naming the trap in the header was not enough — I walked into it twice on
+  // 2026-08-23 running this back to back against production, read four
+  // unrelated FAILs as regressions, and only found the cause by querying the
+  // database. Signup is 5/minute per IP and the limit is shared, so a second
+  // run inside the window fails on its first step and everything after it is
+  // noise.
+  console.log(
+    '\n429 on signup: the rate limiter, not a regression. Signup is 5/minute per IP.',
+  );
+  console.log('Wait a minute and run this again. Nothing below this line means anything.\n');
+}
 
 const dupe = await post('/auth/signup', { name: 'Audit User', email, password });
 check('duplicate signup is refused', dupe.status === 409, `HTTP ${dupe.status}`);
@@ -371,6 +395,7 @@ check(
 );
 
 const deleted = await req('DELETE', '/account', { confirmEmail: email }, login.json.accessToken);
+deletedAccount = deleted.status === 200;
 check(
   'the account deletes itself, and says how many devices went with it',
   deleted.status === 200 && typeof deleted.json.devicesRemoved === 'number',
@@ -406,4 +431,25 @@ check(
 );
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : `\n${failures} CHECK(S) FAILED`);
+
+// What a failed run left behind, and how to remove it.
+//
+// The account is deliberately NOT force-deleted on the way out — the header
+// says why: the state is what you came to look at. But leaving it unmentioned
+// turns a deliberate boundary into a trap. A run against production on
+// 2026-08-23 died on a rate limit and orphaned `audit-bc9a21b1@example.test`;
+// it was found by counting rows, not by reading this output.
+//
+// `deletedAccount` is set by the deletion check itself, so this cannot claim
+// residue that is not there, or miss residue that is.
+if (createdAccount && !deletedAccount) {
+  console.log(`\nThis run left an account behind: ${email}`);
+  console.log('It is not removed automatically — the state is what you came to look at.');
+  console.log('When you are done, on the database host:');
+  console.log(
+    `  psql -U lilypad -d lilypad -c "DELETE FROM devices WHERE user_id=(SELECT id FROM users WHERE email='${email}'); DELETE FROM users WHERE email='${email}';"`,
+  );
+  console.log('  (devices and pairs cascade; audit rows keep their history with user_id NULL)');
+}
+
 process.exit(failures === 0 ? 0 : 1);
