@@ -6,7 +6,10 @@ interface HealthReport {
   status: string;
   uptimeSeconds: number;
   checks: { postgres: string; redis: string };
-  version: string;
+  /** The commit the running image was built from. `/health` used to also send
+   * a `version` semver; it was a literal no release step updated, so it was
+   * removed and this is the only build identity the API reports. */
+  revision: string;
 }
 
 /** Cards planned for M6; today they show placeholders + a live backend probe. */
@@ -55,7 +58,7 @@ export function App() {
               <b className={health.checks.redis === 'up' ? 'ok' : 'bad'}>{health.checks.redis}</b>
             </li>
             <li>uptime {health.uptimeSeconds}s</li>
-            <li>v{health.version}</li>
+            <li>rev {health.revision.slice(0, 12)}</li>
           </ul>
         ) : (
           <p className="muted">{error ? `backend unreachable: ${error}` : 'probing…'}</p>
