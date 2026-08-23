@@ -213,6 +213,19 @@ jobs:
   rust-audit:
     name: Rust — dependency advisories
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # The action reports its findings as a check run, and without this it
+      # does the audit correctly, prints "No vulnerabilities were found", and
+      # then fails the JOB on the API call afterwards:
+      #
+      #   ##[error]Resource not accessible by integration -
+      #   https://docs.github.com/rest/checks/runs#create-a-check-run
+      #
+      # Exactly the shape of the CodeQL failure documented in `security` above:
+      # a passing analysis producing a red build, which teaches people to
+      # ignore the red.
+      checks: write
     steps:
       - uses: actions/checkout@v4
 
