@@ -2,6 +2,19 @@ name: Mobile — iOS (TestFlight)
 
 # Decoupled from the desktop `v*` release tags: mobile ships on its own
 # `mobile-v*` tags plus manual dispatch.
+#
+# Both triggers are somebody deliberately saying "ship this". So a run that
+# cannot ship FAILS, and says which secret is missing.
+#
+# It used to end GREEN when signing secrets were absent, on the reasoning that
+# an unconfigured platform should not look broken. That is the same false
+# signal `site.yml` was rewritten to stop giving: a `mobile-v1.0.0` tag that
+# reports success while uploading nothing teaches people to trust a green check
+# that means nothing. It also never worked — every step but one was gated on
+# the preflight, and the ungated one wrote the .p8 into `apps/mobile`, a
+# directory that does not exist when checkout is skipped. The job would have
+# gone red on a missing directory while its own log said "Ending green".
+# Neither mobile workflow had ever run, so nobody found out.
 on:
   workflow_dispatch:
   push:
@@ -16,54 +29,51 @@ jobs:
   ios:
     name: Build & upload to TestFlight
     runs-on: macos-latest
+    # An iOS archive plus a TestFlight upload is minutes, not hours. Anything
+    # past this is stuck, and a stuck job that can run for six hours is a job
+    # nobody can reason about during a release.
+    timeout-minutes: 60
     defaults:
       run:
         working-directory: apps/mobile
     steps:
-      # ---------------------------------------------------------------------
-      # Preflight: decide whether the required signing secrets are present.
-      # GitHub forbids `secrets.*` in a job-level `if:`, so we read them into
-      # env here and expose a boolean output the later steps gate on. When they
-      # are missing the job ends GREEN with a clear "skipped" line.
-      # ---------------------------------------------------------------------
-      - name: Preflight — are iOS release secrets configured?
-        id: preflight
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Named individually rather than as "signing is not configured", because
+      # the remedy differs per secret and finding out which one is missing
+      # should not require reading this file.
+      - name: Require the App Store Connect credentials
         working-directory: ${{ github.workspace }}
         env:
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
           ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
         run: |
-          if [ -n "$ASC_KEY_ID" ] && [ -n "$ASC_ISSUER_ID" ] && [ -n "$ASC_KEY_P8" ]; then
-            echo "configured=true" >> "$GITHUB_OUTPUT"
-            echo "iOS release secrets detected — proceeding with build + upload."
-          else
-            echo "configured=false" >> "$GITHUB_OUTPUT"
-            echo "skipped: mobile iOS secrets not configured (ASC_KEY_ID / ASC_ISSUER_ID / ASC_KEY_P8). Ending green."
+          missing=()
+          [ -n "$ASC_KEY_ID" ]    || missing+=(ASC_KEY_ID)
+          [ -n "$ASC_ISSUER_ID" ] || missing+=(ASC_ISSUER_ID)
+          [ -n "$ASC_KEY_P8" ]    || missing+=(ASC_KEY_P8)
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::not configured: ${missing[*]}. Create an App Store Connect API key (Users and Access → Integrations → App Store Connect API, role: App Manager), then set ASC_KEY_ID, ASC_ISSUER_ID, and ASC_KEY_P8 (the .p8 file, base64-encoded). See docs/deployment.md."
+            exit 1
           fi
-
-      - name: Checkout
-        if: steps.preflight.outputs.configured == 'true'
-        uses: actions/checkout@v4
+          echo "App Store Connect credentials present"
 
       - name: Setup Node
-        if: steps.preflight.outputs.configured == 'true'
         uses: actions/setup-node@v4
         with:
           node-version: 20
 
       - name: Enable corepack (pins pnpm via package.json#packageManager)
-        if: steps.preflight.outputs.configured == 'true'
         run: corepack enable
         working-directory: ${{ github.workspace }}
 
       - name: Install JS dependencies
-        if: steps.preflight.outputs.configured == 'true'
         run: pnpm install --frozen-lockfile
         working-directory: ${{ github.workspace }}
 
       - name: Setup Ruby + Bundler
-        if: steps.preflight.outputs.configured == 'true'
         uses: ruby/setup-ruby@v1
         with:
           ruby-version: '3.3'
@@ -71,36 +81,46 @@ jobs:
           working-directory: apps/mobile
 
       - name: Write App Store Connect API key (.p8)
-        if: steps.preflight.outputs.configured == 'true'
         env:
           ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
         run: |
+          set -euo pipefail
           mkdir -p ios/fastlane
-          echo "$ASC_KEY_P8" | base64 --decode > ios/fastlane/AuthKey.p8
+          # `--decode` on garbage exits non-zero rather than writing a file that
+          # fails later inside fastlane with a message about JWTs.
+          printf '%s' "$ASC_KEY_P8" | base64 --decode > ios/fastlane/AuthKey.p8
+          grep -q 'BEGIN PRIVATE KEY' ios/fastlane/AuthKey.p8 || {
+            echo "::error::ASC_KEY_P8 did not decode to a PKCS#8 private key. It must be the .p8 file's bytes, base64-encoded (base64 -i AuthKey_XXXX.p8)."
+            exit 1
+          }
+          chmod 600 ios/fastlane/AuthKey.p8
           echo "ASC_KEY_P8_PATH=$(pwd)/ios/fastlane/AuthKey.p8" >> "$GITHUB_ENV"
 
       - name: Install CocoaPods
-        if: steps.preflight.outputs.configured == 'true'
         working-directory: apps/mobile/ios
         run: bundle exec pod install
 
       - name: Fastlane beta (archive → IPA → TestFlight)
-        if: steps.preflight.outputs.configured == 'true'
         working-directory: apps/mobile/ios
         env:
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
           # ASC_KEY_P8_PATH is exported into $GITHUB_ENV by the key-write step.
+          #
+          # The four below are OPTIONAL overrides, and an unset GitHub secret
+          # interpolates to the empty string rather than to nothing. `Appfile`
+          # and `Fastfile` therefore treat blank as absent — `"" || "default"`
+          # is `""` in Ruby, so passing an uncreated secret used to replace the
+          # team id and app identifier with empty strings.
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           IOS_APP_IDENTIFIER: ${{ secrets.IOS_APP_IDENTIFIER }}
-          # Optional `match` signing — leave unset for Xcode-managed automatic signing.
           MATCH_GIT_URL: ${{ secrets.MATCH_GIT_URL }}
           MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
-          FASTLANE_APPLE_ID: ${{ secrets.FASTLANE_APPLE_ID }}
         run: bundle exec fastlane ios beta
 
-      - name: Skipped notice
-        if: steps.preflight.outputs.configured != 'true'
-        working-directory: ${{ github.workspace }}
-        run: |
-          echo "skipped: mobile iOS secrets not configured — nothing to build. This is expected until signing secrets are added."
+      # The .p8 is a credential that can upload builds to this account. The
+      # runner is ephemeral, but a cached bundler step or an artifact upload
+      # added later would not know that.
+      - name: Shred the API key
+        if: always()
+        run: rm -f ios/fastlane/AuthKey.p8

@@ -12,7 +12,21 @@ default_platform(:android)
 platform :android do
   desc "Build a signed AAB + APK and upload the AAB to the Play internal track"
   lane :beta do
-    package_name = ENV["ANDROID_PACKAGE_NAME"] || "com.takedia.lilypad"
+# An unset GitHub Actions secret interpolates to the EMPTY STRING, not to
+# nothing — and in Ruby `"" || "default"` is `""`. So every `ENV["X"] || "…"`
+# below silently loses its default the moment a workflow passes a secret that
+# was never created, which is exactly what `mobile-ios.yml` does for
+# APPLE_TEAM_ID, IOS_APP_IDENTIFIER and FASTLANE_APPLE_ID. The result is
+# `team_id: ""` and an app identifier of `""`, failing deep inside fastlane
+# with a message about neither.
+#
+# `env` treats blank as absent, which is what the `||` chains always meant.
+def env(name)
+  value = ENV[name]
+  value && !value.strip.empty? ? value.strip : nil
+end
+
+    package_name = env("ANDROID_PACKAGE_NAME") || "com.takedia.lilypad"
 
     keystore_path = ENV.fetch("ANDROID_KEYSTORE_PATH")
     unless File.exist?(keystore_path)
@@ -20,7 +34,7 @@ platform :android do
     end
 
     # A unique versionCode per run avoids Play rejecting a duplicate upload.
-    version_code = ENV["ANDROID_VERSION_CODE"] || ENV["GITHUB_RUN_NUMBER"]
+    version_code = env("ANDROID_VERSION_CODE") || env("GITHUB_RUN_NUMBER")
 
     signing_props = {
       "android.injected.signing.store.file" => File.expand_path(keystore_path),
@@ -52,14 +66,14 @@ platform :android do
     apk_path = lane_context[SharedValues::GRADLE_APK_OUTPUT_PATH]
     UI.message("Built APK: #{apk_path}")
 
-    json_key = ENV["PLAY_SERVICE_ACCOUNT_JSON_PATH"]
+    json_key = env("PLAY_SERVICE_ACCOUNT_JSON_PATH")
     if json_key && !json_key.empty? && File.exist?(json_key)
       upload_to_play_store(
         track: "internal",
         package_name: package_name,
         aab: aab_path,
         json_key: json_key,
-        release_status: ENV["PLAY_RELEASE_STATUS"] || "draft",
+        release_status: env("PLAY_RELEASE_STATUS") || "draft",
         skip_upload_apk: true,
         skip_upload_metadata: true,
         skip_upload_images: true,

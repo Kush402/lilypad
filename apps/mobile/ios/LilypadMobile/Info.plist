@@ -38,6 +38,16 @@
 	<string>????</string>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<!-- Export compliance. Without this key every single TestFlight upload
+	     stops and asks the question by hand before the build can be tested.
+	
+	     `false` = this app uses only exempt encryption. What it uses: HTTPS to
+	     the control plane, DTLS-SRTP for media (both provided by the platform
+	     and by WebRTC), and Ed25519 signatures for device identity, which is
+	     authentication rather than confidentiality. No proprietary or
+	     non-standard cryptography is implemented anywhere in this app. -->
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>NSAppTransportSecurity</key>

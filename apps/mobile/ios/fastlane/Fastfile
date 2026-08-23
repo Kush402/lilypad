@@ -12,22 +12,36 @@ default_platform(:ios)
 
 # --- helpers ---------------------------------------------------------------
 
+# An unset GitHub Actions secret interpolates to the EMPTY STRING, not to
+# nothing — and in Ruby `"" || "default"` is `""`. So every `ENV["X"] || "…"`
+# below silently loses its default the moment a workflow passes a secret that
+# was never created, which is exactly what `mobile-ios.yml` does for
+# APPLE_TEAM_ID, IOS_APP_IDENTIFIER and FASTLANE_APPLE_ID. The result is
+# `team_id: ""` and an app identifier of `""`, failing deep inside fastlane
+# with a message about neither.
+#
+# `env` treats blank as absent, which is what the `||` chains always meant.
+def env(name)
+  value = ENV[name]
+  value && !value.strip.empty? ? value.strip : nil
+end
+
 def asc_api_key
   # Prefer a decoded .p8 file path (CI writes one from the base64 secret);
   # fall back to inline base64 content in ASC_KEY_P8 if no file is provided.
-  key_filepath = ENV["ASC_KEY_P8_PATH"]
-  key_content  = ENV["ASC_KEY_P8"]
+  key_filepath = env("ASC_KEY_P8_PATH")
+  key_content  = env("ASC_KEY_P8")
 
   common = {
-    key_id: ENV.fetch("ASC_KEY_ID"),
-    issuer_id: ENV.fetch("ASC_ISSUER_ID"),
+    key_id: env("ASC_KEY_ID") || UI.user_error!("ASC_KEY_ID is not set"),
+    issuer_id: env("ASC_ISSUER_ID") || UI.user_error!("ASC_ISSUER_ID is not set"),
     duration: 1200,
     in_house: false
   }
 
-  if key_filepath && !key_filepath.empty? && File.exist?(key_filepath)
+  if key_filepath && File.exist?(key_filepath)
     app_store_connect_api_key(common.merge(key_filepath: key_filepath))
-  elsif key_content && !key_content.empty?
+  elsif key_content
     app_store_connect_api_key(
       common.merge(key_content: key_content, is_key_content_base64: true)
     )
@@ -42,10 +56,10 @@ end
 platform :ios do
   desc "Build a signed IPA and upload it to TestFlight"
   lane :beta do
-    workspace  = ENV["IOS_WORKSPACE"] || "LilypadMobile.xcworkspace"
-    scheme     = ENV["IOS_SCHEME"] || "LilypadMobile"
-    app_id     = ENV["IOS_APP_IDENTIFIER"] || "com.takedia.lilypad"
-    team_id    = ENV["APPLE_TEAM_ID"] || ENV["FASTLANE_TEAM_ID"] || "7TYFS43RR3"
+    workspace  = env("IOS_WORKSPACE") || "LilypadMobile.xcworkspace"
+    scheme     = env("IOS_SCHEME") || "LilypadMobile"
+    app_id     = env("IOS_APP_IDENTIFIER") || "com.takedia.lilypad"
+    team_id    = env("APPLE_TEAM_ID") || env("FASTLANE_TEAM_ID") || "7TYFS43RR3"
     build_dir  = "build"
     output_ipa = "#{scheme}.ipa"
 
@@ -60,20 +74,20 @@ platform :ios do
 
     # Bump the build number to something unique per CI run so TestFlight never
     # rejects a duplicate. Overridable; defaults to the CI run number or epoch.
-    build_number = ENV["IOS_BUILD_NUMBER"] ||
-                   ENV["GITHUB_RUN_NUMBER"] ||
+    build_number = env("IOS_BUILD_NUMBER") ||
+                   env("GITHUB_RUN_NUMBER") ||
                    Time.now.to_i.to_s
     increment_build_number(
       xcodeproj: "LilypadMobile.xcodeproj",
       build_number: build_number
     )
 
-    if ENV["MATCH_GIT_URL"] && !ENV["MATCH_GIT_URL"].empty?
+    if env("MATCH_GIT_URL")
       # --- manual signing via match --------------------------------------
       match(
         type: "appstore",
         app_identifier: app_id,
-        git_url: ENV["MATCH_GIT_URL"],
+        git_url: env("MATCH_GIT_URL"),
         team_id: team_id,
         api_key: api_key,
         readonly: true

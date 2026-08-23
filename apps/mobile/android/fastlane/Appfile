@@ -2,8 +2,22 @@
 # package_name is derived from android/app/build.gradle
 # (applicationId / namespace = com.takedia.lilypad).
 
-package_name(ENV["ANDROID_PACKAGE_NAME"] || "com.takedia.lilypad")
+# An unset GitHub Actions secret interpolates to the EMPTY STRING, not to
+# nothing — and in Ruby `"" || "default"` is `""`. So every `ENV["X"] || "…"`
+# below silently loses its default the moment a workflow passes a secret that
+# was never created, which is exactly what `mobile-ios.yml` does for
+# APPLE_TEAM_ID, IOS_APP_IDENTIFIER and FASTLANE_APPLE_ID. The result is
+# `team_id: ""` and an app identifier of `""`, failing deep inside fastlane
+# with a message about neither.
+#
+# `env` treats blank as absent, which is what the `||` chains always meant.
+def env(name)
+  value = ENV[name]
+  value && !value.strip.empty? ? value.strip : nil
+end
+
+package_name(env("ANDROID_PACKAGE_NAME") || "com.takedia.lilypad")
 
 # Play service-account JSON used by upload_to_play_store. CI decodes the
 # PLAY_SERVICE_ACCOUNT_JSON secret to a file and points this env at it.
-json_key_file(ENV["PLAY_SERVICE_ACCOUNT_JSON_PATH"]) if ENV["PLAY_SERVICE_ACCOUNT_JSON_PATH"]
+json_key_file(env("PLAY_SERVICE_ACCOUNT_JSON_PATH")) if env("PLAY_SERVICE_ACCOUNT_JSON_PATH")

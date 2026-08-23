@@ -3,10 +3,24 @@
 # (LilypadMobile.xcodeproj: PRODUCT_BUNDLE_IDENTIFIER=com.takedia.lilypad,
 #  DEVELOPMENT_TEAM=7TYFS43RR3) but stay overridable for other signers.
 
-app_identifier(ENV["IOS_APP_IDENTIFIER"] || "com.takedia.lilypad")
-team_id(ENV["APPLE_TEAM_ID"] || ENV["FASTLANE_TEAM_ID"] || "7TYFS43RR3")
+# An unset GitHub Actions secret interpolates to the EMPTY STRING, not to
+# nothing — and in Ruby `"" || "default"` is `""`. So every `ENV["X"] || "…"`
+# below silently loses its default the moment a workflow passes a secret that
+# was never created, which is exactly what `mobile-ios.yml` does for
+# APPLE_TEAM_ID, IOS_APP_IDENTIFIER and FASTLANE_APPLE_ID. The result is
+# `team_id: ""` and an app identifier of `""`, failing deep inside fastlane
+# with a message about neither.
+#
+# `env` treats blank as absent, which is what the `||` chains always meant.
+def env(name)
+  value = ENV[name]
+  value && !value.strip.empty? ? value.strip : nil
+end
+
+app_identifier(env("IOS_APP_IDENTIFIER") || "com.takedia.lilypad")
+team_id(env("APPLE_TEAM_ID") || env("FASTLANE_TEAM_ID") || "7TYFS43RR3")
 
 # Optional — only needed for username/password auth flows. Beta lane uses an
 # App Store Connect API key, so these are almost always left unset.
-apple_id(ENV["FASTLANE_APPLE_ID"]) if ENV["FASTLANE_APPLE_ID"]
-itc_team_id(ENV["ITC_TEAM_ID"]) if ENV["ITC_TEAM_ID"]
+apple_id(env("FASTLANE_APPLE_ID")) if env("FASTLANE_APPLE_ID")
+itc_team_id(env("ITC_TEAM_ID")) if env("ITC_TEAM_ID")
