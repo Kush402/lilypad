@@ -32,10 +32,23 @@ use tokio_tungstenite::tungstenite::Message;
 // and lets a forced close send a real Close frame.
 
 /// How long any single `recv`/`expect` helper waits before failing the test.
-/// Generous relative to in-process, loopback-only work (no real network),
-/// but bounded so a regression that hangs the FSM fails fast instead of
-/// stalling CI.
-const WAIT: Duration = Duration::from_secs(5);
+///
+/// This is a CEILING, not a delay: a passing test never spends it, so a larger
+/// value costs nothing when things work and only makes a genuine hang slower to
+/// report. That asymmetry is why it is generous.
+///
+/// It has now been raised twice for the same test. `full_handshake_reaches_
+/// connected_and_opens_input_channel` drives a real `webrtc` peer connection —
+/// candidate gathering, DTLS, then SCTP — and even entirely on loopback that is
+/// not instant on a shared macOS runner. One second was not enough
+/// (2026-08-22); five was not enough either, and CI failed with
+/// `timed out waiting for session event: ConnectionState(connected)` on
+/// 2026-08-23, on a commit that changed only workflow YAML.
+///
+/// A flaky gate is the same problem as a monitor that is always red: it teaches
+/// people that a failure means nothing. Twenty seconds still fails a hung FSM
+/// fast relative to the six-hour job limit.
+const WAIT: Duration = Duration::from_secs(20);
 
 /// Start a one-shot fake signaling server on an OS-assigned loopback port.
 /// Returns the `ws://` URL to connect to, a sender the test uses to push
