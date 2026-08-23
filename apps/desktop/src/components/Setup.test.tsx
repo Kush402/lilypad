@@ -125,9 +125,15 @@ describe('Setup', () => {
   it('fetches initial status and shows both permission rows', async () => {
     mockSignedIn();
     render(<Setup />);
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith('get_permission_status'));
-    expect(screen.getByText('Screen Recording')).toBeInTheDocument();
+    // `findByText`, not `waitFor(invoke was called)` + `getByText`. Waiting for
+    // the COMMAND leaves a gap: the call having happened says nothing about its
+    // promise having resolved and React having re-rendered. On this machine the
+    // microtask always flushed first and it passed; on a loaded CI runner it
+    // did not, and the run went red on working code with
+    // "Unable to find an element with the text: Screen Recording".
+    expect(await screen.findByText('Screen Recording')).toBeInTheDocument();
     expect(screen.getByText('Accessibility')).toBeInTheDocument();
+    expect(invoke).toHaveBeenCalledWith('get_permission_status');
   });
 
   it('Grant calls the prompting request_permission command', async () => {
