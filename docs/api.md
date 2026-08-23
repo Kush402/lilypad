@@ -47,6 +47,41 @@ yours" cannot be told apart from "does not exist". A present-but-invalid token
 is `401 { "error": "unauthorized" }`, because a client that cannot tell an
 expired session from a missing device cannot know to re-authenticate.
 
+## Errors nobody wrote
+
+Every 4xx above is authored. Anything else — an exception no route expected —
+answers:
+
+```json
+{
+  "error": "internal_error",
+  "message": "Something went wrong on our end. Try again in a moment.",
+  "requestId": "req-4f"
+}
+```
+
+The `requestId` is the same id every log line for that request carries, so a
+customer who reports one can be answered from the logs.
+
+This is a `setErrorHandler`, and until 2026-08-23 there was none. Fastify's
+default puts `err.message` in the body, which was verified against the pinned
+version:
+
+```
+500 {"statusCode":500,"error":"Internal Server Error",
+     "message":"relation \"devices_secret\" does not exist at /repo/apps/backend/dist/db/client.js:42"}
+```
+
+Reproduced on this API by pointing a backend at a database that does not exist
+and calling `POST /auth/signup`: the body carried
+`Failed query: insert into "users" ("id", "email", "name", "password_hash", …)`
+— the whole table, `password_hash` included, to an anonymous caller. It now
+carries the shape above, and the query is in the log instead.
+
+Fastify's own `400` validation errors and the rate limiter's `429` pass through
+unchanged: those messages name the field or the window, which is something a
+caller can act on. See `apps/backend/src/errorResponse.ts`.
+
 ## `GET /health` ✅
 
 Liveness + dependency checks.

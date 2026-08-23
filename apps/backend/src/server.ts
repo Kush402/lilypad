@@ -6,6 +6,7 @@ import { config } from './config.js';
 import { parseTrustProxy } from './trustProxy.js';
 import { observeResponse } from './serverMetrics.js';
 import { parseAllowedOrigins } from './allowedOrigins.js';
+import { safeErrorResponse } from './errorResponse.js';
 import { healthRoutes } from './routes/health.js';
 import { authRoutes } from './routes/auth.js';
 import { enrollmentRoutes } from './routes/enrollment.js';
@@ -63,6 +64,23 @@ export async function buildServer(): Promise<FastifyInstance> {
     // a frame is a phishing surface for free.
     reply.header('x-frame-options', 'DENY');
     return payload;
+  });
+
+  // What an unhandled exception is allowed to tell a stranger.
+  //
+  // Without this, Fastify's default handler puts `err.message` in the body —
+  // proved against the pinned version: a thrown `Error` came back as
+  // `{"statusCode":500,"error":"Internal Server Error","message":"relation
+  // \"devices_secret\" does not exist at /repo/apps/backend/dist/db/client.js:42"}`.
+  // That is a table name and a container path handed to an anonymous caller on
+  // every route at once. See `errorResponse.ts` for what survives and why.
+  app.setErrorHandler((err, req, reply) => {
+    const { status, body, logAsServerError } = safeErrorResponse(err, req.id);
+    if (logAsServerError) {
+      // The whole error, once, on the server, against the id the body carries.
+      req.log.error({ err, reqId: req.id }, 'unhandled error');
+    }
+    void reply.code(status).send(body);
   });
 
   // Every finished request, counted. `onResponse` and not `onSend` so the
