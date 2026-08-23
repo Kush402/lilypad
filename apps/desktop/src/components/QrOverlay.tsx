@@ -121,15 +121,16 @@ export function QrOverlay() {
           wrong cause twice — a 429 is not an unreachable backend. */}
       {error ? <p className="error">{error}</p> : null}
 
+      {/* Only the countdown. This used to also show `Room a1b2c3d4…`, a
+          truncated internal identifier, on the screen a customer stares at
+          while lining up their camera — nothing they can read, act on, or
+          repeat. The room id is a support fact, and support facts live in the
+          Diagnostics window, which can copy them. */}
       {payload ? (
         <dl className="qr__meta">
           <div>
             <dt>Expires in</dt>
             <dd>{secondsLeft}s</dd>
-          </div>
-          <div>
-            <dt>Room</dt>
-            <dd className="mono">{payload.roomId.slice(0, 8)}…</dd>
           </div>
         </dl>
       ) : null}

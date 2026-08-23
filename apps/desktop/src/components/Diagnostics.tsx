@@ -66,6 +66,7 @@ export function diagnosticsReport(state: AppStateDto, version: string): string {
     `backend: ${state.backend_base_url}`,
     `reachable: ${PRESENCE_LABEL[state.presence.state] ?? state.presence.state}`,
     `session: ${state.session}`,
+    `room: ${state.current_room_id ?? 'none'}`,
     `last connection: ${
       state.connection_path
         ? (PATH_LABEL[state.connection_path] ?? state.connection_path)
