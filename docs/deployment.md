@@ -519,8 +519,8 @@ needs a token from the owner's Ubuntu One account (free for up to 5 machines).
 Two deviations from the text above, both deliberate and neither architectural:
 
 1. **The image was cross-built and shipped over SSH**, not pulled from GHCR.
-   `deploy.yml` has never run, so `ghcr.io/kushsharma024/lilypad-backend` does
-   not exist yet, and the repo is private. `docker buildx --platform linux/amd64`
+   `deploy.yml` had never run, so `ghcr.io/kushsharma024/lilypad-backend` did
+   not exist. `docker buildx --platform linux/amd64`
    → `docker save | ssh docker load` puts no credential on the box.
 2. **The tunnel is locally-managed**, not token-managed. The compose file
    expects a dashboard-issued `CLOUDFLARE_TUNNEL_TOKEN`; this tunnel was created
@@ -1260,8 +1260,8 @@ refused:
 ##[error]Code scanning is not enabled for this repository.
 ```
 
-The repo is private on a free plan, and every path to enabling it needs a
-purchase:
+**Resolved 2026-08-23** by making the repository public. While it was private
+on a free plan, every path to enabling code scanning needed a purchase:
 
 ```
 PATCH /repos  advanced_security=enabled  → 422 "Advanced security has not been purchased."
@@ -1269,9 +1269,23 @@ PUT   /code-scanning/default-setup       → 404 Not Found
 PATCH /repos  secret_scanning=enabled    → 422 "Secret scanning is not available for this repository."
 ```
 
-It was working earlier the same day — `Successfully uploaded results` at 03:15
-UTC, refused by 04:08 — so an entitlement lapsed in that window rather than
-anything in the code changing. Buying GitHub Advanced Security, or making the
-repository public, turns it green with no edit. The job is deliberately left in
-place rather than deleted: it is a gate that works the moment the entitlement
-returns, and removing it to make a report look clean would be the wrong trade.
+It had been working earlier the same day — `Successfully uploaded results` at
+03:15 UTC, refused by 04:08 — so an entitlement lapsed in that window rather
+than anything in the code changing. The job was deliberately left in place
+rather than deleted: it was a gate that would work the moment the entitlement
+returned, and removing it to make a report look clean would have been the wrong
+trade. That is exactly what happened.
+
+Public visibility turned on more than CodeQL. Enabled the same day, all free for
+a public repository and all verified by `gh api repos/Kush402/lilypad`:
+
+| Feature                           | Why                                                                                                                                                                                                                                                                                                                                                                                                  |
+| --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `secret_scanning`                 | Everything in the history is now world-readable. A full-history scan for private keys, `re_`/`ghp_`/`AKIA`/`sk-` tokens and assignments to this project's own secret names found nothing but `POSTGRES_PASSWORD=lilypad_dev_password` in `.env.example` — a documented local default, and **not** the production value (48 random characters, confirmed by hashing on the host without printing it). |
+| `secret_scanning_push_protection` | Blocks the next one at `git push`, which is the only point at which it can still be prevented rather than rotated.                                                                                                                                                                                                                                                                                   |
+| `dependabot_security_updates`     | The audit job reports vulnerable dependencies; this opens the pull request that fixes them.                                                                                                                                                                                                                                                                                                          |
+
+`secret_scanning_non_provider_patterns` and `secret_scanning_validity_checks`
+were also requested and did **not** take — they still need GitHub Advanced
+Security. The `PATCH` returns 200 with those fields left `disabled`, so read the
+response body rather than the status code.

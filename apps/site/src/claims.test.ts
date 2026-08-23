@@ -60,12 +60,15 @@ describe('platform claims', () => {
   });
 
   // The page pointed at github.com/Kush402/lilypad/releases/latest for its
-  // whole life, and that repository is private: every one of those links
-  // answered 404 to anyone who was not signed in with access. Both the
-  // download button and the updater manifest were dead for every real visitor,
-  // and it looked fine from inside because an authenticated browser resolves
-  // them. A link to a private host is worse than no link — it fails only for
-  // the people the page exists for.
+  // whole life. The repository was private, so every one of those links
+  // answered 404 to anyone who was not signed in with access: both the download
+  // button and the updater manifest were dead for every real visitor, and it
+  // looked fine from inside because an authenticated browser resolves them.
+  //
+  // The repository became public on 2026-08-23 and those URLs would now
+  // resolve. The rule stays anyway, because the incident was never really about
+  // one setting's value — it was about a customer-facing URL depending on a
+  // setting at all. One click puts it back, and nothing here would fail.
   it('sends nobody to a host that requires an account', () => {
     expect(html).not.toMatch(/github\.com/i);
   });
@@ -218,6 +221,34 @@ describe('the legal pages', () => {
     // domain is a different problem.
     for (const page of [privacy, terms, html]) {
       expect(page).toMatch(/mailto:[^"]+@takedia\.com/);
+    }
+  });
+
+  // Proven against production on 2026-08-23: the deployed pages served
+  // `<a href="/cdn-cgi/l/email-protection#8af9...">[email&#160;protected]</a>`
+  // where the source says `mailto:support@takedia.com`. Cloudflare's Email
+  // Obfuscation rewrites every address in the HTML and restores it with
+  // JavaScript, so the one address a privacy page exists to publish was
+  // unreadable without JS, uncopyable, and un-parseable by anything that is
+  // not a browser. `<!--email_off-->` is Cloudflare's documented per-element
+  // opt-out and is the only lever we hold from inside the repository.
+  //
+  // It also made the `site` workflow's byte comparison permanently red: the
+  // obfuscation key is re-randomised per request, so the live HTML never
+  // matched the build that produced it. One cause, two failures.
+  it('publishes its contact address in a form Cloudflare will not rewrite', () => {
+    for (const [name, page] of [
+      ['privacy', privacy],
+      ['terms', terms],
+      ['index', html],
+    ] as const) {
+      for (const match of page.matchAll(/<a href="mailto:[^"]+">[^<]*<\/a>/g)) {
+        const at = match.index ?? 0;
+        expect(page.slice(Math.max(0, at - 20), at), name).toContain('<!--email_off-->');
+        expect(page.slice(at + match[0].length, at + match[0].length + 20), name).toContain(
+          '<!--email_on-->',
+        );
+      }
     }
   });
 

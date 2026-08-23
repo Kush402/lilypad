@@ -13,6 +13,11 @@ on:
     # as part of the `rust` job's normal `cargo test` below.
     - cron: '0 3 * * *' # nightly 4h soak, 03:00 UTC
     - cron: '0 1 * * 0' # weekly 24h soak, Sunday 01:00 UTC
+  # Re-running the full gate should not require inventing a commit. It is also
+  # the only way to re-test the gate itself after something OUTSIDE the code
+  # changes it — the CodeQL upload was refused for a repository-plan reason on
+  # 2026-08-22 and started working again on 2026-08-23 with no diff.
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

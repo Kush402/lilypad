@@ -8,17 +8,18 @@
 # bandwidth (docs/deployment.md, "Options considered") — a marketing page that
 # gets attention should not produce a bill.
 #
-# `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` are not set, so this cannot
-# deploy. It used to skip the deploy step and report SUCCESS, which is worse
-# than not existing: on 2026-08-20 the live site still read "Not yet released
-# publicly" while a fix for exactly that line sat on `main` behind three green
-# `site` runs. A workflow that reports success without deploying teaches people
-# to trust a signal that means nothing.
+# `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` are set (2026-08-21) and
+# this workflow deploys. It did not always: it used to skip the deploy step and
+# report SUCCESS, which is worse than not existing — on 2026-08-20 the live site
+# still read "Not yet released publicly" while a fix for exactly that line sat on
+# `main` behind three green `site` runs. A workflow that reports success without
+# deploying teaches people to trust a signal that means nothing.
 #
-# It therefore builds and tests on every trigger, and FAILS on a push to `main`
-# when it cannot deploy. That red X is accurate — the site is not being
-# deployed — and it costs nothing else, because this workflow gates no other
-# work. Adding the two secrets turns it green with no edit.
+# So it FAILS rather than skips whenever it cannot deploy, and it does not
+# believe the deploy either: the two verification steps below re-fetch the live
+# site and the live installer anonymously and compare bytes. That is what caught
+# Cloudflare Email Obfuscation rewriting `support@takedia.com` into a
+# JavaScript-only `/cdn-cgi/l/email-protection` link on the privacy page.
 #
 # The token needs `Cloudflare Pages: Edit` and nothing else.
 
@@ -71,12 +72,16 @@ jobs:
 
       # ── The installer itself ───────────────────────────────────────────────
       #
-      # The source repository is private, so GitHub Releases cannot be the
-      # customer's download path: every asset URL there answers 404 to anyone
-      # without repo access, and so did the updater manifest every installed
-      # copy polls. Releases stay where they are — they are the build record —
-      # but the bytes a stranger downloads are served from Cloudflare Pages,
-      # which is public, free of egress charges, and already hosting this page.
+      # GitHub Releases are not the customer's download path. They were, and
+      # every asset URL there answered 404 to anyone without repo access — as
+      # did the updater manifest every installed copy polls — because the
+      # repository was private until 2026-08-23. It is public now and those URLs
+      # would resolve, which is exactly the argument against them: reachability
+      # that depends on a visibility toggle is not reachability. Releases stay
+      # where they are — they are the build record — but the bytes a stranger
+      # downloads are served from Cloudflare Pages, which is public regardless of
+      # that setting, free of egress charges, already hosting this page, and
+      # verified anonymously two steps below.
       #
       # Assets are fetched for the EXACT version in tauri.conf.json rather than
       # "latest". A page that says v0.1.3 while serving v0.1.2's bytes is the

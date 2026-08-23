@@ -18,9 +18,10 @@
   # does not allow anything at all.
   Content-Security-Policy: default-src 'self'; script-src 'none'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; form-action 'none'; frame-ancestors 'none'; base-uri 'none'; upgrade-insecure-requests
 
-# The installer and the updater manifest. This site is the only public path to
-# both: the source repository is private, so GitHub Releases 404 for everyone
-# outside it.
+# The installer and the updater manifest. This site is the customer's only path
+# to both, and deliberately so: GitHub Releases answered 404 to every stranger
+# while the repository was private (until 2026-08-23), and a download URL whose
+# reachability depends on a visibility toggle is not a download URL.
 
 /download/latest.json
   # Every installed copy polls this. Caching it is how an update stops shipping

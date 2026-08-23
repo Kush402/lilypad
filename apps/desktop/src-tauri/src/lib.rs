@@ -456,16 +456,19 @@ mod pairing_order_tests {
     /// The updater endpoint has to be reachable by a stranger.
     ///
     /// It used to be `github.com/Kush402/lilypad/releases/latest/download/…`,
-    /// and that repository is private: every installed copy's update check got
+    /// and the repository was private: every installed copy's update check got
     /// a 404, and the launch banner surfaced it as "Update check failed"
     /// because `phase == "error"` is one of the states it shows. The same 404
     /// was on the website's download button, so nobody outside the org could
     /// install Lilypad OR update it.
     ///
-    /// Downloads are served from the site instead. This asserts the config
-    /// still says so, because the failure is invisible from inside the org —
-    /// an authenticated browser and an authenticated `gh` both make the broken
-    /// URL look fine.
+    /// The repository became public on 2026-08-23, so those URLs would resolve
+    /// today. The rule stays: an installed copy checks for updates for years,
+    /// and one click on a repository setting would break every one of them at
+    /// once. Downloads are served from the site, which the `site` workflow
+    /// fetches anonymously and byte-compares on every deploy — the failure is
+    /// otherwise invisible from inside the org, because an authenticated
+    /// browser and an authenticated `gh` both make a broken URL look fine.
     #[test]
     fn the_updater_endpoint_is_reachable_without_a_github_account() {
         let conf: serde_json::Value =
@@ -479,8 +482,8 @@ mod pairing_order_tests {
             let url = endpoint.as_str().expect("each endpoint is a string");
             assert!(
                 !url.contains("github.com"),
-                "the source repository is private, so a GitHub release URL 404s for every \
-                 customer and for every installed copy checking for updates; got {url}"
+                "update URLs must not depend on repository visibility — one toggle 404s \
+                 every installed copy's update check at once; got {url}"
             );
             assert!(
                 url.starts_with("https://lilypadhome.takedia.com/"),
