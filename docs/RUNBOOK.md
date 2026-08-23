@@ -118,6 +118,26 @@ To resume development on the same or a new machine, just re-run the **section 1*
 steps. Because the lockfiles are committed, the rebuilt dependency tree is
 byte-for-byte the versions the release was cut from.
 
+### Docker Desktop's memory reservation
+
+Docker Desktop reserves its VM's memory from the host whether containers use it
+or not. Measured on 2026-08-23: `MemoryMiB: 6656` on an 8 GB Mac, to run three
+containers using **56 MB** between them (redis 9, postgres 29, coturn 18).
+macOS was left about 1.5 GB and had 15.6 GB of its 16 GB swap in use.
+
+Settings → Resources → Memory. 3 GB is generous for this repo — the containers
+need a fraction of it, and the headroom is for `docker build` of the backend
+image, where `tsc` is the peak. Restart Docker Desktop for it to take effect;
+`lilypad_pgdata` is a volume and survives.
+
+Docker's build cache is not covered by `pnpm clean`, and it grows without
+bound:
+
+```bash
+docker builder prune -f    # unused build cache only
+docker system df           # what is actually held
+```
+
 ### If the checkout lives in an iCloud-synced folder
 
 `~/Desktop` and `~/Documents` are synced when iCloud Drive's "Desktop &
