@@ -101,14 +101,69 @@ jobs:
             ')
           fi
 
+          # A fingerprint of WHAT is wrong, not of when it was measured. The
+          # body carries a timestamp, a run URL and live counters, so comparing
+          # bodies would find every probe different; comparing the finding set
+          # finds only real change.
+          fingerprint=$(
+            if [ -s verdict.json ]; then
+              node -e 'const v=require("./verdict.json");process.stdout.write(v.findings.map(f=>f.severity+":"+f.check).sort().join(","))'
+            else
+              echo "probe-produced-no-verdict"
+            fi
+          )
+          # Appended with printf rather than a literal newline in the string:
+          # this is inside a YAML block scalar, and a continuation line at
+          # column 0 ends the block.
+          body=$(printf '%s\n\n<!-- watchdog-fingerprint: %s -->' "$body" "$fingerprint")
+
           if [ -n "$existing" ]; then
             # One issue per incident, not one per probe. Ten-minute polling
             # would otherwise file 144 issues a day for one broken container.
-            gh issue comment "$existing" --body "$body"
-            echo "commented on #$existing"
+            #
+            # And one comment per CHANGE, not one per probe either. That was
+            # the same problem in a different shape: by 2026-08-23 this issue
+            # held 70 comments, all of them the same known `mail` warning,
+            # arriving every ten minutes. A thread nobody can read is a thread
+            # that hides the comment that matters — which is precisely the one
+            # saying something NEW broke.
+            last=$(gh issue view "$existing" --json comments --jq '.comments[-1].body // ""')
+            case "$last" in
+              *"watchdog-fingerprint: $fingerprint"*)
+                echo "unchanged since the last comment ($fingerprint) — not repeating it on #$existing"
+                ;;
+              *)
+                gh issue comment "$existing" --body "$body"
+                echo "commented on #$existing"
+                ;;
+            esac
           else
             gh issue create --title "$TITLE" --body "$body" --label watchdog 2>/dev/null \
               || gh issue create --title "$TITLE" --body "$body"
             echo "opened a new alert issue"
           fi
-          exit 1
+
+          # Red means a customer is broken. Amber means something needs doing.
+          #
+          # This used to `exit 1` for either, and on 2026-08-23 every one of the
+          # day's 33 runs was red — all of them the same known `mail` warning.
+          # A monitor that is always red is a monitor nobody reads: if Postgres
+          # had died in that window it would have produced the same red X.
+          #
+          # A warning still opens and updates the issue. That is the record. The
+          # run's colour is the alarm, and an alarm has to be able to be off.
+          critical=$(
+            if [ -s verdict.json ]; then
+              node -e 'process.stdout.write(String(require("./verdict.json").critical ?? 1))'
+            else
+              # No verdict at all means the probe could not reach production,
+              # which is an outage until proven otherwise.
+              echo 1
+            fi
+          )
+          if [ "$critical" -gt 0 ]; then
+            echo "::error::$critical critical finding(s) — see the alert issue."
+            exit 1
+          fi
+          echo "::warning::warnings only, no critical findings. The alert issue has the detail."
+          exit 0

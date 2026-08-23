@@ -101,6 +101,13 @@ jobs:
       - name: Docs check
         run: pnpm docs:check
 
+      # A workflow whose YAML does not parse is not a failing workflow — it is
+      # one GitHub stops loading. For a scheduled file like `watchdog.yml` that
+      # means monitoring ends silently on a green push, which is how this check
+      # came to exist.
+      - name: Workflows parse
+        run: pnpm workflows:check
+
       # The schema the tests run against is the migrations, not a snapshot of
       # them — so a migration that does not apply fails CI here rather than in
       # production.
