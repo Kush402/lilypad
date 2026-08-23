@@ -117,10 +117,22 @@ pnpm apple:check
 
 ## Shipping
 
-- **Mac:** tag `v0.1.5` → `release.yml` builds a universal bundle, signs,
-  notarizes, staples, publishes the GitHub release, and `site.yml` picks up the
-  assets and serves them from `lilypadhome.takedia.com`. Customers download and
-  update from the site, never from GitHub — see the note in `site.yml`.
-- **iOS:** tag `mobile-v0.1.5`, or dispatch `Mobile — iOS (TestFlight)`. It
+Versions are deliberately not named here — a document that hard-codes the next
+tag goes stale the moment one is cut, which is the same drift `pnpm release`
+had against the website (L-74).
+
+- **Mac:** `pnpm release <next>` then push the `v<next>` tag → `release.yml`
+  builds a universal bundle, signs, notarizes, staples, publishes the GitHub
+  release, and `site.yml` picks up the assets and serves them from
+  `lilypadhome.takedia.com`. Customers download and update from the site, never
+  from GitHub — see the note in `site.yml`.
+- **iOS:** tag `mobile-v<next>`, or dispatch `Mobile — iOS (TestFlight)`. It
   fails loudly if any credential is missing, rather than reporting success
   while uploading nothing.
+
+Every release up to and including **v0.1.5 is ad-hoc signed**: enough for macOS
+to bind a TCC grant, not enough for Gatekeeper. The first release cut after
+`APPLE_CERTIFICATE` exists is the first one a customer can open without the
+unidentified-developer dialog — and the first whose Screen Recording and
+Accessibility grants survive an update, because an ad-hoc cdhash changes every
+build and TCC binds a grant to the exact signature.
