@@ -276,6 +276,24 @@ jobs:
             # one — recreating cloudflared from this repo's definition is what
             # took api.takedia.com off the internet for seven minutes.
             compose up -d --no-deps backend
+
+            # `docker image prune -f` removes only DANGLING images, and every
+            # image this workflow builds is tagged with its commit — so nothing
+            # was ever reclaimed. Fifteen of them had accumulated by
+            # 2026-08-23, 346 MB each, 2.7 GB on a 45 GB disk that also holds
+            # the database and its backups.
+            #
+            # Keep the three most recent. One is serving, one is what the
+            # rollback step below reaches for, and the third is a spare for the
+            # case where a bad deploy is noticed a deploy late. Docker refuses
+            # to remove an image a container is using, so the running one is
+            # safe even if this ordering is ever wrong.
+            sudo docker images --format '{{.CreatedAt}}\t{{.ID}}\t{{.Repository}}:{{.Tag}}' \
+              | grep -F 'lilypad-backend' \
+              | sort -r \
+              | tail -n +4 \
+              | cut -f2 \
+              | xargs -r sudo docker rmi 2>/dev/null || true
             sudo docker image prune -f
 
       - name: Verify the deployment is actually serving THIS commit
