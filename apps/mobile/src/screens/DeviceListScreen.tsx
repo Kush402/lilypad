@@ -34,10 +34,25 @@ export function DeviceListScreen({ navigation }: Props) {
   const [pairs, setPairs] = useState<PairedDesktop[]>([]);
   const [connecting, setConnecting] = useState<string | null>(null);
   const { session, signOut } = useSession();
-  // A paired laptop's address wins — it is the server that laptop actually
-  // lives on, which is what makes self-hosting work. The session's address is
-  // the fallback for a phone that is signed in but has paired nothing yet.
-  const accountApiBaseUrl = pairs[0]?.apiBaseUrl ?? session?.apiBaseUrl;
+  /**
+   * Which backend "Your devices" asks.
+   *
+   * The session's, always. This screen only exists when there IS a session
+   * (`App.tsx` swaps the whole stack), and an account's devices live on the
+   * account's server — nowhere else.
+   *
+   * It used to prefer `pairs[0].apiBaseUrl`, on the reasoning that a paired
+   * laptop's address is the one that laptop lives on. True, and it is the right
+   * address to RING that laptop at; it is the wrong one to ask about an
+   * account. The moment a paired laptop advertised a different host — a
+   * self-hoster, a dev tunnel, or a desktop on a LAN address, which is what
+   * `config.ts` derives by default — tapping "Your devices" reached a server
+   * this phone has no session on. `accessToken` refuses to use a device key
+   * against a backend that is not its own (`assertHomeBackend`, L-29), so the
+   * screen threw and bounced the user to a sign-in form pointed at a stranger's
+   * server. Nothing leaked; the account screen was simply unreachable.
+   */
+  const accountApiBaseUrl = session?.apiBaseUrl;
 
   const refresh = useCallback(() => {
     void loadPairs().then(setPairs);
