@@ -1,9 +1,10 @@
 # Production deploy for the Lilypad control plane.
 #
-# Gate first, deploy second, verify third. The gate is the same one `ci.yml`
-# runs on every push — repeated here rather than assumed, because a deploy that
-# trusts a green check from an older commit is how untested code reaches
-# production.
+# Gate first, deploy second, verify third. The gate is literally `ci.yml`,
+# called as a reusable workflow rather than trusted from an older run — a deploy
+# that believes a green check from a previous commit is how untested code
+# reaches production. It is called rather than copied because it WAS copied, and
+# the copy drifted far enough that no deploy could pass it (see the `gate` job).
 #
 # Manual dispatch by default. Nothing deploys because a branch moved; a human
 # (or a tag) decides.
@@ -70,26 +71,31 @@ jobs:
           fi
           echo "all deploy inputs present"
 
+  # THE gate, not a copy of it.
+  #
+  # This job used to inline its own list of steps, described in the header above
+  # as "the same one `ci.yml` runs on every push". It was not the same, and the
+  # difference was invisible: `ci.yml` gained Postgres and Redis services on
+  # 2026-08-22 and this did not, so `support.test.ts` and `appVersion.test.ts`
+  # failed here on every dispatch while passing there. It also ran node 22
+  # against CI's 20, skipped the Rust suite, skipped CodeQL, and skipped the
+  # eleven device-identity end-to-end tests.
+  #
+  # Calling the workflow removes the drift rather than correcting it once. The
+  # audit step this job used to own lives in `ci.yml`'s security job, so nothing
+  # is lost: a known-vulnerable dependency still blocks the deploy. The
+  # exceptions, and why, are in docs/deployment.md § "Dependency audit
+  # exceptions" — an ignore with no written reason is indistinguishable from one
+  # added to go green.
   gate:
     name: test · typecheck · lint · build · docs · audit
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: 22, cache: pnpm }
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm typecheck
-      - run: pnpm lint
-      - run: pnpm test
-      - run: pnpm build
-      - run: pnpm docs:check
-      - run: pnpm format:check
-      # Blocking: a known-vulnerable dependency must not reach production
-      # silently. The two suppressed advisories, and why, are in
-      # docs/deployment.md § "Dependency audit exceptions" — an ignore with no
-      # written reason is indistinguishable from one added to go green.
-      - run: pnpm audit --audit-level high
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+      # CodeQL's upload, and the workflow-runs read it makes afterwards. A
+      # called workflow gets only what the caller grants.
+      security-events: write
+      actions: read
 
   image:
     name: build and push image

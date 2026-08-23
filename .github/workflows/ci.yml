@@ -18,6 +18,12 @@ on:
   # changes it — the CodeQL upload was refused for a repository-plan reason on
   # 2026-08-22 and started working again on 2026-08-23 with no diff.
   workflow_dispatch:
+  # `deploy.yml` calls this instead of keeping its own copy of the gate. It had
+  # a copy, and the copy drifted: `ci.yml` gained Postgres and Redis services on
+  # 2026-08-22, `deploy.yml` did not, so two database-backed suites failed there
+  # and NO deploy could reach the image step. Nobody saw it, because Actions was
+  # blocked on billing until 2026-08-23 and the workflow had never run.
+  workflow_call:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
