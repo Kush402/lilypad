@@ -95,8 +95,29 @@ fn quote(value: &str) -> String {
     format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
+/// `security -i` reads one command per LINE, so a value containing a newline is
+/// not a value — it is a second command. `quote` escapes backslashes and double
+/// quotes, which is what the argument parser needs, and cannot help with a line
+/// break because the split happens before parsing.
+///
+/// This is not only the hostile case. Copying an API key out of a provider's
+/// dashboard picks up a line break often enough that it is the ordinary one,
+/// and the JS side only trims the ends. Refusing is right either way: no real
+/// API key contains a control character, so anything that does is a paste that
+/// went wrong, and storing half of it would fail later as an authentication
+/// error nobody could explain.
+fn reject_control_characters(api_key: &str) -> Result<()> {
+    if api_key.chars().any(char::is_control) {
+        anyhow::bail!(
+            "That key has a line break or control character in it — copy just the key itself and try again."
+        );
+    }
+    Ok(())
+}
+
 #[cfg(target_os = "macos")]
 pub fn keychain_set(kind: &str, api_key: &str) -> Result<()> {
+    reject_control_characters(api_key)?;
     // -U updates in place if the item exists.
     security_interactive(&format!(
         "add-generic-password -U -s {} -a {} -w {}\n",
@@ -105,6 +126,14 @@ pub fn keychain_set(kind: &str, api_key: &str) -> Result<()> {
         quote(api_key),
     ))
     .map(|_| ())
+    // `security(1) failed: SecKeychainAddGenericPassword: User interaction is
+    // not allowed.` is what a locked or declined keychain produced on the Ask
+    // setup card, verbatim. Same class as the raw HTTP status that used to
+    // reach the linking screen.
+    .map_err(|err| {
+        log::warn!(target: "lilypad::agent", "keychain write failed: {err:#}");
+        anyhow!("Lilypad couldn’t save that key to the macOS keychain. If a permission box appeared, allow it and try again.")
+    })
 }
 
 #[cfg(target_os = "macos")]
@@ -140,7 +169,9 @@ pub fn keychain_delete(kind: &str) -> Result<()> {
 
 #[cfg(not(target_os = "macos"))]
 pub fn keychain_set(_kind: &str, _api_key: &str) -> Result<()> {
-    Err(anyhow!("secure key storage not implemented on this OS yet"))
+    Err(anyhow!(
+        "Lilypad can’t store an API key securely on this operating system yet."
+    ))
 }
 #[cfg(not(target_os = "macos"))]
 pub fn keychain_get(_kind: &str) -> Option<String> {
@@ -179,5 +210,33 @@ mod tests {
     #[test]
     fn quote_escapes_hostile_values() {
         assert_eq!(quote(r#"a"b\c"#), r#""a\"b\\c""#);
+    }
+
+    /// `security -i` is line-oriented, so a newline inside a value ends the
+    /// command and starts another one. `quote` cannot fix that — the split
+    /// happens before the argument parser sees the quotes — so the value is
+    /// refused instead.
+    ///
+    /// The ordinary case is a paste that picked up a line break, not an attack.
+    /// Either way, half a key stored silently fails later as an authentication
+    /// error nobody can explain.
+    #[test]
+    fn a_key_with_a_line_break_is_refused_rather_than_split_into_two_commands() {
+        for hostile in [
+            "sk-real\nadd-generic-password -U -s evil -a evil -w stolen",
+            "sk-real\rdelete-generic-password -s lilypad",
+            "sk-\u{0}real",
+            "sk-real\ttab",
+        ] {
+            let err = super::reject_control_characters(hostile)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                err.contains("line break or control character"),
+                "expected a refusal for {hostile:?}, got {err}"
+            );
+        }
+        // A real key is all printable, and must still go through.
+        assert!(super::reject_control_characters("sk-ant-api03-AbC_123-xyz").is_ok());
     }
 }
