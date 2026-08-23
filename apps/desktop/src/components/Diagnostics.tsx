@@ -1,4 +1,6 @@
+import { useCallback, useState } from 'react';
 import { useAppState } from '../lib/useAppState';
+import type { AppStateDto } from '../lib/tauri';
 import { SoftwareUpdate } from './SoftwareUpdate';
 
 /** Consumer-facing labels for what were internal plugin names before the M3
@@ -28,6 +30,53 @@ const PATH_LABEL: Record<string, string> = {
 };
 
 /**
+ * Whether a phone can ring this Mac right now, in words.
+ *
+ * This is the state that was invisible when it mattered most: on 2026-08-22 a
+ * Mac spent six hours refusing its own presence registration while the
+ * dashboard said "Linked" and the phone said "the laptop is offline" — both
+ * true, neither the one a person needed. The dashboard shows the remedy and
+ * says nothing while things are fine; this window is where the mechanism
+ * belongs.
+ */
+const PRESENCE_LABEL: Record<string, string> = {
+  starting: 'Starting up',
+  connecting: 'Connecting to Lilypad',
+  online: 'Reachable — a phone can ring this Mac',
+  unreachable: 'Cannot reach Lilypad’s server',
+  refused: 'Lilypad refused this Mac — it is unlinked, revoked, or has no key',
+  no_identity: 'This Mac has no saved key, so it cannot be reached',
+};
+
+/**
+ * Everything above, as text a person can paste into an email.
+ *
+ * A support window whose contents can only be retyped is a support window for
+ * people who can already read a uuid aloud. `pnpm support <email>` covers the
+ * server side; this is the half only the customer's own machine knows.
+ */
+export function diagnosticsReport(state: AppStateDto, version: string): string {
+  const health = Object.entries(state.plugin_health)
+    .map(([name, value]) => `  ${HEALTH_LABEL[name] ?? name}: ${value}`)
+    .join('\n');
+  return [
+    'Lilypad diagnostics',
+    `version: ${version}`,
+    `device: ${state.device_id}`,
+    `backend: ${state.backend_base_url}`,
+    `reachable: ${PRESENCE_LABEL[state.presence.state] ?? state.presence.state}`,
+    `session: ${state.session}`,
+    `last connection: ${
+      state.connection_path
+        ? (PATH_LABEL[state.connection_path] ?? state.connection_path)
+        : 'none yet'
+    }`,
+    'health:',
+    health || '  (none reported)',
+  ].join('\n');
+}
+
+/**
  * Developer/support diagnostics — the "Plugin health" list that used to sit
  * at the bottom of the approve/session window, visible to every user during
  * normal operation. Moved to its own window, reachable only via the tray's
@@ -37,11 +86,33 @@ const PATH_LABEL: Record<string, string> = {
  */
 export function Diagnostics() {
   const state = useAppState();
+  const [copied, setCopied] = useState(false);
+
+  const copy = useCallback(async () => {
+    if (!state) return;
+    // `navigator.clipboard` rather than a Tauri plugin: the window is a
+    // webview, this is one call, and a dependency that ships a permission
+    // surface to save it is a dependency to patch forever.
+    const version = await import('../lib/tauri').then((m) => m.updater.currentVersion());
+    await navigator.clipboard.writeText(diagnosticsReport(state, version));
+    setCopied(true);
+  }, [state]);
 
   return (
     <div className="page diagnostics">
       <h1>Diagnostics</h1>
       <p className="muted">Support/developer information — not shown during normal use.</p>
+
+      <div className="row">
+        <button
+          className="btn"
+          data-testid="copy-diagnostics"
+          disabled={!state}
+          onClick={() => void copy()}
+        >
+          {copied ? 'Copied' : 'Copy for support'}
+        </button>
+      </div>
 
       <SoftwareUpdate variant="panel" />
 
@@ -63,6 +134,12 @@ export function Diagnostics() {
         <section className="debug">
           <h2>Last connection</h2>
           <ul className="debug__list">
+            <li>
+              <span>Reachable by a phone</span>
+              <span data-testid="presence-state">
+                {PRESENCE_LABEL[state.presence.state] ?? state.presence.state}
+              </span>
+            </li>
             <li>
               <span>Path</span>
               <span data-testid="connection-path">
