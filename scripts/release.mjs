@@ -25,6 +25,7 @@
  * deliberate, visible act (the `Release` workflow triggers on the `v*` tag).
  */
 import { readFileSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -124,6 +125,7 @@ function main() {
     'iOS project.pbxproj',
     2,
   );
+  console.log(`\x1b[32m✓ bumped ${current} → ${next}\x1b[0m in:`);
   replaceOnce(
     ANDROID_GRADLE,
     `versionName "${current}"`,
@@ -131,7 +133,31 @@ function main() {
     'android build.gradle',
   );
 
-  console.log(`\x1b[32m✓ bumped ${current} → ${next}\x1b[0m in:`);
+  // Cargo.lock records the workspace member's own version, and bumping
+  // Cargo.toml without it leaves the two disagreeing. They did: at tag v0.1.4
+  // Cargo.toml said 0.1.4 and the committed Cargo.lock still said 0.1.3, so
+  // every tagged commit carried a lockfile one release behind — repaired only
+  // afterwards, by whoever next ran cargo. Nothing failed, because no build
+  // passes `--locked`; a build that did would refuse the release tag, and a
+  // "reproducible from the tag" claim would be false.
+  //
+  // `--workspace --offline` touches only the local package (5s, no network,
+  // no dependency resolution), so this cannot quietly move a dependency as a
+  // side effect of cutting a release.
+  try {
+    execFileSync('cargo', ['update', '--workspace', '--offline'], {
+      cwd: dirname(CARGO_TOML),
+      stdio: 'pipe',
+    });
+    console.log('  apps/desktop/src-tauri/Cargo.lock');
+  } catch (err) {
+    die(
+      `Cargo.toml was bumped but Cargo.lock could not be updated: ${err.message}\n` +
+        `Run \`cargo update --workspace --offline\` in apps/desktop/src-tauri before committing.`,
+    );
+  }
+
+
   console.log('  apps/desktop/src-tauri/tauri.conf.json');
   console.log('  apps/desktop/src-tauri/Cargo.toml');
   console.log('  apps/desktop/package.json');
