@@ -16,9 +16,9 @@ This file exists because the list used to live only in a conversation. Six rows
 (L-20, L-38 through L-42) were reconstructed from later summaries after the
 earlier record was compacted away, which is the argument for the file.
 
-**Status counts:** 64 fixed · 6 blocked on something outside the code ·
+**Status counts:** 65 fixed · 6 blocked on something outside the code ·
 3 deliberately unchanged · 2 not a bug · 1 open (L-47) · 1 unrecoverable
-(L-20). 77 rows.
+(L-20). 78 rows.
 
 Counted from the rows rather than kept by hand — the previous header said
 "3 not a bug · 7 blocked", which folded L-47 (open, not blocked) and L-20
@@ -103,6 +103,7 @@ what it is tallying is the failure this file was created to stop.
 | L-75 | CI audited JavaScript dependencies and not Rust ones. The native binary — the half that captures the screen and injects input — carries 643 crates and had no advisory gate at all; L-47 was found by hand. Running one finds exactly one vulnerability, RUSTSEC-2025-0008, which is L-47.                                                                                                                         | Fixed — `rust-audit` job                                                                                                           |
 | L-76 | `pnpm doctor` — the command README, CONTRIBUTING, the runbook, `bootstrap.mjs` and `run-tauri.mjs` all told people to run to check their machine — is one of **pnpm's own** commands. The script was shadowed: it printed a pnpm config warning, exited 0, and diagnosed nothing. A diagnostic that silently diagnoses nothing is worse than not having one.                                                       | Fixed — `pnpm env:check`                                                                                                           |
 | L-77 | `Setup.test.tsx` waited for the `get_permission_status` command to have been _called_, then asserted synchronously on the render that its promise produces. On this machine the microtask always flushed first; on a loaded CI runner it did not, and the run went red on working code with "Unable to find an element with the text: Screen Recording". The very next test in the file already used `findByText`. | Fixed                                                                                                                              |
+| L-78 | Four orphaned `pnpm dev` trees (`ppid 1`, no terminal) were still running on this Mac — one started 8 days earlier. The oldest held `:8080`, and because `tsx watch` restarts on change it had been recompiling the backend on every file edited during this session. A stale dev server on the default port answers a developer's local requests with whatever code it started with.                              | Fixed — killed; documented                                                                                                         |
 | L-47 | `openh264` 0.6 carries a heap-overflow advisory (GHSA, HIGH) fixed in 0.8. The advisory is in the **decoding** functions; this codebase only encodes.                                                                                                                                                                                                                                                              | Open — not reachable, bump needs real-device video validation                                                                      |
 
 ## What is left, and who it needs

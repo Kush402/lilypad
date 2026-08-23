@@ -118,6 +118,19 @@ To resume development on the same or a new machine, just re-run the **section 1*
 steps. Because the lockfiles are committed, the rebuilt dependency tree is
 byte-for-byte the versions the release was cut from.
 
+### Orphaned dev servers
+
+`pnpm dev` outlives the terminal that started it. Four of them were found
+running on 2026-08-23, the oldest eight days old and still holding `:8080` —
+and since `tsx watch` restarts on change, it had been rebuilding the backend on
+every file edited that day. A stale server on the default port answers local
+requests with whatever code it started with, which is a bad afternoon.
+
+```bash
+ps -Ao pid,ppid,lstart,command | awk '$2==1' | grep -E 'pnpm|vite|metro|tsx'
+lsof -nP -iTCP -sTCP:LISTEN | grep -E ':(8080|8099|5173|1420|8081) '
+```
+
 ### Docker Desktop's memory reservation
 
 Docker Desktop reserves its VM's memory from the host whether containers use it
