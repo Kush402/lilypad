@@ -172,6 +172,84 @@ async function checkSite() {
       `${SITE} still says the product is not released`,
       'The Cloudflare Pages deploy is not tracking main. Check the `site` workflow and its CLOUDFLARE_* secrets.');
   }
+  // Cloudflare rewrites `mailto:` into a JavaScript-only
+  // `/cdn-cgi/l/email-protection` link unless the HTML wraps it in
+  // `<!--email_off-->`. That is a zone setting, not a deploy artifact, so it
+  // can come back without anything in this repository changing — and when it
+  // does, the address the privacy policy exists to publish becomes unreadable
+  // to anything that is not a browser running scripts.
+  if (/__cf_email__/.test(probe.value.text)) {
+    alert('warning', 'site-email-obfuscated',
+      `${SITE} is serving its contact address as a JavaScript-only cdn-cgi link`,
+      'Cloudflare Email Obfuscation is rewriting it. Check the `<!--email_off-->` wrappers survived the build, or turn the zone setting off.');
+  }
+}
+
+/**
+ * The download, fetched the way a stranger fetches it.
+ *
+ * The site being up says nothing about this. For weeks every download and every
+ * installed copy's update check answered 404, because both pointed at a private
+ * GitHub repository — and the page rendered perfectly the whole time. The
+ * `site` workflow proves this on deploy; nothing proved it in between, and a
+ * Pages purge, an `_headers` change or a bad release upload all break it
+ * without a deploy.
+ *
+ * Critical, both of them: a broken installer means nobody new can start, and a
+ * broken manifest means every existing install silently stops updating and
+ * shows "Update check failed".
+ */
+async function checkDownload() {
+  const installer = await timed(async () => {
+    const res = await fetch(`${SITE}/download/Lilypad.dmg`, {
+      method: 'HEAD',
+      redirect: 'follow',
+      signal: AbortSignal.timeout(20_000),
+    });
+    return { status: res.status, type: res.headers.get('content-type'), length: res.headers.get('content-length') };
+  });
+  facts.installer = installer;
+  if (installer.error || installer.value.status !== 200) {
+    alert('critical', 'download',
+      `HEAD ${SITE}/download/Lilypad.dmg → ${installer.error ?? installer.value.status}`,
+      'Nobody can install Lilypad. Re-run the `site` workflow, which stages the installer and verifies it anonymously.');
+  }
+
+  const manifest = await timed(async () => {
+    const res = await fetch(`${SITE}/download/latest.json`, { signal: AbortSignal.timeout(20_000) });
+    if (!res.ok) return { status: res.status };
+    return { status: res.status, body: await res.json() };
+  });
+  facts.updateManifest = manifest.error
+    ? manifest
+    : { ...manifest, value: { status: manifest.value.status, version: manifest.value.body?.version } };
+  if (manifest.error || manifest.value.status !== 200 || !manifest.value.body?.platforms) {
+    return alert('critical', 'update-manifest',
+      `GET ${SITE}/download/latest.json → ${manifest.error ?? manifest.value.status}`,
+      'Every installed copy polls this. A failure here shows in the app as "Update check failed" and updates stop for everyone.');
+  }
+
+  // The manifest naming an archive is not the archive existing. Both have to
+  // hold, and only one of them is visible from the JSON.
+  const url = Object.values(manifest.value.body.platforms)[0]?.url;
+  if (!url) {
+    return alert('critical', 'update-manifest',
+      'the update manifest names no archive for any platform',
+      'The `site` workflow builds this from the release assets. Re-run it.');
+  }
+  const archive = await timed(async () => {
+    const res = await fetch(url, { method: 'HEAD', redirect: 'follow', signal: AbortSignal.timeout(20_000) });
+    return { status: res.status, type: res.headers.get('content-type') };
+  });
+  facts.updateArchive = archive;
+  // A 200 is not enough on a host that answers 200 text/html for every missing
+  // path — the SPA fallback made an earlier version of this exact check inert.
+  const served = archive.error ? null : archive.value;
+  if (!served || served.status !== 200 || /html/i.test(served.type ?? '')) {
+    alert('critical', 'update-archive',
+      `HEAD ${url} → ${archive.error ?? `${served?.status} ${served?.type}`}`,
+      'The manifest points at an archive the site does not serve, so every update fails mid-download.');
+  }
 }
 
 /**
@@ -344,6 +422,7 @@ async function checkTurnTls() {
 await checkApi();
 await checkMetrics();
 await checkSite();
+await checkDownload();
 await checkTurn();
 await checkTurnTls();
 await checkHosts();
