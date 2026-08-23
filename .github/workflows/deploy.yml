@@ -101,12 +101,16 @@ jobs:
     name: build and push image
     needs: [preflight, gate]
     runs-on: ubuntu-latest
+    # A deploy that can run for six hours is a deploy nobody can reason about
+    # during an incident. Fifteen minutes is roughly double a warm build.
+    timeout-minutes: 15
     permissions: { contents: read, packages: write }
     outputs:
       digest: ${{ steps.push.outputs.digest }}
     steps:
       - uses: actions/checkout@v4
-      - uses: docker/setup-qemu-action@v3
+      # No `setup-qemu-action`: nothing here is cross-built any more. See the
+      # `platforms` note below.
       - uses: docker/setup-buildx-action@v3
       - name: Compute a GHCR-legal image reference
         # `${OWNER,,}` is bash lowercasing; GHCR requires it and workflow
@@ -125,13 +129,19 @@ jobs:
         with:
           context: .
           file: apps/backend/Dockerfile
-          # Production today is x86_64 — `uname -m` on the Oracle host, checked
-          # 2026-08-23, not inferred from the tier name. arm64 is built anyway
-          # so the Ampere instances in the same free tier stay a move that costs
-          # a `docker compose pull`, and because the paid fallback (Hetzner CX)
-          # is x86 while its ARM line is not. The GHA cache below is what keeps
-          # the second architecture from costing a second build.
-          platforms: linux/amd64,linux/arm64
+          # amd64 only, because that is what production is: `uname -m` on the
+          # Oracle host says x86_64, checked 2026-08-23 rather than inferred
+          # from the tier name.
+          #
+          # It used to build linux/arm64 as well, for the Ampere instances in
+          # the same free tier — a move nobody has made. QEMU emulates the whole
+          # `pnpm install` and TypeScript build to do it, and the first such run
+          # was cancelled at 45 minutes without finishing. The cost is not the
+          # CI minutes; it is that the time to ship a fix to a broken production
+          # was 45 minutes, on a control plane with one machine and one
+          # operator. Adding `,linux/arm64` back is a one-line change on the day
+          # an ARM host actually exists.
+          platforms: linux/amd64
           push: true
           # Baked into the image and reported by /health, so "which commit is
           # serving?" is answerable with curl instead of an SSH session.

@@ -679,7 +679,13 @@ Stated explicitly so nothing here reads as more finished than it is.
 
 ### Verified locally
 
-- The production image builds for `linux/amd64` and `linux/arm64`.
+- The production image builds for `linux/amd64`, which is what production runs
+  (`uname -m` on the Oracle host, 2026-08-23). It built `linux/arm64` too until
+  the same date, for Ampere instances nobody has moved to; QEMU emulates the
+  whole install-and-compile to produce it, and the first deploy that actually
+  ran was cancelled at 45 minutes still building. A deploy that slow is a
+  time-to-recover that slow. `deploy.yml` names the platform in one line, so an
+  ARM host is a one-line change on the day one exists.
 - It boots under real production configuration and reports
   `{"status":"ok","checks":{"postgres":"up","redis":"up"}}`, with Docker
   reporting the container `healthy`.

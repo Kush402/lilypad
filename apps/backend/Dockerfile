@@ -1,11 +1,11 @@
 # Lilypad backend — production image.
 #
 # Multi-stage so the runtime layer carries no compiler, no dev dependencies and
-# no source: only `dist/` and production `node_modules`. Built for linux/amd64
-# and linux/arm64 alike, so the deployment does not care which it lands on.
-# Production today is amd64 — `uname -m` on the Oracle host, 2026-08-23 — and
-# arm64 is built to keep the Ampere instances in the same free tier one
-# `docker compose pull` away.
+# no source: only `dist/` and production `node_modules`. Nothing here is
+# architecture-specific, so it builds for whatever `docker buildx` is told to
+# target. `deploy.yml` targets linux/amd64 only, because that is what production
+# is — and because cross-building arm64 under QEMU took longer than an incident
+# can wait.
 #
 # Node 22 (repo requires >=20) on Alpine. `--frozen-lockfile` so an image can
 # never silently resolve different dependency versions than CI tested.
