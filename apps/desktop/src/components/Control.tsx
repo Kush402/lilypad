@@ -135,13 +135,22 @@ export function Control() {
         </div>
       </header>
 
-      <p className="dashboard__subtitle muted">{sessionSummary(session)}</p>
+      {/* The session changes without anyone touching this window — a phone
+          rings, a link drops, a peer reconnects. Sighted users get that from
+          this line changing under them; `polite` is what makes it reach
+          everyone else, without interrupting whatever is being read. */}
+      <p className="dashboard__subtitle muted" aria-live="polite" data-testid="session-summary">
+        {sessionSummary(session)}
+      </p>
 
       {/* Silent launch-time update check; renders only when an update exists. */}
       <SoftwareUpdate variant="banner" />
 
       {session === 'awaiting_approval' ? (
-        <section className="control__approve card">
+        // `alert`, not `status`: this is a request to control this Mac, it
+        // arrives unprompted, and it expires. It is the one thing in the app
+        // that has earned the right to interrupt.
+        <section className="control__approve card" role="alert">
           <p className="control__approve-title">
             <strong>{pending?.device_name ?? 'An unknown device'}</strong>{' '}
             {scopeSentence(pending?.requested_scopes ?? [])}
@@ -451,7 +460,7 @@ function TrustedDevices({ linked }: { linked: boolean }) {
         </div>
       ) : null}
       {actionError ? (
-        <p className="error" data-testid="trusted-devices-action-error">
+        <p className="error" role="alert" data-testid="trusted-devices-action-error">
           {actionError}
         </p>
       ) : null}

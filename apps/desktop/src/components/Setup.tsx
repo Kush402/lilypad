@@ -307,9 +307,18 @@ export function Setup() {
             const granted = status[kind];
             return (
               <section key={kind} className="control__approve">
-                <p className="control__approve-title">
+                {/* This flips while the user is over in System Settings, with
+                    no interaction here to hang an announcement on — the whole
+                    point of the live poll above. Sighted users see the chip
+                    appear; `polite` is how everyone else learns the step is
+                    done and they can come back. */}
+                <p className="control__approve-title" aria-live="polite">
                   <strong>{COPY[kind].label}</strong>
-                  {granted ? <span className="chip">Granted</span> : null}
+                  {granted ? (
+                    <span className="chip" data-testid={`granted-${kind}`}>
+                      Granted
+                    </span>
+                  ) : null}
                 </p>
                 <p className="muted">{COPY[kind].body}</p>
                 {!granted ? (

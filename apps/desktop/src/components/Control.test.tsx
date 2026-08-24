@@ -517,3 +517,45 @@ describe('Control — can a phone actually reach this Mac', () => {
     expect(screen.queryByTestId('reachability')).not.toBeInTheDocument();
   });
 });
+
+/**
+ * State that changes without anyone touching this window.
+ *
+ * Lilypad is asynchronous by nature — a phone rings this Mac, a link drops, a
+ * peer reconnects — and until 2026-08-24 the desktop had **no `aria-live`
+ * anywhere**. Every one of those changes was silent to a VoiceOver user, who
+ * would sit in front of a window that had already changed its mind.
+ *
+ * The two cases are deliberately different: the running status is `polite`
+ * (say it when there is a gap), while an incoming request to control this Mac
+ * is an `alert` (say it now). Nothing else in the app has earned an
+ * interruption.
+ */
+describe('Control announces what changes on its own', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('marks the session status as a live region', () => {
+    vi.mocked(useAppState).mockReturnValue(dto({ session: 'idle' }));
+    render(<Control />);
+    expect(screen.getByTestId('session-summary')).toHaveAttribute('aria-live', 'polite');
+  });
+
+  it('makes an incoming control request interrupt, not wait politely', () => {
+    vi.mocked(useAppState).mockReturnValue(
+      dto({
+        session: 'awaiting_approval',
+        pending_request: {
+          device_name: 'iPhone',
+          requested_scopes: ['view'],
+          requested_at: Date.now(),
+        },
+      }),
+    );
+    render(<Control />);
+    // A request to control this Mac expires, so it cannot queue behind
+    // whatever is currently being read out.
+    expect(screen.getByRole('alert')).toHaveTextContent(/iPhone/);
+  });
+});
