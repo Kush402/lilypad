@@ -122,22 +122,39 @@ describe('distribution and relay claims match reality', () => {
   // support. Each assertion pins a fact that was VERIFIED, and must be relaxed
   // only when the underlying fact changes — not when the copy is reworded.
 
-  // Verified: `security find-identity -v -p codesigning` offers only an "Apple
-  // Development" certificate. Developer ID signing and notarization both
-  // require a paid Apple Developer Program membership, which does not exist.
-  it('does not claim the macOS build is signed or notarized', () => {
+  // Flipped 2026-08-24, which is what the note above asks for: the underlying
+  // FACT changed, rather than the copy being reworded around a fact that
+  // hadn't. Verified by downloading the DMG this site serves, anonymously, and
+  // running Gatekeeper against it:
+  //
+  //   spctl -a -t open --context context:primary-signature Lilypad.dmg
+  //     accepted · source=Notarized Developer ID
+  //     origin=Developer ID Application: Abhinay Pandey (AR2Q4Y465L)
+  //   xcrun stapler validate Lilypad.dmg → The validate action worked!
+  //
+  // Until then the page told every visitor the app was unsigned and that macOS
+  // would offer "Move to Trash" — a claim that was true when written and, once
+  // it stopped being true, made the product look worse than it is. These
+  // assertions now hold the opposite line, and fail the moment the page
+  // under-claims again.
+  it('says the macOS build is signed and notarized, because it is', () => {
     const row = /<th scope="row">macOS<\/th>[\s\S]{0,300}?<\/tr>/.exec(html);
     expect(row).not.toBeNull();
-    expect(row![0].replace(/\s+/g, ' ')).not.toMatch(/\bsigned and notarized\b/i);
-    expect(flat).toMatch(/macOS[\s\S]{0,200}?not yet signed or notarized/i);
+    const macos = row![0].replace(/\s+/g, ' ');
+    expect(macos).toMatch(/notarized/i);
+    expect(macos).not.toMatch(/not (yet )?(signed|notarized)/i);
   });
 
-  // Verified: the same missing membership means no TestFlight, so a customer
-  // has no way to install the iPhone app at all.
-  it('admits the iPhone app has no public install path', () => {
+  // Verified: App Store Connect record 6804827369 ("Lilypad RC"), build 1
+  // processingState VALID, in an INTERNAL TestFlight group. Internal means
+  // invitation — there is no public link and no App Store listing — so the
+  // page must say TestFlight without implying the store.
+  it('offers the iPhone app through TestFlight without claiming the App Store', () => {
     const row = /<th scope="row">iOS<\/th>[\s\S]{0,300}?<\/tr>/.exec(html);
     expect(row).not.toBeNull();
-    expect(row![0].replace(/\s+/g, ' ')).toMatch(/no public install path/i);
+    const ios = row![0].replace(/\s+/g, ' ');
+    expect(ios).toMatch(/TestFlight/i);
+    expect(ios).toMatch(/no public App Store listing/i);
   });
 
   // Verified 2026-08-19: coturn is deployed at turn.takedia.com (Oracle Always
@@ -200,14 +217,16 @@ describe('release status', () => {
     // literal in this test is exactly what let that pass: it asserted the page
     // was consistent with the test, not with the build a visitor downloads.
     expect(html).toContain(`v${shippedVersion}`);
-    // Builds are ad-hoc signed from 0.1.4 — enough for macOS to bind a TCC
-    // grant, not enough for Gatekeeper — so the page must still warn. It may
-    // stop only when a Developer ID build is notarized.
-    expect(html).toMatch(/not notarized|unsigned|not signed/i);
+    // The Developer ID build the previous condition was waiting for shipped in
+    // v0.1.7. Warning about a Gatekeeper prompt that no longer appears would
+    // send a customer to System Settings to fix nothing, so the page must NOT
+    // say it any more.
+    expect(html).not.toMatch(/not notarized|unsigned|not signed/i);
   });
 
-  it('still tells iPhone users there is no install path', () => {
-    expect(html).toMatch(/built from source/i);
+  it('does not send iPhone users to Xcode now that TestFlight exists', () => {
+    expect(html).not.toMatch(/built from source/i);
+    expect(html).toMatch(/TestFlight/i);
   });
 });
 
@@ -348,8 +367,11 @@ describe('the repository’s own public pages', () => {
     // `release.yml` warns "APPLE_API_KEY_P8 not set — skipping notarization"
     // and that secret is not configured. Saying otherwise on the front page is
     // the `$XXXX` problem with a security shape.
-    expect(readme).not.toMatch(/signed \+ notarized/i);
-    expect(readme).toMatch(/not notarized/i);
+    // v0.1.7 is the build that made this true; before it, the README claimed a
+    // notarized bundle that nothing notarized. The assertion is kept, pointed
+    // the other way, so the claim stays tied to a fact either way.
+    expect(readme).toMatch(/notarized by Apple/i);
+    expect(readme).not.toMatch(/not notarized/i);
   });
 });
 

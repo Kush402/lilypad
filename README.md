@@ -26,11 +26,13 @@ for a session between two devices on the same network. See
 > both clients, and the **Ask** AI operator (tiered, sandboxed, model-agnostic)
 > driving the Mac from the phone.
 >
-> **Not yet true, and stated here because a README is a claim:** the macOS
-> bundle is **ad-hoc signed and not notarized** — there is no Apple Developer
-> Program subscription, so Gatekeeper shows the unidentified-developer warning
-> on first launch. Sign in with Apple, TestFlight and the App Store are blocked
-> on the same purchase.
+> **Distribution, stated here because a README is a claim:** since v0.1.7 the
+> macOS bundle is **signed with a Developer ID and notarized by Apple**, and
+> the DMG carries its own stapled ticket — Gatekeeper accepts it with no
+> warning, offline included. It ships from team `AR2Q4Y465L`, a collaborator's
+> Apple Developer account, not the repository owner's. The iPhone app is on
+> **TestFlight by invitation** (App Store Connect record "Lilypad RC"); there
+> is no public App Store listing yet.
 >
 > Installers and updates are served from **lilypadhome.takedia.com**, not from
 > GitHub Releases: a customer-facing URL should not depend on a repository

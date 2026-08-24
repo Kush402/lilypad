@@ -54,8 +54,8 @@
         </p>
         <p class="hero__platforms"><span class="chip">macOS</span> <span class="chip">iOS</span></p>
         <p class="hero__note">
-          macOS build available now — <a href="#get">v0.1.7</a>, not notarized, so macOS warns on
-          first open. iPhone still has to be built from source.
+          macOS build available now — <a href="#get">v0.1.8</a>, signed and notarized by Apple, so
+          it opens with no warning. iPhone is in TestFlight, by invitation while it is in beta.
         </p>
       </section>
 
@@ -170,15 +170,15 @@
               <tr>
                 <th scope="row">macOS</th>
                 <td>
-                  <span class="tag tag--yes">Supported</span> Universal build. Not yet signed or
-                  notarized — macOS will warn on first open
+                  <span class="tag tag--yes">Supported</span> Universal build, signed with a
+                  Developer ID and notarized by Apple — it opens with no warning
                 </td>
               </tr>
               <tr>
                 <th scope="row">iOS</th>
                 <td>
-                  <span class="tag tag--yes">Supported</span> iPhone. No public install path yet —
-                  TestFlight needs a paid Apple developer account
+                  <span class="tag tag--yes">Supported</span> iPhone, through TestFlight by
+                  invitation. No public App Store listing yet
                 </td>
               </tr>
               <tr>
@@ -255,20 +255,19 @@
         <div class="band__inner">
           <h2>Get it</h2>
           <p class="lede">
-            <a href="/download/Lilypad.dmg">Download for macOS</a> — v0.1.7, universal, 20&nbsp;MB.
+            <a href="/download/Lilypad.dmg">Download for macOS</a> — v0.1.8, universal, 20&nbsp;MB.
           </p>
           <p>
             macOS ships as a universal build served from this site, and installed copies update
-            themselves from it. It is <strong>not signed or notarized yet</strong>: on first open
-            macOS says it &ldquo;cannot verify Lilypad is free of malware&rdquo; and offers only
-            <em>Move to Trash</em> or <em>Done</em>. To run it anyway, open
-            <strong>System&nbsp;Settings &rarr; Privacy &amp; Security</strong> and choose
-            <strong>Open Anyway</strong>. A paid Apple developer account is what removes this step.
+            themselves from it. It is <strong>signed with a Developer ID and notarized by
+            Apple</strong>, and the disk image carries its own stapled ticket — so it opens on a
+            first double-click with no Gatekeeper warning, nothing to approve in System Settings,
+            and no need to be online for the check.
           </p>
           <p>
-            <strong>The iPhone app has no public install path today.</strong> TestFlight also
-            requires that paid account, so the phone side currently has to be built from source with
-            Xcode.
+            <strong>The iPhone app ships through TestFlight, by invitation</strong> while it is
+            in beta. There is no public App Store listing yet, so ask for an invite rather than
+            looking for it in the store.
           </p>
           <p class="cta">
             <a class="btn btn--primary" href="/download/Lilypad.dmg">Download for macOS</a>
