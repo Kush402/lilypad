@@ -10,3 +10,9 @@ gem 'xcodeproj', '< 1.26.0'
 
 # CI/CD build + release automation (iOS TestFlight, Android Play internal).
 gem 'fastlane', '>= 2.220'
+
+# Only to move the lockfile past GHSA-… in json <= 2.21.1 (use-after-free in
+# JSON::ResumableParser#partial_value). Nothing here calls that parser — the
+# alert is against Gemfile.lock, which recorded 2.21.1 while the Ruby that
+# actually runs loads 2.21.2 as a default gem. Pinned so the two agree.
+gem 'json', '>= 2.21.2'

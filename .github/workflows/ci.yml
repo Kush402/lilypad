@@ -189,6 +189,14 @@ jobs:
       - name: Dependency audit
         run: pnpm audit --audit-level high
 
+      # "Re-evaluate when metro bumps it" is a sentence in a comment, and nobody
+      # re-reads comments. This asks GitHub whether either advisory has a
+      # patched version yet, and fails when one does — so a suppression cannot
+      # outlive its reason. It also fails if a GHSA is added to the ignore list
+      # without the justification the comment above demands.
+      - name: Audit suppressions are still justified
+        run: pnpm audit:exceptions
+
       - uses: github/codeql-action/init@v3
         with:
           languages: javascript-typescript

@@ -14,6 +14,7 @@
     "workflows:check": "node scripts/workflows-check.mjs",
     "apple:check": "node scripts/apple-preflight.mjs",
     "e2e:audit": "node scripts/e2e-audit.mjs",
+    "audit:exceptions": "node scripts/audit-exceptions.mjs",
     "dev": "turbo run dev",
     "build": "turbo run build",
     "lint": "turbo run lint",
