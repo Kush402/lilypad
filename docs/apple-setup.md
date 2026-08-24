@@ -18,6 +18,34 @@ workflows read, in about a second, without printing any of them — the
 alternative is finding out twenty minutes into a release, from a message
 `codesign` or `notarytool` wrote about something else.
 
+## The Mac app and iOS do not need the same Apple team
+
+Worth knowing before doing any of this, because it decides who you have to wait
+for.
+
+A **Developer ID Application** certificate needs no app record, no App Store
+Connect listing and no review — it only has to exist in an account whose
+**Account Holder you are**. Notarization takes an App Store Connect key from
+that same account and nothing else. So the entire Mac pipeline can ship from a
+team you control, today, with nobody else involved.
+
+iOS is the opposite: TestFlight needs an app record, and an app record lives in
+one specific account.
+
+The two pipelines already read separate App Store Connect keys (`APPLE_API_*`
+for the Mac app, `ASC_*` for iOS). Setting **`IOS_TEAM_ID`** splits the last
+shared value, and `pnpm apple:check` then asks each lane's key about its own
+team:
+
+| Secret          | Used by          | Set it to                                                     |
+| --------------- | ---------------- | ------------------------------------------------------------- |
+| `APPLE_TEAM_ID` | `release.yml`    | the team holding the Developer ID certificate                 |
+| `IOS_TEAM_ID`   | `mobile-ios.yml` | the team holding the app record — omit if it is the same team |
+
+As of 2026-08-24 iOS ships from `AR2Q4Y465L`. If the Developer ID certificate
+turns out to be faster to obtain elsewhere, set `APPLE_TEAM_ID` to that team and
+`IOS_TEAM_ID` to `AR2Q4Y465L`; nothing else changes.
+
 ## What each credential unblocks
 
 | Credential                    | Without it                                                                                                                              |
@@ -84,9 +112,18 @@ machine that made it.
    No line means the certificate has no private key here and cannot sign. Revoke
    it, redo step 1 on this machine, and issue a new one.
 
-5. Keychain Access → find `Developer ID Application: … (AR2Q4Y465L)` → right
-   click → **Export** → `.p12`, with a password.
-6. `base64 -i cert.p12 | pbcopy`
+5. `pnpm apple:cert path/to/certificate.cer --set`
+
+   It does steps 3–6 in one go: installs the certificate, **refuses to continue
+   if no private key for it is in this keychain**, exports the `.p12` under a
+   generated password, and sets `APPLE_CERTIFICATE`,
+   `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY` and `APPLE_TEAM_ID`.
+   Without `--set` it prints the values instead of uploading them. The `.p12`
+   is deleted afterwards either way.
+
+   By hand instead: Keychain Access → find
+   `Developer ID Application: … (AR2Q4Y465L)` → right click → **Export** →
+   `.p12` with a password → `base64 -i cert.p12 | pbcopy`.
 
 Secrets: `APPLE_CERTIFICATE` (that base64), `APPLE_CERTIFICATE_PASSWORD`,
 `APPLE_SIGNING_IDENTITY` (the full string, exactly as Keychain Access shows it),

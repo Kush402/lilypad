@@ -226,6 +226,44 @@ for (const [name, mirror] of [
 // ES256 over the .p8, exactly the way notarytool and fastlane build their JWT.
 // Skipped when the key or issuer is missing — there is nothing to ask with —
 // and a network failure is reported as unknown rather than as a bad key.
+
+/**
+ * App Store Connect and the notary service are different services behind the
+ * same key. `askApple` proving one says nothing about the other, and the Mac
+ * release depends only on the second. `notarytool history` authenticates and
+ * returns without submitting anything, which is the cheapest possible proof.
+ *
+ * macOS only — notarytool ships with Xcode. Skipped elsewhere with a line
+ * saying so rather than silently passing.
+ */
+function askNotary({ b64, keyId, issuer }) {
+  if (!b64 || !keyId || !issuer) return;
+  if (process.platform !== 'darwin') return skip('cannot check notarization off macOS (needs notarytool)');
+
+  const dir = mkdtempSync(join(tmpdir(), 'lilypad-notary-'));
+  const file = join(dir, 'key.p8');
+  try {
+    writeFileSync(file, Buffer.from(b64, 'base64'), { mode: 0o600 });
+    execFileSync('xcrun', ['notarytool', 'history', '--key', file, '--key-id', keyId, '--issuer', issuer], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    ok('the notary service accepts this key — notarization will authenticate');
+  } catch (err) {
+    const out = `${err.stderr ?? ''}${err.stdout ?? ''}`.trim();
+    if (/xcrun|notarytool/i.test(out) && /not found|unable to find/i.test(out)) {
+      skip('notarytool is not installed — notarization not verified');
+    } else {
+      bad(
+        'the notary service rejected this key',
+        `Notarization will fail even though App Store Connect accepts the key. ${out.split('\n')[0] ?? ''}`,
+      );
+    }
+  } finally {
+    unlinkSync(file);
+  }
+}
+
 async function askApple({ label, b64, keyId, issuer, team }) {
   console.log(`\nAgainst the live App Store Connect API${label ? ` (${label})` : ''}:\n`);
   if (!b64 || !keyId || !issuer) {
@@ -417,7 +455,11 @@ if (splitTeams) {
     team: iosTeam,
   });
 }
-for (const lane of lanes) await askApple(lane);
+for (const lane of lanes) {
+  await askApple(lane);
+  // Only the Mac app is notarized; the iOS lane never talks to the notary.
+  if (lane.label !== 'iOS') askNotary(lane);
+}
 
 console.log(
   problems === 0
