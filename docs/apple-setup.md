@@ -100,8 +100,22 @@ with half a release.
 
 ## 3. The iOS app record
 
-App Store Connect → **Apps** → **+** → New App, with bundle id
-`com.takedia.lilypad`. Nothing uploads until this exists.
+Two steps, in this order — App Store Connect's New App form only offers bundle
+ids that are already registered as App IDs, so doing them the other way round
+dead-ends on an empty dropdown.
+
+1. Apple Developer → **Identifiers** → **+** → **App IDs** → **App** →
+   description `Lilypad`, Bundle ID **Explicit** = `com.takedia.lilypad`. No
+   capabilities need enabling: the app uses no push, no iCloud, no App Groups.
+2. App Store Connect → **Apps** → **+** → **New App** → iOS, select that bundle
+   id, pick a name and an SKU (the SKU is internal and never shown to anyone —
+   `lilypad-ios` is fine). Nothing uploads until this record exists.
+
+The **name is public and must be unique across the App Store**, which is why
+this step is not automated here even though `fastlane produce` could do it.
+
+The macOS side needs neither: a Developer ID build is distributed outside the
+App Store, so it has no App ID and no App Store Connect record.
 
 The bundle already answers the two questions that otherwise stop every build:
 
