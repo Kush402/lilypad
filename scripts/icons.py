@@ -245,12 +245,16 @@ def main():
 
     icons = ROOT / "apps/desktop/src-tauri/icons"
     for name, px in [
-        ("icon.png", 1024), ("128x128.png", 128), ("128x128@2x.png", 256), ("32x32.png", 32),
+        # 512, NOT 1024. Tauri turns these four into the .icns, and ICNS has no
+        # type for 1024 at 1x — 1024 exists only as 512@2x. Shipping 1024 here
+        # made `tauri build` die with "Failed to create app icon: `No matching
+        # IconType`" AFTER a clean four-minute Rust build, naming no file.
+        ("icon.png", 512), ("128x128.png", 128), ("128x128@2x.png", 256), ("32x32.png", 32),
         ("Square30x30Logo.png", 30), ("Square44x44Logo.png", 44), ("Square89x89Logo.png", 89), ("Square107x107Logo.png", 107), ("Square142x142Logo.png", 142),
         ("Square150x150Logo.png", 150), ("Square284x284Logo.png", 284), ("Square310x310Logo.png", 310),
         ("StoreLogo.png", 50),
     ]:
-        img = mac_master if px == 1024 else mac_master.resize((px, px), Image.LANCZOS)
+        img = mac_master.resize((px, px), Image.LANCZOS)
         img.save(icons / name, "PNG")
     print(f"desktop  {len(list(icons.glob('*.png')))} png(s) regenerated")
 

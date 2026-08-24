@@ -54,3 +54,47 @@ describe('webview security', () => {
     expect(conf.app?.withGlobalTauri).toBe(false);
   });
 });
+
+describe('the icons Tauri turns into the .icns', () => {
+  /**
+   * `tauri build` builds the macOS .icns from exactly the files in
+   * `bundle.icon`, mapping each one's pixel size to an ICNS type. A size with
+   * no type aborts the bundle:
+   *
+   *     failed to bundle project: Failed to create app icon: `No matching IconType`
+   *
+   * It names no file, and it happens AFTER the four-minute release build, so
+   * the cost of getting this wrong is a whole failed release. It was got wrong:
+   * regenerating the icons produced a 1024x1024 `icon.png`, and ICNS has no
+   * 1024-at-1x type — 1024 exists only as 512@2x.
+   */
+  const ICNS_1X = [16, 32, 48, 64, 128, 256, 512];
+  const ICNS_2X = [16, 32, 64, 128, 256, 512];
+
+  const pngSize = (rel: string): { w: number; h: number } => {
+    const png = readFileSync(join(root, 'src-tauri', rel));
+    expect(png.toString('ascii', 12, 16)).toBe('IHDR');
+    return { w: png.readUInt32BE(16), h: png.readUInt32BE(20) };
+  };
+
+  it('lists icons at all', () => {
+    expect(Array.isArray(conf.bundle?.icon)).toBe(true);
+    expect(conf.bundle.icon.length).toBeGreaterThan(0);
+  });
+
+  it.each(
+    (
+      JSON.parse(readFileSync(join(root, 'src-tauri', 'tauri.conf.json'), 'utf8')).bundle
+        .icon as string[]
+    ).map((f) => [f] as [string]),
+  )('%s is square and a size ICNS has a type for', (file) => {
+    const { w, h } = pngSize(file);
+    expect(w, `${file} is not square`).toBe(h);
+    // `@2x` in the name is how the bundler infers density.
+    const allowed = file.includes('@2x') ? ICNS_2X.map((n) => n * 2) : ICNS_1X;
+    expect(
+      allowed,
+      `${file} is ${w}x${h}; allowed for this density: ${allowed.join(', ')}`,
+    ).toContain(w);
+  });
+});
