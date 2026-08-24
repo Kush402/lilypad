@@ -69,6 +69,21 @@ so until after the upload.
 
 ## 1. Developer ID Application certificate
 
+**Done — 2026-08-24.** Issued by the Account Holder from the CSR in this repo's
+owner's keychain, installed, and stored as `APPLE_CERTIFICATE`. Kept here
+because it expires 2031-08-25 and will have to be redone then, and because the
+type name below is a trap worth remembering.
+
+Apple reports it as **`DEVELOPER_ID_APPLICATION_G2`**, not
+`DEVELOPER_ID_APPLICATION` — anything the G2 sub-CA issues carries the suffix.
+A check that matches the bare name reports a fully configured account as having
+no certificate.
+
+The private key exists in exactly two places: this Mac's login keychain, and
+`APPLE_CERTIFICATE`, which GitHub will never hand back. A `.p12` backup lives
+outside the repo alongside the iOS one; without it, replacing a lost key means
+going back to the Account Holder.
+
 This is the one that changes what a customer sees. It is **not** the "Apple
 Development" or "Apple Distribution" certificate — those cannot sign software
 distributed outside the App Store, which is how the Mac app ships.
@@ -232,7 +247,7 @@ going missing.
 
 ## 4. The iOS distribution identity
 
-Only needed because Xcode's **managed cloud signing** is refused for this App
+**Done — 2026-08-24**, and the three secrets are set. Only needed because Xcode's **managed cloud signing** is refused for this App
 Store Connect key:
 
 ```
