@@ -8,6 +8,10 @@
 # defaults to Xcode-managed automatic signing (matches the checked-in project),
 # but can be switched to `match` by setting MATCH_GIT_URL.
 
+require 'base64'
+require 'shellwords'
+require 'tmpdir'
+
 default_platform(:ios)
 
 # --- helpers ---------------------------------------------------------------
@@ -24,6 +28,25 @@ default_platform(:ios)
 def env(name)
   value = ENV[name]
   value && !value.strip.empty? ? value.strip : nil
+end
+
+# xcodebuild needs the key as a FILE at an absolute path — it has no way to
+# take inline content, and a relative path resolves against whatever directory
+# xcodebuild happens to run in. CI already writes one and exports
+# ASC_KEY_P8_PATH; this covers the ASC_KEY_P8-only case so both paths through
+# `asc_api_key` above stay usable.
+#
+# 0600 and a temp dir, because this file can upload builds to the account.
+def asc_key_path
+  from_env = env("ASC_KEY_P8_PATH")
+  return File.expand_path(from_env) if from_env && File.exist?(from_env)
+
+  content = env("ASC_KEY_P8") || UI.user_error!("ASC_KEY_P8_PATH or ASC_KEY_P8 must be set")
+  path = File.join(Dir.mktmpdir("asc-key"), "AuthKey.p8")
+  File.write(path, Base64.decode64(content))
+  File.chmod(0o600, path)
+  at_exit { File.delete(path) if File.exist?(path) }
+  path
 end
 
 def asc_api_key
@@ -64,6 +87,7 @@ platform :ios do
     output_ipa = "#{scheme}.ipa"
 
     api_key = asc_api_key
+    key_path = asc_key_path
 
     # Keep the lane self-sufficient — CocoaPods is idempotent, so this is safe
     # even though CI also runs `pod install` before invoking the lane.
@@ -108,8 +132,30 @@ platform :ios do
       )
     else
       # --- Xcode-managed automatic signing (default) ---------------------
-      # -allowProvisioningUpdates lets Xcode create/download the App Store
-      # profile using the ASC API key, so no profiles need to be pre-installed.
+      # -allowProvisioningUpdates lets Xcode create the App Store profile and a
+      # managed cloud signing certificate, so nothing has to be pre-installed
+      # and no certificate slot is burned on an ephemeral runner.
+      #
+      # On its own it does NOT work in CI. `xcodebuild -help`:
+      #
+      #   Requires a developer account to have been added in Xcode's Accounts
+      #   settings or an App Store Connect authentication key to be specified
+      #   via the -authenticationKeyPath, -authenticationKeyID, and
+      #   -authenticationKeyIssuerID parameters.
+      #
+      # A runner has no Xcode account, and `build_app` has no api_key option to
+      # supply one — `Gym::Options` offers none, so passing `api_key:` here is
+      # silently ignored. The three flags below are the only route, and they
+      # have to go to the export step as well: gym runs -exportArchive as a
+      # separate xcodebuild invocation that re-signs, and it does not inherit
+      # `xcargs`.
+      auth = [
+        "-allowProvisioningUpdates",
+        "-authenticationKeyPath", key_path,
+        "-authenticationKeyID", env("ASC_KEY_ID"),
+        "-authenticationKeyIssuerID", env("ASC_ISSUER_ID")
+      ].map { |a| Shellwords.escape(a) }.join(" ")
+
       build_app(
         workspace: workspace,
         scheme: scheme,
@@ -118,7 +164,8 @@ platform :ios do
         output_directory: build_dir,
         output_name: output_ipa,
         clean: true,
-        xcargs: "-allowProvisioningUpdates",
+        xcargs: auth,
+        export_xcargs: auth,
         export_options: {
           signingStyle: "automatic",
           teamID: team_id

@@ -189,6 +189,14 @@ for (const [name, shape, what] of [
   else ok(`${name} ${v}`);
 }
 
+// A Developer ID certificate needs no app record, so the Mac app can ship from
+// one Apple team while iOS ships from the team that owns the App Store Connect
+// record. When IOS_TEAM_ID declares that split, two different keys under the
+// two sets of names is the correct configuration rather than a typo.
+const iosTeam = val('IOS_TEAM_ID') ?? team;
+const splitTeams = Boolean(val('IOS_TEAM_ID')) && val('IOS_TEAM_ID') !== team;
+if (splitTeams) ok(`IOS_TEAM_ID ${iosTeam} — iOS ships from a different team than the Mac app`);
+
 // ── The same key, under the names the iOS lane reads ──────────────────────
 // `release.yml` (desktop notarization) and `mobile-ios.yml` (TestFlight) can
 // use ONE App Store Connect key, but they read it under different names. A key
@@ -204,7 +212,7 @@ for (const [name, mirror] of [
 ]) {
   const v = val(name);
   if (!v) bad(`${name} is not set`, `Same value as ${mirror}.`);
-  else if (val(mirror) && v !== val(mirror))
+  else if (val(mirror) && v !== val(mirror) && !splitTeams)
     bad(`${name} and ${mirror} disagree`, 'They are the same key; one of them is a typo.');
   else ok(`${name} ${v}`);
 }
@@ -218,11 +226,8 @@ for (const [name, mirror] of [
 // ES256 over the .p8, exactly the way notarytool and fastlane build their JWT.
 // Skipped when the key or issuer is missing — there is nothing to ask with —
 // and a network failure is reported as unknown rather than as a bad key.
-async function askApple() {
-  const b64 = val('APPLE_API_KEY_P8') ?? val('ASC_KEY_P8');
-  const keyId = val('APPLE_API_KEY') ?? val('ASC_KEY_ID');
-  const issuer = val('APPLE_API_ISSUER') ?? val('ASC_ISSUER_ID');
-  console.log('\nAgainst the live App Store Connect API:\n');
+async function askApple({ label, b64, keyId, issuer, team }) {
+  console.log(`\nAgainst the live App Store Connect API${label ? ` (${label})` : ''}:\n`);
   if (!b64 || !keyId || !issuer) {
     skip('not asking Apple — need the key, its Key ID and the Issuer ID first');
     return;
@@ -316,6 +321,7 @@ async function askApple() {
   // build signed by one team cannot be notarized by another's key: notarytool
   // rejects it after the upload, not before. The ASC API exposes no "who am I"
   // endpoint, but every certificate carries the team id in its subject OU.
+  const teamVar = label === 'iOS' ? 'IOS_TEAM_ID' : 'APPLE_TEAM_ID';
   const certs = await get('/v1/certificates?limit=200');
   const certList = certs?.body?.data ?? [];
   const teams = new Set();
@@ -337,12 +343,12 @@ async function askApple() {
   if (teams.size === 0) {
     skip('this key’s account has no certificates, so its Team ID could not be confirmed');
   } else if (!team) {
-    skip(`APPLE_TEAM_ID is unset — this key belongs to ${[...teams].join(', ')}`);
+    skip(`${teamVar} is unset — this key belongs to ${[...teams].join(', ')}`);
   } else if (teams.has(team)) {
     ok(`the key belongs to team ${team}`);
   } else {
     bad(
-      `this key belongs to team ${[...teams].join(', ')}, not APPLE_TEAM_ID ${team}`,
+      `this key belongs to team ${[...teams].join(', ')}, not ${teamVar} ${team}`,
       'A build signed by one team cannot be notarized or uploaded with another team’s key. Use a key generated inside the same Apple Developer account the signing certificate comes from.',
     );
   }
@@ -389,7 +395,29 @@ async function askApple() {
     );
 }
 
-await askApple();
+// One key normally serves both pipelines, so ask once. When IOS_TEAM_ID splits
+// them, the two keys are different credentials for different accounts and each
+// has to be checked on its own — a single answer would be right about one lane
+// and silent about the other.
+const lanes = [
+  {
+    label: splitTeams ? 'Mac app' : '',
+    b64: val('APPLE_API_KEY_P8') ?? val('ASC_KEY_P8'),
+    keyId: val('APPLE_API_KEY') ?? val('ASC_KEY_ID'),
+    issuer: val('APPLE_API_ISSUER') ?? val('ASC_ISSUER_ID'),
+    team,
+  },
+];
+if (splitTeams) {
+  lanes.push({
+    label: 'iOS',
+    b64: val('ASC_KEY_P8'),
+    keyId: val('ASC_KEY_ID'),
+    issuer: val('ASC_ISSUER_ID'),
+    team: iosTeam,
+  });
+}
+for (const lane of lanes) await askApple(lane);
 
 console.log(
   problems === 0

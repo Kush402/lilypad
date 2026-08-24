@@ -112,7 +112,16 @@ jobs:
           # and `Fastfile` therefore treat blank as absent — `"" || "default"`
           # is `""` in Ruby, so passing an uncreated secret used to replace the
           # team id and app identifier with empty strings.
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # Desktop notarization and iOS TestFlight do not have to belong to
+          # the same Apple team — they already read separate App Store Connect
+          # keys (APPLE_API_* vs ASC_*), and this was the last value forcing
+          # them together. A Developer ID certificate needs no app record, so
+          # the Mac app can ship from a team whose Account Holder you are,
+          # while iOS ships from wherever the app record lives.
+          #
+          # Unset secrets interpolate to "", and "" || x is x in GitHub
+          # expressions, so APPLE_TEAM_ID stays the default for the common case.
+          APPLE_TEAM_ID: ${{ secrets.IOS_TEAM_ID || secrets.APPLE_TEAM_ID }}
           IOS_APP_IDENTIFIER: ${{ secrets.IOS_APP_IDENTIFIER }}
           MATCH_GIT_URL: ${{ secrets.MATCH_GIT_URL }}
           MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
