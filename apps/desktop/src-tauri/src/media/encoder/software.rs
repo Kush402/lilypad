@@ -4,7 +4,8 @@
 use anyhow::{anyhow, Result};
 use bytes::Bytes;
 use openh264::encoder::{
-    Encoder as Oh264Encoder, EncoderConfig as Oh264Config, FrameType, RateControlMode,
+    BitRate, Encoder as Oh264Encoder, EncoderConfig as Oh264Config, FrameRate, FrameType,
+    RateControlMode,
 };
 use openh264::formats::YUVSlices;
 use openh264::OpenH264API;
@@ -54,10 +55,13 @@ fn build(s: &EncoderSettings) -> Result<Oh264Encoder> {
     // upstream), single-threaded to avoid reordering latency. openh264 emits no
     // B-frames in this configuration.
     let config = Oh264Config::new()
-        .set_bitrate_bps(s.bitrate_kbps.saturating_mul(1000))
-        .max_frame_rate(s.fps as f32)
+        // 0.8 renamed `set_bitrate_bps(u32)` to `bitrate(BitRate)`; the units
+        // are unchanged, the type is now explicit.
+        .bitrate(BitRate::from_bps(s.bitrate_kbps.saturating_mul(1000)))
+        // 0.8 also gave the frame rate and skip flag typed setters.
+        .max_frame_rate(FrameRate::from_hz(s.fps as f32))
         .rate_control_mode(RateControlMode::Bitrate)
-        .enable_skip_frame(false);
+        .skip_frames(false);
     Oh264Encoder::with_api_config(OpenH264API::from_source(), config)
         .map_err(|e| anyhow!("openh264 init failed: {e}"))
 }

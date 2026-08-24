@@ -58,7 +58,7 @@ bytes = "1"
 # ── Media pipeline (M3) ──────────────────────────────────────────────────────
 # Software H.264 encoder (real, cross-platform) — the verifiable default.
 # VideoToolbox is the macOS hardware path (compile-complete, wired on device).
-openh264 = "0.6"
+openh264 = "0.8"
 
 # ── Input injection (M4) ─────────────────────────────────────────────────────
 # Cross-platform clipboard (paste bridge); real on every desktop OS.
