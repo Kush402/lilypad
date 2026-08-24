@@ -39,7 +39,9 @@ body {
 }
 
 a {
-  color: var(--accent);
+  /* --accent-ink, not --accent: the accent is 3.19:1 against the page and AA
+     asks 4.5:1 for text this size. Every link here was the lighter one. */
+  color: var(--accent-ink);
 }
 
 /* ── Nav ─────────────────────────────────────────────────────────────────── */
@@ -71,7 +73,7 @@ a {
 }
 .nav__links a:hover,
 .nav__links a:focus-visible {
-  color: var(--accent);
+  color: var(--accent-ink);
 }
 
 /* ── Hero ────────────────────────────────────────────────────────────────── */
@@ -107,7 +109,7 @@ a {
   padding: 5px 13px;
   border-radius: var(--radius-pill);
   background: var(--accent-wash);
-  color: var(--accent);
+  color: var(--accent-ink);
   border: 1px solid var(--accent);
 }
 .hero__note {
@@ -245,7 +247,7 @@ a {
   content: '✓';
   position: absolute;
   left: 0;
-  color: var(--accent);
+  color: var(--accent-ink);
   font-weight: 700;
 }
 
@@ -327,7 +329,7 @@ a {
   background: var(--line);
 }
 .plan__status--current {
-  color: var(--accent-ink, var(--accent));
+  color: var(--accent-ink);
   background: var(--accent-wash);
 }
 /* The plan a visitor can actually have is the one that should look real. */
@@ -354,7 +356,7 @@ a {
   content: '·';
   position: absolute;
   left: 0;
-  color: var(--accent);
+  color: var(--accent-ink);
   font-weight: 700;
 }
 

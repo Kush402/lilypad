@@ -22,6 +22,8 @@
   --pending: #b8720a;
   --line: #d8e6df;
   --accent-wash: rgba(31, 159, 107, 0.12);
+  /* `accent` at text size: 3.19:1 is not AA for body copy, 4.97:1 is. */
+  --accent-ink: #187b53;
 
   /* Scheme-independent: a filled button is the same colour in both schemes,
    * so the text on it does not change either. */
@@ -49,5 +51,7 @@
     --pending: #f5a623;
     --line: #24352d;
     --accent-wash: rgba(62, 207, 142, 0.15);
+    /* Dark's accent is already 9.27:1, so ink and accent are the same. */
+    --accent-ink: #3ecf8e;
   }
 }

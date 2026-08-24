@@ -70,6 +70,19 @@ export const light = {
    * in lightness that one fixed alpha does not read well against both.
    */
   accentWash: 'rgba(31, 159, 107, 0.12)',
+  /**
+   * `accent` at text size, on a light background.
+   *
+   * `accent` is 3.19:1 against `bg` — enough for a border, an icon or large
+   * text, and NOT enough for body copy, which WCAG AA puts at 4.5:1. Every
+   * link on the website was that colour, including the download link. This is
+   * the same hue (155.6deg) and saturation, darkened until it clears 4.5:1
+   * against `bg`, `panel` and `accentWash` alike.
+   *
+   * Dark needs no such split: its accent is already 9.27:1, so `accentInk`
+   * there is the accent itself.
+   */
+  accentInk: '#187b53',
 } as const;
 
 /** Dark — what mobile and the admin dashboard ship, and the desktop's `prefers-color-scheme: dark`. */
@@ -85,6 +98,7 @@ export const dark = {
   pending: '#f5a623',
   line: '#24352d',
   accentWash: 'rgba(62, 207, 142, 0.15)',
+  accentInk: '#3ecf8e',
 } as const;
 
 /**

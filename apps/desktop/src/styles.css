@@ -333,7 +333,7 @@ body {
   padding: 3px 10px;
   border-radius: var(--radius-pill);
   background: var(--accent-wash);
-  color: var(--accent);
+  color: var(--accent-ink);
   border: 1px solid var(--accent);
 }
 
@@ -357,7 +357,9 @@ body {
   border-radius: var(--radius-xs);
 }
 .ok {
-  color: var(--accent);
+  /* Text, so it takes the ink variant. In `prefers-color-scheme: light` the
+     plain accent is 3.19:1 against the panel — below AA for body copy. */
+  color: var(--accent-ink);
 }
 .down {
   color: var(--muted);
