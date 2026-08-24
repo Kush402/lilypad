@@ -419,8 +419,13 @@ async function askApple({ label, b64, keyId, issuer, team }) {
   // without the unidentified-developer dialog. Its absence from the account is
   // the difference between "not uploaded yet" and "does not exist yet".
   if (certList.length && wantsDesktop) {
-    const devId = certList.filter(
-      (c) => c?.attributes?.certificateType === 'DEVELOPER_ID_APPLICATION',
+    // Apple reports the type as DEVELOPER_ID_APPLICATION_G2 for anything the G2
+    // sub-CA issued, which is every certificate created now. Matching the bare
+    // name found nothing and reported a correctly configured account as having
+    // no certificate — a false failure in the check that gates the release it
+    // exists to protect.
+    const devId = certList.filter((c) =>
+      String(c?.attributes?.certificateType ?? '').startsWith('DEVELOPER_ID_APPLICATION'),
     );
     if (devId.length)
       ok(`${devId.length} Developer ID Application certificate(s) exist in this account`);
