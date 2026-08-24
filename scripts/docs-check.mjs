@@ -45,12 +45,7 @@ const FRONTMATTER_ROOTS = ['docs'];
  * front door or as issue-template metadata; a YAML block would either show up
  * as noise or collide with the template's own frontmatter.
  */
-const FRONTMATTER_EXEMPT = new Set([
-  'README.md',
-  'CHANGELOG.md',
-  'CONTRIBUTING.md',
-  'SECURITY.md',
-]);
+const FRONTMATTER_EXEMPT = new Set(['README.md', 'CHANGELOG.md', 'CONTRIBUTING.md', 'SECURITY.md']);
 
 const problems = [];
 const fail = (file, message) => problems.push({ file, message });
@@ -210,12 +205,58 @@ function checkRoutes() {
   }
 }
 
+/**
+ * docs/kanban.md's header claims to be "counted from the rows rather than kept
+ * by hand". It was not — adding four rows left the total reading 89 while the
+ * table held 93, which is the exact drift the header was written to complain
+ * about. A tally nobody recomputes is worse than no tally: it is read as fact.
+ */
+function checkKanbanTally() {
+  const file = 'docs/kanban.md';
+  let text;
+  try {
+    text = readFileSync(join(ROOT, file), 'utf8');
+  } catch {
+    return; // the file is optional; checkLinks already reports a missing target
+  }
+  const header = /\*\*Status counts:\*\*([\s\S]*?)rows\./.exec(text);
+  if (!header) return fail(file, 'no "**Status counts:** … rows." header to check');
+
+  // Each row is `| L-nn | finding | status |`; the status is the last cell.
+  const counts = new Map();
+  let total = 0;
+  for (const [, , rest] of text.matchAll(/^\| (L-\d+) \|(.*)\|\s*$/gm)) {
+    total += 1;
+    const status = rest.slice(rest.lastIndexOf('|') + 1);
+    // "Fixed — …", "**Blocked** — …", "Open — …": the first word, unstyled.
+    const word = status
+      .replace(/\*/g, '')
+      .trim()
+      .split(/[\s—-]/)[0]
+      .toLowerCase();
+    counts.set(word, (counts.get(word) ?? 0) + 1);
+  }
+
+  const claimed = Number(/(\d+)\s+rows\./.exec(header[0])?.[1]);
+  if (claimed !== total) fail(file, `header says ${claimed} rows; the table has ${total}`);
+
+  for (const [word, n] of counts) {
+    // Only the words the header actually names are checked — a new status word
+    // should fail loudly by being absent, not silently by being ignored.
+    const claim = new RegExp(`(\\d+)\\s+${word}\\b`, 'i').exec(header[1]);
+    if (!claim) fail(file, `${n} row(s) are "${word}" and the header does not mention it`);
+    else if (Number(claim[1]) !== n)
+      fail(file, `header says ${claim[1]} ${word}; the table has ${n}`);
+  }
+}
+
 // ── run ─────────────────────────────────────────────────────────────────────
 
 const files = walk(ROOT);
 checkFrontmatter(files);
 checkLinks(files);
 checkRoutes();
+checkKanbanTally();
 
 if (problems.length === 0) {
   console.log(`docs-check: OK (${files.length} markdown files)`);

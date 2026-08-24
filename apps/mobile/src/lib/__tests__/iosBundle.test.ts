@@ -169,8 +169,9 @@ describe('the app icon', () => {
  * fails nowhere until an archive is rejected minutes into a TestFlight run.
  *
  * Written after an App Store Connect key was supplied for team AR2Q4Y465L
- * while the project builds for 7TYFS43RR3: a build signed by one team cannot
- * be notarized or uploaded with another team's key.
+ * while the project still built for 7TYFS43RR3: a build signed by one team
+ * cannot be notarized or uploaded with another team's key. The project now
+ * targets AR2Q4Y465L, the team that owns the App ID and the key.
  */
 describe('the Apple account this app is signed for', () => {
   const pbxproj = require('fs').readFileSync(
@@ -188,7 +189,7 @@ describe('the Apple account this app is signed for', () => {
   };
 
   it('builds for exactly one team', () => {
-    expect(settings('DEVELOPMENT_TEAM')).toEqual(['7TYFS43RR3']);
+    expect(settings('DEVELOPMENT_TEAM')).toEqual(['AR2Q4Y465L']);
   });
 
   it('uses the bundle id the App ID is registered under', () => {

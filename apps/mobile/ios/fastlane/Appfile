@@ -1,7 +1,7 @@
 # iOS Appfile — all values overridable via env so nothing sensitive is baked in.
 # Bundle id / team id are derived from the Xcode project
 # (LilypadMobile.xcodeproj: PRODUCT_BUNDLE_IDENTIFIER=com.takedia.lilypad,
-#  DEVELOPMENT_TEAM=7TYFS43RR3) but stay overridable for other signers.
+#  DEVELOPMENT_TEAM=AR2Q4Y465L) but stay overridable for other signers.
 
 # An unset GitHub Actions secret interpolates to the EMPTY STRING, not to
 # nothing — and in Ruby `"" || "default"` is `""`. So every `ENV["X"] || "…"`
@@ -18,7 +18,7 @@ def env(name)
 end
 
 app_identifier(env("IOS_APP_IDENTIFIER") || "com.takedia.lilypad")
-team_id(env("APPLE_TEAM_ID") || env("FASTLANE_TEAM_ID") || "7TYFS43RR3")
+team_id(env("APPLE_TEAM_ID") || env("FASTLANE_TEAM_ID") || "AR2Q4Y465L")
 
 # Optional — only needed for username/password auth flows. Beta lane uses an
 # App Store Connect API key, so these are almost always left unset.

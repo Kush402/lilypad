@@ -59,7 +59,7 @@ platform :ios do
     workspace  = env("IOS_WORKSPACE") || "LilypadMobile.xcworkspace"
     scheme     = env("IOS_SCHEME") || "LilypadMobile"
     app_id     = env("IOS_APP_IDENTIFIER") || "com.takedia.lilypad"
-    team_id    = env("APPLE_TEAM_ID") || env("FASTLANE_TEAM_ID") || "7TYFS43RR3"
+    team_id    = env("APPLE_TEAM_ID") || env("FASTLANE_TEAM_ID") || "AR2Q4Y465L"
     build_dir  = "build"
     output_ipa = "#{scheme}.ipa"
 

@@ -26,9 +26,18 @@ alternative is finding out twenty minutes into a release, from a message
 | App Store Connect API key     | The Mac app is **not notarized**, and no iOS build can reach TestFlight.                                                                |
 | A registered iOS app record   | `upload_to_testflight` has nothing to upload to.                                                                                        |
 
-The Team ID is already known and hard-coded as a default: **`7TYFS43RR3`**
-(`Kush Sharma`), read from `apps/mobile/ios/LilypadMobile.xcodeproj`. The iOS
-bundle identifier is **`com.takedia.lilypad`**.
+The Team ID is already known and hard-coded as a default: **`AR2Q4Y465L`**
+(`Abhinay Pandey`), read from `apps/mobile/ios/LilypadMobile.xcodeproj`. The iOS
+bundle identifier is **`com.takedia.lilypad`**, registered in that team as App ID
+`C54FRGK4KU` with **Sign in with Apple** enabled — the entitlement the app ships
+fails signing without it.
+
+Every credential below must come from **that same account**. Lilypad's code and
+this machine's keychain were originally set up against `7TYFS43RR3`
+(`Kush Sharma`); the project was re-pointed on 2026-08-24 because the App Store
+Connect key and the App ID live in `AR2Q4Y465L`. A build signed by one team
+cannot be notarized or uploaded with another team's key, and Apple does not say
+so until after the upload.
 
 ## 1. Developer ID Application certificate
 
@@ -56,7 +65,7 @@ distributed outside the App Store, which is how the Mac app ships.
    No line means the certificate has no private key here and cannot sign. Revoke
    it, redo step 1 on this machine, and issue a new one.
 
-5. Keychain Access → find `Developer ID Application: … (7TYFS43RR3)` → right
+5. Keychain Access → find `Developer ID Application: … (AR2Q4Y465L)` → right
    click → **Export** → `.p12`, with a password.
 6. `base64 -i cert.p12 | pbcopy`
 
@@ -157,7 +166,7 @@ Repo → Settings → Secrets and variables → Actions. Or:
 
 ```
 gh secret set APPLE_CERTIFICATE < <(base64 -i cert.p12)
-gh secret set APPLE_SIGNING_IDENTITY --body "Developer ID Application: … (7TYFS43RR3)"
+gh secret set APPLE_SIGNING_IDENTITY --body "Developer ID Application: … (AR2Q4Y465L)"
 ```
 
 Then, with the same values exported locally:

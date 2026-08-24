@@ -36,7 +36,7 @@ these values must be exact.
 | iOS        | `com.takedia.lilypad`         |
 | Android    | `com.takedia.lilypad`         |
 | Desktop    | `com.takedia.lilypad.desktop` |
-| Apple team | `7TYFS43RR3`                  |
+| Apple team | `AR2Q4Y465L`                  |
 
 An iOS OAuth client's bundle id and an Android package name are **immutable once
 created**. These were unified before any client was created for that reason.

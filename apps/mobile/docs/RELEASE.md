@@ -12,7 +12,7 @@ Confirmed identifiers (derived from the project files, not guessed):
 
 - **iOS bundle id:** `com.takedia.lilypad` (tests: `com.takedia.lilypad.tests`)
 - **iOS scheme / workspace:** `LilypadMobile` / `LilypadMobile.xcworkspace`
-- **iOS team id (default):** `7TYFS43RR3` (overridable via `APPLE_TEAM_ID`)
+- **iOS team id (default):** `AR2Q4Y465L` (overridable via `APPLE_TEAM_ID`)
 - **Android applicationId / namespace:** `com.takedia.lilypad`
 - **Desktop bundle id:** `com.takedia.lilypad.desktop`
 
@@ -81,7 +81,7 @@ Apple ID password or 2FA session required in CI.
 | `ASC_KEY_ID`         | ✅       | The API key's Key ID (10 chars).                                                                                                                           |
 | `ASC_ISSUER_ID`      | ✅       | The Issuer ID (UUID) of your App Store Connect team.                                                                                                       |
 | `ASC_KEY_P8`         | ✅       | **base64** of the downloaded `AuthKey_XXXX.p8` file.                                                                                                       |
-| `APPLE_TEAM_ID`      | optional | Overrides the default team id `7TYFS43RR3`.                                                                                                                |
+| `APPLE_TEAM_ID`      | optional | Overrides the default team id `AR2Q4Y465L`.                                                                                                                |
 | `IOS_APP_IDENTIFIER` | optional | Overrides the default bundle id `com.takedia.lilypad`.                                                                                                     |
 | `FASTLANE_APPLE_ID`  | optional | Apple ID email, only for username-based flows (not needed for beta).                                                                                       |
 | `MATCH_GIT_URL`      | optional | Git repo URL for [`match`](https://docs.fastlane.tools/actions/match/) certs/profiles. Set this to switch from Xcode-managed automatic signing to `match`. |

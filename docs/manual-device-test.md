@@ -114,7 +114,7 @@ cd apps/mobile/ios
 xcodebuild -workspace LilypadMobile.xcworkspace -scheme LilypadMobile \
   -configuration Release -destination 'generic/platform=iOS' \
   -derivedDataPath /tmp/ios-release \
-  DEVELOPMENT_TEAM=7TYFS43RR3 CODE_SIGN_STYLE=Automatic build
+  DEVELOPMENT_TEAM=AR2Q4Y465L CODE_SIGN_STYLE=Automatic build
 
 # 3. Put the real entitlements back, immediately, and check it took.
 cp /tmp/ent.orig LilypadMobile/LilypadMobile.entitlements
