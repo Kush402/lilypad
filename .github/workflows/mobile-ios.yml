@@ -65,6 +65,20 @@ jobs:
         with:
           node-version: 20
 
+      # The step above proves the secrets exist. This asks Apple whether they
+      # work, and whether the app record `upload_to_testflight` needs actually
+      # exists — before an archive that takes tens of minutes to find out.
+      # Dependency-free, so it runs before the install.
+      - name: Verify Apple accepts the credentials
+        working-directory: ${{ github.workspace }}
+        env:
+          APPLE_CHECK_LANE: ios
+          APPLE_TEAM_ID: ${{ secrets.IOS_TEAM_ID || secrets.APPLE_TEAM_ID }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+        run: node scripts/apple-preflight.mjs
+
       - name: Enable corepack (pins pnpm via package.json#packageManager)
         run: corepack enable
         working-directory: ${{ github.workspace }}

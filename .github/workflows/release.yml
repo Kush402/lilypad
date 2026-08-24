@@ -154,6 +154,10 @@ jobs:
       - name: Verify Apple accepts the credentials
         if: steps.preflight.outputs.notarize == 'true'
         env:
+          # Desktop only. The Mac app needs a Developer ID certificate and the
+          # notary service; it does not need a TestFlight app record, and
+          # failing a signed release over one would be a lie.
+          APPLE_CHECK_LANE: desktop
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
