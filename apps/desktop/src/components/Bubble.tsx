@@ -93,7 +93,14 @@ export function Bubble() {
         title={STATUS_ARIA_LABEL[status]}
         aria-label={STATUS_ARIA_LABEL[status]}
       >
-        <span className="bubble__pad">🪷</span>
+        {/* The mark, not the 🪷 emoji this used to render. An emoji is drawn
+         * by whichever font the OS ships, so it changed shape between macOS
+         * versions and matched nothing else in the product — least of all the
+         * app icon, which is this shape. Same geometry as
+         * `scripts/icons.py`: a disc with a wedge cut to the rim. */}
+        <svg className="bubble__pad" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="M12 12 L20.25 7.71 A9.3 9.3 0 1 1 18.16 5.04 Z" />
+        </svg>
         <span className="bubble__dot" style={{ backgroundColor: STATUS_COLOR[status] }} />
         {/* Color-only status fails WCAG 1.4.1 for colorblind/screen-reader
          * users — this text alternative isn't visible but is announced.

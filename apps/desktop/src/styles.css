@@ -73,7 +73,11 @@ body {
   border-radius: 50%;
   border: none;
   cursor: pointer;
-  background: radial-gradient(circle at 35% 30%, #2fae76, #0f6b47);
+  /* Was `#2fae76 -> #0f6b47`: a third green, in a product whose design
+   * tokens exist precisely so a colour means one thing. The light end is
+   * now the accent itself; the dark end is a shade of it rather than an
+   * unrelated hex. */
+  background: radial-gradient(circle at 35% 30%, var(--accent), #0f6b47);
   box-shadow:
     0 8px 24px rgba(0, 0, 0, 0.45),
     inset 0 1px 2px rgba(255, 255, 255, 0.25);
@@ -101,7 +105,11 @@ body {
   }
 }
 .bubble__pad {
-  font-size: 34px;
+  width: 38px;
+  height: 38px;
+  /* Light rather than the accent green: at 38px on a green bubble, a green
+     pad does not read. The icon can afford the tonal version; this cannot. */
+  fill: #eafaf2;
   filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.4));
 }
 .bubble__dot {
