@@ -188,9 +188,12 @@ Two steps, in this order — App Store Connect's New App form only offers bundle
 ids that are already registered as App IDs, so doing them the other way round
 dead-ends on an empty dropdown.
 
-1. Apple Developer → **Identifiers** → **+** → **App IDs** → **App** →
-   description `Lilypad`, Bundle ID **Explicit** = `com.takedia.lilypad`. No
-   capabilities need enabling: the app uses no push, no iCloud, no App Groups.
+1. ~~Apple Developer → **Identifiers** → **+**~~ — **done.** Registered
+   through the API on 2026-08-24 as App ID `C54FRGK4KU`, with **Sign in with
+   Apple** enabled. That capability is not optional:
+   `LilypadMobile.entitlements` ships `com.apple.developer.applesignin`, and
+   signing fails with a provisioning-profile mismatch without it. Nothing else
+   needs enabling — no push, no iCloud, no App Groups.
 2. App Store Connect → **Apps** → **+** → **New App** → iOS, select that bundle
    id, pick a name and an SKU (the SKU is internal and never shown to anyone —
    `lilypad-ios` is fine). Nothing uploads until this record exists.
@@ -215,6 +218,50 @@ The bundle already answers the two questions that otherwise stop every build:
 Both are asserted by `apps/mobile/src/lib/__tests__/iosBundle.test.ts`, since
 nothing in the JavaScript imports them and nothing else would notice them
 going missing.
+
+## 4. The iOS distribution identity
+
+Only needed because Xcode's **managed cloud signing** is refused for this App
+Store Connect key:
+
+```
+error: exportArchive Cloud signing permission error
+error: exportArchive No signing certificate "iOS Distribution" found
+```
+
+That is a role the key does not have, and no repository change fixes it. It is
+also the wrong mechanism for CI regardless: an ephemeral runner cannot reuse a
+certificate whose private key it does not hold, so cloud-less automatic signing
+would mint a fresh certificate every run until the account hit its limit.
+
+Instead the certificate and profile are created once, through the API, with a
+private key we keep — created on 2026-08-24 as certificate `88YSPR2XJM` and
+profile **Lilypad App Store**, and handed to CI as three secrets:
+
+| Secret                     | What                             |
+| -------------------------- | -------------------------------- |
+| `IOS_DIST_CERT_P12`        | base64 of the `.p12`             |
+| `IOS_DIST_CERT_PASSWORD`   | its password                     |
+| `IOS_PROVISIONING_PROFILE` | base64 of the `.mobileprovision` |
+
+`mobile-ios.yml` imports them into a keychain it creates and deletes, runs
+`security set-key-partition-list` so `codesign` does not block on a GUI prompt
+no runner can answer, and derives the identity and profile names rather than
+storing them as further secrets. Omit all three and the lane falls back to
+automatic signing, which is correct for an account whose key _may_ create cloud
+certificates.
+
+The **archive** still signs automatically — Xcode resolves a development
+identity from the same API key — and only the **export** is manual. That is the
+combination verified end to end: `ARCHIVE SUCCEEDED`, a 24 MB IPA signed by
+`iPhone Distribution: … (AR2Q4Y465L)`, and `altool --validate-app` reaching
+Apple and stopping only at
+
+```
+Cannot determine the Apple ID from Bundle ID 'com.takedia.lilypad'
+```
+
+— which is the missing app record from §3, and nothing else.
 
 ## Adding the secrets
 

@@ -37,6 +37,18 @@ end
 # `asc_api_key` above stay usable.
 #
 # 0600 and a temp dir, because this file can upload builds to the account.
+# The flags that let xcodebuild talk to the developer portal without an Xcode
+# account. See the comment on the automatic-signing branch for why they are not
+# optional in CI.
+def auth_args(key_path)
+  [
+    "-allowProvisioningUpdates",
+    "-authenticationKeyPath", key_path,
+    "-authenticationKeyID", env("ASC_KEY_ID"),
+    "-authenticationKeyIssuerID", env("ASC_ISSUER_ID")
+  ].map { |a| Shellwords.escape(a) }.join(" ")
+end
+
 def asc_key_path
   from_env = env("ASC_KEY_P8_PATH")
   return File.expand_path(from_env) if from_env && File.exist?(from_env)
@@ -106,7 +118,42 @@ platform :ios do
       build_number: build_number
     )
 
-    if env("MATCH_GIT_URL")
+    # Signing assets this account will actually issue. Xcode's *managed cloud
+    # signing* — what plain automatic signing reaches for at export — needs a
+    # role this App Store Connect key does not have; it fails with
+    # "Cloud signing permission error / No signing certificate iOS Distribution
+    # found" no matter how many times it is retried.
+    #
+    # A certificate and profile created through the API and handed in as
+    # secrets sidestep that entirely, and are deterministic besides: an
+    # ephemeral runner cannot reuse a certificate whose private key it does not
+    # have, so cloud-less automatic signing would mint a fresh one every run
+    # until the account hit its limit.
+    #
+    # The ARCHIVE still signs automatically — Xcode resolves a development
+    # identity from the same API key, which works — and only the EXPORT is
+    # manual. That is the combination verified end to end on 2026-08-24.
+    if env("IOS_PROVISIONING_PROFILE_NAME")
+      # --- explicit manual export ----------------------------------------
+      build_app(
+        workspace: workspace,
+        scheme: scheme,
+        configuration: "Release",
+        export_method: "app-store",
+        output_directory: build_dir,
+        output_name: output_ipa,
+        clean: true,
+        xcargs: auth_args(key_path),
+        export_xcargs: auth_args(key_path),
+        export_options: {
+          signingStyle: "manual",
+          teamID: team_id,
+          signingCertificate: env("IOS_SIGNING_IDENTITY") ||
+                              UI.user_error!("IOS_SIGNING_IDENTITY is not set"),
+          provisioningProfiles: { app_id => env("IOS_PROVISIONING_PROFILE_NAME") }
+        }
+      )
+    elsif env("MATCH_GIT_URL")
       # --- manual signing via match --------------------------------------
       match(
         type: "appstore",
@@ -149,13 +196,6 @@ platform :ios do
       # have to go to the export step as well: gym runs -exportArchive as a
       # separate xcodebuild invocation that re-signs, and it does not inherit
       # `xcargs`.
-      auth = [
-        "-allowProvisioningUpdates",
-        "-authenticationKeyPath", key_path,
-        "-authenticationKeyID", env("ASC_KEY_ID"),
-        "-authenticationKeyIssuerID", env("ASC_ISSUER_ID")
-      ].map { |a| Shellwords.escape(a) }.join(" ")
-
       build_app(
         workspace: workspace,
         scheme: scheme,
@@ -164,8 +204,8 @@ platform :ios do
         output_directory: build_dir,
         output_name: output_ipa,
         clean: true,
-        xcargs: auth,
-        export_xcargs: auth,
+        xcargs: auth_args(key_path),
+        export_xcargs: auth_args(key_path),
         export_options: {
           signingStyle: "automatic",
           teamID: team_id

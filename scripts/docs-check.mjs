@@ -225,7 +225,7 @@ function checkKanbanTally() {
   // Each row is `| L-nn | finding | status |`; the status is the last cell.
   const counts = new Map();
   let total = 0;
-  for (const [, , rest] of text.matchAll(/^\| (L-\d+) \|(.*)\|\s*$/gm)) {
+  for (const [, , rest] of text.matchAll(/^\|\s*(L-\d+)\s*\|(.*)\|\s*$/gm)) {
     total += 1;
     const status = rest.slice(rest.lastIndexOf('|') + 1);
     // "Fixed — …", "**Blocked** — …", "Open — …": the first word, unstyled.
