@@ -199,6 +199,16 @@ with half a release.
 
 ## 3. The iOS app record
 
+**Done — 2026-08-24.** App Store Connect record `6804827369`, named **Lilypad
+RC** because "Lilypad" was already taken App Store–wide, SKU `lilypad-ios`,
+bundle id `com.takedia.lilypad`. Build 1 uploaded and VALID; an internal
+TestFlight group named "Internal" has access to all builds.
+
+Its primary language came out as **English (Australia)** from the New App form's
+default. Changing it now returns `409 — you must first provide all the required
+screenshots for each version`, so it has to wait until store screenshots exist.
+TestFlight is unaffected.
+
 Two steps, in this order — App Store Connect's New App form only offers bundle
 ids that are already registered as App IDs, so doing them the other way round
 dead-ends on an empty dropdown.
