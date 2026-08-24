@@ -150,3 +150,30 @@ describe('small controls are still reachable with a thumb', () => {
     expect(chunk!).toMatch(/hitSlop=/);
   });
 });
+
+/**
+ * `appError(code, message)` takes an override, and that override is rendered
+ * verbatim. `toAppError` was hardened on 2026-08-24 and this door was left
+ * open beside it: `webrtc.ts` was still passing `String(err)` from a failed
+ * SDP apply, and the signaling client's own "gave up after 4 reconnect
+ * attempts" — a sentence written for whoever debugs it, shown to the customer
+ * instead.
+ *
+ * The override still exists, because `toAppError` needs it to carry copy we
+ * wrote. What must not happen is a raw value reaching it.
+ */
+describe('no raw error text is passed to appError', () => {
+  const LIB = `${__dirname}/..`;
+
+  it.each(['webrtc.ts', 'api.ts', 'signaling.ts'])('%s', (file) => {
+    const src = require('fs').readFileSync(`${LIB}/${file}`, 'utf8');
+    const offenders = src
+      .split('\n')
+      .map((l) => l.trim())
+      .filter((l) => !l.startsWith('//') && !l.startsWith('*'))
+      // An override built from a caught value or an interpolation is the shape
+      // that leaks; a bare `appError('code')` is fine.
+      .filter((l) => /appError\([^)]*,\s*(`|String\(|err|e\.|event\.)/.test(l));
+    expect(offenders).toEqual([]);
+  });
+});

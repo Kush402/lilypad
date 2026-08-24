@@ -22,6 +22,7 @@ import { RTCView, type MediaStream } from 'react-native-webrtc';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useKeepAwake } from '@sayem314/react-native-keep-awake';
 import Clipboard from '@react-native-clipboard/clipboard';
+import { journalText } from '../lib/journal';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { Modifier, CaptureMode } from '@lilypad/protocol';
 import type { RootStackParamList } from '../types';
@@ -139,6 +140,7 @@ export function ViewerScreen({ route, navigation }: Props) {
   const [keyboardOpen, setKeyboardOpen] = useState(false);
   const [stickyMods, setStickyMods] = useState<Modifier[]>([]);
   const [clipboardToast, setClipboardToast] = useState(false);
+  const [logCopied, setLogCopied] = useState(false);
   const [captureMode, setCaptureModeState] = useState<CaptureMode>('motion');
   const [modeToast, setModeToast] = useState(false);
   const [confirmingDisconnect, setConfirmingDisconnect] = useState(false);
@@ -825,6 +827,29 @@ export function ViewerScreen({ route, navigation }: Props) {
             </View>
           ) : null}
         </Pressable>
+        {/* These numbers are live and then gone. When a session was bad, the
+            question afterwards is always "what did your phone see", and until
+            now the honest answer was nothing. Tucked inside the expanded HUD
+            so it is reachable without being a button anyone presses by
+            accident. */}
+        {hudExpanded ? (
+          <Pressable
+            testID="copy-session-log"
+            style={styles.copyLog}
+            onPress={() => {
+              Clipboard.setString(journalText());
+              setLogCopied(true);
+            }}
+            accessibilityRole="button"
+            accessibilityLabel="Copy session log"
+            accessibilityHint="Puts this session's diagnostics on the clipboard to send to support"
+            hitSlop={{ top: 10, bottom: 10, left: 12, right: 12 }}
+          >
+            <Text style={styles.copyLogText}>
+              {logCopied ? 'Session log copied' : 'Copy session log'}
+            </Text>
+          </Pressable>
+        ) : null}
         {clipboardToast ? (
           <View style={styles.toast} testID="clipboard-toast">
             <Text style={styles.toastText}>Copied from Mac</Text>
@@ -1098,6 +1123,8 @@ const styles = StyleSheet.create({
   qualityDot: { width: 8, height: 8, borderRadius: 4 },
   badgeText: { color: theme.ink, fontSize: 12 },
   hud: { marginTop: 4, gap: 2 },
+  copyLog: { alignSelf: 'flex-start', marginTop: 6, paddingVertical: 4 },
+  copyLogText: { color: theme.muted, fontSize: 11 },
   hudText: { color: theme.muted, fontSize: 11 },
   toast: {
     position: 'absolute',

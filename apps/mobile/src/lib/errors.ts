@@ -37,7 +37,13 @@ const COPY: Record<AppErrorCode, string> = {
   request_timeout: 'That took too long. Check your connection and try again.',
   rate_limited: 'Too many attempts just now. Wait a minute, then try again.',
   server_error: 'The pairing server had a problem. Try again in a moment.',
-  signaling_lost: 'Lost the connection to the laptop. Reconnecting…',
+  // Reached on exactly one path, and it is the one where the session is over:
+  // `onError(signaling_lost)` is immediately followed by `onState('ended')`
+  // and `close()`. An earlier draft said "Reconnecting…" here, which would
+  // have been a sentence the app was not going to honour. When signaling
+  // drops while media is still flowing, nothing is shown at all — the badge
+  // reads "Reconnecting…" and the retry happens quietly.
+  signaling_lost: 'Lost the connection to the laptop. Connect again when you’re ready.',
   session_gone: 'That session ended. Reconnecting to the laptop…',
   peer_denied: 'The laptop denied this request. Approve it there, then try again.',
   ice_failed: 'Could not reach the laptop. Check that both devices are online, then try again.',

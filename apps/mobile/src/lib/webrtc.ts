@@ -25,6 +25,7 @@ import { AppLifecycleController } from './lifecycle';
 import { InputSender, MAX_BUFFERED_AMOUNT_BYTES } from './input';
 import { getDeviceId } from './device';
 import { appError, classifyHubError, type AppError } from './errors';
+import { record, startSession } from './journal';
 import { classifyQuality, QUALITY_POLL_MS, type ConnectionQuality } from './quality';
 
 export type ViewerState =
@@ -189,6 +190,8 @@ export class ViewerConnection {
    * while media is still healthy (see `onSignalingLifecycle`). */
   private lostRetryTimer: ReturnType<typeof setTimeout> | null = null;
   private statsPoll: ReturnType<typeof setInterval> | null = null;
+  /** Last quality level journalled, so only transitions are recorded. */
+  private lastQualityLevel: string | null = null;
   private lastInboundBytes: number | null = null;
   private lastStatsAt: number | null = null;
   /** Wall-clock of the last poll where inbound video bytes actually advanced —
@@ -218,6 +221,8 @@ export class ViewerConnection {
   }
 
   async start(): Promise<void> {
+    startSession();
+    record('connecting');
     this.cb.onState('connecting');
     await this.sig.connect();
     this.sig.register(getDeviceId());
@@ -227,6 +232,7 @@ export class ViewerConnection {
     // deserves its own "look at your laptop" moment instead of reusing the
     // generic 'connecting' spinner for both. See
     // docs/audit/m3/mobile-ux.md Finding 1.
+    record('awaiting_approval');
     this.cb.onState('awaiting_approval');
     // Fire one heartbeat immediately, then on the interval: `setInterval`
     // waits a full interval before its first call, which on a cellular path
@@ -239,6 +245,7 @@ export class ViewerConnection {
       onBackground: () => this.sig.pause('backgrounded'),
       onForeground: () => {
         if (!this.sig.isOpen() && !this.sig.isReconnecting()) {
+          record('reconnecting signaling');
           this.cb.onState('reconnecting_signaling');
           this.sig.beginReconnect(getDeviceId());
         }
@@ -350,6 +357,7 @@ export class ViewerConnection {
         // Approval already happened and ICE servers are assigned — the peer
         // connection is about to be built and an offer is imminent. See
         // docs/audit/m3/mobile-ux.md Finding 1.
+        record('negotiating');
         this.cb.onState('negotiating');
         this.setupPeer(m.payload.iceServers, m.payload.iceTransportPolicy);
         break;
@@ -359,7 +367,12 @@ export class ViewerConnection {
         // in a dead-path state until the desktop's recovery deadline kills
         // it with no trace of why.
         this.handleOffer(m.payload.sdp).catch((err) => {
-          this.cb.onError(appError('unknown', `applying offer failed: ${String(err)}`));
+          // The raw text goes to the journal, not to the screen. "applying
+          // offer failed: InvalidAccessError: ..." is a sentence for whoever
+          // debugs it later, and this module already learned that lesson once
+          // for the hub's own words a few lines below.
+          record('offer failed', String(err));
+          this.cb.onError(appError('unknown'));
         });
         break;
       case 'ice-candidate':
@@ -391,6 +404,7 @@ export class ViewerConnection {
         // Split out from the generic 'ended' bucket: a denial is a decision,
         // not a failure — the UI shows different copy and no "reconnect"
         // affordance for it. See docs/audit/m3/mobile-ux.md Finding 1.
+        record('denied');
         this.cb.onState('denied');
         this.close();
         break;
@@ -407,10 +421,12 @@ export class ViewerConnection {
         if (m.payload.reason === 'revoked') {
           this.cb.onRevoked?.();
         }
+        record('ended');
         this.cb.onState('ended');
         this.close();
         break;
       case 'disconnect':
+        record('ended');
         this.cb.onState('ended');
         this.close();
         break;
@@ -438,12 +454,14 @@ export class ViewerConnection {
     switch (event.kind) {
       case 'closed':
         if (this.peerConnected) {
+          record('reconnecting signaling');
           this.cb.onState('reconnecting_signaling');
           this.sig.beginReconnect(getDeviceId());
         } else {
           // Before the peer is up, signaling IS the session — matches the
           // desktop's own rule (`session/mod.rs`'s `SignalingClientEvent::Closed`
           // handler).
+          record('ended');
           this.cb.onState('ended');
           this.close();
         }
@@ -454,6 +472,7 @@ export class ViewerConnection {
         // because signaling came back while the peer connection is still
         // unwell.
         if (this.peerConnected) {
+          record('connected');
           this.cb.onState('connected');
         }
         break;
@@ -467,13 +486,16 @@ export class ViewerConnection {
         // retrying in paced cycles instead; signaling recovers whenever the
         // radio does. Without media, signaling IS the session — end it.
         if (this.peerConnected) {
+          record('reconnecting signaling');
           this.cb.onState('reconnecting_signaling');
           this.lostRetryTimer = setTimeout(() => {
             this.lostRetryTimer = null;
             if (this.pc && !this.isClosed) this.sig.beginReconnect(getDeviceId());
           }, 4000);
         } else {
-          this.cb.onError(appError('signaling_lost', event.error.message));
+          record('signaling lost', event.error.message);
+          this.cb.onError(appError('signaling_lost'));
+          record('ended');
           this.cb.onState('ended');
           this.close();
         }
@@ -560,6 +582,7 @@ export class ViewerConnection {
         this.iceRestartAttempts = 0;
         this.clearRecoveryDeadline();
         this.clearDegradedGraceTimer();
+        record('connected');
         this.cb.onState('connected');
       } else if (s === 'failed' || s === 'disconnected') {
         // Both 'disconnected' and 'failed' are routed through the SAME
@@ -581,6 +604,7 @@ export class ViewerConnection {
         // already closed, this is just cleanup noise.
         if (!this.isClosed) {
           this.peerConnected = false;
+          record('ended');
           this.cb.onState('ended');
         }
       } else {
@@ -708,6 +732,7 @@ export class ViewerConnection {
         // Video is the ground truth and the desktop agrees: while it's
         // flowing, this is a connected session, not a degraded one. No
         // renegotiate — the desktop would just decline it.
+        record('connected');
         this.cb.onState('connected');
         this.armDegradedRecheck(pc, p);
         return;
@@ -750,6 +775,7 @@ export class ViewerConnection {
         // stop). No renegotiate: the desktop declines these while its own
         // traffic still reads fresh, so sending one would only strand the
         // UI on 'recovering_ice' with no way back to 'connected'.
+        record('connected');
         this.cb.onState('connected');
         if (this.pc) {
           this.armDegradedRecheck(this.pc, this.pc as unknown as { connectionState: string });
@@ -779,6 +805,7 @@ export class ViewerConnection {
         // agree the session is fine) and go back to the video-aware
         // degraded loop instead of a bare return (a `disconnected`/`failed`
         // state may still be lingering).
+        record('connected');
         this.cb.onState('connected');
         if (this.pc) {
           this.armDegradedRecheck(this.pc, this.pc as unknown as { connectionState: string });
@@ -893,8 +920,21 @@ export class ViewerConnection {
       this.lastStatsAt = now;
     }
 
+    const level = classifyQuality(rttMs, packetLossPct);
+    // Only when it CHANGES. A sample every 2s would bury the transitions that
+    // explain a session under a wall of identical "good" lines, and the shape
+    // of a wobbly connection is exactly where the level moved and how long it
+    // stayed there.
+    if (level !== this.lastQualityLevel) {
+      this.lastQualityLevel = level;
+      record(
+        `quality ${level}`,
+        `rtt ${rttMs ?? '—'}ms · ${bitrateKbps ?? '—'}kbps · ${fps ?? '—'}fps · loss ${packetLossPct ?? '—'}%`,
+      );
+    }
+
     this.cb.onStats({
-      level: classifyQuality(rttMs, packetLossPct),
+      level,
       rttMs,
       bitrateKbps,
       fps,

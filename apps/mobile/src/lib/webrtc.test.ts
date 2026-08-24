@@ -510,7 +510,10 @@ describe('ViewerConnection', () => {
 
       expect(cb.onError).toHaveBeenCalledWith({
         code: 'signaling_lost',
-        message: 'gave up after 4 reconnect attempts',
+        // Was `'gave up after 4 reconnect attempts'` — the transport's own
+        // sentence, written for whoever debugs it and shown to the customer
+        // instead. It goes to the session journal now; the screen gets copy.
+        message: 'Lost the connection to the laptop. Connect again when you’re ready.',
         retryable: true,
       });
       expect(cb.onState).toHaveBeenCalledWith('ended');
