@@ -288,6 +288,28 @@ function askNotary({ b64, keyId, issuer }) {
   }
 }
 
+/**
+ * Days until an Apple `expirationDate`, or null if it is unparseable.
+ *
+ * Signing material fails by expiring, silently and on a date nobody has written
+ * down: a Developer ID certificate lasts five years, a provisioning profile
+ * one. Nothing in this repo watched either, so the first sign would have been a
+ * release failing to notarize or an archive refusing to export.
+ */
+function daysUntil(iso) {
+  const t = Date.parse(iso ?? '');
+  return Number.isNaN(t) ? null : Math.floor((t - Date.now()) / 86_400_000);
+}
+
+/** Report an expiry: fails inside 30 days, notes the date otherwise. */
+function reportExpiry(what, iso, remedy) {
+  const days = daysUntil(iso);
+  if (days === null) return;
+  if (days < 0) bad(`${what} EXPIRED ${-days} days ago`, remedy);
+  else if (days < 30) bad(`${what} expires in ${days} days`, remedy);
+  else ok(`${what} is valid for ${days} more days`);
+}
+
 async function askApple({ label, b64, keyId, issuer, team }) {
   console.log(`\nAgainst the live App Store Connect API${label ? ` (${label})` : ''}:\n`);
   if (!b64 || !keyId || !issuer) {
@@ -427,9 +449,19 @@ async function askApple({ label, b64, keyId, issuer, team }) {
     const devId = certList.filter((c) =>
       String(c?.attributes?.certificateType ?? '').startsWith('DEVELOPER_ID_APPLICATION'),
     );
-    if (devId.length)
+    if (devId.length) {
       ok(`${devId.length} Developer ID Application certificate(s) exist in this account`);
-    else
+      // The one that expires last is the one that will still be signing.
+      const furthest = devId
+        .map((c) => c.attributes.expirationDate)
+        .sort()
+        .at(-1);
+      reportExpiry(
+        'the Developer ID certificate',
+        furthest,
+        'Only the Account Holder can issue a replacement, so start before it lapses. See docs/apple-setup.md §1.',
+      );
+    } else
       bad(
         'this account has no Developer ID Application certificate',
         'Without one the Mac app can only be ad-hoc signed. Apple Developer → Certificates → + → Developer ID Application. Only the Account Holder can create it.',
@@ -453,6 +485,28 @@ async function askApple({ label, b64, keyId, issuer, team }) {
       `App ID ${wanted} is not registered in this account`,
       'Apple Developer → Identifiers → + → App IDs → App, explicit bundle id. The App Store Connect record cannot be created before it exists. See docs/apple-setup.md §3.',
     );
+
+  // The App Store profile lasts a year. Nothing watched it, so the first sign
+  // of expiry would have been an archive that refuses to export.
+  const profiles = await get('/v1/profiles?limit=200');
+  const mine = (profiles?.body?.data ?? []).filter(
+    (d) =>
+      d?.attributes?.profileType === 'IOS_APP_STORE' && /lilypad/i.test(d?.attributes?.name ?? ''),
+  );
+  for (const prof of mine) {
+    if (prof.attributes.profileState !== 'ACTIVE') {
+      bad(
+        `provisioning profile "${prof.attributes.name}" is ${prof.attributes.profileState}`,
+        'A profile goes INVALID when the certificate it names is revoked. Delete it and create a replacement.',
+      );
+      continue;
+    }
+    reportExpiry(
+      `provisioning profile "${prof.attributes.name}"`,
+      prof.attributes.expirationDate,
+      'Recreate it against the current distribution certificate and update IOS_PROVISIONING_PROFILE.',
+    );
+  }
 
   const record = (apps.body?.data ?? []).find((d) => d?.attributes?.bundleId === wanted);
   if (record) ok(`App Store Connect record ${record.id} — “${record.attributes.name}”`);

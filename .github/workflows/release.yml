@@ -211,6 +211,44 @@ jobs:
           # Universal binary so one artifact covers Intel + Apple Silicon.
           args: --target universal-apple-darwin
 
+      # Tauri notarizes and staples the .app, then wraps it in a DMG it never
+      # submits. The DMG is the file a customer downloads, and Gatekeeper checks
+      # the container first — so a stapled app inside an unstapled DMG still has
+      # to phone Apple on first open, and warns outright on a machine that is
+      # offline or behind a filtering network. Verified on v0.1.7:
+      #
+      #   Lilypad.app: accepted / source=Notarized Developer ID   (stapled)
+      #   Lilypad_0.1.7_universal.dmg does not have a ticket stapled to it.
+      #
+      # Submitting the DMG is fast — its contents are already notarized, so
+      # Apple is only ticketing the container — and the asset is re-uploaded
+      # over the one tauri-action already published.
+      - name: Notarize and staple the DMG itself
+        if: steps.preflight.outputs.notarize == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_type == 'tag' && github.ref_name || format('v0.0.0-dispatch.{0}', github.run_number) }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          dmgs=(apps/desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg)
+          if [ ${#dmgs[@]} -eq 0 ]; then
+            echo "::error::no DMG was built — nothing to staple"
+            exit 1
+          fi
+          for dmg in "${dmgs[@]}"; do
+            echo "submitting $(basename "$dmg")"
+            xcrun notarytool submit "$dmg" \
+              --key "$APPLE_API_KEY_PATH" \
+              --key-id "$APPLE_API_KEY" \
+              --issuer "$APPLE_API_ISSUER" \
+              --wait --timeout 30m
+            xcrun stapler staple "$dmg"
+            xcrun stapler validate "$dmg"
+            # --clobber, because tauri-action uploaded the unstapled one first.
+            gh release upload "$TAG" "$dmg" --clobber
+          done
+
       # The one property that decides whether the product can work at all on a
       # customer's Mac, checked on the artifact rather than assumed from the
       # configuration above.
