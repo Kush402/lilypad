@@ -16,6 +16,13 @@
  * Deliberately shallow. This is not a linter for what a workflow DOES — it
  * answers "will GitHub load this file at all", which is the question that had
  * no answer before a push.
+ *
+ * It grew one more question of the same kind. A reusable workflow gets only the
+ * permissions its CALLER grants, and asking for more is not a job failure: the
+ * run is refused before any job starts, reported as `startup_failure` with zero
+ * jobs, zero logs and zero annotations. Adding `checks: write` to a job in
+ * `ci.yml` broke every `deploy.yml` run that way, and the only visible evidence
+ * was a red dot with nothing behind it.
  */
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -30,6 +37,11 @@ if (files.length === 0) {
 }
 
 let failed = 0;
+/** file -> { job -> {perm: level} } for every job that declares permissions. */
+const declared = new Map();
+/** callers: { file, job, uses, granted } for every `uses: ./.github/workflows/...` */
+const callers = [];
+
 for (const file of files.sort()) {
   let doc;
   try {
@@ -54,7 +66,51 @@ for (const file of files.sort()) {
     failed += 1;
     continue;
   }
+  // Record what each job asks for, and who calls whom, for the caller/callee
+  // permission comparison below.
+  const perms = {};
+  for (const [name, job] of Object.entries(jobs)) {
+    if (job && typeof job === 'object' && job.permissions && typeof job.permissions === 'object') {
+      perms[name] = job.permissions;
+    }
+    const uses = job?.uses;
+    if (typeof uses === 'string' && uses.startsWith('./.github/workflows/')) {
+      callers.push({
+        file,
+        job: name,
+        uses: uses.replace('./.github/workflows/', ''),
+        granted: (job.permissions && typeof job.permissions === 'object') ? job.permissions : {},
+      });
+    }
+  }
+  declared.set(file, perms);
+
   console.log(`  ok   ${file} (${Object.keys(jobs).length} job(s))`);
+}
+
+// A caller must grant at least what every job in the called workflow declares.
+// `write` satisfies a `read` request; nothing satisfies a missing key.
+const RANK = { none: 0, read: 1, write: 2 };
+for (const { file, job, uses, granted } of callers) {
+  const callee = declared.get(uses);
+  if (!callee) {
+    console.error(`  FAIL ${file}: job "${job}" calls ${uses}, which is not a workflow here`);
+    failed += 1;
+    continue;
+  }
+  for (const [calleeJob, wanted] of Object.entries(callee)) {
+    for (const [perm, level] of Object.entries(wanted)) {
+      const have = granted[perm];
+      if (RANK[have] === undefined || RANK[have] < RANK[level]) {
+        console.error(
+          `  FAIL ${file}: job "${job}" calls ${uses}, whose job "${calleeJob}" needs ` +
+            `${perm}: ${level}, but the caller grants ${have ? `${perm}: ${have}` : 'nothing'}. ` +
+            `GitHub refuses the whole run with startup_failure and no logs.`,
+        );
+        failed += 1;
+      }
+    }
+  }
 }
 
 console.log(
