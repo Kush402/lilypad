@@ -385,13 +385,18 @@ describe('what a shared link looks like', () => {
 
   it('every asset the pages reference actually exists in public/', () => {
     const referenced = new Set<string>();
+    // `noUncheckedIndexedAccess` types a capture group as possibly undefined
+    // even though a match guarantees it, so both loops take the group through a
+    // local rather than asserting it away.
+    const collect = (page: string, re: RegExp) => {
+      for (const m of page.matchAll(re)) {
+        const file = m[1];
+        if (file) referenced.add(file);
+      }
+    };
     for (const [, page] of pages) {
-      for (const m of page.matchAll(/(?:href|content)="\/([a-z0-9.-]+\.(?:ico|png))"/g))
-        referenced.add(m[1]);
-      for (const m of page.matchAll(
-        /content="https:\/\/lilypadhome\.takedia\.com\/([a-z0-9.-]+\.png)"/g,
-      ))
-        referenced.add(m[1]);
+      collect(page, /(?:href|content)="\/([a-z0-9.-]+\.(?:ico|png))"/g);
+      collect(page, /content="https:\/\/lilypadhome\.takedia\.com\/([a-z0-9.-]+\.png)"/g);
     }
     expect(referenced.size).toBeGreaterThan(0);
     for (const file of referenced) {
