@@ -311,11 +311,31 @@ a {
   font-size: 19px;
   margin: 0 0 4px;
 }
-.plan__price {
-  font-size: 30px;
-  font-weight: 700;
+/* Replaced `.plan__price`, which rendered a literal `$XXXX` in three cards on
+   the live site. A placeholder price reads as an unfinished page; a status
+   reads as a roadmap, and is the same truth. */
+.plan__status {
+  display: inline-block;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
   margin: 0 0 16px;
-  color: var(--accent);
+  padding: 4px 10px;
+  border-radius: 999px;
+  color: var(--muted);
+  background: var(--line);
+}
+.plan__status--current {
+  color: var(--accent-ink, var(--accent));
+  background: var(--accent-wash);
+}
+/* The plan a visitor can actually have is the one that should look real. */
+.plan--current {
+  border-color: var(--accent);
+}
+.plan--planned {
+  opacity: 0.78;
 }
 .plan ul {
   list-style: none;

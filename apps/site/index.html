@@ -8,6 +8,28 @@
       name="description"
       content="Phone-first remote control for your Mac. At home it connects directly over your own network. Pair once with a QR code, reconnect forever."
     />
+    <link rel="icon" href="/favicon.ico" sizes="any" />
+    <link rel="icon" type="image/png" href="/favicon-32.png" sizes="32x32" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="canonical" href="https://lilypadhome.takedia.com/" />
+
+    <!-- Open Graph / Twitter. Without these a shared link is a bare URL with
+         no title, no description and no picture, in every client that unfurls
+         one. The image is generated from the same mark as the app icon by
+         scripts/icons.py. -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Lilypad" />
+    <meta property="og:title" content="Lilypad — your Mac, on your phone" />
+    <meta property="og:description" content="Phone-first remote control for your Mac. At home it connects directly over your own network. Pair once with a QR code, reconnect forever." />
+    <meta property="og:url" content="https://lilypadhome.takedia.com/" />
+    <meta property="og:image" content="https://lilypadhome.takedia.com/og.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="The Lilypad mark beside the words: Your Mac, on your phone." />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="theme-color" content="#0e1512" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#f4faf7" media="(prefers-color-scheme: light)" />
+
     <link rel="stylesheet" href="/src/styles.css" />
   </head>
   <body>
@@ -180,39 +202,40 @@
         <div class="band__inner">
           <h2>Plans</h2>
           <p class="lede">
-            <strong>Using Lilypad on your own network is always free.</strong> It costs us nothing
-            to run, so there is nothing to charge for. We only meter the two things that genuinely
-            cost money: relayed minutes, and AI we pay for on your behalf.
+            <strong>Using Lilypad on your own network is always free.</strong> It costs us
+            nothing to run, so there is nothing to charge for — and that stays true whatever else
+            changes. Everything the app does today is free; paid plans are planned around the only
+            two things that cost real money: relayed minutes, and AI we pay for on your behalf.
           </p>
 
           <div class="plans">
-            <article class="plan">
+            <article class="plan plan--current">
               <h3>Free</h3>
-              <p class="plan__price">$XXXX</p>
+              <p class="plan__status plan__status--current">Available now</p>
               <ul>
                 <li>Unlimited sessions on your own network</li>
                 <li>Unlimited direct peer-to-peer sessions</li>
-                <li>A monthly allowance of relayed minutes</li>
+                <li>Relayed sessions when a network blocks a direct one</li>
                 <li>Remote control, input and clipboard</li>
                 <li>Multiple devices</li>
                 <li>Ask with your own API key</li>
               </ul>
             </article>
-            <article class="plan">
+            <article class="plan plan--planned">
               <h3>Pro</h3>
-              <p class="plan__price">$XXXX</p>
+              <p class="plan__status">Planned</p>
               <ul>
                 <li>Everything in Free</li>
-                <li>A higher relay allowance</li>
+                <li>A larger relay allowance</li>
                 <li>Managed AI — no key of your own to supply</li>
                 <li>Premium models</li>
                 <li>Extended history</li>
                 <li>Priority support</li>
               </ul>
             </article>
-            <article class="plan">
+            <article class="plan plan--planned">
               <h3>Team</h3>
-              <p class="plan__price">$XXXX</p>
+              <p class="plan__status">Planned</p>
               <ul>
                 <li>Everything in Pro</li>
                 <li>Team and business features</li>
@@ -221,8 +244,9 @@
           </div>
 
           <p class="footnote">
-            <strong>Prices are not set.</strong> <code>$XXXX</code> is a placeholder, and the
-            allowances above are not yet quantified. Nothing here is an offer.
+            <strong>Pro and Team do not exist yet, and prices are not set.</strong> Nothing on this
+            page is an offer. When paid plans arrive the prices and allowances will be published
+            here first, and using your own network to reach your own computer will remain free.
           </p>
         </div>
       </section>

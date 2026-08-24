@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, it, expect } from 'vitest';
 
@@ -80,22 +80,34 @@ describe('platform claims', () => {
 
 describe('pricing claims', () => {
   it('names exactly the three tiers the schema has', () => {
-    const plans = [...html.matchAll(/<article class="plan">\s*<h3>([^<]+)<\/h3>/g)].map(
+    // `class="plan plan--current"` etc — the modifier says which one a visitor
+    // can actually have, so the match must not require the bare class.
+    const plans = [...html.matchAll(/<article class="plan[^"]*">\s*<h3>([^<]+)<\/h3>/g)].map(
       (m) => m[1],
     );
     expect(plans).toEqual(['Free', 'Pro', 'Team']);
   });
 
-  // `$XXXX` is the only permitted price. A real figure on this page would be an
-  // offer the repository has no basis for making.
-  it('quotes no price other than the placeholder', () => {
-    const prices = [...html.matchAll(/\$[\w.,]+/g)].map((m) => m[0]);
-    expect(prices.length).toBeGreaterThan(0);
-    expect([...new Set(prices)]).toEqual(['$XXXX']);
+  // A real figure here would be an offer the repository has no basis for
+  // making. This used to permit `$XXXX`, which the page then rendered in three
+  // plan cards on the live site — a placeholder price reads as an unfinished
+  // product, not as candour. Quoting NO figure is the same guarantee and looks
+  // like a decision.
+  it('quotes no price at all', () => {
+    const prices = [...html.matchAll(/\$[\d][\w.,]*|\$XXXX/g)].map((m) => m[0]);
+    expect(prices).toEqual([]);
   });
 
-  it('says plainly that the prices are not set', () => {
+  it('says plainly that the prices are not set and the paid tiers do not exist', () => {
     expect(html).toMatch(/prices are not set/i);
+    expect(html).toMatch(/do not exist yet/i);
+  });
+
+  it('marks which plan a visitor can actually have today', () => {
+    // Three equal-looking cards where two cannot be bought is the confusion
+    // this replaces.
+    expect(html).toMatch(/plan__status--current/);
+    expect([...html.matchAll(/class="plan__status">Planned</g)]).toHaveLength(2);
   });
 
   // The one pricing fact the repo does assert, in INFRASTRUCTURE-COST-MODEL.md:
@@ -338,5 +350,64 @@ describe('the repository’s own public pages', () => {
     // the `$XXXX` problem with a security shape.
     expect(readme).not.toMatch(/signed \+ notarized/i);
     expect(readme).toMatch(/not notarized/i);
+  });
+});
+
+describe('what a shared link looks like', () => {
+  // The site had no favicon and no Open Graph tags at all, so the browser tab
+  // was blank and pasting the URL into iMessage, Slack or a tweet produced a
+  // bare link — no title, no description, no picture. For a page whose whole
+  // job is handing a stranger an installer, that is the first impression.
+  const pages: Array<[string, string]> = [
+    ['index.html', html],
+    ['privacy.html', privacy],
+    ['terms.html', terms],
+  ];
+
+  it.each(pages)('%s declares a card image, a favicon and a canonical URL', (_name, page) => {
+    expect(page).toContain('property="og:image"');
+    expect(page).toContain('name="twitter:card"');
+    expect(page).toContain('rel="apple-touch-icon"');
+    expect(page).toContain('rel="canonical"');
+  });
+
+  it.each(pages)(
+    '%s points og:title at its own title, not the homepage everywhere',
+    (_name, page) => {
+      const title = /<title>([^<]+)<\/title>/.exec(page)?.[1];
+      const og = /property="og:title" content="([^"]+)"/.exec(page)?.[1];
+      expect(og).toBeTruthy();
+      // The pages differ, and a card that says "Lilypad — your Mac, on your
+      // phone" above the privacy policy is the tell that these were pasted.
+      expect(title).toContain(og!.split(' — ')[0]);
+    },
+  );
+
+  it('every asset the pages reference actually exists in public/', () => {
+    const referenced = new Set<string>();
+    for (const [, page] of pages) {
+      for (const m of page.matchAll(/(?:href|content)="\/([a-z0-9.-]+\.(?:ico|png))"/g))
+        referenced.add(m[1]);
+      for (const m of page.matchAll(
+        /content="https:\/\/lilypadhome\.takedia\.com\/([a-z0-9.-]+\.png)"/g,
+      ))
+        referenced.add(m[1]);
+    }
+    expect(referenced.size).toBeGreaterThan(0);
+    for (const file of referenced) {
+      const path = fileURLToPath(new URL(`../public/${file}`, import.meta.url));
+      expect(existsSync(path), `${file} is referenced but missing from apps/site/public/`).toBe(
+        true,
+      );
+    }
+  });
+
+  it('og.png really is the 1200x630 it claims to be', () => {
+    // A card whose declared size disagrees with the file renders cropped or
+    // letterboxed, and only in other people's clients where nobody sees it.
+    const png = readFileSync(fileURLToPath(new URL('../public/og.png', import.meta.url)));
+    expect(png.toString('ascii', 12, 16)).toBe('IHDR');
+    expect(png.readUInt32BE(16)).toBe(1200);
+    expect(png.readUInt32BE(20)).toBe(630);
   });
 });

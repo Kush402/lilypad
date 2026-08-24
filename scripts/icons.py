@@ -29,7 +29,7 @@ import math
 from pathlib import Path
 
 import numpy as np
-from PIL import Image, ImageDraw, ImageFilter
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -169,6 +169,62 @@ def ios_icon(size):
     return img.convert("RGB").resize((size, size), Image.LANCZOS)
 
 
+# ── Web ───────────────────────────────────────────────────────────────────────
+# The site had no favicon, no apple-touch-icon and no Open Graph image, so the
+# browser tab was blank and sharing the link anywhere — iMessage, Slack, a
+# tweet — produced a bare URL with no title, no description and no picture.
+
+BG_DEEP = (0x0B, 0x33, 0x26)
+FG = (0xF4, 0xFA, 0xF7)          # tokens.light.bg, used here as text on dark
+MUTED = (0x9F, 0xC4, 0xB4)
+
+def _font(size, bold=False):
+    """Helvetica Neue: the closest freely-renderable match to the site's
+    `system-ui` stack, which resolves to SF Pro on macOS. Rendered once into a
+    committed PNG, so there is no runtime font dependency either way."""
+    path = "/System/Library/Fonts/HelveticaNeue.ttc"
+    try:
+        return ImageFont.truetype(path, size, index=1 if bold else 0)
+    except OSError:
+        return ImageFont.load_default()
+
+
+def og_image():
+    """1200x630 social card."""
+    W, H = 1200, 630
+    img = _linear_gradient(max(W, H), (0x10, 0x3F, 0x2F), ON_ACCENT, 55.0).crop((0, 0, W, H)).convert("RGBA")
+
+    mark = macos_icon(300)
+    img.paste(mark, (96, (H - 300) // 2), mark)
+
+    d = ImageDraw.Draw(img)
+    x = 456
+    d.text((x, 214), "Lilypad", font=_font(96, bold=True), fill=FG)
+    d.text((x, 330), "Your Mac, on your phone.", font=_font(40), fill=MUTED)
+    d.text((x, 392), "Pair once with a QR code. Reconnect forever.", font=_font(28), fill=MUTED)
+    d.text((x, 470), "lilypadhome.takedia.com", font=_font(24), fill=ACCENT_DARK)
+    return img.convert("RGB")
+
+
+def write_web(mac_master):
+    pub = ROOT / "apps/site/public"
+    pub.mkdir(parents=True, exist_ok=True)
+
+    # Favicon: a tab is 16px, where the veins are gone and only the silhouette
+    # is left, so the pad is drawn on the brand backdrop rather than
+    # transparent — a transparent green shape disappears on a dark tab strip.
+    ico_sizes = [16, 32, 48, 64]
+    base = ios_icon(256)
+    base.save(pub / "favicon.ico", sizes=[(s, s) for s in ico_sizes])
+    base.resize((32, 32), Image.LANCZOS).save(pub / "favicon-32.png")
+
+    # Apple touch icon: 180x180, no alpha, no rounded corners — iOS masks it.
+    ios_icon(180).save(pub / "apple-touch-icon.png")
+
+    og_image().save(pub / "og.png", quality=92)
+    print(f"web      favicon.ico, favicon-32.png, apple-touch-icon.png, og.png")
+
+
 def main():
     # Render each variant ONCE at full resolution and downsample. Re-rendering a
     # supersampled master per size meant a 4096x4096 blur for every entry, which
@@ -213,6 +269,8 @@ def main():
         round_master.resize((px, px), Image.LANCZOS).save(d / "ic_launcher_round.png", "PNG")
         n += 1
     print(f"android  {n} density bucket(s) regenerated")
+
+    write_web(mac_master)
 
 
 if __name__ == "__main__":
