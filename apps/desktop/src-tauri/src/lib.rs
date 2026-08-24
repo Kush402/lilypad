@@ -11,6 +11,7 @@ mod agent;
 mod autostart;
 mod commands;
 mod health;
+mod logfile;
 mod presence;
 mod single_instance;
 // Public so a headless example / integration test can drive a real session
@@ -257,10 +258,20 @@ pub fn run() {
     // `log::` macros are no-ops until a logger is installed — without this,
     // input-injection and session errors vanish instead of reaching stderr.
     // Defaults to `info` for our own crate; override with RUST_LOG as usual.
-    let _ = env_logger::Builder::from_env(
+    // ...and to a file, because stderr goes nowhere for a `.app` launched from
+    // Finder or by the login-item LaunchAgent. Without this, a customer
+    // reporting a bad session leaves no evidence on their own machine — see
+    // `logfile`. Falls back to stderr alone if the file cannot be opened.
+    let mut builder = env_logger::Builder::from_env(
         env_logger::Env::default().default_filter_or("lilypad=info,lilypad_desktop=info"),
-    )
-    .try_init();
+    );
+    if let Some(target) = logfile::target() {
+        builder.target(env_logger::Target::Pipe(target));
+    }
+    let _ = builder.try_init();
+    if let Some(path) = logfile::path() {
+        log::info!(target: "lilypad::logging", "logging to {}", path.display());
+    }
 
     // Refuse to be the second instance. The launch-at-login LaunchAgent and a
     // manual/dev launch would otherwise both register the same presence room
@@ -387,6 +398,8 @@ pub fn run() {
             commands::set_login_item_enabled,
             commands::show_setup_window,
             commands::show_control_window,
+            commands::log_file_path,
+            commands::reveal_log_file,
             commands::get_account_state,
             commands::account_sign_up,
             commands::account_sign_in,

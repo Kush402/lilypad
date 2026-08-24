@@ -1209,3 +1209,37 @@ mod tests {
         assert!(!pairing_failure(400).contains("Try again"));
     }
 }
+
+/// Where this Mac writes its log, and a way to get to it.
+///
+/// A log a customer cannot find is a log that only helps developers. The path
+/// goes into the copyable diagnostics report so a support conversation can name
+/// it, and `reveal_log_file` opens Finder on it so nobody has to be told how to
+/// reach `~/Library/Logs`.
+#[tauri::command]
+pub fn log_file_path() -> Option<String> {
+    crate::logfile::path().map(|p| p.display().to_string())
+}
+
+/// Select the log file in Finder. macOS-only, like the rest of this app's
+/// shell integration; elsewhere it reports that there is nothing to open
+/// rather than pretending it worked.
+#[tauri::command]
+pub fn reveal_log_file() -> Result<(), String> {
+    let path = crate::logfile::path().ok_or("no log file path on this system")?;
+    #[cfg(target_os = "macos")]
+    {
+        // `-R` reveals rather than opens: a 5 MB log opened in TextEdit is not
+        // what someone attaching it to an email wants.
+        std::process::Command::new("open")
+            .arg("-R")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| format!("could not reveal the log file: {e}"))?;
+        Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err(format!("the log file is at {}", path.display()))
+    }
+}

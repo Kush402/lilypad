@@ -18,6 +18,10 @@ vi.mock('../lib/tauri', () => ({
     check: vi.fn().mockResolvedValue(null),
     relaunch: vi.fn(),
   },
+  api: {
+    logFilePath: vi.fn().mockResolvedValue('/Users/x/Library/Logs/Lilypad/lilypad.log'),
+    revealLogFile: vi.fn().mockResolvedValue(undefined),
+  },
 }));
 
 describe('Diagnostics', () => {
@@ -132,5 +136,52 @@ describe('the report a customer can send', () => {
     vi.mocked(useAppState).mockReturnValue({ ...state, presence: { state: 'online' } });
     render(<Diagnostics />);
     expect(screen.getByTestId('presence-state')).toHaveTextContent(/a phone can ring this Mac/i);
+  });
+});
+
+/**
+ * The log file, from support's point of view.
+ *
+ * Until 2026-08-24 the desktop wrote no log at all: `env_logger` went to
+ * stderr, and a `.app` launched from Finder or the login-item LaunchAgent has
+ * no stderr. A customer reporting a bad session left no evidence on their own
+ * machine — proven when a "wobbly on cellular" report could be traced through
+ * the backend's log and stopped dead at the Mac's half.
+ *
+ * A log nobody can find is worth very little more, so the path has to reach
+ * the one artefact support actually asks for: the copyable report.
+ */
+describe('Diagnostics — the log file', () => {
+  const state = {
+    device_id: 'desktop-abc',
+    backend_base_url: 'http://localhost:8080',
+    session: 'idle',
+    current_room_id: null,
+    pending_request: null,
+    plugin_health: {},
+    connection_path: null,
+    presence: { state: 'online' } as const,
+  } satisfies AppStateDto;
+
+  it('names the log path in the report support is asked to paste', () => {
+    expect(
+      diagnosticsReport(state, '0.1.7', '/Users/x/Library/Logs/Lilypad/lilypad.log'),
+    ).toContain('log: /Users/x/Library/Logs/Lilypad/lilypad.log');
+  });
+
+  // Says so rather than omitting the line. An absent `log:` row is
+  // indistinguishable from an old build, and the whole point is telling
+  // support which of those they are looking at.
+  it('says the log is not being written rather than staying silent', () => {
+    expect(diagnosticsReport(state, '0.1.7', null)).toContain('log: not being written');
+  });
+
+  it('shows the path on screen, with a way to reach it', async () => {
+    vi.mocked(useAppState).mockReturnValue(state);
+    render(<Diagnostics />);
+    expect(await screen.findByTestId('log-path')).toHaveTextContent(
+      '/Users/x/Library/Logs/Lilypad/lilypad.log',
+    );
+    expect(screen.getByTestId('reveal-log')).toBeEnabled();
   });
 });

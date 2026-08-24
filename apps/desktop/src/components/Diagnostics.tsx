@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useAppState } from '../lib/useAppState';
 import type { AppStateDto } from '../lib/tauri';
 import { SoftwareUpdate } from './SoftwareUpdate';
@@ -55,7 +55,11 @@ const PRESENCE_LABEL: Record<string, string> = {
  * people who can already read a uuid aloud. `pnpm support <email>` covers the
  * server side; this is the half only the customer's own machine knows.
  */
-export function diagnosticsReport(state: AppStateDto, version: string): string {
+export function diagnosticsReport(
+  state: AppStateDto,
+  version: string,
+  logPath?: string | null,
+): string {
   const health = Object.entries(state.plugin_health)
     .map(([name, value]) => `  ${HEALTH_LABEL[name] ?? name}: ${value}`)
     .join('\n');
@@ -72,6 +76,10 @@ export function diagnosticsReport(state: AppStateDto, version: string): string {
         ? (PATH_LABEL[state.connection_path] ?? state.connection_path)
         : 'none yet'
     }`,
+    // Named in the report because the next question after reading one of
+    // these is always "can you send the log" — and the answer has to be a
+    // path, not an instruction to go hunting in ~/Library.
+    `log: ${logPath ?? 'not being written'}`,
     'health:',
     health || '  (none reported)',
   ].join('\n');
@@ -88,6 +96,16 @@ export function diagnosticsReport(state: AppStateDto, version: string): string {
 export function Diagnostics() {
   const state = useAppState();
   const [copied, setCopied] = useState(false);
+  const [logPath, setLogPath] = useState<string | null>(null);
+
+  useEffect(() => {
+    // Best-effort: a missing path is rendered as such, and must never stop the
+    // rest of this window from rendering.
+    void import('../lib/tauri')
+      .then((m) => m.api.logFilePath())
+      .then(setLogPath)
+      .catch(() => setLogPath(null));
+  }, []);
 
   const copy = useCallback(async () => {
     if (!state) return;
@@ -95,9 +113,9 @@ export function Diagnostics() {
     // webview, this is one call, and a dependency that ships a permission
     // surface to save it is a dependency to patch forever.
     const version = await import('../lib/tauri').then((m) => m.updater.currentVersion());
-    await navigator.clipboard.writeText(diagnosticsReport(state, version));
+    await navigator.clipboard.writeText(diagnosticsReport(state, version, logPath));
     setCopied(true);
-  }, [state]);
+  }, [state, logPath]);
 
   return (
     <div className="page diagnostics">
@@ -155,6 +173,30 @@ export function Diagnostics() {
           </ul>
         </section>
       ) : null}
+
+      <section className="debug">
+        <h2>Log</h2>
+        <ul className="debug__list">
+          <li>
+            <span>File</span>
+            <span data-testid="log-path" className="mono">
+              {logPath ?? 'Not being written'}
+            </span>
+          </li>
+        </ul>
+        <div className="row">
+          <button
+            className="btn"
+            data-testid="reveal-log"
+            disabled={!logPath}
+            onClick={() => {
+              void import('../lib/tauri').then((m) => m.api.revealLogFile());
+            }}
+          >
+            Show in Finder
+          </button>
+        </div>
+      </section>
 
       {state ? (
         <p className="muted mono">

@@ -54,6 +54,10 @@ export const api = {
   deny: () => invoke<void>('deny_session'),
   disconnect: () => invoke<void>('disconnect'),
   panic: () => invoke<void>('panic_disconnect'),
+  /** Where this Mac writes its log, and a way to reveal it in Finder. A log a
+   * customer cannot find only ever helps developers. */
+  logFilePath: () => invoke<string | null>('log_file_path'),
+  revealLogFile: () => invoke<void>('reveal_log_file'),
   // Trusted devices dashboard (M5.4) — mirrors @lilypad/protocol's
   // TrustedPairListing via the backend's /devices/pairs endpoints.
   listTrustedDevices: () =>
