@@ -144,7 +144,7 @@ if (!p12) {
 if (!val('APPLE_API_KEY_P8')) {
   bad(
     'APPLE_API_KEY_P8 is not set — notarization will be skipped',
-    'App Store Connect → Users and Access → Integrations → App Store Connect API → generate a key with the Developer role. The .p8 downloads once and cannot be downloaded again.',
+    'App Store Connect → Users and Access → Integrations → App Store Connect API → generate a key with the App Manager role. Developer is enough to notarize the Mac app but NOT to upload to TestFlight, and the .p8 downloads once — a key with the wrong role has to be revoked and remade. See docs/apple-setup.md.',
   );
 } else {
   decodeBase64('APPLE_API_KEY_P8', 'BEGIN PRIVATE KEY');

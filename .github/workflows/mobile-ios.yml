@@ -55,7 +55,7 @@ jobs:
           [ -n "$ASC_ISSUER_ID" ] || missing+=(ASC_ISSUER_ID)
           [ -n "$ASC_KEY_P8" ]    || missing+=(ASC_KEY_P8)
           if [ ${#missing[@]} -gt 0 ]; then
-            echo "::error::not configured: ${missing[*]}. Create an App Store Connect API key (Users and Access → Integrations → App Store Connect API, role: App Manager), then set ASC_KEY_ID, ASC_ISSUER_ID, and ASC_KEY_P8 (the .p8 file, base64-encoded). See docs/deployment.md."
+            echo "::error::not configured: ${missing[*]}. Create an App Store Connect API key (Users and Access → Integrations → App Store Connect API, role: App Manager), then set ASC_KEY_ID, ASC_ISSUER_ID, and ASC_KEY_P8 (the .p8 file, base64-encoded). See docs/apple-setup.md."
             exit 1
           fi
           echo "App Store Connect credentials present"

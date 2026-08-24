@@ -36,11 +36,29 @@ This is the one that changes what a customer sees. It is **not** the "Apple
 Development" or "Apple Distribution" certificate — those cannot sign software
 distributed outside the App Store, which is how the Mac app ships.
 
-1. Apple Developer → Certificates → **+** → **Developer ID Application**.
-2. Create it, download it, and double-click to install into the login keychain.
-3. Keychain Access → find `Developer ID Application: … (7TYFS43RR3)` → right
+1. Keychain Access → Certificate Assistant → **Request a Certificate From a
+   Certificate Authority**. Enter your email, any Common Name, choose **Saved
+   to disk**, and save the `.certSigningRequest`. This also creates the key
+   pair in your login keychain — the _private_ half never leaves the machine
+   and is what makes the certificate usable. Skip if you already have a CSR
+   whose key is still in that keychain.
+2. Apple Developer → Certificates → **+** → **Developer ID Application** →
+   upload that CSR.
+3. Download the resulting `.cer` and double-click it. macOS pairs it with the
+   private key from step 1.
+4. Confirm the pairing before going further — this is the step that silently
+   fails if the CSR came from a different machine or a stray `openssl` command:
+
+   ```sh
+   security find-identity -v -p codesigning | grep "Developer ID Application"
+   ```
+
+   No line means the certificate has no private key here and cannot sign. Revoke
+   it, redo step 1 on this machine, and issue a new one.
+
+5. Keychain Access → find `Developer ID Application: … (7TYFS43RR3)` → right
    click → **Export** → `.p12`, with a password.
-4. `base64 -i cert.p12 | pbcopy`
+6. `base64 -i cert.p12 | pbcopy`
 
 Secrets: `APPLE_CERTIFICATE` (that base64), `APPLE_CERTIFICATE_PASSWORD`,
 `APPLE_SIGNING_IDENTITY` (the full string, exactly as Keychain Access shows it),
