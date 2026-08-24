@@ -198,8 +198,19 @@ dead-ends on an empty dropdown.
    id, pick a name and an SKU (the SKU is internal and never shown to anyone —
    `lilypad-ios` is fine). Nothing uploads until this record exists.
 
-The **name is public and must be unique across the App Store**, which is why
-this step is not automated here even though `fastlane produce` could do it.
+The **name is public and must be unique across the App Store** — but that is
+not why this step is manual. It cannot be automated at all. Three routes, all
+closed:
+
+| Route                | Answer                                                        |
+| -------------------- | ------------------------------------------------------------- |
+| `POST /v1/apps`      | `403 — the resource 'apps' does not allow 'CREATE'`           |
+| `POST /iris/v1/apps` | `404` — the web UI's route is not served on the API host      |
+| `fastlane produce`   | `--username` is its only credential; no API-key option exists |
+
+So an app record needs a human signed into the browser. As of 2026-08-24
+`kushsharma024@gmail.com` is an **Admin** of `AR2Q4Y465L` with all apps
+visible, which is enough to create one.
 
 The macOS side needs neither: a Developer ID build is distributed outside the
 App Store, so it has no App ID and no App Store Connect record.
