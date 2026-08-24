@@ -9,6 +9,7 @@ import { clearDeviceId, initDeviceIdentity } from './device';
 import { forgetAllPairs } from './pairs';
 import { APP_VERSION } from '../config/version';
 import { loadSession } from './session';
+import { UserFacingError } from './errors';
 
 /**
  * This phone's authenticated relationship with the backend
@@ -58,7 +59,7 @@ let notEnrolled: DeviceAuthError | null = null;
 /** The device is not allowed, and retrying with the same key never helps.
  * Distinct from a network error so the UI can send the user to sign-in instead
  * of into a retry loop. */
-export class DeviceAuthError extends Error {
+export class DeviceAuthError extends UserFacingError {
   constructor(readonly code: 'device_not_enrolled' | 'device_revoked') {
     super(
       code === 'device_revoked'
@@ -105,7 +106,7 @@ export function unauthorizedError(body: string): DeviceAuthError {
  * will ever succeed while it keeps this key, and the only way forward is
  * `resetDeviceIdentity()`.
  */
-export class DeviceTakenError extends Error {
+export class DeviceTakenError extends UserFacingError {
   constructor() {
     super(
       'This phone is already set up with a different Lilypad account. ' +
@@ -371,10 +372,10 @@ export async function approveDesktopEnrollment(
   // straight to sign-in and comes back to this same card.
   if (status === 401) throw unauthorizedError(text);
   if (status === 404) {
-    throw new Error('That code has expired. Show a new one on the computer.');
+    throw new UserFacingError('That code has expired. Show a new one on the computer.');
   }
   if (status === 409) {
-    throw new Error('That computer is already on another account.');
+    throw new UserFacingError('That computer is already on another account.');
   }
   // `deviceExchangeFailure` rather than a status code: the remaining statuses
   // here are the same three it already words correctly — rate limited, a

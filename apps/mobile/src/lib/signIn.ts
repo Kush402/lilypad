@@ -5,6 +5,7 @@ import type { AuthSession, DeviceSession, OAuthProviderName } from '@lilypad/pro
 import { GOOGLE_WEB_CLIENT_ID, GOOGLE_IOS_CLIENT_ID, isGoogleConfigured } from '../config/oauth';
 import { enrollDevice } from './auth';
 import { saveSession } from './session';
+import { UserFacingError } from './errors';
 
 /**
  * Sign-in: prove who the human is, then bind this phone to them.
@@ -31,7 +32,7 @@ import { saveSession } from './session';
 
 const REQUEST_TIMEOUT_MS = 15_000;
 
-export class SignInError extends Error {
+export class SignInError extends UserFacingError {
   constructor(
     readonly code: 'cancelled' | 'not_configured' | 'unavailable' | 'rejected' | 'network',
     message: string,

@@ -5,6 +5,7 @@ import type {
   MobilePairListResponse,
 } from '@lilypad/protocol';
 import { accessToken, DeviceAuthError, unauthorizedError } from './auth';
+import { UserFacingError } from './errors';
 
 /**
  * The account's own devices (P2).
@@ -23,7 +24,7 @@ import { accessToken, DeviceAuthError, unauthorizedError } from './auth';
 
 const REQUEST_TIMEOUT_MS = 8_000;
 
-export class AccountDeviceError extends Error {}
+export class AccountDeviceError extends UserFacingError {}
 
 async function request(
   apiBaseUrl: string,

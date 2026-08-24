@@ -3,7 +3,9 @@ import {
   classifyHttpStatus,
   classifyFetchError,
   toAppError,
+  classifyHubError,
   RedeemError,
+  UserFacingError,
 } from './errors';
 
 describe('appError', () => {
@@ -85,12 +87,61 @@ describe('toAppError', () => {
     });
   });
 
-  it('flattens a plain Error to unknown, keeping its message', () => {
+  /**
+   * Both of these pinned the opposite behaviour until 2026-08-24, and both are
+   * flipped rather than deleted because the assertion is still the one worth
+   * making — it just pointed the wrong way.
+   *
+   * `boom` is a stand-in for what a real unplanned throw says: a TypeError
+   * from the WebRTC path reads "undefined is not an object (evaluating
+   * 'this.pc.close')". Keeping the message meant that sentence rendered in the
+   * viewer, mid-session, to a customer — the exact failure this module's
+   * opening comment says it exists to prevent, fixed for HTTP bodies and left
+   * live on the catch-all.
+   */
+  it('does not put an unplanned Error message on screen', () => {
     const normalized = toAppError(new Error('boom'));
-    expect(normalized).toEqual({ code: 'unknown', message: 'boom', retryable: true });
+    expect(normalized).toEqual({
+      code: 'unknown',
+      message: 'Something went wrong. Try again in a moment.',
+      retryable: true,
+    });
   });
 
-  it('stringifies anything else thrown', () => {
-    expect(toAppError('not an error').message).toBe('not an error');
+  it('keeps a message that was written for a person', () => {
+    // The distinction cannot be made from the type — our own curated copy was
+    // thrown as a plain `Error` too — so it is marked, not guessed.
+    const ours = new UserFacingError('That code has expired. Show a new one on the computer.');
+    expect(toAppError(ours).message).toBe('That code has expired. Show a new one on the computer.');
+  });
+
+  it('does not stringify a non-Error onto the screen', () => {
+    // `String({})` is "[object Object]", which is not an explanation of
+    // anything.
+    expect(toAppError('not an error').message).toBe('Something went wrong. Try again in a moment.');
+    expect(toAppError({}).message).not.toMatch(/object Object/);
+  });
+});
+
+/**
+ * The comment on `classifyHubError` calls passing the hub's own words through
+ * "alarming, and about the wrong thing" — and then the default branch did
+ * exactly that for every code except the one that had been fixed. `message` is
+ * a protocol string aimed at a developer.
+ */
+describe('classifyHubError', () => {
+  it('never repeats the hub’s protocol text to a person', () => {
+    const err = classifyHubError(
+      'some_future_code',
+      'this device is not authorized to join this room',
+    );
+    expect(err.message).not.toMatch(/not authorized to join/);
+    expect(err.code).toBe('unknown');
+  });
+
+  it('still translates the one that actually happens', () => {
+    // A laptop's lid closing is enough to cause this; observed four times in
+    // 48 hours on production with a single user.
+    expect(classifyHubError('unauthorized_room', 'whatever').code).toBe('session_gone');
   });
 });

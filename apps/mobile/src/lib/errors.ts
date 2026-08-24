@@ -37,14 +37,14 @@ const COPY: Record<AppErrorCode, string> = {
   request_timeout: 'That took too long. Check your connection and try again.',
   rate_limited: 'Too many attempts just now. Wait a minute, then try again.',
   server_error: 'The pairing server had a problem. Try again in a moment.',
-  signaling_lost: 'Lost the connection to the laptop.',
+  signaling_lost: 'Lost the connection to the laptop. Reconnecting…',
   session_gone: 'That session ended. Reconnecting to the laptop…',
-  peer_denied: 'The laptop denied this request.',
-  ice_failed: 'Could not establish a connection to the laptop.',
+  peer_denied: 'The laptop denied this request. Approve it there, then try again.',
+  ice_failed: 'Could not reach the laptop. Check that both devices are online, then try again.',
   not_trusted: "This laptop hasn't trusted this phone yet. Scan its QR code once to pair.",
   trust_revoked: 'This pairing was revoked on the laptop. Scan its QR code to pair again.',
   desktop_offline: 'The laptop is offline. Make sure Lilypad is running on it.',
-  unknown: 'Something went wrong.',
+  unknown: 'Something went wrong. Try again in a moment.',
 };
 
 const RETRYABLE: Record<AppErrorCode, boolean> = {
@@ -64,13 +64,30 @@ const RETRYABLE: Record<AppErrorCode, boolean> = {
   unknown: true,
 };
 
+/**
+ * An error whose message was written for a person to read.
+ *
+ * `toAppError` used to pass EVERY `Error.message` straight to the screen, so a
+ * runtime fault rendered itself: "undefined is not an object (evaluating
+ * 'this.pc.close')" is a sentence this app was one TypeError away from showing
+ * a customer, in the viewer, mid-session. That is precisely the failure this
+ * module's own opening comment says it exists to prevent — fixed for HTTP
+ * bodies, still live on the catch-all path.
+ *
+ * The distinction cannot be made from the type alone, because our own curated
+ * copy was thrown as a plain `Error` too. So the copy is marked instead: this
+ * class and its subclasses are the messages we wrote, and everything else
+ * falls back to the catalogue.
+ */
+export class UserFacingError extends Error {}
+
 export function appError(code: AppErrorCode, message?: string): AppError {
   return { code, message: message ?? COPY[code], retryable: RETRYABLE[code] };
 }
 
 /** Thrown by `redeemToken` so callers can branch UI on `.code`/`.retryable`
  * instead of pattern-matching a message string. */
-export class RedeemError extends Error implements AppError {
+export class RedeemError extends UserFacingError implements AppError {
   readonly code: AppErrorCode;
   readonly retryable: boolean;
 
@@ -122,7 +139,12 @@ export function classifyHttpStatus(status: number, body: string): AppError {
  */
 export function classifyHubError(code: string, message: string): AppError {
   if (code === 'unauthorized_room') return appError('session_gone');
-  return appError('unknown', message);
+  // The comment above describes passing the hub's own words through as the
+  // bug, and then this line did it for every OTHER code. `message` is a
+  // protocol string aimed at a developer; it is kept for the log, not the
+  // screen.
+  void message;
+  return appError('unknown');
 }
 
 /** Classify a fetch that never got an HTTP response at all — a network
@@ -136,6 +158,9 @@ export function classifyFetchError(timedOut: boolean): AppError {
 export function toAppError(err: unknown): AppError {
   if (err instanceof RedeemError)
     return { code: err.code, message: err.message, retryable: err.retryable };
-  if (err instanceof Error) return appError('unknown', err.message);
-  return appError('unknown', String(err));
+  // Only text we wrote. A `TypeError` from a null peer connection, or a
+  // `String(err)` that renders "[object Object]", is not an explanation — it
+  // is the app's insides on a customer's screen.
+  if (err instanceof UserFacingError) return appError('unknown', err.message);
+  return appError('unknown');
 }
