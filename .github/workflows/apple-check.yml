@@ -1,0 +1,50 @@
+name: Apple — verify the signing secrets
+
+# The Apple secrets are seven opaque strings. Nothing verified them until a
+# release ran, and a release runs for twenty minutes before it gets far enough
+# to find out. Worse, the answer to "which key is in APPLE_API_KEY_P8?" cannot
+# be looked up: GitHub never gives a secret back, so a wrong value is invisible
+# until it fails.
+#
+# This asks Apple, from inside Actions where the secrets actually live, in
+# about a minute. Run it after changing any of them.
+#
+# Manual only. It costs nothing to run and nothing to skip, and putting it on a
+# schedule would page about credentials nobody is trying to use today.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Ask App Store Connect
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # `scripts/apple-preflight.mjs` is dependency-free on purpose, so this
+      # needs no install step and cannot be broken by a lockfile change.
+      #
+      # It never prints a secret — only lengths, fingerprints, parsed subjects
+      # and the ids Apple echoes back. The .p12 parse needs macOS and reports
+      # itself as skipped here; verify that one locally with `pnpm apple:check`.
+      - name: pnpm apple:check
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+        run: node scripts/apple-preflight.mjs
