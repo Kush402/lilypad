@@ -19,8 +19,14 @@ export default tseslint.config(
   ...tseslint.configs.recommended,
   {
     // Node CLI scripts (doctor/bootstrap/run-tauri/clean/e2e-audit) — plain ESM
-    // run by node, so the Node globals are real there. `fetch` and `Buffer` are
-    // globals in Node 20+, which `engines` already requires.
+    // run by node, so the Node globals are real there. `fetch`, `Buffer`,
+    // `AbortSignal`, `crypto` and `performance` are all globals in Node 20+,
+    // which `engines` already requires.
+    //
+    // The list was short by five, which cost 16 no-undef errors across
+    // watchdog/e2e-audit/apple-preflight — invisible because `pnpm lint` is
+    // `turbo run lint` and `scripts/` belongs to no workspace, so nothing ever
+    // linted them. `lint:scripts` does now.
     files: ['scripts/**/*.mjs'],
     languageOptions: {
       globals: {
@@ -28,6 +34,16 @@ export default tseslint.config(
         console: 'readonly',
         fetch: 'readonly',
         Buffer: 'readonly',
+        AbortSignal: 'readonly',
+        crypto: 'readonly',
+        performance: 'readonly',
+        setTimeout: 'readonly',
+        clearTimeout: 'readonly',
+        setInterval: 'readonly',
+        clearInterval: 'readonly',
+        URL: 'readonly',
+        TextEncoder: 'readonly',
+        TextDecoder: 'readonly',
       },
     },
   },

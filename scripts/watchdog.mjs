@@ -62,8 +62,12 @@ async function checkApi() {
   });
   facts.api = probe;
   if (probe.error) {
-    return alert('critical', 'api', `GET ${API}/health failed: ${probe.error}`,
-      'Check the cloudflared tunnel and the backend container on the production VM.');
+    return alert(
+      'critical',
+      'api',
+      `GET ${API}/health failed: ${probe.error}`,
+      'Check the cloudflared tunnel and the backend container on the production VM.',
+    );
   }
   const { status, body } = probe.value;
   if (status !== 200 || body.status !== 'ok') {
@@ -72,26 +76,39 @@ async function checkApi() {
     // Only the up/down probes. `checks.mail` reports configured/unconfigured
     // and has its own alert below — listing it here would say "down: mail"
     // during a Postgres outage and send someone to look at the wrong thing.
-    const down = Object.entries(body.checks ?? {}).filter(([, v]) => v === 'down').map(([k]) => k);
-    return alert('critical', 'api',
+    const down = Object.entries(body.checks ?? {})
+      .filter(([, v]) => v === 'down')
+      .map(([k]) => k);
+    return alert(
+      'critical',
+      'api',
       `health is ${body.status ?? status}${down.length ? `; down: ${down.join(', ')}` : ''}`,
-      down.length ? `Restart the ${down.join(' and ')} container(s) and check disk.` :
-        'Backend is answering but not healthy — read its container logs.');
+      down.length
+        ? `Restart the ${down.join(' and ')} container(s) and check disk.`
+        : 'Backend is answering but not healthy — read its container logs.',
+    );
   }
   // Outbound email, which is invisible from every other signal. With no
   // mailer, password reset and magic-link sign-in answer 503 while the API is
   // otherwise perfectly healthy — a customer who cannot get back into their
   // account, and a dashboard that says everything is fine.
   if (body.checks?.mail === 'unconfigured') {
-    alert('warning', 'mail',
+    alert(
+      'warning',
+      'mail',
       'production has no mail sender — password reset and magic-link sign-in return 503',
-      'Set RESEND_API_KEY and MAIL_FROM in the host .env.production and redeploy.');
+      'Set RESEND_API_KEY and MAIL_FROM in the host .env.production and redeploy.',
+    );
   }
   // A latency ceiling, not an average: this is one sample over Cloudflare and
   // only means something when it is badly wrong.
   if (probe.ms > 3000) {
-    alert('warning', 'api-latency', `/health took ${probe.ms} ms`,
-      'Check VM load and Postgres responsiveness.');
+    alert(
+      'warning',
+      'api-latency',
+      `/health took ${probe.ms} ms`,
+      'Check VM load and Postgres responsiveness.',
+    );
   }
 }
 
@@ -113,8 +130,12 @@ async function checkMetrics() {
   });
   facts.metrics = probe;
   if (probe.error) {
-    return alert('warning', 'metrics', `GET ${API}/metrics failed: ${probe.error}`,
-      'Check METRICS_BEARER_TOKEN matches production, then the backend logs.');
+    return alert(
+      'warning',
+      'metrics',
+      `GET ${API}/metrics failed: ${probe.error}`,
+      'Check METRICS_BEARER_TOKEN matches production, then the backend logs.',
+    );
   }
   const m = probe.value;
   // A rate, not a count: five 500s out of five requests is an outage, five out
@@ -128,24 +149,36 @@ async function checkMetrics() {
   // guessing from arithmetic.
   const MIN_SAMPLE = 20;
   if (m.requests >= MIN_SAMPLE && m.errors5xx / m.requests > 0.05) {
-    alert('critical', 'error-rate',
+    alert(
+      'critical',
+      'error-rate',
       `${m.errors5xx} of ${m.requests} requests returned 5xx in the last ${m.windowMinutes} min`,
-      'Read the backend logs — something is throwing, not merely refusing.');
+      'Read the backend logs — something is throwing, not merely refusing.',
+    );
   }
   if (m.authFailures >= 100) {
-    alert('warning', 'auth-failures',
+    alert(
+      'warning',
+      'auth-failures',
       `${m.authFailures} 401/403 responses in ${m.windowMinutes} min`,
-      'Either a credential-stuffing run, or a client version that has broken its own auth. Check audit_logs for the addresses tried.');
+      'Either a credential-stuffing run, or a client version that has broken its own auth. Check audit_logs for the addresses tried.',
+    );
   }
   if (m.rateLimited >= 50) {
-    alert('warning', 'rate-limited',
+    alert(
+      'warning',
+      'rate-limited',
       `${m.rateLimited} requests rate-limited in ${m.windowMinutes} min`,
-      'An attack, or a limit set too low for real use. Check whether one IP or many.');
+      'An attack, or a limit set too low for real use. Check whether one IP or many.',
+    );
   }
   if (m.latencyP95Ms !== null && m.latencyP95Ms > 2000) {
-    alert('warning', 'latency',
+    alert(
+      'warning',
+      'latency',
       `p95 request latency is ${m.latencyP95Ms} ms over the last ${m.latency ?? 512} samples`,
-      'Check Postgres load and VM CPU.');
+      'Check Postgres load and VM CPU.',
+    );
   }
 }
 
@@ -157,20 +190,28 @@ async function checkSite() {
   });
   // The body is not kept in `facts` — it is 10 KB of HTML, and the report is
   // meant to be readable.
-  facts.site = probe.error ? probe : { ...probe, value: { status: probe.value.status, length: probe.value.length } };
+  facts.site = probe.error
+    ? probe
+    : { ...probe, value: { status: probe.value.status, length: probe.value.length } };
   if (probe.error || probe.value.status !== 200) {
-    return alert('critical', 'site',
+    return alert(
+      'critical',
+      'site',
       `GET ${SITE} → ${probe.error ?? probe.value.status}`,
-      'The download page is how customers get the app. Check Cloudflare Pages.');
+      'The download page is how customers get the app. Check Cloudflare Pages.',
+    );
   }
   // A tripwire for one specific failure that really happened: for weeks the
   // live site said the product was unreleased while a fix for that exact
   // sentence sat on `main` behind a workflow that could not deploy. The site
   // being UP was never the question; the site being STALE was.
   if (/not yet released publicly/i.test(probe.value.text)) {
-    alert('critical', 'site-stale',
+    alert(
+      'critical',
+      'site-stale',
       `${SITE} still says the product is not released`,
-      'The Cloudflare Pages deploy is not tracking main. Check the `site` workflow and its CLOUDFLARE_* secrets.');
+      'The Cloudflare Pages deploy is not tracking main. Check the `site` workflow and its CLOUDFLARE_* secrets.',
+    );
   }
   // Cloudflare rewrites `mailto:` into a JavaScript-only
   // `/cdn-cgi/l/email-protection` link unless the HTML wraps it in
@@ -179,9 +220,12 @@ async function checkSite() {
   // does, the address the privacy policy exists to publish becomes unreadable
   // to anything that is not a browser running scripts.
   if (/__cf_email__/.test(probe.value.text)) {
-    alert('warning', 'site-email-obfuscated',
+    alert(
+      'warning',
+      'site-email-obfuscated',
       `${SITE} is serving its contact address as a JavaScript-only cdn-cgi link`,
-      'Cloudflare Email Obfuscation is rewriting it. Check the `<!--email_off-->` wrappers survived the build, or turn the zone setting off.');
+      'Cloudflare Email Obfuscation is rewriting it. Check the `<!--email_off-->` wrappers survived the build, or turn the zone setting off.',
+    );
   }
 }
 
@@ -206,39 +250,61 @@ async function checkDownload() {
       redirect: 'follow',
       signal: AbortSignal.timeout(20_000),
     });
-    return { status: res.status, type: res.headers.get('content-type'), length: res.headers.get('content-length') };
+    return {
+      status: res.status,
+      type: res.headers.get('content-type'),
+      length: res.headers.get('content-length'),
+    };
   });
   facts.installer = installer;
   if (installer.error || installer.value.status !== 200) {
-    alert('critical', 'download',
+    alert(
+      'critical',
+      'download',
       `HEAD ${SITE}/download/Lilypad.dmg → ${installer.error ?? installer.value.status}`,
-      'Nobody can install Lilypad. Re-run the `site` workflow, which stages the installer and verifies it anonymously.');
+      'Nobody can install Lilypad. Re-run the `site` workflow, which stages the installer and verifies it anonymously.',
+    );
   }
 
   const manifest = await timed(async () => {
-    const res = await fetch(`${SITE}/download/latest.json`, { signal: AbortSignal.timeout(20_000) });
+    const res = await fetch(`${SITE}/download/latest.json`, {
+      signal: AbortSignal.timeout(20_000),
+    });
     if (!res.ok) return { status: res.status };
     return { status: res.status, body: await res.json() };
   });
   facts.updateManifest = manifest.error
     ? manifest
-    : { ...manifest, value: { status: manifest.value.status, version: manifest.value.body?.version } };
+    : {
+        ...manifest,
+        value: { status: manifest.value.status, version: manifest.value.body?.version },
+      };
   if (manifest.error || manifest.value.status !== 200 || !manifest.value.body?.platforms) {
-    return alert('critical', 'update-manifest',
+    return alert(
+      'critical',
+      'update-manifest',
       `GET ${SITE}/download/latest.json → ${manifest.error ?? manifest.value.status}`,
-      'Every installed copy polls this. A failure here shows in the app as "Update check failed" and updates stop for everyone.');
+      'Every installed copy polls this. A failure here shows in the app as "Update check failed" and updates stop for everyone.',
+    );
   }
 
   // The manifest naming an archive is not the archive existing. Both have to
   // hold, and only one of them is visible from the JSON.
   const url = Object.values(manifest.value.body.platforms)[0]?.url;
   if (!url) {
-    return alert('critical', 'update-manifest',
+    return alert(
+      'critical',
+      'update-manifest',
       'the update manifest names no archive for any platform',
-      'The `site` workflow builds this from the release assets. Re-run it.');
+      'The `site` workflow builds this from the release assets. Re-run it.',
+    );
   }
   const archive = await timed(async () => {
-    const res = await fetch(url, { method: 'HEAD', redirect: 'follow', signal: AbortSignal.timeout(20_000) });
+    const res = await fetch(url, {
+      method: 'HEAD',
+      redirect: 'follow',
+      signal: AbortSignal.timeout(20_000),
+    });
     return { status: res.status, type: res.headers.get('content-type') };
   });
   facts.updateArchive = archive;
@@ -246,9 +312,12 @@ async function checkDownload() {
   // path — the SPA fallback made an earlier version of this exact check inert.
   const served = archive.error ? null : archive.value;
   if (!served || served.status !== 200 || /html/i.test(served.type ?? '')) {
-    alert('critical', 'update-archive',
+    alert(
+      'critical',
+      'update-archive',
       `HEAD ${url} → ${archive.error ?? `${served?.status} ${served?.type}`}`,
-      'The manifest points at an archive the site does not serve, so every update fails mid-download.');
+      'The manifest points at an archive the site does not serve, so every update fails mid-download.',
+    );
   }
 }
 
@@ -259,32 +328,44 @@ async function checkDownload() {
 async function checkTurn() {
   if (!TURN_HOST) return;
   const dgram = await import('node:dgram');
-  const probe = await timed(() => new Promise((resolve, reject) => {
-    const socket = dgram.createSocket('udp4');
-    const txId = Buffer.from(crypto.getRandomValues(new Uint8Array(12)));
-    // RFC 5389 Binding Request: type 0x0001, length 0, magic cookie, tx id.
-    const req = Buffer.concat([
-      Buffer.from([0x00, 0x01, 0x00, 0x00, 0x21, 0x12, 0xa4, 0x42]), txId,
-    ]);
-    const timer = setTimeout(() => {
-      socket.close();
-      reject(new Error('no STUN response within 5s'));
-    }, 5000);
-    socket.on('message', (msg) => {
-      clearTimeout(timer);
-      socket.close();
-      // 0x0101 = Binding Success Response, and the transaction id must match.
-      const ok = msg.length >= 20 && msg.readUInt16BE(0) === 0x0101 && msg.subarray(8, 20).equals(txId);
-      ok ? resolve('binding-success') : reject(new Error(`unexpected STUN reply 0x${msg.readUInt16BE(0).toString(16)}`));
-    });
-    socket.on('error', (err) => { clearTimeout(timer); reject(err); });
-    socket.send(req, 3478, TURN_HOST);
-  }));
+  const probe = await timed(
+    () =>
+      new Promise((resolve, reject) => {
+        const socket = dgram.createSocket('udp4');
+        const txId = Buffer.from(crypto.getRandomValues(new Uint8Array(12)));
+        // RFC 5389 Binding Request: type 0x0001, length 0, magic cookie, tx id.
+        const req = Buffer.concat([
+          Buffer.from([0x00, 0x01, 0x00, 0x00, 0x21, 0x12, 0xa4, 0x42]),
+          txId,
+        ]);
+        const timer = setTimeout(() => {
+          socket.close();
+          reject(new Error('no STUN response within 5s'));
+        }, 5000);
+        socket.on('message', (msg) => {
+          clearTimeout(timer);
+          socket.close();
+          // 0x0101 = Binding Success Response, and the transaction id must match.
+          const ok =
+            msg.length >= 20 && msg.readUInt16BE(0) === 0x0101 && msg.subarray(8, 20).equals(txId);
+          if (ok) resolve('binding-success');
+          else reject(new Error(`unexpected STUN reply 0x${msg.readUInt16BE(0).toString(16)}`));
+        });
+        socket.on('error', (err) => {
+          clearTimeout(timer);
+          reject(err);
+        });
+        socket.send(req, 3478, TURN_HOST);
+      }),
+  );
   facts.turn = probe;
   if (probe.error) {
-    alert('critical', 'turn',
+    alert(
+      'critical',
+      'turn',
       `STUN binding to ${TURN_HOST}:3478/udp failed: ${probe.error}`,
-      'Sessions that cannot go direct will fail entirely. Check coturn and the OCI NSG.');
+      'Sessions that cannot go direct will fail entirely. Check coturn and the OCI NSG.',
+    );
   }
 }
 
@@ -295,82 +376,144 @@ async function checkHosts() {
   facts.hosts = {};
   for (const host of HOSTS) {
     const probe = await timed(async () => {
-      const { stdout } = await run('ssh', [
-        '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=15',
-        '-i', process.env.MONITOR_KEY_PATH ?? '/dev/null', host,
-      ], { timeout: 30_000 });
+      const { stdout } = await run(
+        'ssh',
+        [
+          '-o',
+          'BatchMode=yes',
+          '-o',
+          'ConnectTimeout=15',
+          '-i',
+          process.env.MONITOR_KEY_PATH ?? '/dev/null',
+          host,
+        ],
+        { timeout: 30_000 },
+      );
       return JSON.parse(stdout);
     });
     facts.hosts[host] = probe;
     if (probe.error) {
-      alert('critical', `host:${host}`, `status probe failed: ${probe.error}`,
-        'The VM may be down, or Oracle may have reclaimed it. Check the OCI console.');
+      alert(
+        'critical',
+        `host:${host}`,
+        `status probe failed: ${probe.error}`,
+        'The VM may be down, or Oracle may have reclaimed it. Check the OCI console.',
+      );
       continue;
     }
     const s = probe.value;
     if (s.diskPercent >= DISK_PERCENT) {
-      alert('critical', `disk:${s.host}`, `root filesystem ${s.diskPercent}% full`,
-        'Postgres stops accepting writes on a full disk. Prune docker images and old backups.');
+      alert(
+        'critical',
+        `disk:${s.host}`,
+        `root filesystem ${s.diskPercent}% full`,
+        'Postgres stops accepting writes on a full disk. Prune docker images and old backups.',
+      );
     }
     if (s.memPercent >= MEM_PERCENT) {
-      alert('warning', `memory:${s.host}`, `memory ${s.memPercent}% used`,
-        'These are 1 GB Always-Free VMs; the OOM killer takes Postgres first.');
+      alert(
+        'warning',
+        `memory:${s.host}`,
+        `memory ${s.memPercent}% used`,
+        'These are 1 GB Always-Free VMs; the OOM killer takes Postgres first.',
+      );
     }
     for (const c of s.containers ?? []) {
       if (c.state !== 'running') {
-        alert('critical', `container:${c.name}`, `state is ${c.state}`,
-          'Bring the compose stack back up and read the container logs for why it exited.');
+        alert(
+          'critical',
+          `container:${c.name}`,
+          `state is ${c.state}`,
+          'Bring the compose stack back up and read the container logs for why it exited.',
+        );
       } else if (c.healthy === false) {
-        alert('critical', `container:${c.name}`, 'healthcheck failing',
-          'The container is running but not serving. Check its logs.');
+        alert(
+          'critical',
+          `container:${c.name}`,
+          'healthcheck failing',
+          'The container is running but not serving. Check its logs.',
+        );
       }
     }
     if (s.backupAgeSeconds === -1) {
-      alert('critical', `backup:${s.host}`, 'backup directory exists but is empty',
-        'Backups used to run here. Check the cron entry and backup.sh.');
+      alert(
+        'critical',
+        `backup:${s.host}`,
+        'backup directory exists but is empty',
+        'Backups used to run here. Check the cron entry and backup.sh.',
+      );
     } else if (s.backupAgeSeconds > BACKUP_MAX_AGE_S) {
-      alert('critical', `backup:${s.host}`,
+      alert(
+        'critical',
+        `backup:${s.host}`,
         `newest backup is ${Math.round(s.backupAgeSeconds / 3600)}h old`,
-        'At least one nightly backup has failed silently. Run backup.sh by hand and read the error.');
+        'At least one nightly backup has failed silently. Run backup.sh by hand and read the error.',
+      );
     }
     // Reported and alerted separately from the local dump: the two fail
     // independently, and a local backup on the same disk as its database is
     // no help at all in the scenario the backup exists for.
     if (s.offsiteBackupAgeSeconds === -1) {
-      alert('critical', `offsite-backup:${s.host}`, 'the off-host backup directory exists but is empty',
-        'Copies used to arrive here. Check backup.sh on the production VM and the offsite key.');
+      alert(
+        'critical',
+        `offsite-backup:${s.host}`,
+        'the off-host backup directory exists but is empty',
+        'Copies used to arrive here. Check backup.sh on the production VM and the offsite key.',
+      );
     } else if (s.offsiteBackupAgeSeconds > BACKUP_MAX_AGE_S) {
-      alert('critical', `offsite-backup:${s.host}`,
+      alert(
+        'critical',
+        `offsite-backup:${s.host}`,
         `newest off-host copy is ${Math.round(s.offsiteBackupAgeSeconds / 3600)}h old`,
-        'The database is currently protected only by a copy on the same disk as itself. Run backup.sh by hand and read the error.');
+        'The database is currently protected only by a copy on the same disk as itself. Run backup.sh by hand and read the error.',
+      );
     }
     if (s.coturn === 'failed' || s.coturn === 'inactive') {
-      alert('critical', `coturn:${s.host}`, `coturn is ${s.coturn}`,
-        'systemctl status coturn on the relay VM.');
+      alert(
+        'critical',
+        `coturn:${s.host}`,
+        `coturn is ${s.coturn}`,
+        'systemctl status coturn on the relay VM.',
+      );
     }
     if (s.rebootRequired) {
-      alert('warning', `patches:${s.host}`, 'a reboot is pending for applied security updates',
-        'The host is running the old kernel/libc. Schedule a reboot.');
+      alert(
+        'warning',
+        `patches:${s.host}`,
+        'a reboot is pending for applied security updates',
+        'The host is running the old kernel/libc. Schedule a reboot.',
+      );
     }
     // Redis went from "unlimited, and one day the OOM killer takes Postgres" to
     // "capped, and one day it evicts". That is the better failure and the
     // quieter one, so it needs an alarm bolted to it or the fix just moves the
     // outage somewhere harder to see.
     if (typeof s.redisEvictedKeys === 'number' && s.redisEvictedKeys > 0) {
-      alert('critical', `redis-evictions:${s.host}`,
+      alert(
+        'critical',
+        `redis-evictions:${s.host}`,
         `Redis has evicted ${s.redisEvictedKeys} keys`,
-        'Redis is at its 128 MB cap. Evicted keys are pairing tokens and live room-authorization records, so somebody is being told to pair again mid-session. Check for a flood of /devices/challenge or /pairing/create, then raise --maxmemory in infra/production/docker-compose.yml.');
+        'Redis is at its 128 MB cap. Evicted keys are pairing tokens and live room-authorization records, so somebody is being told to pair again mid-session. Check for a flood of /devices/challenge or /pairing/create, then raise --maxmemory in infra/production/docker-compose.yml.',
+      );
     }
     if (typeof s.redisUsedBytes === 'number' && s.redisMaxBytes > 0) {
       const pct = Math.round((s.redisUsedBytes / s.redisMaxBytes) * 100);
       if (pct >= REDIS_PERCENT) {
-        alert('warning', `redis-memory:${s.host}`, `Redis is at ${pct}% of its cap`,
-          'Steady state is well under 2 MB, so this is either real growth or a flood. Check /metrics for the request rate before raising the cap.');
+        alert(
+          'warning',
+          `redis-memory:${s.host}`,
+          `Redis is at ${pct}% of its cap`,
+          'Steady state is well under 2 MB, so this is either real growth or a flood. Check /metrics for the request rate before raising the cap.',
+        );
       }
     }
     if (s.redisMaxBytes === 0) {
-      alert('warning', `redis-unbounded:${s.host}`, 'Redis is running with no maxmemory',
-        'An unbounded Redis on a 952 MB VM ends as an OOM kill of whatever has the largest RSS, which is Postgres. The compose file sets --maxmemory 128mb; this host is not running it.');
+      alert(
+        'warning',
+        `redis-unbounded:${s.host}`,
+        'Redis is running with no maxmemory',
+        'An unbounded Redis on a 952 MB VM ends as an OOM kill of whatever has the largest RSS, which is Postgres. The compose file sets --maxmemory 128mb; this host is not running it.',
+      );
     }
   }
 }
@@ -391,31 +534,43 @@ async function checkHosts() {
 async function checkTurnTls() {
   if (!TURN_HOST) return;
   const tls = await import('node:tls');
-  const probe = await timed(() => new Promise((resolve, reject) => {
-    const socket = tls.connect(
-      { host: TURN_HOST, port: 443, servername: 'turn.takedia.com', timeout: 8000 },
-      () => {
-        const cert = socket.getPeerCertificate();
-        socket.end();
-        if (!cert || !cert.valid_to) return reject(new Error('no certificate presented'));
-        resolve({ validTo: cert.valid_to, subject: cert.subject?.CN ?? null });
-      },
-    );
-    socket.on('timeout', () => { socket.destroy(); reject(new Error('TLS handshake timed out')); });
-    socket.on('error', reject);
-  }));
+  const probe = await timed(
+    () =>
+      new Promise((resolve, reject) => {
+        const socket = tls.connect(
+          { host: TURN_HOST, port: 443, servername: 'turn.takedia.com', timeout: 8000 },
+          () => {
+            const cert = socket.getPeerCertificate();
+            socket.end();
+            if (!cert || !cert.valid_to) return reject(new Error('no certificate presented'));
+            resolve({ validTo: cert.valid_to, subject: cert.subject?.CN ?? null });
+          },
+        );
+        socket.on('timeout', () => {
+          socket.destroy();
+          reject(new Error('TLS handshake timed out'));
+        });
+        socket.on('error', reject);
+      }),
+  );
   facts.turnTls = probe;
   if (probe.error) {
-    return alert('critical', 'turn-tls',
+    return alert(
+      'critical',
+      'turn-tls',
       `TLS handshake with ${TURN_HOST}:443 failed: ${probe.error}`,
-      'TURNS on 443 is the only path for users on networks that allow nothing but HTTPS. Check coturn and /etc/coturn/certs.');
+      'TURNS on 443 is the only path for users on networks that allow nothing but HTTPS. Check coturn and /etc/coturn/certs.',
+    );
   }
   const daysLeft = Math.floor((Date.parse(probe.value.validTo) - Date.now()) / 86_400_000);
   facts.turnTls.daysLeft = daysLeft;
   if (daysLeft <= TLS_MIN_DAYS) {
-    alert(daysLeft <= 3 ? 'critical' : 'warning', 'turn-tls-expiry',
+    alert(
+      daysLeft <= 3 ? 'critical' : 'warning',
+      'turn-tls-expiry',
       `the relay certificate expires in ${daysLeft} days`,
-      'certbot renews at 30 days, so this means renewal has been failing. Run `certbot renew --dry-run` on the relay VM and check /etc/letsencrypt/renewal-hooks/deploy/coturn.sh still runs.');
+      'certbot renews at 30 days, so this means renewal has been failing. Run `certbot renew --dry-run` on the relay VM and check /etc/letsencrypt/renewal-hooks/deploy/coturn.sh still runs.',
+    );
   }
 }
 

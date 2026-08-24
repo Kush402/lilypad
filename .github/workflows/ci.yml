@@ -92,6 +92,14 @@ jobs:
       - name: Lint
         run: pnpm turbo run lint
 
+      # `turbo run lint` only visits workspaces, and scripts/ belongs to none of
+      # them — so the ten scripts that run releases, deploys, the production
+      # watchdog and the Apple preflight were never linted. eslint.config.mjs
+      # had a block configuring globals for them, which had been dead the whole
+      # time and was five globals short.
+      - name: Lint the operational scripts
+        run: pnpm lint:scripts
+
       - name: Format check
         run: pnpm format:check
 
