@@ -147,6 +147,13 @@ Then, with the same values exported locally:
 pnpm apple:check
 ```
 
+Once the Issuer ID is set it does more than check shapes: it signs an ES256 JWT
+with the `.p8` exactly the way `notarytool` and fastlane do and calls the live
+App Store Connect API. That distinguishes the three failures that otherwise all
+surface twenty minutes into a release run as something else — a wrong Issuer ID
+(401), a key without the App Manager role (403), and an account with no app
+record yet (which blocks TestFlight but not notarization).
+
 ## Shipping
 
 Versions are deliberately not named here — a document that hard-codes the next

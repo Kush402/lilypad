@@ -21,6 +21,7 @@
  * line saying so rather than silently passing.
  */
 import { execFileSync } from 'node:child_process';
+import { createSign } from 'node:crypto';
 import { writeFileSync, unlinkSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -177,6 +178,90 @@ for (const [name, mirror] of [
     bad(`${name} and ${mirror} disagree`, 'They are the same key; one of them is a typo.');
   else ok(`${name} ${v}`);
 }
+
+// ── Ask Apple ─────────────────────────────────────────────────────────────
+// Everything above checks that the values are well FORMED. That is not the
+// same as Apple accepting them, and the difference is a twenty-minute release
+// run: a mistyped Issuer ID, a revoked key, or a key created with the wrong
+// role all look perfect on paper. One signed request settles it.
+//
+// ES256 over the .p8, exactly the way notarytool and fastlane build their JWT.
+// Skipped when the key or issuer is missing — there is nothing to ask with —
+// and a network failure is reported as unknown rather than as a bad key.
+async function askApple() {
+  const b64 = val('APPLE_API_KEY_P8') ?? val('ASC_KEY_P8');
+  const keyId = val('APPLE_API_KEY') ?? val('ASC_KEY_ID');
+  const issuer = val('APPLE_API_ISSUER') ?? val('ASC_ISSUER_ID');
+  console.log('\nAgainst the live App Store Connect API:\n');
+  if (!b64 || !keyId || !issuer) {
+    skip('not asking Apple — need the key, its Key ID and the Issuer ID first');
+    return;
+  }
+
+  const b64url = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
+  const header = b64url({ alg: 'ES256', kid: keyId, typ: 'JWT' });
+  const now = Math.floor(Date.now() / 1000);
+  const payload = b64url({
+    iss: issuer,
+    iat: now,
+    exp: now + 300,
+    aud: 'appstoreconnect-v1',
+  });
+  let jwt;
+  try {
+    const signer = createSign('SHA256');
+    signer.update(`${header}.${payload}`);
+    // ASC requires the JOSE fixed-width r||s form, not the DER that
+    // createSign emits by default.
+    const sig = signer.sign(
+      { key: Buffer.from(b64, 'base64'), dsaEncoding: 'ieee-p1363' },
+      'base64url',
+    );
+    jwt = `${header}.${payload}.${sig}`;
+  } catch (err) {
+    bad(`could not sign a token with the .p8: ${err.message}`, 'The key is not a usable ES256 private key.');
+    return;
+  }
+
+  let res;
+  try {
+    res = await fetch('https://api.appstoreconnect.apple.com/v1/apps?limit=1', {
+      headers: { authorization: `Bearer ${jwt}` },
+      signal: AbortSignal.timeout(20_000),
+    });
+  } catch (err) {
+    skip(`could not reach App Store Connect (${err.message}) — credentials not verified`);
+    return;
+  }
+
+  if (res.ok) {
+    const body = await res.json().catch(() => ({}));
+    const n = body?.meta?.paging?.total;
+    ok(`Apple accepted the key — Issuer ID, Key ID and .p8 all agree`);
+    if (typeof n === 'number') {
+      if (n === 0)
+        bad(
+          'the account has no app records yet',
+          'TestFlight uploads need one: register the App ID, then App Store Connect → Apps → + → New App. See docs/apple-setup.md §3. Notarizing the Mac app does NOT need this.',
+        );
+      else ok(`${n} app record(s) visible to this key`);
+    }
+  } else if (res.status === 401) {
+    bad(
+      'App Store Connect rejected the key (401)',
+      'Wrong Issuer ID, a revoked key, or the .p8 does not belong to this Key ID.',
+    );
+  } else if (res.status === 403) {
+    bad(
+      'App Store Connect accepted the key but refused the request (403)',
+      'The key authenticates but lacks permission — it needs the App Manager role for TestFlight uploads.',
+    );
+  } else {
+    skip(`App Store Connect answered HTTP ${res.status} — credentials not verified`);
+  }
+}
+
+await askApple();
 
 console.log(
   problems === 0
