@@ -70,6 +70,33 @@ export class DeviceAuthError extends Error {
 }
 
 /**
+ * Turn a 401 into the error whose remedy is already wired up.
+ *
+ * Every authenticated route can answer 401 for a reason that is about THIS
+ * phone rather than the request: `requireAuth` for a token that no longer
+ * verifies, and `rejectRevokedActor` for a device whose row was revoked or
+ * whose account was deleted. Both mean the same thing to a person — the
+ * credential in hand is finished, and signing in is what fixes it.
+ *
+ * Nothing used to say so. `invalidateAccessToken` below documents itself as
+ * "called when the backend answers 401" and no such caller existed, so a 401
+ * left the dead token cached for its full ten-minute TTL and surfaced as a raw
+ * status code. Measured on production 2026-08-24: removing this phone from
+ * "Your devices" — which the screen warns will sign it out — turned every
+ * later action into `HTTP 401`, including `could not add that computer
+ * (HTTP 401)` on the linking card, with no route back to sign-in.
+ *
+ * The body distinguishes the two, and both `DeviceAuthError` messages are
+ * already the right sentence, so this adds no new copy.
+ */
+export function unauthorizedError(body: string): DeviceAuthError {
+  invalidateAccessToken();
+  return new DeviceAuthError(
+    body.includes('device_revoked') ? 'device_revoked' : 'device_not_enrolled',
+  );
+}
+
+/**
  * This phone's key already names a device on a DIFFERENT account.
  *
  * Separate from `DeviceAuthError` because the remedy is the opposite one.
@@ -338,6 +365,11 @@ export async function approveDesktopEnrollment(
     { code },
     await accessToken(apiBaseUrl),
   );
+  // Before the generic branch below, which would render this as
+  // `could not add that computer (HTTP 401)` — a dead end, when the phone
+  // itself is what needs attention. `ScannerScreen` routes a `DeviceAuthError`
+  // straight to sign-in and comes back to this same card.
+  if (status === 401) throw unauthorizedError(text);
   if (status === 404) {
     throw new Error('That code has expired. Show a new one on the computer.');
   }

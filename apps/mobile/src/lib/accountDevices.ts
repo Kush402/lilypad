@@ -4,7 +4,7 @@ import type {
   MobilePairListing,
   MobilePairListResponse,
 } from '@lilypad/protocol';
-import { accessToken, DeviceAuthError } from './auth';
+import { accessToken, DeviceAuthError, unauthorizedError } from './auth';
 
 /**
  * The account's own devices (P2).
@@ -34,7 +34,7 @@ async function request(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   try {
-    return await fetch(`${apiBaseUrl.replace(/\/$/, '')}${path}`, {
+    const res = await fetch(`${apiBaseUrl.replace(/\/$/, '')}${path}`, {
       method: init.method,
       headers: {
         authorization: `Bearer ${token}`,
@@ -49,6 +49,12 @@ async function request(
       ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }),
       signal: controller.signal,
     });
+    // A 401 is about this phone, not this request, so it must not reach the
+    // callers below as `(HTTP 401)`. Revoking the device you are holding is a
+    // supported act — the screen warns it signs you out — and this is what
+    // makes the refresh that follows it land on sign-in instead of an error.
+    if (res.status === 401) throw unauthorizedError(await res.text().catch(() => ''));
+    return res;
   } finally {
     clearTimeout(timer);
   }

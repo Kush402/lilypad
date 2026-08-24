@@ -1,7 +1,7 @@
 import { Platform } from 'react-native';
 import type { ConnectResponse, PairingRedeemResponse } from '@lilypad/protocol';
 import { initDeviceIdentity } from './device';
-import { accessToken, DeviceAuthError } from './auth';
+import { accessToken, DeviceAuthError, unauthorizedError } from './auth';
 import { RedeemError, appError, classifyHttpStatus, classifyFetchError } from './errors';
 
 /** Bounded so a slow/dead network surfaces as a classified, actionable error
@@ -87,6 +87,11 @@ export async function redeemToken(
     });
     if (!res.ok) {
       const text = await res.text().catch(() => '');
+      // `classifyHttpStatus` has no 401 branch, so this would land on
+      // `unknown` — the least useful thing to say about the one failure with
+      // an exact remedy. `ScannerScreen` already sends a `DeviceAuthError` to
+      // sign-in and returns to this card.
+      if (res.status === 401) throw unauthorizedError(text);
       throw new RedeemError(classifyHttpStatus(res.status, text));
     }
     return (await res.json()) as PairingRedeemResponse;
@@ -136,6 +141,10 @@ export async function requestConnect(
     });
     if (!res.ok) {
       const body = await res.text().catch(() => '');
+      // As in `redeemToken`: a revoked phone ringing a laptop is a 401
+      // from `rejectRevokedActor`, and "something went wrong" is not what to
+      // tell someone whose phone was removed from the account.
+      if (res.status === 401) throw unauthorizedError(body);
       throw new RedeemError(classifyConnectStatus(res.status, body));
     }
     return (await res.json()) as ConnectResponse;
