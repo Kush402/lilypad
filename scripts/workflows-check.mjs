@@ -24,7 +24,9 @@
  * `ci.yml` broke every `deploy.yml` run that way, and the only visible evidence
  * was a red dot with nothing behind it.
  */
-import { readdirSync, readFileSync } from 'node:fs';
+import { readdirSync, readFileSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parse } from 'yaml';
 
@@ -41,6 +43,8 @@ let failed = 0;
 const declared = new Map();
 /** callers: { file, job, uses, granted } for every `uses: ./.github/workflows/...` */
 const callers = [];
+/** file -> [{ job, step, run, shell }] for every step that runs shell. */
+const runBlocks = new Map();
 
 for (const file of files.sort()) {
   let doc;
@@ -85,7 +89,48 @@ for (const file of files.sort()) {
   }
   declared.set(file, perms);
 
+  const blocks = [];
+  for (const [name, job] of Object.entries(jobs)) {
+    for (const step of job?.steps ?? []) {
+      if (typeof step?.run === 'string') {
+        blocks.push({
+          job: name,
+          step: step.name ?? step.run.split('\n')[0].slice(0, 40),
+          run: step.run,
+          shell: step.shell ?? job.defaults?.run?.shell ?? doc.defaults?.run?.shell,
+        });
+      }
+    }
+  }
+  runBlocks.set(file, blocks);
+
   console.log(`  ok   ${file} (${Object.keys(jobs).length} job(s))`);
+}
+
+// Every `run:` block must be valid shell. A syntax error there is not caught by
+// YAML parsing — the file loads, the job starts, and it dies partway through
+// after the runner has already spent minutes on checkout, node, pnpm and cargo.
+//
+// `${{ ... }}` is substituted by GitHub before bash ever sees it and is not
+// valid shell, so it is replaced with a harmless token first. Steps that name a
+// non-bash shell are skipped rather than guessed at.
+const EXPR = /\$\{\{[^}]*\}\}/g;
+for (const [file, blocks] of runBlocks) {
+  for (const { job, step, run, shell } of blocks) {
+    if (shell && !/^bash|^sh$/.test(shell)) continue;
+    const dir = mkdtempSync(join(tmpdir(), 'wfcheck-'));
+    const path = join(dir, 'step.sh');
+    writeFileSync(path, run.replace(EXPR, 'GH_EXPR'));
+    const res = spawnSync('bash', ['-n', path], { encoding: 'utf8' });
+    rmSync(dir, { recursive: true, force: true });
+    if (res.status !== 0) {
+      console.error(
+        `  FAIL ${file}: job "${job}", step "${step}" is not valid shell:\n` +
+          `        ${String(res.stderr).trim().split('\n').join('\n        ')}`,
+      );
+      failed += 1;
+    }
+  }
 }
 
 // A caller must grant at least what every job in the called workflow declares.

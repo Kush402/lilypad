@@ -16,9 +16,9 @@ This file exists because the list used to live only in a conversation. Six rows
 (L-20, L-38 through L-42) were reconstructed from later summaries after the
 earlier record was compacted away, which is the argument for the file.
 
-**Status counts:** 75 fixed · 6 blocked on something outside the code ·
+**Status counts:** 76 fixed · 6 blocked on something outside the code ·
 3 deliberately unchanged · 2 not a bug · 1 open (L-47) · 1 unrecoverable
-(L-20). 88 rows.
+(L-20). 89 rows.
 
 Counted from the rows rather than kept by hand — the previous header said
 "3 not a bug · 7 blocked", which folded L-47 (open, not blocked) and L-20
@@ -114,6 +114,7 @@ what it is tallying is the failure this file was created to stop.
 | L-86 | Every link on the website failed WCAG AA. `a { color: var(--accent) }`, and the light accent `#1f9f6b` is **3.19:1** against the page — AA asks 4.5:1 for text that size. That is Privacy, Terms, the support address and the download link the site exists to serve. The desktop had the same defect in `prefers-color-scheme: light`.                                                                                                                                                                 | Fixed — `accentInk` `#187b53`, 4.97:1                                                                                              |
 | L-87 | Regenerating the icons produced a 1024x1024 `icon.png`, and the v0.1.6 release died at bundling: `Failed to create app icon: 'No matching IconType'`. ICNS has no 1024-at-1x type — 1024 exists only as 512@2x, and the file had been 512 before. The error names no file and arrives **after** the four-minute Rust build, so the whole release is spent before it appears.                                                                                                                            | Fixed — 512 again; sizes asserted against the ICNS types                                                                           |
 | L-88 | `release.yml` decided "notarize" from `APPLE_API_KEY_P8` alone. Setting that secret first — the natural order, since one App Store Connect key serves both pipelines — turned notarization on while the issuer id and the certificate were still missing. Tauri could not notarize, published an ad-hoc build anyway, and the Gatekeeper check failed the release with "the notarization ticket is not stapled": a half-configuration reported as a build failure.                                      | Fixed — the whole set is required, and the warning names what is missing                                                           |
+| L-89 | The site deploy verifies the served installer and update archive byte-for-byte — correctly — but with a single fetch immediately after uploading. Cloudflare Pages does not swap a deployment atomically at every edge, so v0.1.6 failed on the previous build's bytes and matched perfectly by the time anyone looked. A release that goes red for a reason nobody can act on is L-64 in another costume.                                                                                              | Fixed — bounded retry; a mismatch surviving 90s still fails                                                                        |
 | L-47 | `openh264` 0.6 carries a heap-overflow advisory (GHSA, HIGH) fixed in 0.8. The advisory is in the **decoding** functions; this codebase only encodes.                                                                                                                                                                                                                                                                                                                                                   | Open — not reachable, bump needs real-device video validation                                                                      |
 
 ## What is left, and who it needs

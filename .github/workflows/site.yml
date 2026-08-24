@@ -246,6 +246,29 @@ jobs:
           set -euo pipefail
           base=https://lilypadhome.takedia.com
 
+          # Cloudflare Pages does not swap a deployment atomically at every
+          # edge: for a few seconds after the upload the old bytes are still
+          # being served. A single fetch therefore fails on TIMING rather than
+          # on anything being wrong, which is what happened to v0.1.6 — the
+          # archive it compared was the previous build of the same version, and
+          # by the time anyone looked the two matched.
+          #
+          # Retrying does not weaken the check. It still has to match exactly,
+          # and a mismatch that survives ~90s is a real one. What it stops is a
+          # red release for a reason nobody can act on, which is how a signal
+          # stops being read (L-64).
+          expect_bytes() {
+            local url="$1" want="$2" label="$3" got=none
+            for attempt in 1 2 3 4 5 6 7 8 9; do
+              got=$(curl -fsSL "$url" | shasum -a 256 | cut -d' ' -f1) || got=unreachable
+              [ "$got" = "$want" ] && { echo "$label verified: $want"; return 0; }
+              echo "attempt $attempt: $label is $got, want $want — waiting for the edge"
+              sleep 10
+            done
+            echo "::error::$label served from $url does not match what was built ($got != $want) after 90s — this is not propagation delay"
+            return 1
+          }
+
           for attempt in 1 2 3 4 5 6; do
             code=$(curl -s -o /dev/null -w '%{http_code}' -L "$base/download/Lilypad.dmg") || code=000
             [ "$code" = "200" ] && break
@@ -254,10 +277,9 @@ jobs:
           done
           [ "$code" = "200" ] || { echo "::error::the download link answers $code to an anonymous request"; exit 1; }
 
-          expected=$(shasum -a 256 apps/site/dist/download/Lilypad.dmg | cut -d' ' -f1)
-          live=$(curl -fsSL "$base/download/Lilypad.dmg" | shasum -a 256 | cut -d' ' -f1)
-          [ "$live" = "$expected" ] || { echo "::error::the served installer differs from the one built ($live != $expected)"; exit 1; }
-          echo "installer verified: $expected"
+          expect_bytes "$base/download/Lilypad.dmg" \
+            "$(shasum -a 256 apps/site/dist/download/Lilypad.dmg | cut -d' ' -f1)" \
+            "installer"
 
           # The updater manifest, and the archive it names — the path every
           # already-installed copy takes. A 404 here breaks updates silently for
@@ -283,13 +305,9 @@ jobs:
           #
           # So compare the bytes, the same way the installer above does. The
           # archive was just built into dist/, so the hash is right there.
-          expected_archive=$(shasum -a 256 apps/site/dist/download/Lilypad.app.tar.gz | cut -d' ' -f1)
-          live_archive=$(curl -fsSL "$archive" | shasum -a 256 | cut -d' ' -f1) || live_archive=none
-          [ "$live_archive" = "$expected_archive" ] || {
-            echo "::error::latest.json names $archive, but the bytes served there are not the archive that was built ($live_archive != $expected_archive)"
-            exit 1
-          }
-          echo "update archive verified: $expected_archive"
+          expect_bytes "$archive" \
+            "$(shasum -a 256 apps/site/dist/download/Lilypad.app.tar.gz | cut -d' ' -f1)" \
+            "update archive (named by latest.json)"
 
           # A control, so a green run cannot mean "the check cannot fail".
           # If a path that certainly does not exist looks like a real download,
