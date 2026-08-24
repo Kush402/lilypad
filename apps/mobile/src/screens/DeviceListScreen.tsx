@@ -206,12 +206,32 @@ export function DeviceListScreen({ navigation }: Props) {
                   style={[styles.connect, connecting === item.desktopDeviceId && styles.busy]}
                   disabled={connecting !== null}
                   onPress={() => void connect(item)}
+                  accessibilityRole="button"
+                  accessibilityState={{
+                    disabled: connecting !== null,
+                    busy: connecting === item.desktopDeviceId,
+                  }}
+                  // In a list, "Connect" spoken on its own is the same words on
+                  // every row. The laptop's name is what makes the button
+                  // identifiable, and it is only on screen visually.
+                  accessibilityLabel={
+                    connecting === item.desktopDeviceId
+                      ? `Ringing ${item.name ?? 'laptop'}`
+                      : `Connect to ${item.name ?? 'laptop'}`
+                  }
                 >
                   <Text style={styles.connectText}>
                     {connecting === item.desktopDeviceId ? 'Ringing…' : 'Connect'}
                   </Text>
                 </Pressable>
-                <Pressable style={styles.forget} onPress={() => confirmForget(item)}>
+                <Pressable
+                  style={styles.forget}
+                  onPress={() => confirmForget(item)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Forget ${item.name ?? 'laptop'}`}
+                  accessibilityHint="Ends this phone's pairing with that computer"
+                  hitSlop={{ top: 14, bottom: 14, left: 12, right: 12 }}
+                >
                   <Text style={styles.forgetText}>Forget</Text>
                 </Pressable>
               </View>
@@ -229,10 +249,17 @@ export function DeviceListScreen({ navigation }: Props) {
           style={styles.secondary}
           testID="open-account-devices"
           onPress={() => navigation.navigate('AccountDevices', { apiBaseUrl: accountApiBaseUrl })}
+          accessibilityRole="button"
+          accessibilityLabel="Your devices"
+          accessibilityHint="Every computer and phone on your account"
         >
           <Text style={styles.secondaryText}>Your devices</Text>
         </Pressable>
-        <Pressable style={styles.primary} onPress={() => navigation.navigate('Scanner')}>
+        <Pressable
+          style={styles.primary}
+          onPress={() => navigation.navigate('Scanner')}
+          accessibilityRole="button"
+        >
           <Text style={styles.primaryText}>
             {pairs.length === 0 ? "Scan a laptop's QR" : 'Add another laptop'}
           </Text>
@@ -241,7 +268,13 @@ export function DeviceListScreen({ navigation }: Props) {
         {/* Signing out is phone-side: the session record and the saved pairs go,
             the device stays on the account until it is revoked from "Your
             devices". Confirmed because the paired laptops go with it. */}
-        <Pressable style={styles.signOut} testID="sign-out" onPress={confirmSignOut}>
+        <Pressable
+          style={styles.signOut}
+          testID="sign-out"
+          onPress={confirmSignOut}
+          accessibilityRole="button"
+          accessibilityLabel="Sign out"
+        >
           <Text style={styles.signOutText}>
             {session?.email ? `Sign out (${session.email})` : 'Sign out'}
           </Text>

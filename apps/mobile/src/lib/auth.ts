@@ -376,7 +376,11 @@ export async function approveDesktopEnrollment(
   if (status === 409) {
     throw new Error('That computer is already on another account.');
   }
-  if (status !== 200) throw new Error(`could not add that computer (HTTP ${status})`);
+  // `deviceExchangeFailure` rather than a status code: the remaining statuses
+  // here are the same three it already words correctly — rate limited, a
+  // client too old for its server, and a server having a bad minute. This is
+  // the last place in the app that read a number aloud to a person.
+  if (status !== 200) throw new Error(deviceExchangeFailure(status));
   return JSON.parse(text) as DesktopEnrollmentApproved;
 }
 

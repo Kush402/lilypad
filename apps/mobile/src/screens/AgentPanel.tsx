@@ -74,6 +74,8 @@ export function AgentPanel({ feed, onSend, onStop, onDecide }: AgentPanelProps):
         <TextInput
           testID="agent-command-input"
           style={styles.input}
+          accessibilityLabel="Ask your Mac to do something"
+
           value={text}
           onChangeText={setText}
           placeholder="Ask your Mac to do something…"
@@ -90,7 +92,14 @@ export function AgentPanel({ feed, onSend, onStop, onDecide }: AgentPanelProps):
           multiline
         />
         {feed.running ? (
-          <Pressable testID="agent-stop" style={[styles.btn, styles.stopBtn]} onPress={onStop}>
+          <Pressable
+            testID="agent-stop"
+            style={[styles.btn, styles.stopBtn]}
+            onPress={onStop}
+            accessibilityRole="button"
+            accessibilityLabel="Stop"
+            accessibilityHint="Stops what Lilypad is doing on your Mac"
+          >
             <Text style={styles.btnText}>Stop</Text>
           </Pressable>
         ) : (
@@ -99,6 +108,9 @@ export function AgentPanel({ feed, onSend, onStop, onDecide }: AgentPanelProps):
             style={[styles.btn, styles.sendBtn, !text.trim() && styles.btnDisabled]}
             onPress={submit}
             disabled={!text.trim()}
+            accessibilityRole="button"
+            accessibilityLabel="Ask"
+            accessibilityState={{ disabled: !text.trim() }}
           >
             <Text style={styles.btnText}>Ask</Text>
           </Pressable>
@@ -131,6 +143,13 @@ export function AgentPanel({ feed, onSend, onStop, onDecide }: AgentPanelProps):
               testID="agent-deny"
               style={[styles.btn, styles.denyBtn]}
               onPress={() => onDecide(held.stepId, false)}
+              accessibilityRole="button"
+              // This pair is a security decision about a specific action on the
+              // user's Mac, and the action is `held.summary` — on screen above
+              // the buttons, and nowhere in what a screen reader hears when it
+              // reaches them. "Approve" alone is a consent prompt with the
+              // subject removed.
+              accessibilityLabel={`Deny: ${held.summary}`}
             >
               <Text style={styles.btnText}>Deny</Text>
             </Pressable>
@@ -138,6 +157,8 @@ export function AgentPanel({ feed, onSend, onStop, onDecide }: AgentPanelProps):
               testID="agent-approve"
               style={[styles.btn, styles.approveBtn]}
               onPress={() => onDecide(held.stepId, true)}
+              accessibilityRole="button"
+              accessibilityLabel={`Allow: ${held.summary}`}
             >
               <Text style={styles.btnText}>Approve</Text>
             </Pressable>

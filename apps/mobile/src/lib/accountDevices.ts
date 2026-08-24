@@ -60,6 +60,22 @@ async function request(
   }
 }
 
+/**
+ * What to say when a listing fails, without reading a status code aloud.
+ *
+ * `Could not load your devices (HTTP 503).` tells a person the one thing they
+ * cannot act on and none of the things they can. The statuses are separated
+ * because their remedies genuinely differ: waiting helps a 429 or a 5xx, and
+ * nothing the user does helps a 400. 401 never reaches here — `request` turns
+ * it into a `DeviceAuthError` whose remedy is signing in.
+ */
+function deviceListFailure(status: number, what: 'devices' | 'laptops'): string {
+  if (status === 429) return 'Too many requests just now. Wait a moment, then try again.';
+  if (status >= 500)
+    return `Lilypad’s server is having trouble. Your ${what} are safe — try again in a moment.`;
+  return `Could not load your ${what}. Check your connection and try again.`;
+}
+
 /** Every device on this account. */
 export async function listAccountDevices(apiBaseUrl: string): Promise<AccountDevice[]> {
   let res: Response;
@@ -69,7 +85,7 @@ export async function listAccountDevices(apiBaseUrl: string): Promise<AccountDev
     if (err instanceof DeviceAuthError) throw err;
     throw new AccountDeviceError('Could not reach Lilypad. Check your connection.');
   }
-  if (!res.ok) throw new AccountDeviceError(`Could not load your devices (HTTP ${res.status}).`);
+  if (!res.ok) throw new AccountDeviceError(deviceListFailure(res.status, 'devices'));
   const body = (await res.json()) as AccountDeviceList;
   return body.devices;
 }
@@ -147,7 +163,7 @@ export async function listMyPairs(apiBaseUrl: string): Promise<MobilePairListing
     if (err instanceof DeviceAuthError) throw err;
     throw new AccountDeviceError('Could not reach Lilypad. Check your connection.');
   }
-  if (!res.ok) throw new AccountDeviceError(`Could not load your laptops (HTTP ${res.status}).`);
+  if (!res.ok) throw new AccountDeviceError(deviceListFailure(res.status, 'laptops'));
   const body = (await res.json()) as MobilePairListResponse;
   return body.pairs;
 }

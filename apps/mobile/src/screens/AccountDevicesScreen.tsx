@@ -175,7 +175,11 @@ export function AccountDevicesScreen({ route, navigation }: Props): React.JSX.El
         ) : (
           <>
             <Text style={styles.error}>{error}</Text>
-            <Pressable style={styles.primary} onPress={() => void refresh()}>
+            <Pressable
+              style={styles.primary}
+              onPress={() => void refresh()}
+              accessibilityRole="button"
+            >
               <Text style={styles.primaryText}>Try again</Text>
             </Pressable>
           </>
@@ -240,10 +244,32 @@ export function AccountDevicesScreen({ route, navigation }: Props): React.JSX.El
                     setDraftName(item.name ?? '');
                     setRenaming(item.id);
                   }}
+                  accessibilityRole="button"
+                  accessibilityState={{ disabled: busy === item.id }}
+                  // Every row's button says the same word. The device name is
+                  // what tells them apart, and it is only there to look at.
+                  accessibilityLabel={`Rename ${item.name ?? `unnamed ${item.kind}`}`}
+                  hitSlop={{ top: 14, bottom: 14, left: 12, right: 12 }}
                 >
                   <Text style={styles.action}>Rename</Text>
                 </Pressable>
-                <Pressable disabled={busy === item.id} onPress={() => confirmRevoke(item)}>
+                <Pressable
+                  disabled={busy === item.id}
+                  onPress={() => confirmRevoke(item)}
+                  accessibilityRole="button"
+                  accessibilityState={{ disabled: busy === item.id, busy: busy === item.id }}
+                  // Removing the phone you are holding signs it out
+                  // immediately. Sighted users get that from the "· this
+                  // phone" tag beside the name; spoken, it has to be in the
+                  // button itself, because the confirm sheet arrives after
+                  // the tap.
+                  accessibilityLabel={
+                    item.isCurrentDevice
+                      ? 'Remove this phone, signing it out'
+                      : `Remove ${item.name ?? `unnamed ${item.kind}`}`
+                  }
+                  hitSlop={{ top: 14, bottom: 14, left: 12, right: 12 }}
+                >
                   <Text style={[styles.action, styles.danger]}>
                     {busy === item.id ? 'Working…' : 'Remove'}
                   </Text>

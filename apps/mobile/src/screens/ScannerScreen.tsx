@@ -289,6 +289,16 @@ export function ScannerScreen({ navigation }: Props) {
               style={[styles.primary, styles.flex]}
               onPress={() => void link()}
               disabled={connecting || (!!error && !error.retryable)}
+              accessibilityRole="button"
+              // While `connecting` the only child is an ActivityIndicator, so
+              // the button has NO spoken name at the one moment a person most
+              // needs to know what is happening. The label is fixed and the
+              // progress rides in `busy`.
+              accessibilityLabel="Add computer"
+              accessibilityState={{
+                busy: connecting,
+                disabled: connecting || (!!error && !error.retryable),
+              }}
             >
               {connecting ? (
                 <ActivityIndicator color={theme.onAccent} />
@@ -296,7 +306,12 @@ export function ScannerScreen({ navigation }: Props) {
                 <Text style={styles.primaryText}>Add computer</Text>
               )}
             </Pressable>
-            <Pressable style={[styles.ghost, styles.flex]} onPress={cancelOrRescan}>
+            <Pressable
+              style={[styles.ghost, styles.flex]}
+              onPress={cancelOrRescan}
+              accessibilityRole="button"
+              accessibilityLabel={connecting ? 'Cancel' : 'Rescan'}
+            >
               <Text style={styles.ghostText}>{connecting ? 'Cancel' : 'Rescan'}</Text>
             </Pressable>
           </View>
@@ -313,6 +328,12 @@ export function ScannerScreen({ navigation }: Props) {
               style={[styles.primary, styles.flex]}
               onPress={() => void connect()}
               disabled={connecting || (!!error && !error.retryable)}
+              accessibilityRole="button"
+              accessibilityLabel="Connect"
+              accessibilityState={{
+                busy: connecting,
+                disabled: connecting || (!!error && !error.retryable),
+              }}
             >
               {connecting ? (
                 <ActivityIndicator color={theme.onAccent} />
@@ -320,11 +341,21 @@ export function ScannerScreen({ navigation }: Props) {
                 <Text style={styles.primaryText}>Connect</Text>
               )}
             </Pressable>
-            <Pressable style={[styles.ghost, styles.flex]} onPress={cancelOrRescan}>
+            <Pressable
+              style={[styles.ghost, styles.flex]}
+              onPress={cancelOrRescan}
+              accessibilityRole="button"
+              accessibilityLabel={connecting ? 'Cancel' : 'Rescan'}
+            >
               <Text style={styles.ghostText}>{connecting ? 'Cancel' : 'Rescan'}</Text>
             </Pressable>
           </View>
-          <Pressable onPress={() => setShowDetails((v) => !v)}>
+          <Pressable
+            onPress={() => setShowDetails((v) => !v)}
+            accessibilityRole="button"
+            accessibilityState={{ expanded: showDetails }}
+            accessibilityLabel="Technical details"
+          >
             <Text style={styles.link}>{showDetails ? 'Hide' : 'Show'} technical details</Text>
           </Pressable>
           {showDetails ? (

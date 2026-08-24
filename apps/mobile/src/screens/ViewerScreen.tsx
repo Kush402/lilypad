@@ -582,6 +582,17 @@ export function ViewerScreen({ route, navigation }: Props) {
                 testID={`mode-toggle-${m}`}
                 style={[styles.modeKey, active && styles.modeKeyActive]}
                 onPress={() => requestCaptureMode(m)}
+                accessibilityRole="button"
+                // `selected` is what makes VoiceOver say "selected" for the
+                // active mode. Colour alone carries that today, which is
+                // exactly the information a screen reader cannot see.
+                accessibilityState={{ selected: active }}
+                accessibilityLabel={`${MODE_LABEL[m]} quality`}
+                accessibilityHint={
+                  m === 'motion'
+                    ? 'Smoother video, softer text'
+                    : 'Sharper text, less smooth motion'
+                }
               >
                 <Text style={[styles.keyText, active && styles.stickyKeyTextActive]}>
                   {MODE_LABEL[m]}
@@ -593,12 +604,22 @@ export function ViewerScreen({ route, navigation }: Props) {
             testID="mode-toggle-zoom"
             style={[styles.modeKey, zoomLock && styles.modeKeyActive]}
             onPress={toggleZoomLock}
+            accessibilityRole="button"
+            accessibilityState={{ selected: zoomLock }}
+            accessibilityLabel="Zoom lock"
+            accessibilityHint="Drag to pan and pinch to zoom without sending taps to your Mac"
           >
             <Text style={[styles.keyText, zoomLock && styles.stickyKeyTextActive]}>Zoom</Text>
           </Pressable>
           <Pressable
             testID="mode-toggle-ask"
             style={[styles.modeKey, askOpen && styles.modeKeyActive]}
+            accessibilityRole="button"
+            // `expanded`, not `selected`: this one opens a panel rather than
+            // switching a mode, and VoiceOver announces the two differently.
+            accessibilityState={{ expanded: askOpen }}
+            accessibilityLabel="Ask"
+            accessibilityHint="Ask Lilypad to do something on your Mac"
             onPress={() =>
               setAskOpen((v) => {
                 // Closing the panel must also release its keyboard — the
@@ -690,14 +711,31 @@ export function ViewerScreen({ route, navigation }: Props) {
           <Pressable
             style={[styles.keyboardToggle, keyboardOpen && styles.keyboardToggleActive]}
             onPress={toggleKeyboard}
+            testID="keyboard-toggle"
+            accessibilityRole="button"
+            accessibilityState={{ selected: keyboardOpen }}
+            // The visible content is the single character "⌨", which VoiceOver
+            // reads as "keyboard" only by luck of the Unicode name — and as
+            // nothing at all in some voices. The label is the control.
+            accessibilityLabel="Keyboard"
+            accessibilityHint="Type on your Mac from this phone"
           >
-            <Text style={styles.keyboardToggleText}>⌨</Text>
+            <Text style={styles.keyboardToggleText} accessibilityElementsHidden>
+              ⌨
+            </Text>
           </Pressable>
         ) : null}
         <Pressable
           style={[styles.disconnect, confirmingDisconnect && styles.disconnectConfirming]}
           onPress={onDisconnectPress}
           testID="disconnect-button"
+          accessibilityRole="button"
+          // The button is a two-stage confirm, and the second stage is the
+          // destructive one. Saying so is the whole point of the stage.
+          accessibilityLabel={confirmingDisconnect ? 'Confirm disconnect' : 'Disconnect'}
+          accessibilityHint={
+            confirmingDisconnect ? 'Ends this session' : 'Asks once more before ending the session'
+          }
         >
           <Text style={styles.disconnectText}>
             {confirmingDisconnect ? 'Tap again to disconnect' : 'Disconnect'}
@@ -759,6 +797,14 @@ export function ViewerScreen({ route, navigation }: Props) {
           style={styles.badge}
           onPress={() => setHudExpanded((v) => !v)}
           disabled={!quality}
+          accessibilityRole="button"
+          accessibilityState={{ expanded: hudExpanded, disabled: !quality }}
+          // The dot's colour is the entire quality signal on screen. Spoken,
+          // it has to become a word.
+          accessibilityLabel={
+            quality ? `${STATE_LABEL[state]}, connection ${quality.level}` : STATE_LABEL[state]
+          }
+          accessibilityHint={quality ? 'Shows round trip time, bitrate and frame rate' : undefined}
         >
           <View style={styles.badgeRow}>
             {quality ? (
@@ -812,8 +858,15 @@ export function ViewerScreen({ route, navigation }: Props) {
             style={[styles.trayHandle, { right: Math.max(14, insets.right) }]}
             onPress={() => setTrayOpen((v) => !v)}
             testID="tray-handle"
+            accessibilityRole="button"
+            accessibilityState={{ expanded: trayOpen }}
+            // "⌄" and "⌃" are decoration standing in for a verb.
+            accessibilityLabel={trayOpen ? 'Hide controls' : 'Show controls'}
+            hitSlop={{ top: 14, bottom: 14, left: 12, right: 12 }}
           >
-            <Text style={styles.trayHandleText}>{trayOpen ? '⌄' : '⌃'}</Text>
+            <Text style={styles.trayHandleText} accessibilityElementsHidden>
+              {trayOpen ? '⌄' : '⌃'}
+            </Text>
           </Pressable>
         </>
       ) : (
