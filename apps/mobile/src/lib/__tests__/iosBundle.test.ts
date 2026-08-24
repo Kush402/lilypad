@@ -9,7 +9,15 @@
 export {};
 
 declare const __dirname: string;
-declare const require: (m: 'fs') => { readFileSync(path: string, encoding: 'utf8'): string };
+declare const require: (m: 'fs') => {
+  readFileSync(path: string, encoding: 'utf8'): string;
+  readFileSync(path: string): {
+    length: number;
+    readUInt32BE(o: number): number;
+    toString(e: 'ascii', s: number, en: number): string;
+  };
+  existsSync(path: string): boolean;
+};
 
 /**
  * iOS bundle declarations that decide runtime behaviour and appear in no other
@@ -111,5 +119,42 @@ describe('what the App Store requires before a build can be tested', () => {
     expect(privacyManifest).not.toMatch(
       /<key>NSPrivacyCollectedDataTypeTracking<\/key>\s*<true\/>/,
     );
+  });
+});
+
+describe('the app icon', () => {
+  // The asset catalogue held a Contents.json and no images at all, so the app
+  // had no icon: blank on the home screen, and rejected by App Store Connect,
+  // which requires the 1024 marketing icon before a build can be processed.
+  // Nothing else in this repo reads these files, so nothing else would notice
+  // them going missing again.
+  const iconDir = `${__dirname}/../../../ios/LilypadMobile/Images.xcassets/AppIcon.appiconset`;
+
+  it('exists at the one size App Store Connect will not process a build without', () => {
+    expect(require('fs').existsSync(`${iconDir}/AppIcon.png`)).toBe(true);
+  });
+
+  it('is listed in the catalogue, not merely present on disk', () => {
+    // A PNG that Contents.json does not name is a file Xcode ignores.
+    const contents = require('fs').readFileSync(`${iconDir}/Contents.json`, 'utf8');
+    expect(JSON.parse(contents).images).toEqual([
+      expect.objectContaining({ filename: 'AppIcon.png', size: '1024x1024' }),
+    ]);
+  });
+
+  it('is 1024x1024 with no alpha channel', () => {
+    // Apple rejects an icon with alpha. Read the PNG's IHDR directly rather
+    // than adding an image library: bytes 16..24 are width and height, byte 25
+    // is the colour type, where 6 is RGBA and 4 is greyscale+alpha.
+    const png = require('fs').readFileSync(`${iconDir}/AppIcon.png`) as unknown as {
+      readUInt32BE(o: number): number;
+      toString(e: 'ascii', s: number, en: number): string;
+      [i: number]: number;
+    };
+    expect(png.toString('ascii', 12, 16)).toBe('IHDR');
+    expect(png.readUInt32BE(16)).toBe(1024);
+    expect(png.readUInt32BE(20)).toBe(1024);
+    const colourType = png[25];
+    expect([4, 6]).not.toContain(colourType);
   });
 });

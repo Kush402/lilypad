@@ -16,9 +16,9 @@ This file exists because the list used to live only in a conversation. Six rows
 (L-20, L-38 through L-42) were reconstructed from later summaries after the
 earlier record was compacted away, which is the argument for the file.
 
-**Status counts:** 67 fixed · 6 blocked on something outside the code ·
+**Status counts:** 68 fixed · 6 blocked on something outside the code ·
 3 deliberately unchanged · 2 not a bug · 1 open (L-47) · 1 unrecoverable
-(L-20). 80 rows.
+(L-20). 81 rows.
 
 Counted from the rows rather than kept by hand — the previous header said
 "3 not a bug · 7 blocked", which folded L-47 (open, not blocked) and L-20
@@ -106,6 +106,7 @@ what it is tallying is the failure this file was created to stop.
 | L-78 | Four orphaned `pnpm dev` trees (`ppid 1`, no terminal) were still running on this Mac — one started 8 days earlier. The oldest held `:8080`, and because `tsx watch` restarts on change it had been recompiling the backend on every file edited during this session. A stale dev server on the default port answers a developer's local requests with whatever code it started with.                                                                                                                   | Fixed — killed; documented                                                                                                         |
 | L-79 | `pnpm apple:check` told people to create the App Store Connect API key with the **Developer** role. Developer notarizes the Mac app but is refused by TestFlight upload — and the `.p8` downloads exactly once, so following the tool meant revoking the key and starting again. `docs/apple-setup.md` and `mobile-ios.yml` both already said App Manager; the tool was the odd one out. The same workflow's error also pointed at `docs/deployment.md`, which has no App Store Connect section at all. | Fixed                                                                                                                              |
 | L-80 | `docs/apple-setup.md` had a certificate section with no CSR step and an app-record section with no App ID step. Both dead-end silently: Certificates → + wants a CSR you were never told to make, and App Store Connect's New App form only lists bundle ids already registered as App IDs, so it shows an empty dropdown and no reason why. Neither said to check that the downloaded certificate actually paired with a private key.                                                                  | Fixed                                                                                                                              |
+| L-81 | The iOS `AppIcon.appiconset` contained a `Contents.json` and **no images at all** — the app had no icon. It would have shown blank on the home screen, and App Store Connect will not process a build without the 1024 marketing icon, so the TestFlight upload could never have succeeded. The desktop's icon was a plain green circle: a placeholder, shipping to customers since v0.1.0.                                                                                                             | Fixed — a drawn mark, generated from the design tokens                                                                             |
 | L-47 | `openh264` 0.6 carries a heap-overflow advisory (GHSA, HIGH) fixed in 0.8. The advisory is in the **decoding** functions; this codebase only encodes.                                                                                                                                                                                                                                                                                                                                                   | Open — not reachable, bump needs real-device video validation                                                                      |
 
 ## What is left, and who it needs
