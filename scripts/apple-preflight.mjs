@@ -22,9 +22,10 @@
  */
 import { execFileSync } from 'node:child_process';
 import { createSign } from 'node:crypto';
-import { writeFileSync, unlinkSync, mkdtempSync } from 'node:fs';
+import { readFileSync, writeFileSync, unlinkSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 let problems = 0;
 const ok = (m) => console.log(`  ok    ${m}`);
@@ -41,6 +42,26 @@ const val = (name) => {
   const v = process.env[name];
   return v && v.trim() ? v.trim() : null;
 };
+
+/** The bundle id the iOS app actually builds as. Read from the Xcode project
+ * rather than hard-coded here, because that file is what `xcodebuild` obeys —
+ * a copy in this script could agree with the docs and disagree with the build. */
+function iosAppIdentifier() {
+  if (val('IOS_APP_IDENTIFIER')) return val('IOS_APP_IDENTIFIER');
+  const pbx = join(
+    dirname(dirname(fileURLToPath(import.meta.url))),
+    'apps/mobile/ios/LilypadMobile.xcodeproj/project.pbxproj',
+  );
+  try {
+    // The test target is `<id>.tests`; the app target is the one without it.
+    const all = [
+      ...readFileSync(pbx, 'utf8').matchAll(/PRODUCT_BUNDLE_IDENTIFIER = ([^;\s]+);/g),
+    ].map((m) => m[1]);
+    return all.find((id) => id && !id.endsWith('.tests')) ?? null;
+  } catch {
+    return null;
+  }
+}
 
 function decodeBase64(name, expectSubstring) {
   const raw = val(name);
@@ -93,7 +114,15 @@ if (!p12) {
     // the identity the workflow must be told to sign with.
     const out = execFileSync(
       'openssl',
-      ['pkcs12', '-in', file, '-nokeys', '-passin', `pass:${process.env.APPLE_CERTIFICATE_PASSWORD ?? ''}`, '-legacy'],
+      [
+        'pkcs12',
+        '-in',
+        file,
+        '-nokeys',
+        '-passin',
+        `pass:${process.env.APPLE_CERTIFICATE_PASSWORD ?? ''}`,
+        '-legacy',
+      ],
       { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
     );
     const cn = /subject=.*?CN\s*=\s*([^,\n/]+)/.exec(out)?.[1]?.trim();
@@ -166,7 +195,8 @@ for (const [name, shape, what] of [
 // that works for one and is missing for the other is the likeliest way to have
 // half a release pipeline.
 console.log('\niOS TestFlight lane reads the same key under different names:\n');
-if (!val('ASC_KEY_P8')) bad('ASC_KEY_P8 is not set', 'Same .p8 as APPLE_API_KEY_P8, base64-encoded.');
+if (!val('ASC_KEY_P8'))
+  bad('ASC_KEY_P8 is not set', 'Same .p8 as APPLE_API_KEY_P8, base64-encoded.');
 else decodeBase64('ASC_KEY_P8', 'BEGIN PRIVATE KEY');
 for (const [name, mirror] of [
   ['ASC_KEY_ID', 'APPLE_API_KEY'],
@@ -199,16 +229,15 @@ async function askApple() {
   }
 
   const b64url = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
-  const header = b64url({ alg: 'ES256', kid: keyId, typ: 'JWT' });
   const now = Math.floor(Date.now() / 1000);
-  const payload = b64url({
-    iss: issuer,
-    iat: now,
-    exp: now + 300,
-    aud: 'appstoreconnect-v1',
-  });
-  let jwt;
-  try {
+  // A TEAM key names the team's Issuer ID in `iss`. An INDIVIDUAL key has no
+  // Issuer ID at all and identifies itself with `sub: "user"` instead. Both
+  // download as a .p8 and both show a Key ID, so the two are indistinguishable
+  // on disk — but notarytool and fastlane only ever build the team form, so an
+  // individual key fails every workflow with a flat 401.
+  const mint = (claims) => {
+    const header = b64url({ alg: 'ES256', kid: keyId, typ: 'JWT' });
+    const payload = b64url({ iat: now, exp: now + 300, aud: 'appstoreconnect-v1', ...claims });
     const signer = createSign('SHA256');
     signer.update(`${header}.${payload}`);
     // ASC requires the JOSE fixed-width r||s form, not the DER that
@@ -217,48 +246,147 @@ async function askApple() {
       { key: Buffer.from(b64, 'base64'), dsaEncoding: 'ieee-p1363' },
       'base64url',
     );
-    jwt = `${header}.${payload}.${sig}`;
-  } catch (err) {
-    bad(`could not sign a token with the .p8: ${err.message}`, 'The key is not a usable ES256 private key.');
-    return;
-  }
+    return `${header}.${payload}.${sig}`;
+  };
 
-  let res;
+  let jwt;
   try {
-    res = await fetch('https://api.appstoreconnect.apple.com/v1/apps?limit=1', {
-      headers: { authorization: `Bearer ${jwt}` },
-      signal: AbortSignal.timeout(20_000),
-    });
+    jwt = mint({ iss: issuer });
   } catch (err) {
-    skip(`could not reach App Store Connect (${err.message}) — credentials not verified`);
+    bad(
+      `could not sign a token with the .p8: ${err.message}`,
+      'The key is not a usable ES256 private key.',
+    );
     return;
   }
 
-  if (res.ok) {
-    const body = await res.json().catch(() => ({}));
-    const n = body?.meta?.paging?.total;
-    ok(`Apple accepted the key — Issuer ID, Key ID and .p8 all agree`);
-    if (typeof n === 'number') {
-      if (n === 0)
-        bad(
-          'the account has no app records yet',
-          'TestFlight uploads need one: register the App ID, then App Store Connect → Apps → + → New App. See docs/apple-setup.md §3. Notarizing the Mac app does NOT need this.',
-        );
-      else ok(`${n} app record(s) visible to this key`);
+  /** GET an ASC path. Returns null on a network failure, `{ status, body }`
+   * otherwise, so each caller can distinguish "Apple said no" from "no answer". */
+  const get = async (path, token = jwt) => {
+    try {
+      const res = await fetch(`https://api.appstoreconnect.apple.com${path}`, {
+        headers: { authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(20_000),
+      });
+      return { status: res.status, body: res.ok ? await res.json().catch(() => ({})) : null };
+    } catch {
+      return null;
     }
-  } else if (res.status === 401) {
-    bad(
-      'App Store Connect rejected the key (401)',
-      'Wrong Issuer ID, a revoked key, or the .p8 does not belong to this Key ID.',
-    );
-  } else if (res.status === 403) {
+  };
+
+  const apps = await get('/v1/apps?limit=200');
+  if (!apps) {
+    skip('could not reach App Store Connect — credentials not verified');
+    return;
+  }
+
+  if (apps.status === 401) {
+    // Before blaming the Issuer ID, check whether this is an individual key.
+    // Same .p8, same Key ID, different claim shape — if that one is accepted
+    // the key is real and the workflows still cannot use it.
+    const asIndividual = await get('/v1/apps?limit=1', mint({ sub: 'user' }));
+    if (asIndividual?.status === 200) {
+      bad(
+        `Key ID ${keyId} is an INDIVIDUAL App Store Connect key, not a team key`,
+        'Apple accepts it, but notarytool and fastlane only send the team form of the token, so every workflow gets a 401. Generate a key under Users and Access → Integrations → App Store Connect API → Team Keys.',
+      );
+    } else {
+      bad(
+        'App Store Connect rejected the key (401)',
+        'Wrong Issuer ID, a revoked key, or the .p8 does not belong to this Key ID.',
+      );
+    }
+    return;
+  }
+  if (apps.status === 403) {
     bad(
       'App Store Connect accepted the key but refused the request (403)',
       'The key authenticates but lacks permission — it needs the App Manager role for TestFlight uploads.',
     );
-  } else {
-    skip(`App Store Connect answered HTTP ${res.status} — credentials not verified`);
+    return;
   }
+  if (apps.status !== 200) {
+    skip(`App Store Connect answered HTTP ${apps.status} — credentials not verified`);
+    return;
+  }
+  ok('Apple accepted the key — Issuer ID, Key ID and .p8 all agree');
+
+  // ── Whose account is this? ──────────────────────────────────────────────
+  // A key that authenticates is not automatically a key for YOUR team, and a
+  // build signed by one team cannot be notarized by another's key: notarytool
+  // rejects it after the upload, not before. The ASC API exposes no "who am I"
+  // endpoint, but every certificate carries the team id in its subject OU.
+  const certs = await get('/v1/certificates?limit=200');
+  const certList = certs?.body?.data ?? [];
+  const teams = new Set();
+  for (const c of certList) {
+    const der = c?.attributes?.certificateContent;
+    if (!der) continue;
+    try {
+      const subject = execFileSync('openssl', ['x509', '-inform', 'der', '-noout', '-subject'], {
+        input: Buffer.from(der, 'base64'),
+        encoding: 'utf8',
+        stdio: ['pipe', 'pipe', 'ignore'],
+      });
+      const ou = /OU\s*=\s*([^,\n/]+)/.exec(subject)?.[1]?.trim();
+      if (ou) teams.add(ou);
+    } catch {
+      /* openssl missing or an unparseable cert — the other checks still run */
+    }
+  }
+  if (teams.size === 0) {
+    skip('this key’s account has no certificates, so its Team ID could not be confirmed');
+  } else if (!team) {
+    skip(`APPLE_TEAM_ID is unset — this key belongs to ${[...teams].join(', ')}`);
+  } else if (teams.has(team)) {
+    ok(`the key belongs to team ${team}`);
+  } else {
+    bad(
+      `this key belongs to team ${[...teams].join(', ')}, not APPLE_TEAM_ID ${team}`,
+      'A build signed by one team cannot be notarized or uploaded with another team’s key. Use a key generated inside the same Apple Developer account the signing certificate comes from.',
+    );
+  }
+
+  // A Developer ID Application certificate is what makes the Mac app open
+  // without the unidentified-developer dialog. Its absence from the account is
+  // the difference between "not uploaded yet" and "does not exist yet".
+  if (certList.length) {
+    const devId = certList.filter(
+      (c) => c?.attributes?.certificateType === 'DEVELOPER_ID_APPLICATION',
+    );
+    if (devId.length)
+      ok(`${devId.length} Developer ID Application certificate(s) exist in this account`);
+    else
+      bad(
+        'this account has no Developer ID Application certificate',
+        'Without one the Mac app can only be ad-hoc signed. Apple Developer → Certificates → + → Developer ID Application. Only the Account Holder can create it.',
+      );
+  }
+
+  // ── Is Lilypad in this account? ─────────────────────────────────────────
+  // The old check only counted app records. Three records belonging to other
+  // products passed it while nothing named Lilypad existed.
+  const wanted = iosAppIdentifier();
+  if (!wanted) {
+    skip('could not read PRODUCT_BUNDLE_IDENTIFIER from the Xcode project');
+    return;
+  }
+  const ids = await get(`/v1/bundleIds?limit=200`);
+  const registered = (ids?.body?.data ?? []).some((d) => d?.attributes?.identifier === wanted);
+  if (registered) ok(`App ID ${wanted} is registered`);
+  else
+    bad(
+      `App ID ${wanted} is not registered in this account`,
+      'Apple Developer → Identifiers → + → App IDs → App, explicit bundle id. The App Store Connect record cannot be created before it exists. See docs/apple-setup.md §3.',
+    );
+
+  const record = (apps.body?.data ?? []).find((d) => d?.attributes?.bundleId === wanted);
+  if (record) ok(`App Store Connect record ${record.id} — “${record.attributes.name}”`);
+  else
+    bad(
+      `no App Store Connect record uses ${wanted}`,
+      'TestFlight uploads need one: App Store Connect → Apps → + → New App, selecting that bundle id. Notarizing the Mac app does NOT need this.',
+    );
 }
 
 await askApple();

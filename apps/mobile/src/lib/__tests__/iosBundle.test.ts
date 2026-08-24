@@ -158,3 +158,44 @@ describe('the app icon', () => {
     expect([4, 6]).not.toContain(colourType);
   });
 });
+
+/**
+ * The signing identity baked into the Xcode project.
+ *
+ * These two strings decide which Apple account the app belongs to, and nothing
+ * else in the repo reads them — the Appfile and Fastfile only carry them as
+ * fallbacks, and CI passes secrets that override both. So a project edited to
+ * a different team, or a bundle id that drifts from the registered App ID,
+ * fails nowhere until an archive is rejected minutes into a TestFlight run.
+ *
+ * Written after an App Store Connect key was supplied for team AR2Q4Y465L
+ * while the project builds for 7TYFS43RR3: a build signed by one team cannot
+ * be notarized or uploaded with another team's key.
+ */
+describe('the Apple account this app is signed for', () => {
+  const pbxproj = require('fs').readFileSync(
+    `${__dirname}/../../../ios/LilypadMobile.xcodeproj/project.pbxproj`,
+    'utf8',
+  );
+
+  const settings = (key: string): string[] => {
+    const found = new Set<string>();
+    for (const m of pbxproj.matchAll(new RegExp(`${key} = ([^;\\s]+);`, 'g'))) {
+      const value = m[1];
+      if (value) found.add(value);
+    }
+    return [...found].sort();
+  };
+
+  it('builds for exactly one team', () => {
+    expect(settings('DEVELOPMENT_TEAM')).toEqual(['7TYFS43RR3']);
+  });
+
+  it('uses the bundle id the App ID is registered under', () => {
+    // The test target is a separate bundle id and is never uploaded.
+    expect(settings('PRODUCT_BUNDLE_IDENTIFIER')).toEqual([
+      'com.takedia.lilypad',
+      'com.takedia.lilypad.tests',
+    ]);
+  });
+});

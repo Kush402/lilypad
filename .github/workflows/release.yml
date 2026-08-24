@@ -145,6 +145,29 @@ jobs:
             echo "::warning::skipping notarization — missing: ${notarize_missing[*]}. The build will publish ad-hoc signed, and macOS will warn on first open."
           fi
 
+      # The gate above proves the secrets EXIST. It cannot prove Apple accepts
+      # them, and every way they can be wrong — a revoked key, a mistyped
+      # Issuer ID, an individual key instead of a team key, a key belonging to
+      # a different Apple account than the signing certificate — surfaces only
+      # after the Rust build, as a notarytool rejection about something else.
+      # One signed API call settles it in about a second.
+      - name: Verify Apple accepts the credentials
+        if: steps.preflight.outputs.notarize == 'true'
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          # The iOS lane's names are checked by mobile-ios.yml, not here — a
+          # desktop release must not fail because TestFlight is unconfigured.
+          ASC_KEY_ID: ${{ secrets.APPLE_API_KEY }}
+          ASC_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER }}
+          ASC_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: node scripts/apple-preflight.mjs
+
       # The App Store Connect API key is stored base64-encoded; write it to a
       # .p8 file and expose its path for the build step.
       - name: Decode App Store Connect API key

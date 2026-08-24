@@ -76,14 +76,33 @@ versions, and that flow stops being reachable.
 
 One key covers both notarizing the Mac app and uploading iOS builds.
 
+It must come from **the same Apple Developer account the signing certificate
+belongs to** — team `7TYFS43RR3`, the team the Xcode project builds for. A key
+from any other account authenticates perfectly and is still useless: a build
+signed by one team cannot be notarized or uploaded with another team's key, and
+Apple only says so after the upload. Asking a collaborator for "the Issuer ID"
+gets you _their_ team's, which is the failure this paragraph exists to prevent.
+
 1. App Store Connect → **Users and Access** → **Integrations** → **App Store
-   Connect API** → **+**.
+   Connect API** → the **Team Keys** tab → **+**.
+   - **Team Keys**, not Individual Keys. An individual key has no Issuer ID and
+     identifies itself differently; `notarytool` and `fastlane` only ever send
+     the team form of the token, so an individual key fails every workflow with
+     a flat `401` that reads like a wrong Issuer ID. The two are
+     indistinguishable once downloaded — only the tab you created it under
+     tells them apart.
+   - Creating team keys requires the **Account Holder** or an **Admin**.
 2. Role: **App Manager** (Developer is enough for notarization alone, not for
    TestFlight uploads).
 3. Download the `.p8`. **It downloads once.** Losing it means revoking and
    starting again.
 4. Note the **Key ID** next to it and the **Issuer ID** at the top of the page.
 5. `base64 -i AuthKey_XXXXXXXX.p8 | pbcopy`
+
+`pnpm apple:check` verifies the account matches before anything is built: it
+reads the team id out of the account's own certificates and compares it to
+`APPLE_TEAM_ID`, and it reports an individual key as an individual key rather
+than as a bad Issuer ID.
 
 The two release pipelines read the same key under different names, so set all
 six:
