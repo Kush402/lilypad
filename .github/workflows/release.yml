@@ -119,11 +119,30 @@ jobs:
             echo "APPLE_SIGNING_IDENTITY=-" >> "$GITHUB_ENV"
             echo "::warning::APPLE_CERTIFICATE not set — signing AD-HOC. macOS will warn on first open, and permissions must be re-granted after every update (TCC binds a grant to the exact code signature)."
           fi
-          if [ -n "${APPLE_API_KEY_P8:-}" ]; then
+          # Notarization needs the WHOLE set, not any one of it. This used to
+          # branch on APPLE_API_KEY_P8 alone, so setting that secret first — the
+          # natural order, since one App Store Connect key serves both
+          # pipelines — turned notarization "on" while the issuer id and the
+          # certificate were still missing. Tauri then could not notarize,
+          # published an ad-hoc build anyway, and the Gatekeeper check at the
+          # end failed the release with "the notarization ticket is not
+          # stapled". A true half-configuration reported as a build failure.
+          #
+          # APPLE_CERTIFICATE belongs in this list even though it is not passed
+          # to notarytool: Apple refuses to notarize a binary that is not signed
+          # with a Developer ID certificate under the hardened runtime, so
+          # without it the answer is "no" regardless of the key.
+          notarize_missing=()
+          [ -n "${APPLE_API_KEY_P8:-}" ] || notarize_missing+=(APPLE_API_KEY_P8)
+          [ -n "${APPLE_API_KEY:-}" ]    || notarize_missing+=(APPLE_API_KEY)
+          [ -n "${APPLE_API_ISSUER:-}" ] || notarize_missing+=(APPLE_API_ISSUER)
+          [ -n "${APPLE_CERTIFICATE:-}" ] || notarize_missing+=(APPLE_CERTIFICATE)
+          if [ ${#notarize_missing[@]} -eq 0 ]; then
             echo "notarize=true" >> "$GITHUB_OUTPUT"
+            echo "  notarization: every input present"
           else
             echo "notarize=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::APPLE_API_KEY_P8 not set — skipping notarization."
+            echo "::warning::skipping notarization — missing: ${notarize_missing[*]}. The build will publish ad-hoc signed, and macOS will warn on first open."
           fi
 
       # The App Store Connect API key is stored base64-encoded; write it to a
