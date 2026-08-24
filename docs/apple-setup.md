@@ -45,14 +45,33 @@ This is the one that changes what a customer sees. It is **not** the "Apple
 Development" or "Apple Distribution" certificate — those cannot sign software
 distributed outside the App Store, which is how the Mac app ships.
 
+**Only the Account Holder can create it**, and only in the web UI. Not an
+Admin, not an App Manager, and not an App Store Connect API key however
+privileged — the API answers a `POST /v1/certificates` for this type with:
+
+```
+403 FORBIDDEN_ERROR — This operation can only be performed by the Account Holder.
+```
+
+So for team `AR2Q4Y465L` this is Abhinay's step, and nobody else's. Steps 1 and
+3–6 belong to whoever will hold the private key; step 2 is his.
+
+The private key never has to travel. Whoever runs step 1 keeps it; the CSR that
+comes out of it carries only a public key and can be emailed safely. The `.cer`
+that comes back is equally public. That is why the split below works: Abhinay
+uploads someone else's CSR and the resulting certificate is usable only on the
+machine that made it.
+
 1. Keychain Access → Certificate Assistant → **Request a Certificate From a
    Certificate Authority**. Enter your email, any Common Name, choose **Saved
    to disk**, and save the `.certSigningRequest`. This also creates the key
    pair in your login keychain — the _private_ half never leaves the machine
    and is what makes the certificate usable. Skip if you already have a CSR
    whose key is still in that keychain.
-2. Apple Developer → Certificates → **+** → **Developer ID Application** →
-   upload that CSR.
+2. **Account Holder only.** Apple Developer → Certificates → **+** →
+   **Developer ID Application** → upload that CSR. Sending the `.certSigningRequest`
+   to the Account Holder and getting a `.cer` back is the normal way to do this
+   when the two are different people.
 3. Download the resulting `.cer` and double-click it. macOS pairs it with the
    private key from step 1.
 4. Confirm the pairing before going further — this is the step that silently

@@ -16,9 +16,9 @@ This file exists because the list used to live only in a conversation. Six rows
 (L-20, L-38 through L-42) were reconstructed from later summaries after the
 earlier record was compacted away, which is the argument for the file.
 
-**Status counts:** 79 fixed · 7 blocked on something outside the code ·
+**Status counts:** 80 fixed · 8 blocked on something outside the code ·
 3 deliberately unchanged · 2 not a bug · 1 open (L-47) · 1 unrecoverable
-(L-20). 93 rows.
+(L-20). 95 rows.
 
 Counted from the rows rather than kept by hand — the previous header said
 "3 not a bug · 7 blocked", which folded L-47 (open, not blocked) and L-20
@@ -119,15 +119,18 @@ what it is tallying is the failure this file was created to stop.
 | L-91 | The second `.p8` in play is an **Individual** App Store Connect key, not a Team key. Apple accepts it — with `sub: "user"` and no `iss` — but `notarytool` and `fastlane` only ever send the team form of the token, so it fails every workflow with a flat `401`. Both key kinds download as a `.p8` with a Key ID and are indistinguishable on disk, and the preflight blamed the Issuer ID for it.                                                                                                                                                                              | Fixed — the 401 branch retries as an individual key and says so                                                                    |
 | L-92 | `release.yml` proved the Apple secrets **existed** and nothing more. Every way they can be wrong — revoked key, mistyped Issuer ID, individual key, wrong account — surfaced only after the four-minute Rust build, as a `notarytool` rejection about something else. Twenty minutes to learn a UUID was wrong.                                                                                                                                                                                                                                                                    | Fixed — one signed API call gates the build, before it starts                                                                      |
 | L-93 | `APPLE_API_KEY_P8` and `ASC_KEY_P8` held the **individual** key, not the team key — proved without ever reading the secret back, because the preflight prints the decoded length and the two `.p8` files differ (240 bytes vs 257). Every notarization and every TestFlight upload would have failed `401`, and no local check could have caught it: GitHub does not hand a secret back.                                                                                                                                                                                           | Fixed — replaced with the verified team key; `apple-check.yml` re-runs the proof on demand                                         |
+| L-94 | The App ID `com.takedia.lilypad` did not exist in the shipping team, and `LilypadMobile.entitlements` ships `com.apple.developer.applesignin` — an entitlement that fails signing with a provisioning-profile mismatch unless the App ID carries the matching capability. The entitlements file has said so in a comment since M8; nothing acted on it.                                                                                                                                                                                                                            | Fixed — registered as `C54FRGK4KU` with Sign in with Apple enabled, via the API                                                    |
+| L-95 | Neither remaining Apple step can be automated, and both were worth proving rather than assuming. `POST /v1/apps` answers `403 — the resource 'apps' does not allow 'CREATE'`; `POST /v1/certificates` for `DEVELOPER_ID_APPLICATION` answers `403 — This operation can only be performed by the Account Holder`. The certificate is a third party's to issue, in the web UI, and no API key of any role substitutes.                                                                                                                                                               | Blocked — Account Holder must create the certificate; the app record is UI-only                                                    |
 | L-47 | `openh264` 0.6 carries a heap-overflow advisory (GHSA, HIGH) fixed in 0.8. The advisory is in the **decoding** functions; this codebase only encodes.                                                                                                                                                                                                                                                                                                                                                                                                                              | Open — not reachable, bump needs real-device video validation                                                                      |
 
 ## What is left, and who it needs
 
-Four of the seven blocked rows are the same purchase. None of them is code.
+Four of the eight blocked rows are the same purchase. None of them is code.
 
 | Needs                         | Rows                   |
 | ----------------------------- | ---------------------- |
 | Apple Developer Program       | L-02, L-09, L-11, L-19 |
 | A Resend API key              | L-03                   |
+| Abhinay, as Account Holder    | L-95                   |
 | A pricing decision            | L-13                   |
 | A real device, a real network | L-19                   |
