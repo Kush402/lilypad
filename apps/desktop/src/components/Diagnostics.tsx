@@ -44,7 +44,7 @@ const PRESENCE_LABEL: Record<string, string> = {
   connecting: 'Connecting to Lilypad',
   online: 'Reachable — a phone can ring this Mac',
   unreachable: 'Cannot reach Lilypad’s server',
-  refused: 'Lilypad refused this Mac — it is unlinked, revoked, or has no key',
+  refused: 'Lilypad refused this Mac — most likely it was removed from the account',
   no_identity: 'This Mac has no saved key, so it cannot be reached',
   not_linked: 'No account has linked this Mac yet, so there is nothing to ring',
 };

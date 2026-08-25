@@ -136,7 +136,7 @@ describe('the report a customer can send', () => {
     expect(report).toContain('desktop-b31d4eed-d318-4e37-ba08-9a1f76349290');
     expect(report).toContain('https://api.takedia.com');
     // In words, not `refused` — the reader may be the customer.
-    expect(report).toMatch(/unlinked, revoked, or has no key/);
+    expect(report).toMatch(/removed from the account/);
     expect(report).toMatch(/TURN/);
     expect(report).toContain('Screen Recording: ok');
     expect(report).toContain('Accessibility: degraded: not granted');
