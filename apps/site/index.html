@@ -20,12 +20,18 @@
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="Lilypad" />
     <meta property="og:title" content="Lilypad — your Mac, on your phone" />
-    <meta property="og:description" content="Phone-first remote control for your Mac. At home it connects directly over your own network. Pair once with a QR code, reconnect forever." />
+    <meta
+      property="og:description"
+      content="Phone-first remote control for your Mac. At home it connects directly over your own network. Pair once with a QR code, reconnect forever."
+    />
     <meta property="og:url" content="https://lilypadhome.takedia.com/" />
     <meta property="og:image" content="https://lilypadhome.takedia.com/og.png" />
     <meta property="og:image:width" content="1200" />
     <meta property="og:image:height" content="630" />
-    <meta property="og:image:alt" content="The Lilypad mark beside the words: Your Mac, on your phone." />
+    <meta
+      property="og:image:alt"
+      content="The Lilypad mark beside the words: Your Mac, on your phone."
+    />
     <meta name="twitter:card" content="summary_large_image" />
     <meta name="theme-color" content="#0e1512" media="(prefers-color-scheme: dark)" />
     <meta name="theme-color" content="#f4faf7" media="(prefers-color-scheme: light)" />
@@ -41,6 +47,7 @@
         <a href="#security">Security</a>
         <a href="#ask">Ask</a>
         <a href="#pricing">Pricing</a>
+        <a href="#setup">Setup</a>
         <a href="#get">Get it</a>
       </nav>
     </header>
@@ -59,7 +66,7 @@
           the phone, mid-session.
         </p>
         <p class="hero__note">
-          macOS build available now — <a href="#get">v0.1.13</a>, signed and notarized by Apple, so
+          macOS build available now — <a href="#get">v0.1.14</a>, signed and notarized by Apple, so
           it opens with no warning. iPhone is in TestFlight, by invitation while it is in beta.
         </p>
       </section>
@@ -207,10 +214,10 @@
         <div class="band__inner">
           <h2>Plans</h2>
           <p class="lede">
-            <strong>Using Lilypad on your own network is always free.</strong> It costs us
-            nothing to run, so there is nothing to charge for — and that stays true whatever else
-            changes. Everything the app does today is free; paid plans are planned around the only
-            two things that cost real money: relayed minutes, and AI we pay for on your behalf.
+            <strong>Using Lilypad on your own network is always free.</strong> It costs us nothing
+            to run, so there is nothing to charge for — and that stays true whatever else changes.
+            Everything the app does today is free; paid plans are planned around the only two things
+            that cost real money: relayed minutes, and AI we pay for on your behalf.
           </p>
 
           <div class="plans">
@@ -256,23 +263,68 @@
         </div>
       </section>
 
-      <section id="get" class="band band--alt">
+      <!-- What happens after the download, in the app's own words. A visitor
+           who has not installed anything still learns the three nouns the
+           product uses — account, permissions, pairing — before meeting them
+           on a screen. The steps mirror the desktop's Setup window exactly;
+           if that ever stops being true, one of the two is lying. -->
+      <section id="setup" class="band band--alt">
+        <div class="band__inner">
+          <h2>Three steps, once</h2>
+          <p class="lede">
+            About two minutes, and only the last one needs your phone in your hand.
+          </p>
+          <ol class="paths">
+            <li>
+              <h3>Make an account</h3>
+              <p>
+                On the Mac. Signing in is what puts that computer on your account, so you can see it
+                — and remove it — from your phone later. Do the same on the phone with the same
+                account.
+              </p>
+            </li>
+            <li>
+              <h3>Allow two things</h3>
+              <p>
+                Screen Recording, so your Mac can show you its screen, and Accessibility, so your
+                taps become clicks and keystrokes. macOS asks once; Lilypad explains each one before
+                it does.
+              </p>
+            </li>
+            <li>
+              <h3>Pair your phone</h3>
+              <p>
+                The Mac shows a code, the phone scans it. That pairing is what lets that phone reach
+                that Mac — being on the same account is not enough, which is the point. Once per
+                phone; after that it reconnects on its own.
+              </p>
+            </li>
+          </ol>
+          <p class="footnote">
+            Pair a second Mac the same way. Every computer and phone you sign in on appears under
+            <strong>Your devices</strong>, and you can rename or remove any of them from your phone
+            — a removed device loses access immediately, including a session running at that moment.
+          </p>
+        </div>
+      </section>
+
+      <section id="get" class="band">
         <div class="band__inner">
           <h2>Get it</h2>
           <p class="lede">
-            <a href="/download/Lilypad.dmg">Download for macOS</a> — v0.1.13, universal, 20&nbsp;MB.
+            <a href="/download/Lilypad.dmg">Download for macOS</a> — v0.1.14, universal, 20&nbsp;MB.
           </p>
           <p>
             macOS ships as a universal build served from this site, and installed copies update
-            themselves from it. It is <strong>signed with a Developer ID and notarized by
-            Apple</strong>, and the disk image carries its own stapled ticket — so it opens on a
-            first double-click with no Gatekeeper warning, nothing to approve in System Settings,
-            and no need to be online for the check.
+            themselves from it. It is
+            <strong>signed with a Developer ID and notarized by Apple</strong>, and the disk image
+            carries its own stapled ticket — so it opens on a first double-click with no Gatekeeper
+            warning, nothing to approve in System Settings, and no need to be online for the check.
           </p>
           <p>
-            <strong>The iPhone app ships through TestFlight, by invitation</strong> while it is
-            in beta. There is no public App Store listing yet, so ask for an invite rather than
-            looking for it in the store — the Mac app on its own is half the product.
+            <strong>The iPhone app ships through TestFlight, by invitation</strong> while it is in
+            beta. There is no public App Store listing yet, so ask for an invite rather than looking
+            for it in the store — the Mac app on its own is half the product.
           </p>
           <p class="cta">
             <a class="btn btn--primary" href="/download/Lilypad.dmg">Download for macOS</a>

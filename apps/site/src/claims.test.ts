@@ -225,6 +225,43 @@ describe('what the page must not say', () => {
 });
 
 /**
+ * The setup section, and the reason it has a test at all.
+ *
+ * A visitor reads this before installing anything, so it is where the product's
+ * three nouns — account, permissions, pairing — are learned. If it stops
+ * matching the desktop's own Setup window, one of the two is lying to the same
+ * person within about two minutes of each other, and the page is the half they
+ * cannot check.
+ *
+ * The counts are asserted, not just the words: "Three steps" is a promise a
+ * reader checks against the list underneath it, and a page that promises three
+ * and shows four has miscounted in front of someone deciding whether to trust
+ * it. The same test exists on the wizard (`Setup.test.tsx`).
+ */
+describe('setting it up', () => {
+  const prose = html.replace(/\s+/g, ' ');
+
+  it('promises exactly as many steps as it lists', () => {
+    const section = /<section id="setup"[\s\S]*?<\/section>/.exec(html)?.[0] ?? '';
+    expect(section).not.toBe('');
+    expect(section.replace(/\s+/g, ' ')).toMatch(/Three steps/);
+    expect(section.match(/<li>/g) ?? []).toHaveLength(3);
+  });
+
+  /** The one thing a customer can get wrong in a way that costs them an
+   * evening: assuming that signing in on both devices is enough. It is not,
+   * deliberately — that is the whole security claim two sections up. */
+  it('says that being on the account is not the same as being reachable', () => {
+    expect(prose).toMatch(/[Ss]igning in is what puts that computer on your account/);
+    expect(prose).toMatch(/being on the same account is not enough/);
+  });
+
+  it('is reachable from the nav, not only by scrolling', () => {
+    expect(html).toMatch(/<a href="#setup">/);
+  });
+});
+
+/**
  * The page shipped saying "Not yet released publicly" in its hero while
  * linking a public v0.1.1 download further down the same page. Both cannot be
  * true, and the visitor reads the hero first — so the honest half was the one
