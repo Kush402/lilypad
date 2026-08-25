@@ -35,6 +35,18 @@
  */
 import { randomBytes, generateKeyPairSync, sign as nodeSign } from 'node:crypto';
 
+// Keep running when stdout goes away.
+//
+// This script CREATES an account on the target — production, usually — and
+// deletes it in its last three checks. Piping it to `head` closes the pipe,
+// node raises EPIPE on the next write, and the run dies before those checks:
+// two orphan `audit-…@example.test` accounts were left in the production
+// database on 2026-08-25 that way, and had to be removed by hand. Swallowing
+// EPIPE costs a truncated transcript and keeps the cleanup.
+process.stdout.on('error', (err) => {
+  if (err.code !== 'EPIPE') throw err;
+});
+
 const BASE = process.env.BASE ?? 'http://127.0.0.1:8099';
 const PREFIX = 'lilypad-device-auth:v1:';
 const b64u = (b) => Buffer.from(b).toString('base64url');
