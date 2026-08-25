@@ -182,24 +182,35 @@ jobs:
           echo "signing as: $identity"
           echo "profile:    $name ($uuid)"
 
-      # `pod install` fails intermittently in pnpm monorepos with CocoaPods'
-      # `ArgumentError - pathname contains null byte`, raised from
-      # `common_path` while adding a local pod's source files
-      # (CocoaPods #12798, #12866 — both open upstream). Reproduced on a
-      # developer Mac on 2026-08-25: a CLEAN run failed, and the very next
-      # run, with nothing changed but the half-populated `Pods/` left behind,
-      # succeeded. So it is a first-pass race, not a broken configuration —
-      # which is why a retry is the proportionate fix rather than pinning a
-      # gem or vendoring a patch.
-      #
-      # Three attempts, not unlimited: a genuinely broken Podfile must still
-      # fail the build rather than spin.
+      # The pod sandbox, keyed on the lockfile that determines it. This is
+      # here for correctness before speed: `pod install` fails intermittently
+      # in pnpm monorepos with CocoaPods' `ArgumentError - pathname contains
+      # null byte` (CocoaPods #12798, #12866, both open upstream) at roughly
+      # one run in two, and retrying is not a cure — run 32808340942 lost all
+      # three of its attempts to it. A cache hit means the command that flakes
+      # does not run at all, which is the only reliable way to stop losing.
+      - name: Cache the CocoaPods sandbox
+        uses: actions/cache@v4
+        with:
+          path: apps/mobile/ios/Pods
+          key: pods-${{ runner.os }}-${{ hashFiles('apps/mobile/ios/Podfile.lock') }}
+
+      # Five attempts on a cache miss. At ~50% each that is ~3% rather than the
+      # ~12% three attempts left, and a genuinely broken Podfile still fails
+      # the build rather than spinning forever.
       - name: Install CocoaPods
         working-directory: apps/mobile/ios
         run: |
           set -uo pipefail
-          for attempt in 1 2 3; do
-            echo "pod install (attempt $attempt/3)"
+          # The same question Xcode's own "[CP] Check Pods Manifest.lock" phase
+          # asks, and the same one the beta lane asks: is the sandbox already
+          # the one this lockfile describes?
+          if [ -f Pods/Manifest.lock ] && cmp -s Pods/Manifest.lock Podfile.lock; then
+            echo "Pods restored from cache and match Podfile.lock — skipping install"
+            exit 0
+          fi
+          for attempt in 1 2 3 4 5; do
+            echo "pod install (attempt $attempt/5)"
             if bundle exec pod install; then
               echo "pod install succeeded on attempt $attempt"
               exit 0
@@ -207,7 +218,7 @@ jobs:
             echo "::warning::pod install failed on attempt $attempt — retrying"
             sleep 5
           done
-          echo "::error::pod install failed three times — this is not the known intermittent failure"
+          echo "::error::pod install failed five times — this is not the known intermittent failure"
           exit 1
 
       - name: Fastlane beta (archive → IPA → TestFlight)
