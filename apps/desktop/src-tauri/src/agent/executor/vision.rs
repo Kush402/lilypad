@@ -49,6 +49,15 @@ fn capture_png_base64() -> Result<String> {
     use core_graphics::display::CGDisplay;
     use image::{ImageFormat, RgbaImage};
 
+    // The MAIN display, which since v0.1.10 is not necessarily the one the
+    // phone is watching — a session can be moved to another monitor from the
+    // switcher and this screenshot would not follow it. Harmless today because
+    // this tier is perception only (see the module note: the agent acts through
+    // AX and skills, which address elements, not screen coordinates), so
+    // nothing can be clicked in the wrong place. It becomes load-bearing the
+    // day pixel-coordinate clicking lands, and the fix then is to thread the
+    // session's `display_id` down here the way `InputGate::set_target_display`
+    // already threads it to the input backend.
     let display = CGDisplay::main();
     let cg_image = display
         .image()
