@@ -242,6 +242,20 @@ describe('release status', () => {
     expect(html).not.toMatch(/built from source/i);
     expect(html).toMatch(/TestFlight/i);
   });
+
+  it('tells a visitor how to ask for the invite it tells them to ask for', () => {
+    // The page says "ask for an invite" and, until 2026-08-24, offered no way
+    // to ask: the only address on it was in the footer, three sections down.
+    // A Mac app with no phone app is half a product, so this is the one CTA
+    // that must sit beside the download.
+    expect(html).toMatch(/href="mailto:support@takedia\.com\?subject=[^"]*[Ii]nvite"/);
+    // Wrapped in the directive that stops Cloudflare rewriting mailto links
+    // into a JavaScript-only `/cdn-cgi/l/email-protection` URL — without it
+    // the address is unreadable with JS off, and the deploy's byte comparison
+    // fails on a page that changed at the edge rather than in the repo.
+    const invite = html.slice(html.indexOf('subject=') - 400, html.indexOf('subject=') + 400);
+    expect(invite).toMatch(/<!--email_off-->/);
+  });
 });
 
 /**
