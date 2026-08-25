@@ -60,6 +60,11 @@ let failures = 0;
  * exists to catch. */
 let createdAccount = false;
 let deletedAccount = false;
+// The second account, which exists for one check: a phone on another account
+// may not pair with this laptop. Tracked separately so the residue notice at
+// the end can name whichever of the two actually survived.
+let createdStranger = false;
+let deletedStranger = false;
 
 /**
  * Fail on an unreachable target with a sentence instead of a stack trace.
@@ -167,9 +172,7 @@ if (signup.status === 429) {
   // database. Signup is 5/minute per IP and the limit is shared, so a second
   // run inside the window fails on its first step and everything after it is
   // noise.
-  console.log(
-    '\n429 on signup: the rate limiter, not a regression. Signup is 5/minute per IP.',
-  );
+  console.log('\n429 on signup: the rate limiter, not a regression. Signup is 5/minute per IP.');
   console.log('Wait a minute and run this again. Nothing below this line means anything.\n');
 }
 
@@ -205,20 +208,84 @@ const enrolled = await post(
 check('phone enrolls against the account', enrolled.status === 200, `HTTP ${enrolled.status}`);
 const phoneToken = enrolled.json.accessToken;
 
-// ── 3. A computer may not put itself on an account (ADR-0010) ────────────────
+// ── 3. The laptop joins the account by signing in on it (ADR-0015) ───────────
+//
+// This section asserted the OPPOSITE until 2026-08-25: a desktop was refused
+// `403 desktop_enrollment_requires_approval` and could be owned only by a phone
+// scanning its QR. The refusal withheld nothing — the capability behind it is a
+// device token, and the same account password minted one right above with
+// `kind: "mobile"` — while making ownership mean one thing on a phone and
+// another on a Mac.
 const laptop = newKey();
-const selfLink = await post(
+const laptopEnroll = await post(
   '/devices/enroll',
-  { ...(await proof(laptop)), kind: 'desktop', fingerprint: `desktop-${tag}` },
+  {
+    ...(await proof(laptop)),
+    kind: 'desktop',
+    fingerprint: `desktop-${tag}`,
+    name: 'Audit MacBook',
+    platform: 'macos',
+  },
   login.json.accessToken,
 );
 check(
-  'a desktop cannot enroll itself, even signed in',
-  selfLink.status === 403 && selfLink.json.error === 'desktop_enrollment_requires_approval',
-  `HTTP ${selfLink.status}`,
+  'signing in on a computer is what puts it on the account',
+  laptopEnroll.status === 200,
+  `HTTP ${laptopEnroll.status} ${laptopEnroll.json.error ?? ''}`,
+);
+const laptopToken = laptopEnroll.json.accessToken;
+
+check(
+  'the token exchange names the wire id this computer is actually known by',
+  laptopEnroll.json.fingerprint === `desktop-${tag}`,
+  String(laptopEnroll.json.fingerprint),
 );
 
-// ── 4. Linking: laptop shows a code, phone approves it ───────────────────────
+// The repair for kanban L-153, end to end. `device_id` is a file in the app's
+// data directory and the key is in the login keychain, so clearing one and not
+// the other renames a computer without changing who it is. That used to answer
+// `public_key_in_use` FOREVER — revocation leaves the row, so the key still
+// resolved, and only deleting the keychain entry cleared it.
+const drifted = await post(
+  '/devices/enroll',
+  {
+    ...(await proof(laptop)),
+    kind: 'desktop',
+    fingerprint: `desktop-${tag}-wiped`,
+    platform: 'macos',
+  },
+  login.json.accessToken,
+);
+check(
+  'a computer that lost its local id is told what it is really called, not refused',
+  drifted.status === 200 && drifted.json.fingerprint === `desktop-${tag}`,
+  `HTTP ${drifted.status} ${drifted.json.error ?? drifted.json.fingerprint}`,
+);
+
+const stillOriginal = await post('/devices/token', await proof(laptop));
+check(
+  'and the wire id every pairing resolves through was NOT rewritten',
+  stillOriginal.status === 200 && stillOriginal.json.fingerprint === `desktop-${tag}`,
+  String(stillOriginal.json.fingerprint),
+);
+
+// One key naming both a laptop and a phone is not drift, and stays refused.
+const crossKind = await post(
+  '/devices/enroll',
+  { ...(await proof(laptop)), kind: 'mobile', fingerprint: `mobile-${tag}-x`, platform: 'ios' },
+  login.json.accessToken,
+);
+check(
+  'one key may not name both a laptop and a phone',
+  crossKind.status === 409 && crossKind.json.error === 'public_key_in_use',
+  `HTTP ${crossKind.status} ${crossKind.json.error}`,
+);
+
+// ── 4. The enrollment QR still works, as the recovery path ───────────────────
+//
+// No longer the front door — signing in is (section 3) — but it is how a Mac
+// whose sign-in enrollment failed, or that was removed from the account, gets
+// back. A phone that is already on the account approves it.
 const code = await post('/devices/enrollment-code', {
   ...(await proof(laptop)),
   fingerprint: `desktop-${tag}`,
@@ -228,35 +295,29 @@ const code = await post('/devices/enrollment-code', {
 check('laptop mints an enrollment code', code.status === 201, `HTTP ${code.status}`);
 check('the code carries the address the PHONE should use', !!code.json.apiBaseUrl);
 
-const beforeLink = await post('/devices/token', await proof(laptop));
-check(
-  'laptop cannot sign in before approval',
-  beforeLink.status === 403 && beforeLink.json.error === 'device_not_enrolled',
-  `HTTP ${beforeLink.status}`,
-);
-
 const approved = await post(
   '/devices/enrollment-code/approve',
   { code: code.json.code },
   phoneToken,
 );
-check('phone approves — the laptop is linked', approved.status === 200, `HTTP ${approved.status}`);
+check('phone approves the code', approved.status === 200, `HTTP ${approved.status}`);
 check('approval delivers the per-pair connect secret', !!approved.json.pairSecret);
 
 const replay = await post('/devices/enrollment-code/approve', { code: code.json.code }, phoneToken);
 check('the code is single-use', replay.status === 404, `HTTP ${replay.status}`);
 
-const laptopAuth = await post('/devices/token', await proof(laptop));
-check('laptop can now sign itself in', laptopAuth.status === 200, `HTTP ${laptopAuth.status}`);
-const laptopToken = laptopAuth.json.accessToken;
-
 // ── 5. Device management ─────────────────────────────────────────────────────
 const list = await req('GET', '/devices', undefined, phoneToken);
 const kinds = (list.json.devices ?? []).map((d) => `${d.kind}:${d.state}`).sort();
 check(
-  'both devices appear on the account as linked',
+  'both devices appear on the account, from signing in on each',
   list.status === 200 && kinds.join(',') === 'desktop:linked,mobile:linked',
   kinds.join(',') || `HTTP ${list.status}`,
+);
+check(
+  'and the drifted enrollment did not leave a second row behind',
+  (list.json.devices ?? []).filter((d) => d.kind === 'desktop').length === 1,
+  `${(list.json.devices ?? []).filter((d) => d.kind === 'desktop').length} desktop rows`,
 );
 check(
   'fingerprints are masked in the listing',
@@ -304,6 +365,65 @@ const reuse = await post(
 );
 check('the pairing token is single-use', reuse.status === 410, `HTTP ${reuse.status}`);
 
+// ── 6b. A pair joins two devices on ONE account (ADR-0015) ───────────────────
+//
+// Previously unreachable from this ceremony — a Mac had no owner until a phone
+// gave it one — and reachable the moment both machines started joining their
+// own accounts independently. Without the guard, a laptop can end up listed in
+// one account's "Your laptops" and no account's "Your devices": visible in one
+// place, unmanageable from the other, revocable from neither.
+const strangerEmail = `audit-stranger-${tag}@example.test`;
+const strangerSignup = await post('/auth/signup', {
+  name: 'Audit Stranger',
+  email: strangerEmail,
+  password,
+});
+createdStranger = strangerSignup.status === 201;
+const strangerPhone = newKey();
+const strangerEnroll = await post(
+  '/devices/enroll',
+  {
+    ...(await proof(strangerPhone)),
+    kind: 'mobile',
+    fingerprint: `mobile-stranger-${tag}`,
+    platform: 'ios',
+  },
+  strangerSignup.json.accessToken,
+);
+
+const strangerPairing = await post(
+  '/pairing/create',
+  { deviceId: `desktop-${tag}`, deviceName: 'Audit MacBook', platform: 'macos' },
+  laptopToken,
+);
+const crossAccount = await post(
+  '/pairing/redeem',
+  {
+    token: strangerPairing.json.token,
+    deviceId: `mobile-stranger-${tag}`,
+    platform: 'ios',
+  },
+  strangerEnroll.json.accessToken,
+);
+check(
+  'a phone on another account cannot pair with this laptop',
+  crossAccount.status === 403 && crossAccount.json.error === 'different_account',
+  `HTTP ${crossAccount.status} ${crossAccount.json.error ?? ''}`,
+);
+
+const strangerGone = await req(
+  'DELETE',
+  '/account',
+  { confirmEmail: strangerEmail },
+  strangerSignup.json.accessToken,
+);
+deletedStranger = strangerGone.status === 200;
+check(
+  'the second account cleans itself up',
+  strangerGone.status === 200,
+  `HTTP ${strangerGone.status}`,
+);
+
 // ── 7. No-QR reconnect authorization ─────────────────────────────────────────
 const ring = await post(
   '/connect/request',
@@ -322,7 +442,11 @@ check(
 
 const badSecret = await post(
   '/connect/request',
-  { desktopDeviceId: `desktop-${tag}`, mobileDeviceId: `mobile-${tag}`, pairSecret: 'x'.repeat(32) },
+  {
+    desktopDeviceId: `desktop-${tag}`,
+    mobileDeviceId: `mobile-${tag}`,
+    pairSecret: 'x'.repeat(32),
+  },
   phoneToken,
 );
 check(
@@ -393,21 +517,43 @@ check(
   `HTTP ${refreshAfterRevoke.status} — a 200 means the stolen machine can still refresh`,
 );
 
-const reLink = await post('/devices/enrollment-code', {
-  ...(await proof(laptop)),
-  fingerprint: `desktop-${tag}`,
-  platform: 'macos',
-});
-const reApprove = await post(
-  '/devices/enrollment-code/approve',
-  { code: reLink.json.code },
-  phoneToken,
+// Restoring a removed laptop is now "sign in on it again", which is what the
+// message on it says. It needs a FRESH account session: enrolling clears
+// `revoked_at`, so a token minted before the revocation is refused on purpose —
+// otherwise a stolen laptop could undo its own removal with the credential it
+// was already holding.
+const freshLogin = await post('/auth/password', { email, password });
+const reEnroll = await post(
+  '/devices/enroll',
+  {
+    ...(await proof(laptop)),
+    kind: 'desktop',
+    fingerprint: `desktop-${tag}`,
+    platform: 'macos',
+  },
+  freshLogin.json.accessToken,
 );
 const restored = await post('/devices/token', await proof(laptop));
 check(
-  're-linking a revoked laptop restores it',
-  reApprove.status === 200 && restored.status === 200,
-  `approve ${reApprove.status}, token ${restored.status}`,
+  'signing in again on a removed laptop restores it',
+  reEnroll.status === 200 && restored.status === 200,
+  `enroll ${reEnroll.status} ${reEnroll.json.error ?? ''}, token ${restored.status}`,
+);
+
+const staleToken = await post(
+  '/devices/enroll',
+  {
+    ...(await proof(laptop)),
+    kind: 'desktop',
+    fingerprint: `desktop-${tag}`,
+    platform: 'macos',
+  },
+  login.json.accessToken,
+);
+check(
+  'but a token minted before the removal cannot undo it',
+  staleToken.status !== 200,
+  `HTTP ${staleToken.status} — a 200 means a stolen laptop can un-revoke itself`,
 );
 
 // The other half, and the case with no second factor at all. A laptop is
@@ -448,8 +594,12 @@ check(
 // Last on purpose. It is both the cleanup and a real check: the audit fixture
 // is the only account in existence whose whole life this script watched, so it
 // is the only one that can prove the delete removed exactly what it claimed.
-const wrongConfirmation = await req('DELETE', '/account', { confirmEmail: 'someone@else.test' },
-  login.json.accessToken);
+const wrongConfirmation = await req(
+  'DELETE',
+  '/account',
+  { confirmEmail: 'someone@else.test' },
+  login.json.accessToken,
+);
 check(
   'deletion refuses a confirmation that names another account',
   wrongConfirmation.status === 400 && wrongConfirmation.json.error === 'confirmation_mismatch',
@@ -511,6 +661,10 @@ console.log(failures === 0 ? '\nALL CHECKS PASSED' : `\n${failures} CHECK(S) FAI
 //
 // `deletedAccount` is set by the deletion check itself, so this cannot claim
 // residue that is not there, or miss residue that is.
+if (createdStranger && !deletedStranger) {
+  console.log(`\nThis run left a second account behind: ${strangerEmail}`);
+  console.log('It exists only to prove a phone on another account cannot pair here.');
+}
 if (createdAccount && !deletedAccount) {
   console.log(`\nThis run left an account behind: ${email}`);
   console.log('It is not removed automatically — the state is what you came to look at.');
