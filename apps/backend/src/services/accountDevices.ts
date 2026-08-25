@@ -96,9 +96,10 @@ export function orderDevices(devices: AccountDevice[]): AccountDevice[] {
     d.lastSeenAt ? -Date.parse(d.lastSeenAt) : Number.POSITIVE_INFINITY,
   ];
   return [...devices].sort((a, b) => {
-    const [x, y] = [rank(a), rank(b)];
-    for (let i = 0; i < x.length; i += 1) {
-      if (x[i] !== y[i]) return x[i] - y[i];
+    const other = rank(b);
+    for (const [i, value] of rank(a).entries()) {
+      const against = other[i] ?? 0;
+      if (value !== against) return value - against;
     }
     // Newest first among rows that tie on everything above, so the order is
     // stable rather than left to the database.

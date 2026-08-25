@@ -82,7 +82,10 @@ export function AccountSignIn({ onChange, initialMode = 'signin' }: AccountSignI
    */
   const [emailAvailable, setEmailAvailable] = useState(true);
   useEffect(() => {
-    api.accountEmailAvailable().then(setEmailAvailable).catch(() => setEmailAvailable(true));
+    api
+      .accountEmailAvailable()
+      .then(setEmailAvailable)
+      .catch(() => setEmailAvailable(true));
   }, []);
 
   const run = useCallback(
