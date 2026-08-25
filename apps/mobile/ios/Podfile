@@ -44,5 +44,33 @@ target 'LilypadMobile' do
       :mac_catalyst_enabled => false,
       # :ccache_enabled => true
     )
+
+    # Strip extended attributes from every framework before it is signed.
+    #
+    # A checkout inside an iCloud-synced folder — `~/Desktop` and `~/Documents`
+    # are synced by default, and this repo lives in one — has
+    # `com.apple.FinderInfo` stamped on its files by the sync agent. `codesign`
+    # refuses outright:
+    #
+    #     resource fork, Finder information, or similar detritus not allowed
+    #
+    # This line used to be added BY HAND to the generated
+    # `Pods-*-frameworks.sh`, which `pod install` overwrites — so the local iOS
+    # build broke again on the next install, silently, every time, and the fix
+    # had to be rediscovered. Regenerating it here is the difference between a
+    # workaround and a fix.
+    #
+    # Harmless where it is not needed (CI checkouts carry no such attributes),
+    # and `|| true` so a file with nothing to strip is not an error.
+    installer.sandbox.target_support_files_root.glob('*/Pods-*-frameworks.sh').each do |script|
+      body = script.read
+      next if body.include?('xattr -cr')
+
+      anchor = '    local code_sign_cmd='
+      next unless body.include?(anchor)
+
+      script.write(body.sub(anchor, "    xattr -cr \"$1\" 2>/dev/null || true\n#{anchor}"))
+      Pod::UI.puts "Patched #{script.basename} to strip extended attributes before signing".green
+    end
   end
 end
