@@ -1,4 +1,4 @@
-import { reconcile, type PairedDesktop, type RemotePair } from '../pairs';
+import { orderPairs, reconcile, type PairedDesktop, type RemotePair } from '../pairs';
 
 /**
  * The phone's laptop list used to be checked against nothing. A laptop revoked
@@ -92,5 +92,49 @@ describe('what reconciliation must never do', () => {
   it('keeps the local name when the backend has none, rather than blanking it', () => {
     const [kept] = reconcile([local({ name: 'My Mac' })], [remote({ name: null })], BASE);
     expect(kept.name).toBe('My Mac');
+  });
+});
+
+/**
+ * The order "Your laptops" is read in.
+ *
+ * Stored order is the order the laptops were paired in, which stops being
+ * interesting the moment there is more than one of them. The same rule as
+ * "Your devices": what you were just using is at the top.
+ */
+describe('orderPairs', () => {
+  const pair = (over: Partial<PairedDesktop>): PairedDesktop =>
+    ({
+      desktopDeviceId: 'd',
+      name: 'Laptop',
+      apiBaseUrl: 'https://api.example',
+      connectSecret: 's',
+      addedAt: 0,
+      lastConnectedAt: null,
+      ...over,
+    }) as PairedDesktop;
+
+  it('puts the laptop you were last on first', () => {
+    const old = pair({ desktopDeviceId: 'old', addedAt: 1, lastConnectedAt: 100 });
+    const recent = pair({ desktopDeviceId: 'recent', addedAt: 2, lastConnectedAt: 200 });
+    expect(orderPairs([old, recent]).map((p) => p.desktopDeviceId)).toEqual(['recent', 'old']);
+  });
+
+  it('falls back to most recently added for laptops never connected to', () => {
+    const first = pair({ desktopDeviceId: 'first', addedAt: 1 });
+    const second = pair({ desktopDeviceId: 'second', addedAt: 2 });
+    expect(orderPairs([first, second]).map((p) => p.desktopDeviceId)).toEqual(['second', 'first']);
+  });
+
+  it('ranks any connection above a laptop that has never been used', () => {
+    const never = pair({ desktopDeviceId: 'never', addedAt: 9 });
+    const used = pair({ desktopDeviceId: 'used', addedAt: 1, lastConnectedAt: 5 });
+    expect(orderPairs([never, used]).map((p) => p.desktopDeviceId)).toEqual(['used', 'never']);
+  });
+
+  it('does not reorder the live cache other code mutates', () => {
+    const rows = [pair({ desktopDeviceId: 'a', addedAt: 1 }), pair({ desktopDeviceId: 'b', addedAt: 2 })];
+    orderPairs(rows);
+    expect(rows.map((p) => p.desktopDeviceId)).toEqual(['a', 'b']);
   });
 });

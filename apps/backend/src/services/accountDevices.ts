@@ -73,6 +73,39 @@ export function toAccountDevice(
   };
 }
 
+/**
+ * The order "Your devices" is read in.
+ *
+ * The query had none, so Postgres returned whatever the heap gave it and the
+ * phone rendered it verbatim: a screenshot on 2026-08-24 showed 2m, 1m, 3d,
+ * 33h, 7h down the screen. Sorting on the client would fix one client; sorting
+ * here fixes every reader of the endpoint, and the two facts the top of the
+ * list turns on — which device is asking, and which are in a session — are
+ * known here and nowhere else.
+ *
+ * Revoked rows sink to the bottom whatever else is true of them: they are
+ * history, and history that outranks a live device is a list that misleads at
+ * a glance.
+ */
+export function orderDevices(devices: AccountDevice[]): AccountDevice[] {
+  const rank = (d: AccountDevice): number[] => [
+    d.state === 'revoked' ? 1 : 0,
+    d.isCurrentDevice ? 0 : 1,
+    d.activeSession ? 0 : 1,
+    // Negated so a later timestamp sorts first; never-seen sorts last.
+    d.lastSeenAt ? -Date.parse(d.lastSeenAt) : Number.POSITIVE_INFINITY,
+  ];
+  return [...devices].sort((a, b) => {
+    const [x, y] = [rank(a), rank(b)];
+    for (let i = 0; i < x.length; i += 1) {
+      if (x[i] !== y[i]) return x[i] - y[i];
+    }
+    // Newest first among rows that tie on everything above, so the order is
+    // stable rather than left to the database.
+    return Date.parse(b.createdAt) - Date.parse(a.createdAt);
+  });
+}
+
 export class AccountDeviceService {
   constructor(private readonly store: AccountDeviceStore) {}
 
@@ -89,11 +122,13 @@ export class AccountDeviceService {
     isLive: (kind: DeviceKind, fingerprint: string) => boolean,
   ): Promise<AccountDevice[]> {
     const rows = await this.store.listForUser(userId);
-    return rows.map((row) =>
-      toAccountDevice(row, {
-        activeSession: isLive(row.kind, row.fingerprint),
-        isCurrentDevice: row.id === currentDeviceId,
-      }),
+    return orderDevices(
+      rows.map((row) =>
+        toAccountDevice(row, {
+          activeSession: isLive(row.kind, row.fingerprint),
+          isCurrentDevice: row.id === currentDeviceId,
+        }),
+      ),
     );
   }
 

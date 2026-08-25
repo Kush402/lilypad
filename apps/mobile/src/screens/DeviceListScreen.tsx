@@ -4,7 +4,14 @@ import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { RootStackParamList } from '../types';
 import { theme } from '../theme';
-import { loadPairs, forgetPair, touchPair, reconcilePairs, type PairedDesktop } from '../lib/pairs';
+import {
+  loadPairs,
+  forgetPair,
+  touchPair,
+  orderPairs,
+  reconcilePairs,
+  type PairedDesktop,
+} from '../lib/pairs';
 import { requestConnect, requestUnpair } from '../lib/api';
 import { toAppError } from '../lib/errors';
 import { useSession } from '../lib/sessionContext';
@@ -55,7 +62,7 @@ export function DeviceListScreen({ navigation }: Props) {
   const accountApiBaseUrl = session?.apiBaseUrl;
 
   const refresh = useCallback(() => {
-    void loadPairs().then(setPairs);
+    void loadPairs().then((p) => setPairs(orderPairs(p)));
   }, []);
 
   /**
@@ -84,7 +91,7 @@ export function DeviceListScreen({ navigation }: Props) {
     for (const base of bases) {
       try {
         const remote = await listMyPairs(base);
-        setPairs(await reconcilePairs(remote, base));
+        setPairs(orderPairs(await reconcilePairs(remote, base)));
       } catch {
         /* see above: never prune on an answer we did not get */
       }

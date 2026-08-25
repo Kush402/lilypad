@@ -83,6 +83,23 @@ export async function loadPairs(): Promise<PairedDesktop[]> {
   return cache;
 }
 
+/**
+ * Most recently used first, then most recently added.
+ *
+ * Stored order is insertion order, which is the order a person paired their
+ * laptops in — a fact of no interest by the second week. Someone with a work
+ * laptop and a home one wants the one they were just on at the top, the same
+ * rule "Your devices" sorts by.
+ *
+ * A copy: the array `loadPairs` hands back is the live cache, and callers
+ * mutate rows in it.
+ */
+export function orderPairs(pairs: PairedDesktop[]): PairedDesktop[] {
+  return [...pairs].sort(
+    (a, b) => (b.lastConnectedAt ?? 0) - (a.lastConnectedAt ?? 0) || b.addedAt - a.addedAt,
+  );
+}
+
 /** Add or refresh a pair (keyed by desktopDeviceId). Called after every
  * successful QR redeem — re-pairing refreshes the name/URL. */
 export async function upsertPair(
