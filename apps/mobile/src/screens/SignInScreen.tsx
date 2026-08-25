@@ -246,6 +246,7 @@ export function SignInScreen({ apiBaseUrl, onSignedIn }: SignInScreenProps): Rea
           <TextInput
             testID="sign-up-name"
             style={styles.input}
+            accessibilityLabel="Your name"
             placeholder="Your name"
             placeholderTextColor={theme.muted}
             autoCapitalize="words"
@@ -439,6 +440,10 @@ function EmailField({
     <TextInput
       testID="sign-in-email"
       style={styles.input}
+      // The placeholder is the only thing naming these fields, and a
+      // placeholder is gone the moment there is a value — so VoiceOver reads
+      // out what you typed with no idea what it was for.
+      accessibilityLabel="Email address"
       placeholder="you@example.com"
       placeholderTextColor={theme.muted}
       autoCapitalize="none"
@@ -485,6 +490,7 @@ function PasswordField({
       <TextInput
         testID={testID}
         style={[styles.input, styles.fieldRowInput]}
+        accessibilityLabel={placeholder}
         placeholder={placeholder}
         placeholderTextColor={theme.muted}
         autoCapitalize="none"
@@ -526,6 +532,7 @@ function CodeField({
     <TextInput
       testID="sign-in-token"
       style={styles.input}
+      accessibilityLabel="Code from the email"
       placeholder="Code from the email"
       placeholderTextColor={theme.muted}
       autoCapitalize="none"

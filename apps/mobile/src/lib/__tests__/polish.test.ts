@@ -177,3 +177,35 @@ describe('no raw error text is passed to appError', () => {
     expect(offenders).toEqual([]);
   });
 });
+
+/**
+ * Fields that say what they are, to a screen reader as well as to an eye.
+ *
+ * Measured 2026-08-25: nine `TextInput`s across the app, and the only thing
+ * naming most of them was `placeholder` — the phone's whole sign-in form, the
+ * password-reset code, and the type-your-email confirmation on ACCOUNT
+ * DELETION. A placeholder is gone the moment there is a value, so VoiceOver
+ * reads back what you typed with nothing to say what it was for, and a
+ * half-filled form cannot be re-read at all. This is WCAG 3.3.2, and it is the
+ * one screen where getting it wrong locks a person out of their own account.
+ */
+describe('every text field has a name that outlives its placeholder', () => {
+  const SCREENS = `${__dirname}/../../screens`;
+
+  it.each(
+    require('fs')
+      .readdirSync(SCREENS)
+      .filter((f: string) => f.endsWith('.tsx') && !f.includes('.test.')),
+  )('%s', (name: string) => {
+    const src = require('fs').readFileSync(`${SCREENS}/${name}`, 'utf8');
+    const unnamed = src
+      .split('<TextInput')
+      .slice(1)
+      .map((chunk: string) => chunk.split('/>')[0] ?? '')
+      .filter((chunk: string) => chunk.includes('placeholder'))
+      .filter((chunk: string) => !chunk.includes('accessibilityLabel'))
+      // The testID is the only stable way to name the offender in the failure.
+      .map((chunk: string) => chunk.match(/testID=\{?["`]([^"`]+)/)?.[1] ?? '(no testID)');
+    expect(unnamed).toEqual([]);
+  });
+});

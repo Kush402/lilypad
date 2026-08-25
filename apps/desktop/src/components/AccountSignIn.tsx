@@ -156,6 +156,7 @@ export function AccountSignIn({ onChange, initialMode = 'signin' }: AccountSignI
               data-testid="delete-confirm-email"
               type="email"
               aria-label={`Type ${account.email} to confirm`}
+              aria-label={`Type ${account.email} to confirm deleting your account`}
               placeholder={`Type ${account.email} to confirm`}
               autoComplete="off"
               value={deleteEmail}
@@ -166,6 +167,7 @@ export function AccountSignIn({ onChange, initialMode = 'signin' }: AccountSignI
               className="field"
               data-testid="delete-password"
               type="password"
+              aria-label="Your password"
               aria-label="Your password"
               placeholder="Your password"
               autoComplete="current-password"
@@ -230,6 +232,7 @@ export function AccountSignIn({ onChange, initialMode = 'signin' }: AccountSignI
         <input
           className="field"
           data-testid="account-name"
+          aria-label="Your name"
           placeholder="Your name"
           autoComplete="name"
           value={name}
@@ -242,6 +245,7 @@ export function AccountSignIn({ onChange, initialMode = 'signin' }: AccountSignI
         className="field"
         data-testid="account-email"
         type="email"
+        aria-label="Email address"
         placeholder="you@example.com"
         autoComplete="username"
         value={email}
@@ -253,6 +257,7 @@ export function AccountSignIn({ onChange, initialMode = 'signin' }: AccountSignI
         <input
           className="field"
           data-testid="account-reset-code"
+          aria-label="Code from the email"
           placeholder="Code from the email"
           value={code}
           disabled={busy}
@@ -266,6 +271,7 @@ export function AccountSignIn({ onChange, initialMode = 'signin' }: AccountSignI
             className="field"
             data-testid="account-password"
             type={reveal ? 'text' : 'password'}
+            aria-label={mode === 'signin' ? 'Password' : 'Password, at least 12 characters'}
             placeholder={mode === 'signin' ? 'Password' : 'Password (at least 12 characters)'}
             autoComplete={mode === 'signin' ? 'current-password' : 'new-password'}
             value={password}

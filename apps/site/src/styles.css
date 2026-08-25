@@ -75,6 +75,33 @@ a {
 .nav__links a:focus-visible {
   color: var(--accent-ink);
 }
+/* A colour change alone is not a focus indicator: these links change colour on
+   hover too, so a keyboard user gets no signal a mouse user does not already
+   get for free. Same ring as the buttons. */
+.nav__links a:focus-visible,
+.nav__brand:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: 4px;
+}
+
+/* Skip link — three pages repeat the same nav, and a keyboard or switch user
+   should not have to tab past it on every one. Off-screen until focused. */
+.skip {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  background: var(--panel);
+  color: var(--ink);
+  padding: 10px 16px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  z-index: 10;
+}
+.skip:focus {
+  left: 12px;
+  top: 12px;
+}
 
 /* ── Hero ────────────────────────────────────────────────────────────────── */
 .hero {
@@ -431,4 +458,13 @@ a {
 }
 .legal li {
   margin-bottom: 0.6rem;
+}
+
+/* The skip link's target takes focus rather than only scrolling: without
+   `tabindex="-1"` on <main>, a fragment jump moves the viewport but leaves the
+   keyboard caret in the nav, so the next Tab lands back where it started. The
+   outline is suppressed because the user asked to go here — they did not click
+   a control. */
+main:focus {
+  outline: none;
 }

@@ -291,6 +291,7 @@ export function AccountDevicesScreen({ route, navigation }: Props): React.JSX.El
           <TextInput
             testID="delete-confirm-email"
             style={styles.input}
+            accessibilityLabel="Type your account email to confirm"
             placeholder="Type your account email to confirm"
             placeholderTextColor={theme.muted}
             autoCapitalize="none"

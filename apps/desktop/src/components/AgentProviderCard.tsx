@@ -93,6 +93,7 @@ export function AgentProviderCard() {
       </div>
       <div className="row">
         <input
+          aria-label="Model, blank for the provider default"
           placeholder="Model (blank = provider default)"
           value={model}
           onChange={(e) => setModel(e.target.value)}
@@ -101,6 +102,7 @@ export function AgentProviderCard() {
       {kind === 'openai_compat' ? (
         <div className="row">
           <input
+            aria-label="Base URL"
             placeholder="Base URL, e.g. http://localhost:11434/v1"
             value={baseUrl}
             onChange={(e) => setBaseUrl(e.target.value)}
@@ -110,6 +112,7 @@ export function AgentProviderCard() {
       <div className="row">
         <input
           type="password"
+          aria-label="API key"
           placeholder={config?.hasKey ? 'API key saved — enter to replace' : 'API key'}
           value={apiKey}
           onChange={(e) => setApiKey(e.target.value)}
