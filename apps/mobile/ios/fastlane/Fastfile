@@ -158,8 +158,19 @@ platform :ios do
         output_directory: build_dir,
         output_name: output_ipa,
         clean: true,
+        # `xcargs` ONLY. This fastlane already forwards `xcargs` into the
+        # `-exportArchive` invocation, so also passing `export_xcargs` puts
+        # the auth flags on that command line twice and xcodebuild refuses
+        # outright:
+        #
+        #     xcodebuild: error: option '-authenticationKeyPath' may only be
+        #     provided once
+        #
+        # ...after a twenty-minute archive that had just SUCCEEDED. The
+        # comment above describes a version of gym that did not forward them;
+        # that stopped being true and nothing here noticed, because this lane
+        # had never run.
         xcargs: auth_args(key_path),
-        export_xcargs: auth_args(key_path),
         export_options: {
           signingStyle: "manual",
           teamID: team_id,
@@ -219,8 +230,10 @@ platform :ios do
         output_directory: build_dir,
         output_name: output_ipa,
         clean: true,
+        # See the manual branch above: passing both duplicates every flag on
+        # the export command line, and xcodebuild rejects a repeated
+        # `-authenticationKeyPath`.
         xcargs: auth_args(key_path),
-        export_xcargs: auth_args(key_path),
         export_options: {
           signingStyle: "automatic",
           teamID: team_id
