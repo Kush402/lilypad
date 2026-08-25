@@ -5,6 +5,18 @@ use std::time::Duration;
 
 use lilypad_desktop_lib::media::{EncodedSample, MediaPipeline, PipelineConfig};
 
+/// How long a test may wait for the next encoded sample.
+///
+/// `timeout` returns the instant the sample arrives, so a large budget costs a
+/// passing run nothing — this file finishes in about five seconds on an idle
+/// machine. Five seconds was a wall-clock assertion about the host's spare
+/// capacity instead: this suite went one-of-four red on 2026-08-24 while a
+/// full `pnpm -w test` had every core, and green the moment it ran alone.
+/// Software H.264 on a starved CPU is slow, not broken.
+///
+/// Same number and the same reasoning as `input_worker.rs`'s `SETTLE`.
+const SAMPLE: Duration = Duration::from_secs(20);
+
 /// A PLI from the viewer must produce an IDR on the next frame — not at the
 /// next periodic keyframe.
 #[tokio::test]
@@ -22,7 +34,7 @@ async fn keyframe_request_forces_idr_on_next_frame() {
 
     // Frame 0 is always an IDR; drain a few frames to get past it.
     for _ in 0..3 {
-        let s = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+        let s = tokio::time::timeout(SAMPLE, rx.recv())
             .await
             .expect("sample")
             .expect("open");
@@ -35,7 +47,7 @@ async fn keyframe_request_forces_idr_on_next_frame() {
     // frames already in flight/queued to pass, then expect an IDR promptly.
     let mut got_idr = false;
     for _ in 0..6 {
-        let s = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+        let s = tokio::time::timeout(SAMPLE, rx.recv())
             .await
             .expect("sample")
             .expect("open");
@@ -66,7 +78,7 @@ async fn pipeline_streams_real_h264_with_metrics() {
     // Collect several encoded frames.
     let mut samples = Vec::new();
     for _ in 0..6 {
-        let s = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+        let s = tokio::time::timeout(SAMPLE, rx.recv())
             .await
             .expect("a sample within 5s")
             .expect("channel stays open");
@@ -145,7 +157,7 @@ async fn dropped_frame_recovers_with_immediate_keyframe() {
     // even produced.
     tokio::time::sleep(Duration::from_millis(1500)).await;
 
-    let first = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+    let first = tokio::time::timeout(SAMPLE, rx.recv())
         .await
         .expect("first sample")
         .expect("open");
@@ -164,7 +176,7 @@ async fn dropped_frame_recovers_with_immediate_keyframe() {
     // behavioral contract without coupling the test to that race window.
     let mut recovery_keyframe = false;
     for _ in 0..5 {
-        let s = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+        let s = tokio::time::timeout(SAMPLE, rx.recv())
             .await
             .expect("recovery sample")
             .expect("open");
@@ -193,7 +205,7 @@ async fn pipeline_stops_cleanly_and_closes_channel() {
     let (tx, mut rx) = tokio::sync::mpsc::channel::<EncodedSample>(8);
     let mut pipeline = MediaPipeline::start(PipelineConfig::default(), tx).expect("start");
     // Drain a couple frames, then stop.
-    let _ = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await;
+    let _ = tokio::time::timeout(SAMPLE, rx.recv()).await;
     pipeline.stop();
     // After stop, the sender thread is gone; the channel eventually drains + closes.
     // Give the OS thread a moment, then confirm recv returns None (closed) or empty.

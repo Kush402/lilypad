@@ -13,6 +13,9 @@ jest.mock('../lib/pairs', () => ({
   forgetPair: jest.fn(),
   touchPair: jest.fn(),
   reconcilePairs: jest.fn(),
+  // The real one: it is a pure sort, and stubbing it would let a change to the
+  // list's order pass this file unnoticed.
+  orderPairs: jest.requireActual('../lib/pairs').orderPairs,
 }));
 jest.mock('../lib/api', () => ({ requestConnect: jest.fn(), requestUnpair: jest.fn() }));
 jest.mock('../lib/accountDevices', () => ({ listMyPairs: jest.fn() }));
