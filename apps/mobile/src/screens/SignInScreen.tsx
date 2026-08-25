@@ -207,9 +207,15 @@ export function SignInScreen({ apiBaseUrl, onSignedIn }: SignInScreenProps): Rea
       <Text style={styles.title}>
         {mode === 'signup' ? 'Create your Lilypad account' : 'Sign in to Lilypad'}
       </Text>
+      {/* Says what signing in DOES, and draws the line that matters. Under
+          [ADR-0015](../../../../docs/adr/0015-ownership-follows-sign-in.md)
+          signing in is what puts a device on the account — so the old copy,
+          "you add each computer separately", is no longer true. What is still
+          true, and what someone who assumes otherwise will be confused by, is
+          that being on the account is not the same as being reachable. */}
       <Text style={styles.subtitle}>
-        Signing in tells us who you are. You add each computer separately, by scanning the code it
-        shows.
+        Signing in puts this phone on your account, alongside every computer you sign in on. Pairing
+        with one — by scanning the code it shows — is what lets you see its screen.
       </Text>
 
       {/* Which server this is about to create an account on.

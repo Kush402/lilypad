@@ -206,3 +206,25 @@ describe('offering only the ways in that work', () => {
     expect(screen.getByTestId('go-magic-link')).toBeTruthy();
   });
 });
+
+/**
+ * The first screen anyone sees on the phone, and the one place the product's
+ * model is stated before they have any of it.
+ *
+ * It used to say "you add each computer separately", which stopped being true
+ * under [ADR-0015](../../../docs/adr/0015-ownership-follows-sign-in.md):
+ * signing in is what adds a computer. The line that still has to be drawn is
+ * the next one along — on the account is not the same as reachable — and
+ * someone who misses it signs in on both devices, sees an empty "Your laptops",
+ * and concludes the product is broken.
+ */
+describe('what the sign-in screen promises', () => {
+  it('separates joining the account from being able to see a screen', async () => {
+    render(<SignInScreen apiBaseUrl="https://api.takedia.example" onSignedIn={jest.fn()} />);
+    const sub = await screen.findByText(/Signing in puts this phone on your account/);
+    const text = sub.props.children as string;
+    expect(text).toMatch(/every computer you sign in on/i);
+    expect(text).toMatch(/is what lets you see its screen/i);
+    expect(text).not.toMatch(/you add each computer separately/i);
+  });
+});
