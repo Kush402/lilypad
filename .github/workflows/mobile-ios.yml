@@ -241,6 +241,24 @@ jobs:
           IOS_PROVISIONING_PROFILE_NAME: ${{ env.IOS_PROVISIONING_PROFILE_NAME }}
         run: bundle exec fastlane ios beta
 
+      # `xcbeautify` prints a tidy one-line summary per build phase and DROPS
+      # the output of any script phase that fails — so "PhaseScriptExecution
+      # Bundle React Native code and images ... failed" arrives with no reason
+      # attached, and the only way to learn one is another twenty-minute run.
+      # gym keeps the raw log; this hands it over when, and only when, it is
+      # needed.
+      - name: Show the raw build log if the archive failed
+        if: failure()
+        run: |
+          log=~/Library/Logs/gym/LilypadMobile-LilypadMobile.log
+          if [ -f "$log" ]; then
+            echo "── last 400 lines of $log ─────────────────────────────"
+            tail -400 "$log"
+          else
+            echo "no gym log at $log — the failure was before the archive"
+            ls -la ~/Library/Logs/gym 2>/dev/null || true
+          fi
+
       # The .p8 is a credential that can upload builds to this account. The
       # runner is ephemeral, but a cached bundler step or an artifact upload
       # added later would not know that.
