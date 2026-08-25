@@ -1,6 +1,7 @@
 import { Platform } from 'react-native';
 import { GoogleSignin } from '@react-native-google-signin/google-signin';
 import appleAuth from '@invertase/react-native-apple-authentication';
+import { AuthMethodsSchema, type AuthMethods } from '@lilypad/protocol';
 import type { AuthSession, DeviceSession, OAuthProviderName } from '@lilypad/protocol';
 import { GOOGLE_WEB_CLIENT_ID, GOOGLE_IOS_CLIENT_ID, isGoogleConfigured } from '../config/oauth';
 import { enrollDevice } from './auth';
@@ -55,6 +56,31 @@ async function postJson(url: string, body: unknown): Promise<{ status: number; t
     return { status: res.status, text: await res.text() };
   } catch {
     throw new SignInError('network', 'Could not reach Lilypad. Check your connection.');
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Which ways in this server can actually perform.
+ *
+ * Fails OPEN: an unreachable or old backend answers `null`, and the caller
+ * shows every method rather than hiding the way in. Hiding a working option
+ * because a request timed out would be a worse failure than the one this
+ * fixes.
+ */
+export async function fetchAuthMethods(apiBaseUrl: string): Promise<AuthMethods | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  try {
+    const res = await fetch(`${apiBaseUrl.replace(/\/$/, '')}/auth/methods`, {
+      signal: controller.signal,
+    });
+    if (!res.ok) return null;
+    const parsed = AuthMethodsSchema.safeParse(await res.json());
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
   } finally {
     clearTimeout(timer);
   }

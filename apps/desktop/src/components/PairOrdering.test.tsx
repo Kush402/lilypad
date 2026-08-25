@@ -26,6 +26,7 @@ vi.mock('../lib/tauri', () => ({
       source: 'none',
     }),
     getAccountState: vi.fn().mockResolvedValue({ signedIn: false, email: null, userId: null }),
+    accountEmailAvailable: vi.fn().mockResolvedValue(true),
     getLinkState: vi.fn(),
   },
   updater: { currentVersion: vi.fn().mockResolvedValue('0.1.0'), check: vi.fn() },

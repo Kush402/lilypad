@@ -9,6 +9,7 @@ import {
   PasswordResetRequestSchema,
   PasswordResetConfirmSchema,
   type AuthSession,
+  type AuthMethods,
 } from '@lilypad/protocol';
 import { signAccessToken, ACCESS_TOKEN_TTL_SECONDS } from '../auth/tokens.js';
 import {
@@ -101,6 +102,27 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       .catch((err) => log.audit.error({ err }, 'failed to write login_failed audit log'));
     return reply.code(401).send({ error: 'invalid_token' });
   }
+
+  /**
+   * What this server can actually do.
+   *
+   * Unauthenticated on purpose: a client needs it BEFORE it can sign in, and
+   * it discloses only what an attacker learns anyway by sending one request to
+   * each route. It exists because the alternative was the phone offering
+   * "Email me a sign-in link" and "Forgot your password?" against a production
+   * backend with no mail sender — two buttons whose only possible outcome was
+   * a 503, on the first screen of the product.
+   *
+   * Password sign-in and sign-up are absent because they depend on nothing
+   * external and are therefore always available.
+   */
+  app.get('/auth/methods', async (_req, reply) => {
+    return reply.code(200).send({
+      email: mailer !== null,
+      apple: isProviderConfigured('apple'),
+      google: isProviderConfigured('google'),
+    } satisfies AuthMethods);
+  });
 
   /**
    * Sign in with an Apple or Google ID token the client already obtained.

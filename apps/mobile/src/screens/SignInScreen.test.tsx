@@ -32,6 +32,7 @@ jest.mock('../lib/signIn', () => {
     signUpWithPassword: jest.fn(),
     signInWithGoogle: jest.fn(),
     signInWithApple: jest.fn(),
+    fetchAuthMethods: jest.fn(() => Promise.resolve(null)),
     requestMagicLink: jest.fn(),
     verifyMagicLink: jest.fn(),
     requestPasswordReset: jest.fn(),
@@ -58,6 +59,7 @@ jest.mock('../config/backend', () => ({
 }));
 
 const signIn = signInWithPassword as jest.Mock;
+const authMethods = jest.requireMock('../lib/signIn').fetchAuthMethods as jest.Mock;
 const resetIdentity = resetDeviceIdentity as jest.Mock;
 const { DeviceTakenError } = jest.requireMock('../lib/auth');
 
@@ -159,5 +161,43 @@ describe('which server this account will live on', () => {
   it('falls back to the default when no address was passed', () => {
     render(<SignInScreen apiBaseUrl={undefined} onSignedIn={jest.fn()} />);
     expect(screen.queryByTestId('foreign-backend-notice')).toBeNull();
+  });
+});
+
+/**
+ * Sign-in ways that cannot work are not offered.
+ *
+ * Production has never had a mail sender, so `POST /auth/magic-link/request`
+ * and both password-reset routes have answered 503 to every call ever made —
+ * while "Email me a sign-in link instead" and "Forgot your password?" sat on
+ * the first screen of the app. `GET /auth/methods` reports what the server can
+ * really do, and this screen believes it.
+ */
+describe('offering only the ways in that work', () => {
+  beforeEach(() => authMethods.mockResolvedValue(null));
+
+  it('hides the email flows when the server says it cannot send mail', async () => {
+    authMethods.mockResolvedValue({ email: false, apple: true, google: false });
+    render(<SignInScreen onSignedIn={jest.fn()} />);
+    await waitFor(() => expect(screen.queryByTestId('go-reset')).toBeNull());
+    expect(screen.queryByTestId('go-magic-link')).toBeNull();
+    // The way in that never depended on mail is untouched.
+    expect(screen.getByTestId('sign-in-password-submit')).toBeTruthy();
+  });
+
+  it('shows them the moment a mail sender exists', async () => {
+    authMethods.mockResolvedValue({ email: true, apple: true, google: false });
+    render(<SignInScreen onSignedIn={jest.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('go-reset')).toBeTruthy());
+    expect(screen.getByTestId('go-magic-link')).toBeTruthy();
+  });
+
+  it('shows everything when the server cannot be reached', async () => {
+    // Fails OPEN. A timeout removing the user's only way in would be a worse
+    // bug than the one this whole mechanism fixes.
+    authMethods.mockResolvedValue(null);
+    render(<SignInScreen onSignedIn={jest.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('go-reset')).toBeTruthy());
+    expect(screen.getByTestId('go-magic-link')).toBeTruthy();
   });
 });

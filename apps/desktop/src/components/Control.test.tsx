@@ -47,6 +47,7 @@ vi.mock('../lib/tauri', () => ({
     getLinkState: vi.fn().mockResolvedValue({ state: 'linked' }),
     accountSignUp: vi.fn(),
     accountSignIn: vi.fn(),
+    accountEmailAvailable: vi.fn().mockResolvedValue(true),
     accountRequestPasswordReset: vi.fn(),
     accountConfirmPasswordReset: vi.fn(),
     accountSignOut: vi.fn(),

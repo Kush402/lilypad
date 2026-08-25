@@ -1,4 +1,4 @@
-import React, { useCallback, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -10,12 +10,13 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import type { DeviceSession } from '@lilypad/protocol';
+import type { AuthMethods, DeviceSession } from '@lilypad/protocol';
 import {
   signInWithGoogle,
   signInWithApple,
   signInWithPassword,
   signUpWithPassword,
+  fetchAuthMethods,
   requestMagicLink,
   verifyMagicLink,
   requestPasswordReset,
@@ -97,6 +98,25 @@ export function SignInScreen({ apiBaseUrl, onSignedIn }: SignInScreenProps): Rea
   /** True once a code has been mailed, for whichever of the two flows asked. */
   const [codeSent, setCodeSent] = useState(false);
   const [code, setCode] = useState('');
+  /**
+   * What this server can actually perform, or `null` until it has answered.
+   *
+   * `null` means "show everything" — the same screen this always was. Only a
+   * definite `false` hides anything, so a slow or offline network never
+   * removes a way in.
+   */
+  const [methods, setMethods] = useState<AuthMethods | null>(null);
+  useEffect(() => {
+    let live = true;
+    void fetchAuthMethods(baseUrl).then((m) => {
+      if (live) setMethods(m);
+    });
+    return () => {
+      live = false;
+    };
+  }, [baseUrl]);
+  /** A definite no from the server, not merely "not answered yet". */
+  const emailFlows = methods?.email !== false;
 
   const run = useCallback(
     async (which: Busy, action: () => Promise<DeviceSession>) => {
@@ -207,7 +227,7 @@ export function SignInScreen({ apiBaseUrl, onSignedIn }: SignInScreenProps): Rea
         </Text>
       )}
 
-      {Platform.OS === 'ios' && (
+      {Platform.OS === 'ios' && methods?.apple !== false && (
         <Pressable
           accessibilityRole="button"
           testID="sign-in-apple"
@@ -223,7 +243,7 @@ export function SignInScreen({ apiBaseUrl, onSignedIn }: SignInScreenProps): Rea
         </Pressable>
       )}
 
-      {isGoogleConfigured() && (
+      {isGoogleConfigured() && methods?.google !== false && (
         <Pressable
           accessibilityRole="button"
           testID="sign-in-google"
@@ -313,12 +333,23 @@ export function SignInScreen({ apiBaseUrl, onSignedIn }: SignInScreenProps): Rea
             }
           />
           <Link testID="go-sign-up" label="Create an account" onPress={() => switchTo('signup')} />
-          <Link testID="go-reset" label="Forgot your password?" onPress={() => switchTo('reset')} />
-          <Link
-            testID="go-magic-link"
-            label="Email me a sign-in link instead"
-            onPress={() => switchTo('magic-link')}
-          />
+          {/* Both of these post to routes that need a mail sender. A server
+              without one answers 503 to each, so offering them is offering a
+              button that cannot work — see `GET /auth/methods`. */}
+          {emailFlows && (
+            <>
+              <Link
+                testID="go-reset"
+                label="Forgot your password?"
+                onPress={() => switchTo('reset')}
+              />
+              <Link
+                testID="go-magic-link"
+                label="Email me a sign-in link instead"
+                onPress={() => switchTo('magic-link')}
+              />
+            </>
+          )}
         </>
       )}
 

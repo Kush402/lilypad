@@ -183,6 +183,26 @@ impl Account {
         Ok((status, text))
     }
 
+    /// Whether this backend can send mail.
+    ///
+    /// Password reset is the only account flow on this Mac that needs one, and
+    /// production has never had a sender — so "Forgot password" led to a 503
+    /// every time it was pressed. `GET /auth/methods` reports it, and the
+    /// dashboard hides the link when the answer is a definite no.
+    ///
+    /// **Fails open.** Any error at all answers `true`, because hiding a
+    /// working recovery path because a request timed out is a worse outcome
+    /// than the dead end this removes.
+    pub async fn email_available(&self) -> bool {
+        let Ok(response) = self.http.get(self.url("/auth/methods")).send().await else {
+            return true;
+        };
+        let Ok(body) = response.json::<serde_json::Value>().await else {
+            return true;
+        };
+        body.get("email").and_then(serde_json::Value::as_bool).unwrap_or(true)
+    }
+
     /// Create an account, then remember it.
     pub async fn sign_up(&self, name: &str, email: &str, password: &str) -> Result<AccountState> {
         let (status, text) = self

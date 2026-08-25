@@ -403,6 +403,7 @@ pub fn run() {
             commands::get_account_state,
             commands::account_sign_up,
             commands::account_sign_in,
+            commands::account_email_available,
             commands::account_request_password_reset,
             commands::account_confirm_password_reset,
             commands::account_sign_out,

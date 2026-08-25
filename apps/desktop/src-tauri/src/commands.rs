@@ -1137,6 +1137,14 @@ pub async fn account_sign_in(
         .map_err(|e| e.to_string())
 }
 
+/// Whether the backend can send mail, so the dashboard can stop offering a
+/// password reset that can only answer 503. Fails open — see
+/// `Account::email_available`.
+#[tauri::command]
+pub async fn account_email_available(state: State<'_, SharedState>) -> Result<bool, String> {
+    Ok(account_client(&state).email_available().await)
+}
+
 #[tauri::command]
 pub async fn account_request_password_reset(
     state: State<'_, SharedState>,

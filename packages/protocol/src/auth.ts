@@ -138,3 +138,27 @@ export type AuthErrorCode =
   /** Signup only. The one place the API does distinguish — see ADR-0012's
    * Consequences for why that tradeoff is taken here and nowhere else. */
   | 'email_in_use';
+
+/**
+ * What this server can actually do — `GET /auth/methods`.
+ *
+ * Every sign-in route below depends on configuration the client cannot see:
+ * magic link and password reset need a mail sender, and each OAuth provider
+ * needs its client ids. Without this, the phone offered all of them and let
+ * the user discover the answer by tapping — production has had no mail sender
+ * and no Google client since launch, so "Email me a sign-in link" and "Forgot
+ * your password?" were two buttons that could only ever fail.
+ *
+ * Email and password sign-up have no external dependency, so they carry no
+ * flag: they always work, and a client that cannot reach this endpoint at all
+ * should fall back to showing everything rather than hiding the way in.
+ */
+export const AuthMethodsSchema = z.object({
+  /** A mail sender is configured, so a code can actually be delivered. Gates
+   * BOTH magic-link sign-in and password reset — they share the sender, so
+   * they are never available separately. */
+  email: z.boolean(),
+  apple: z.boolean(),
+  google: z.boolean(),
+});
+export type AuthMethods = z.infer<typeof AuthMethodsSchema>;

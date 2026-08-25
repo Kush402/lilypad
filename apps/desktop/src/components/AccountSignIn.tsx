@@ -75,6 +75,16 @@ export function AccountSignIn({ onChange, initialMode = 'signin' }: AccountSignI
       });
   }, [apply]);
 
+  /**
+   * Whether the backend can send mail. `true` until told otherwise, so the
+   * link only disappears on a definite no — see `Account::email_available`,
+   * which fails open for the same reason.
+   */
+  const [emailAvailable, setEmailAvailable] = useState(true);
+  useEffect(() => {
+    api.accountEmailAvailable().then(setEmailAvailable).catch(() => setEmailAvailable(true));
+  }, []);
+
   const run = useCallback(
     async (action: () => Promise<AccountStateDto | void>) => {
       setBusy(true);
@@ -368,8 +378,15 @@ export function AccountSignIn({ onChange, initialMode = 'signin' }: AccountSignI
             Create an account
           </button>
         ) : null}
-        {mode !== 'reset' ? (
-          <button className="btn btn--small" onClick={() => switchTo('reset')}>
+        {/* Reset needs a mail sender. Production has never had one, so this
+            button's only possible outcome was "Password reset is not available
+            on this server." */}
+        {mode !== 'reset' && emailAvailable ? (
+          <button
+            className="btn btn--small"
+            data-testid="account-go-reset"
+            onClick={() => switchTo('reset')}
+          >
             Forgot password
           </button>
         ) : null}

@@ -8,6 +8,7 @@ vi.mock('../lib/tauri', () => ({
     getAccountState: vi.fn(),
     accountSignUp: vi.fn(),
     accountSignIn: vi.fn(),
+    accountEmailAvailable: vi.fn(),
     accountRequestPasswordReset: vi.fn(),
     accountConfirmPasswordReset: vi.fn(),
     accountSignOut: vi.fn(),
@@ -26,6 +27,7 @@ describe('AccountSignIn', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(api.getAccountState).mockResolvedValue(SIGNED_OUT);
+    vi.mocked(api.accountEmailAvailable).mockResolvedValue(true);
   });
 
   it('signs in with email and password', async () => {
@@ -308,5 +310,43 @@ describe('AccountSignIn', () => {
       fireEvent.click(screen.getByText('Sign in instead'));
       expect(await screen.findByTestId('account-sign-in-submit')).toBeInTheDocument();
     });
+  });
+});
+
+/**
+ * A recovery path that cannot run is not offered.
+ *
+ * Production has never had a mail sender, so every press of "Forgot password"
+ * ended at `Password reset is not available on this server.` The backend now
+ * says so up front (`GET /auth/methods`) and this panel believes it — and
+ * un-hides the link the moment a sender exists, with no client release.
+ */
+describe('AccountSignIn — the reset link', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(api.getAccountState).mockResolvedValue(SIGNED_OUT);
+  });
+
+  it('hides it when the backend cannot send mail', async () => {
+    vi.mocked(api.accountEmailAvailable).mockResolvedValue(false);
+    render(<AccountSignIn />);
+    await screen.findByTestId('account-sign-in');
+    await waitFor(() => expect(screen.queryByTestId('account-go-reset')).toBeNull());
+    // The way in that never needed mail is untouched.
+    expect(screen.getByTestId('account-sign-in')).toBeInTheDocument();
+  });
+
+  it('shows it when the backend can', async () => {
+    vi.mocked(api.accountEmailAvailable).mockResolvedValue(true);
+    render(<AccountSignIn />);
+    expect(await screen.findByTestId('account-go-reset')).toBeInTheDocument();
+  });
+
+  it('shows it when the question could not be asked at all', async () => {
+    // Fails open: an old backend with no such route, or a laptop that is
+    // offline, must not lose a recovery path that works.
+    vi.mocked(api.accountEmailAvailable).mockRejectedValue(new Error('offline'));
+    render(<AccountSignIn />);
+    expect(await screen.findByTestId('account-go-reset')).toBeInTheDocument();
   });
 });

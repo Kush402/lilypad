@@ -86,6 +86,9 @@ export const api = {
     invoke<AccountStateDto>('account_sign_up', { name, email, password }),
   accountSignIn: (email: string, password: string) =>
     invoke<AccountStateDto>('account_sign_in', { email, password }),
+  /** Whether the backend can send mail. Gates the password-reset link — see
+   * `Account::email_available`; fails open on the Rust side. */
+  accountEmailAvailable: () => invoke<boolean>('account_email_available'),
   accountRequestPasswordReset: (email: string) =>
     invoke<void>('account_request_password_reset', { email }),
   accountConfirmPasswordReset: (email: string, code: string, password: string) =>
