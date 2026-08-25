@@ -438,13 +438,26 @@ would have made two different plans claim the same labels.
 | M18 — Ask productisation | **Becomes P5.**                                                                              |
 | M13 — production infra   | **Unchanged.** P4 is the site's content and build; M13 still owns DNS, TLS and hosting.      |
 
-**What it does not change.** LAN-first ([ADR-0006](adr/0006-lan-first-connectivity.md)),
-cloud as control plane only ([ADR-0007](adr/0007-cloud-is-control-plane-only.md)),
-and explicit device linking ([ADR-0010](adr/0010-explicit-device-linking.md)) all
-hold. In particular: **an account never discovers devices.** No milestone here
-may introduce a flow where signing in makes an unlinked computer appear.
+**What it does not change.** LAN-first ([ADR-0006](adr/0006-lan-first-connectivity.md))
+and cloud as control plane only ([ADR-0007](adr/0007-cloud-is-control-plane-only.md))
+hold.
+
+> **Amended 2026-08-25 by [ADR-0015](adr/0015-ownership-follows-sign-in.md).**
+> This paragraph used to add explicit device linking and the rule that "an
+> account never discovers devices". Signing in on a device is now what puts it
+> on the account, on every platform. What survives, and is what that rule was
+> actually protecting: **ownership buys no reach** — a phone sees a screen only
+> through a `trusted_devices` pair created by the QR ceremony. No milestone here
+> may introduce a flow where signing in makes a computer _reachable_.
 
 ## P1 — Account-connected clients 🚧
+
+> **Read the ✅ items below as a record of what P1 delivered, not as current
+> behaviour.** [ADR-0015](adr/0015-ownership-follows-sign-in.md) (2026-08-25)
+> replaced the linking ceremony with ownership at sign-in and collapsed the
+> wizard's four steps to three — **1 your account → 2 permissions → 3 pair your
+> phone**. The enrollment QR described here still exists, as the recovery path
+> for a Mac whose sign-in enrollment failed.
 
 The account layer was built on both ends and connected on neither: the desktop's
 `auth.rs` was dead code until M9 wired its token path, `SignInScreen.tsx` had no

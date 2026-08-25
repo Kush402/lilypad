@@ -258,33 +258,37 @@ and the absence of a prompt is not a failure.
 | 3.5 | Let a QR expire without scanning it                     | It shows **Expired** and scanning it afterwards does nothing. Generate a new one. |
 | 3.6 | Scan the same QR twice                                  | The second attempt fails. Codes are single-use.                                   |
 
-### Linking the Mac to an account
+### Putting the Mac on an account
 
-Pairing and linking are different things and the test covers both.
+Ownership and pairing are different things and the test covers both. Signing in
+is what puts a device on the account
+([ADR-0015](adr/0015-ownership-follows-sign-in.md)); pairing is what lets one
+device reach another.
 
-| #    | Do                                                                 | Expect                                                                                                                               |
-| ---- | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------ |
-| 3.7  | On the iPhone: sign in (or create an account)                      | Signed in. The **Your devices** list is reachable.                                                                                   |
-| 3.8  | On the Mac: dashboard → **This computer** → **Link this computer** | A second QR appears — this one is an enrollment code, not a pairing code.                                                            |
-| 3.9  | Scan it with the signed-in iPhone and approve                      | The Mac's panel flips to **Linked**.                                                                                                 |
-| 3.10 | iPhone → Your devices                                              | Both the Mac and the iPhone are listed.                                                                                              |
-| 3.11 | On the Mac: sign in with the same account under **Your account**   | It says signed in — and says explicitly that signing in does **not** link the computer. Both statements should be on screen at once. |
+| #    | Do                                                                                      | Expect                                                                                                                                                       |
+| ---- | --------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 3.7  | On the Mac: **Your account** → create an account (or sign in)                           | Signed in, and the card below flips to **On your account** without anything else being done.                                                                 |
+| 3.8  | On the iPhone: sign in with the same account                                            | Signed in. **Your devices** is reachable.                                                                                                                    |
+| 3.9  | iPhone → **Your devices**, before pairing anything                                      | **Both the Mac and the iPhone are listed.** This is the 2026-08-25 regression: only the phone used to appear, because a Mac gained an owner only at pairing. |
+| 3.10 | iPhone → **Your laptops**, still before pairing                                         | Empty, and it explains why: the computers are on the account, pairing is the separate step. The two screens must not contradict each other.                  |
+| 3.11 | On the Mac: sign out, then sign in again                                                | Signed back in and still **On your account**. Signing out is local; it does not remove the device.                                                           |
+| 3.12 | On a second Mac (or after clearing this one's keychain): sign in to a DIFFERENT account | Refused with a message naming the remedy — remove it from the first account's **Your devices**, then sign in again. One device has one owner.                |
 
 ### Account state
 
-Sign-in is not linking and neither is pairing, so the account's own behaviour
-gets its own rows. Nothing here needs a delivered email — that is the point of
+Sign-in now carries ownership, and pairing is still separate, so the account's
+own behaviour gets its own rows. Nothing here needs a delivered email — that is the point of
 password auth ([ADR-0012](adr/0012-password-authentication.md)), and it is why
 the journey is testable at all while Resend is unconfigured.
 
-| #    | Do                                                              | Expect                                                                               |
-| ---- | --------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
-| 3.12 | Create the account with a password shorter than 12 characters   | Refused, and it says so before the request is sent.                                  |
-| 3.13 | Try to create a second account on the same address              | Refused: an account already exists for that address.                                 |
-| 3.14 | Sign out on the Mac, then sign in again with the right password | Signed back in. The computer is **still linked** — signing out is not unlinking.     |
-| 3.15 | Sign in with the right address and a wrong password             | Refused. The message must not reveal whether the address has an account.             |
-| 3.16 | Sign in with an address that has no account                     | Refused with the **same** message and no noticeable difference in how long it takes. |
-| 3.17 | Quit the app entirely and reopen it                             | Still signed in and still linked. Neither should need doing twice.                   |
+| #    | Do                                                                        | Expect                                                                                    |
+| ---- | ------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| 3.13 | Create the account with a password shorter than 12 characters             | Refused, and it says so before the request is sent.                                       |
+| 3.14 | Try to create a second account on the same address                        | Refused: an account already exists for that address.                                      |
+| 3.15 | Sign in with the right address and a wrong password                       | Refused. The message must not reveal whether the address has an account.                  |
+| 3.16 | Sign in with an address that has no account                               | Refused with the **same** message and no noticeable difference in how long it takes.      |
+| 3.17 | Quit the app entirely and reopen it                                       | Still signed in and still on the account. Neither should need doing twice.                |
+| 3.18 | iPhone → Your devices → **Remove** the Mac, then sign in on the Mac again | It comes back. Removal is reversible by signing in, which is what the message on it says. |
 
 ## 4. Connectivity
 
