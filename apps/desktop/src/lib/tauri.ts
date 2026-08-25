@@ -158,7 +158,17 @@ export interface AgentConfigDto {
  * that was fine.
  */
 export interface PresenceDto {
-  state: 'starting' | 'connecting' | 'online' | 'unreachable' | 'refused' | 'no_identity';
+  state:
+    | 'starting'
+    | 'connecting'
+    | 'online'
+    | 'unreachable'
+    | 'refused'
+    | 'no_identity'
+    /** Nobody has linked this Mac yet. Not a fault, and the reachability
+     * banner deliberately renders nothing for it — the linking panel is
+     * already the thing telling the user what to do. */
+    | 'not_linked';
 }
 
 export interface LinkStateDto {

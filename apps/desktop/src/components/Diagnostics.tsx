@@ -46,6 +46,7 @@ const PRESENCE_LABEL: Record<string, string> = {
   unreachable: 'Cannot reach Lilypad’s server',
   refused: 'Lilypad refused this Mac — it is unlinked, revoked, or has no key',
   no_identity: 'This Mac has no saved key, so it cannot be reached',
+  not_linked: 'No account has linked this Mac yet, so there is nothing to ring',
 };
 
 /**

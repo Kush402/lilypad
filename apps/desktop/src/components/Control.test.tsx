@@ -535,6 +535,21 @@ describe('Control — can a phone actually reach this Mac', () => {
     expect(await screen.findByTestId('reachability')).toHaveTextContent(/keychain/i);
   });
 
+  it('says nothing about the keychain when the Mac is simply not linked yet', async () => {
+    // Every one of the four reasons a device token can be missing used to be
+    // reported as `no_identity`, and `no_identity` reads "macOS may have
+    // denied Lilypad access to the keychain". The commonest reason by far is
+    // that nobody has linked this computer — the state EVERY Mac is in on its
+    // first run — so that scare was on the first screen of the product.
+    vi.mocked(useAppState).mockReturnValue(dto({ presence: { state: 'not_linked' } }));
+    vi.mocked(api.getLinkState).mockResolvedValue({ state: 'unlinked' } as never);
+
+    render(<Control />);
+    await screen.findByText('Trusted devices');
+
+    expect(screen.queryByTestId('reachability')).not.toBeInTheDocument();
+  });
+
   it('stays quiet on an unlinked Mac, which no phone is trying to reach', async () => {
     vi.mocked(useAppState).mockReturnValue(dto({ presence: { state: 'refused' } }));
     vi.mocked(api.getLinkState).mockResolvedValue({ state: 'unlinked' } as never);

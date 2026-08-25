@@ -152,6 +152,12 @@ pub enum PresenceState {
     /// before it was tried. Kept apart from `Refused` because the remedy is
     /// different and local.
     NoIdentity,
+    /// No account owns this computer yet, so there is nothing for a phone to
+    /// ring. Not a fault, and deliberately NOT rendered as one: the linking
+    /// panel above is already saying what to do, and this is the state every
+    /// Mac is in on its first run. It used to report `NoIdentity` — a keychain
+    /// scare on the first screen of the product.
+    NotLinked,
 }
 
 pub type SharedState = Mutex<AppState>;

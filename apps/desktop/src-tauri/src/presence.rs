@@ -19,7 +19,7 @@ use std::time::Duration;
 
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::auth::DesktopAuth;
+use crate::auth::{DesktopAuth, NoToken};
 use crate::signaling::{connect, messages::ConnectRequestPayload, Envelope};
 use crate::state::SharedState;
 
@@ -28,6 +28,24 @@ use crate::state::SharedState;
 /// tick sends a `ping` (not a bare heartbeat) so the hub's `pong` gives us a
 /// liveness signal.
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(4);
+/// How a missing token should be reported to the person sitting at the Mac.
+///
+/// Only one of these is a fault of this machine's, and only one of them is
+/// worth a banner at all: a computer nobody has linked yet is in the state
+/// every computer starts in, and the dashboard's linking panel is already
+/// telling the user what to do about it.
+fn presence_for(reason: NoToken) -> crate::state::PresenceState {
+    use crate::state::PresenceState as P;
+    match reason {
+        NoToken::NoIdentity => P::NoIdentity,
+        NoToken::NotLinked => P::NotLinked,
+        NoToken::Revoked => P::Refused,
+        // Network, DNS, a backend blip — the same thing an unreachable hub
+        // means, and it clears on its own.
+        NoToken::Unavailable => P::Unreachable,
+    }
+}
+
 /// If the hub hasn't sent ANY frame (pong or connect-request) in this long,
 /// the socket is presumed dead and we reconnect. This is the load-bearing
 /// fix for sleep/wake: a suspended-then-resumed Mac leaves the TCP connection
@@ -130,23 +148,30 @@ async fn run(app: AppHandle) {
         // earlier attempt may well have expired during a long backoff. `None`
         // is normal for a computer no account has linked yet — the backend
         // still admits it, on the same terms it always has.
-        let token = app.state::<Arc<DesktopAuth>>().bearer().await;
-
-        // Connecting without a token used to be normal — the backend admitted
-        // an unowned computer on the same terms it always had. It is not
-        // normal any more: under account → devices the hub refuses a presence
-        // register it cannot attribute, so this would spend a connection to
-        // earn a 4403 and then do it again forever. Report it and back off
-        // instead; `DesktopAuth` retries the keychain on the next call.
-        if token.is_none() {
-            set_presence(&app, crate::state::PresenceState::NoIdentity);
-            log::warn!(
-                target: "lilypad::presence",
-                "no device token — this Mac cannot be reached by a phone until it has one",
-            );
-        } else {
-            set_presence(&app, crate::state::PresenceState::Connecting);
-        }
+        let token = match app.state::<Arc<DesktopAuth>>().bearer_result().await {
+            Ok(token) => {
+                set_presence(&app, crate::state::PresenceState::Connecting);
+                Some(token)
+            }
+            // Connecting without a token used to be normal — the backend
+            // admitted an unowned computer on the same terms it always had. It
+            // is not normal any more: under account → devices the hub refuses
+            // a presence register it cannot attribute, so this would spend a
+            // connection to earn a 4403 and then do it again forever. Report
+            // it and back off instead; `DesktopAuth` retries on the next call.
+            //
+            // WHICH reason gets reported is the part that had been wrong: all
+            // four said "no saved key — macOS may have denied Lilypad access
+            // to the keychain", including the two that are ordinary.
+            Err(reason) => {
+                set_presence(&app, presence_for(reason));
+                log::warn!(
+                    target: "lilypad::presence",
+                    "no device token ({reason:?}) — this Mac cannot be reached by a phone until it has one",
+                );
+                None
+            }
+        };
 
         match connect(&url, token.as_deref()).await {
             Ok((handle, mut inbound)) => {
@@ -259,6 +284,22 @@ fn handle_inbound(app: &AppHandle, signaling_url: &str, env: Envelope) {
                 target: "lilypad::presence",
                 "hub refused the presence channel: {}", env.payload
             );
+            // `unauthorized_room` on a presence register almost always means
+            // the token this socket presented was not accepted, and the
+            // commonest reason is that it had expired — the backend gates
+            // presence on proving this computer is the one it names, so an
+            // unauthenticated socket is refused exactly like an impostor.
+            //
+            // Throwing the cached token away makes the NEXT attempt mint a
+            // fresh one. Without this the loop reconnects with the same dead
+            // credential until the cache decides on its own that it is stale,
+            // which after a sleep took twenty-four minutes on 2026-08-25 — the
+            // phone showing that Mac offline throughout. The wall-clock fix in
+            // `auth.rs` closes the usual cause; this closes the loop for every
+            // other cause, including a rotated signing key.
+            if env.payload.get("code").and_then(|c| c.as_str()) == Some("unauthorized_room") {
+                app.state::<Arc<DesktopAuth>>().inner().invalidate();
+            }
         }
         // `session-end` here means the hub closed the presence room (e.g.
         // graceful shutdown) — the socket close that follows drives the
@@ -320,6 +361,27 @@ fn on_connect_request(app: &AppHandle, signaling_url: &str, payload: ConnectRequ
 
 #[cfg(test)]
 mod tests {
+
+    /// What the person at the Mac is told when there is no device token.
+    ///
+    /// All four reasons used to produce the same banner: "This Mac can't prove
+    /// who it is — macOS may have denied Lilypad access to the keychain."
+    /// Two of the four are ordinary, and one of those two is the state every
+    /// Mac is in on its first run, so that scare was on the first screen of
+    /// the product.
+    #[test]
+    fn a_missing_token_is_reported_as_the_reason_it_is_missing() {
+        use crate::state::PresenceState as P;
+        assert_eq!(presence_for(NoToken::NoIdentity), P::NoIdentity);
+        // Not a fault. The dashboard renders no banner for this one at all.
+        assert_eq!(presence_for(NoToken::NotLinked), P::NotLinked);
+        // "If you removed it from your account, link it again above" — which
+        // is exactly what happened.
+        assert_eq!(presence_for(NoToken::Revoked), P::Refused);
+        // A wake with the network not yet back. Clears on its own, and the
+        // copy for this one says so.
+        assert_eq!(presence_for(NoToken::Unavailable), P::Unreachable);
+    }
     use super::*;
 
     #[test]

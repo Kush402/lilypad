@@ -1,5 +1,5 @@
 use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::{Duration, SystemTime};
 
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
@@ -51,7 +51,18 @@ struct CachedToken {
     value: String,
     /// When to stop using it. Deliberately EARLIER than the server's expiry —
     /// see `RENEW_MARGIN`.
-    renew_after: Instant,
+    ///
+    /// **Wall clock, not `Instant`, and that is the whole point.** `Instant` on
+    /// macOS does not advance while the machine is asleep, but the server's
+    /// `exp` is wall-clock — so a Mac that slept for forty minutes woke up
+    /// believing a ten-minute token was still fresh and presented an expired
+    /// one to every call. Observed in production on 2026-08-25: the presence
+    /// channel was refused `unauthorized_room` fifteen times over
+    /// twenty-four minutes after a wake, with no `/devices/token` request in
+    /// between, which is exactly what "the client thinks it is fresh" looks
+    /// like from the server's side. The phone showed that Mac as offline the
+    /// whole time.
+    renew_after: SystemTime,
     /// Who the backend says this device belongs to. Kept beside the token so
     /// the dashboard can answer "is this computer linked?" without a network
     /// round trip on every render.
@@ -329,9 +340,15 @@ impl DeviceAuth {
     }
 
     fn cached_token(&self) -> Option<String> {
+        self.cached_token_at(SystemTime::now())
+    }
+
+    /// `now` is a parameter so a test can express the case that produced the
+    /// bug: wall-clock time moving while this process was suspended.
+    fn cached_token_at(&self, now: SystemTime) -> Option<String> {
         let guard = self.cached.lock().ok()?;
         let token = guard.as_ref()?;
-        (Instant::now() < token.renew_after).then(|| token.value.clone())
+        (now < token.renew_after).then(|| token.value.clone())
     }
 
     /// The account and device this computer last authenticated as, if that
@@ -339,7 +356,7 @@ impl DeviceAuth {
     fn cached_identity(&self) -> Option<(String, String)> {
         let guard = self.cached.lock().ok()?;
         let token = guard.as_ref()?;
-        (Instant::now() < token.renew_after)
+        (SystemTime::now() < token.renew_after)
             .then(|| (token.user_id.clone(), token.device_id.clone()))
     }
 
@@ -348,7 +365,7 @@ impl DeviceAuth {
         // past and every call re-authenticate. Keep a floor so a
         // short-TTL server still gets some caching rather than none.
         let ttl = Duration::from_secs(session.expires_in_seconds);
-        let renew_after = Instant::now() + ttl.saturating_sub(RENEW_MARGIN).max(ttl / 2);
+        let renew_after = SystemTime::now() + ttl.saturating_sub(RENEW_MARGIN).max(ttl / 2);
         if let Ok(mut guard) = self.cached.lock() {
             *guard = Some(CachedToken {
                 value: session.access_token.clone(),
@@ -490,6 +507,18 @@ impl DesktopAuth {
         }
     }
 
+    /// Throw away the cached device token, so the next call mints a fresh one.
+    ///
+    /// The presence loop calls this when the hub answers `unauthorized_room`:
+    /// the commonest reason a register is refused is a token the server
+    /// considers expired, and reconnecting with the same one cannot fix that.
+    /// A no-op on a machine with no identity, which has nothing cached.
+    pub fn invalidate(&self) {
+        if let Some(auth) = self.device_auth() {
+            auth.invalidate();
+        }
+    }
+
     /// Mint an enrollment code for this computer to show as a QR.
     pub async fn request_enrollment_code(
         &self,
@@ -514,15 +543,50 @@ impl DesktopAuth {
     /// meet without a flag day — the moment a phone links this machine, these
     /// calls start carrying a token and the backend starts requiring one.
     pub async fn bearer(&self) -> Option<String> {
-        let auth = self.device_auth()?;
+        self.bearer_result().await.ok()
+    }
+
+    /// A token, or WHY there is not one. The distinction is the difference
+    /// between an accurate banner and a keychain scare — see `NoToken`.
+    pub async fn bearer_result(&self) -> Result<String, NoToken> {
+        let Some(auth) = self.device_auth() else {
+            return Err(NoToken::NoIdentity);
+        };
         match auth.access_token().await {
-            Ok(token) => Some(token),
+            Ok(token) => Ok(token),
             Err(e) => {
                 log::debug!(target: "lilypad::auth", "no device token available: {e}");
-                None
+                Err(match e.downcast_ref::<AuthError>() {
+                    Some(AuthError::NotEnrolled) => NoToken::NotLinked,
+                    Some(AuthError::Revoked) => NoToken::Revoked,
+                    None => NoToken::Unavailable,
+                })
             }
         }
     }
+}
+
+/// Why there is no device token to present.
+///
+/// `bearer()` collapsed all of these into `None`, and the presence loop then
+/// reported every one of them as "this Mac has no saved key — macOS may have
+/// denied Lilypad access to the keychain". That message is right for exactly
+/// one of them. It was shown on the dashboard of every computer that had not
+/// been linked yet — which is every computer, on its first run — and again for
+/// thirty seconds after each wake, when the real cause was that the network
+/// had not come back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoToken {
+    /// The keychain would not produce a durable identity. Local, and the one
+    /// case where telling the user about the keychain is correct.
+    NoIdentity,
+    /// No account owns this computer yet. Ordinary, and not a fault at all:
+    /// the dashboard's linking panel is already saying what to do about it.
+    NotLinked,
+    /// It was linked and is not any more.
+    Revoked,
+    /// The exchange itself failed — network, DNS, backend. Clears on its own.
+    Unavailable,
 }
 
 /// Where this computer stands with respect to an account.
@@ -831,6 +895,31 @@ mod tests {
         let auth = auth();
         auth.cache(&session(10));
         assert_eq!(auth.cached_token().as_deref(), Some("a-token"));
+    }
+
+    /// The bug this file's clock choice exists to prevent.
+    ///
+    /// A Mac sleeps. `Instant` does not advance while it is asleep; the
+    /// server's `exp` does. On 2026-08-25 a laptop woke holding a
+    /// ten-minute token minted forty-nine minutes earlier, believed it fresh,
+    /// and was refused `unauthorized_room` on every presence register for
+    /// twenty-four minutes — during which the phone showed it as offline and
+    /// no `/devices/token` request was made at all.
+    ///
+    /// Expressing that case requires a clock the test can move independently
+    /// of the process, which is precisely what `Instant` cannot be.
+    #[test]
+    fn a_token_is_stale_after_the_machine_sleeps_through_its_lifetime() {
+        let auth = auth();
+        auth.cache(&session(600));
+        // Awake: still good.
+        assert!(auth.cached_token_at(SystemTime::now()).is_some());
+        // Woken forty minutes later. The process did not run; the world moved.
+        let after_sleep = SystemTime::now() + Duration::from_secs(40 * 60);
+        assert!(
+            auth.cached_token_at(after_sleep).is_none(),
+            "a token the server expired half an hour ago must not be presented"
+        );
     }
 
     #[test]
