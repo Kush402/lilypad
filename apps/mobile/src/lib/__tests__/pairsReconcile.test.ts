@@ -133,7 +133,10 @@ describe('orderPairs', () => {
   });
 
   it('does not reorder the live cache other code mutates', () => {
-    const rows = [pair({ desktopDeviceId: 'a', addedAt: 1 }), pair({ desktopDeviceId: 'b', addedAt: 2 })];
+    const rows = [
+      pair({ desktopDeviceId: 'a', addedAt: 1 }),
+      pair({ desktopDeviceId: 'b', addedAt: 2 }),
+    ];
     orderPairs(rows);
     expect(rows.map((p) => p.desktopDeviceId)).toEqual(['a', 'b']);
   });

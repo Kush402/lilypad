@@ -200,7 +200,9 @@ impl Account {
         let Ok(body) = response.json::<serde_json::Value>().await else {
             return true;
         };
-        body.get("email").and_then(serde_json::Value::as_bool).unwrap_or(true)
+        body.get("email")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(true)
     }
 
     /// Create an account, then remember it.
