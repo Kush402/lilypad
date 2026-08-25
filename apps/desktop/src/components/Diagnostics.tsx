@@ -71,6 +71,10 @@ export function diagnosticsReport(
     `reachable: ${PRESENCE_LABEL[state.presence.state] ?? state.presence.state}`,
     `session: ${state.session}`,
     `room: ${state.current_room_id ?? 'none'}`,
+    // Only when there is a choice to report. On a one-screen Mac this line
+    // would say the same thing in every report ever sent, which is the
+    // definition of noise in a support paste.
+    ...(state.shared_display ? [`showing: ${state.shared_display}`] : []),
     `last connection: ${
       state.connection_path
         ? (PATH_LABEL[state.connection_path] ?? state.connection_path)

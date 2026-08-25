@@ -182,9 +182,33 @@ jobs:
           echo "signing as: $identity"
           echo "profile:    $name ($uuid)"
 
+      # `pod install` fails intermittently in pnpm monorepos with CocoaPods'
+      # `ArgumentError - pathname contains null byte`, raised from
+      # `common_path` while adding a local pod's source files
+      # (CocoaPods #12798, #12866 — both open upstream). Reproduced on a
+      # developer Mac on 2026-08-25: a CLEAN run failed, and the very next
+      # run, with nothing changed but the half-populated `Pods/` left behind,
+      # succeeded. So it is a first-pass race, not a broken configuration —
+      # which is why a retry is the proportionate fix rather than pinning a
+      # gem or vendoring a patch.
+      #
+      # Three attempts, not unlimited: a genuinely broken Podfile must still
+      # fail the build rather than spin.
       - name: Install CocoaPods
         working-directory: apps/mobile/ios
-        run: bundle exec pod install
+        run: |
+          set -uo pipefail
+          for attempt in 1 2 3; do
+            echo "pod install (attempt $attempt/3)"
+            if bundle exec pod install; then
+              echo "pod install succeeded on attempt $attempt"
+              exit 0
+            fi
+            echo "::warning::pod install failed on attempt $attempt — retrying"
+            sleep 5
+          done
+          echo "::error::pod install failed three times — this is not the known intermittent failure"
+          exit 1
 
       - name: Fastlane beta (archive → IPA → TestFlight)
         working-directory: apps/mobile/ios

@@ -115,6 +115,21 @@ describe('the report a customer can send', () => {
     shared_display: null,
   } satisfies AppStateDto;
 
+  /**
+   * A Mac with two monitors can be watched on either, chosen from the phone —
+   * so "which screen was it showing" became a question a support conversation
+   * can ask, and the report is where it gets answered.
+   */
+  it('names the screen being shared when there is a choice', () => {
+    const report = diagnosticsReport({ ...state, shared_display: 'Display 2' }, '0.1.10');
+    expect(report).toContain('showing: Display 2');
+  });
+
+  it('says nothing about screens on a Mac that only has one', () => {
+    // Otherwise this line says the same thing in every report ever sent.
+    expect(diagnosticsReport(state, '0.1.10')).not.toContain('showing:');
+  });
+
   it('carries every fact a support conversation opens with', () => {
     const report = diagnosticsReport(state, '0.1.4');
     expect(report).toContain('version: 0.1.4');
