@@ -60,6 +60,32 @@ export async function pairingRoutes(app: FastifyInstance): Promise<void> {
       if (!actAsDevice(optionalActorOf(req), mobile).allow) return notFound(reply);
       try {
         const result = await redeemPairing(parsed.data);
+        // A pair links two devices on the SAME account
+        // ([ADR-0015](../../../../docs/adr/0015-ownership-follows-sign-in.md)).
+        //
+        // Checked here rather than before the redeem because the desktop's
+        // identity lives inside the token, and reading it is what spends it.
+        // Burning a token on a refusal is the right trade: the alternative is
+        // a phone that pairs across accounts and then holds a laptop that
+        // shows up in "Your laptops" and in nobody's "Your devices" — visible
+        // in one list, unmanageable from the other, revocable from neither.
+        //
+        // Both sides must be OWNED for this to fire, which in practice they
+        // always are: `actAsDevice` has no unowned lane, so an ownerless
+        // laptop could not have minted this token and an ownerless phone could
+        // not have reached this line. The null checks are there so a row that
+        // disappeared between minting and redeeming falls through to the
+        // ordinary path rather than being reported as somebody else's.
+        const desktop = result.desktopDeviceId
+          ? await deviceOwnershipByFingerprint('desktop', result.desktopDeviceId)
+          : null;
+        if (desktop?.userId != null && mobile?.userId != null && desktop.userId !== mobile.userId) {
+          return reply.code(403).send({
+            error: 'different_account',
+            message:
+              'that computer belongs to a different Lilypad account. Sign in to the same account on both, then pair again.',
+          });
+        }
         // Repudiation mitigation (docs/threat-model.md): a device just
         // completed pairing. Fire-and-forget — an audit-log blip must never
         // fail a redeem the mobile app is blocked on, matching the
