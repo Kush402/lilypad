@@ -212,3 +212,27 @@ describe('Diagnostics — the log file', () => {
     expect(screen.getByTestId('reveal-log')).toBeEnabled();
   });
 });
+
+/**
+ * The button says "Copy for support" and, until 2026-08-25, named no support.
+ * The address existed only in the website's footer, so a customer who had done
+ * exactly what the product asked was holding a report with nowhere to send it.
+ */
+describe('where a copied report goes', () => {
+  it('names the address beside the button that produces the report', () => {
+    vi.mocked(useAppState).mockReturnValue({
+      device_id: 'desktop-abc',
+      backend_base_url: 'http://localhost:8080',
+      session: 'idle',
+      current_room_id: null,
+      pending_request: null,
+      plugin_health: {},
+      connection_path: null,
+      presence: { state: 'online' } as const,
+      shared_display: null,
+    } satisfies AppStateDto);
+
+    render(<Diagnostics />);
+    expect(screen.getByTestId('support-address')).toHaveTextContent('support@takedia.com');
+  });
+});

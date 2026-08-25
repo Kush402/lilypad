@@ -336,7 +336,7 @@ export function SignInScreen({ apiBaseUrl, onSignedIn }: SignInScreenProps): Rea
           {/* Both of these post to routes that need a mail sender. A server
               without one answers 503 to each, so offering them is offering a
               button that cannot work — see `GET /auth/methods`. */}
-          {emailFlows && (
+          {emailFlows ? (
             <>
               <Link
                 testID="go-reset"
@@ -349,6 +349,15 @@ export function SignInScreen({ apiBaseUrl, onSignedIn }: SignInScreenProps): Rea
                 onPress={() => switchTo('magic-link')}
               />
             </>
+          ) : (
+            /* Hiding the reset link is right — it can only fail — but it
+               leaves somebody who has actually forgotten their password with
+               nowhere to go, and neither app named a human anywhere. Shown
+               only in the state where self-service recovery does not exist. */
+            <Text testID="support-address" style={styles.hint}>
+              Forgotten your password? Email support@takedia.com — password reset by email is not
+              available on this server yet.
+            </Text>
           )}
         </>
       )}

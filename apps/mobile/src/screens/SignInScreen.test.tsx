@@ -183,6 +183,9 @@ describe('offering only the ways in that work', () => {
     expect(screen.queryByTestId('go-magic-link')).toBeNull();
     // The way in that never depended on mail is untouched.
     expect(screen.getByTestId('sign-in-password-submit')).toBeTruthy();
+    // And somebody who HAS forgotten their password is not left with nowhere
+    // to go — hiding a dead link must not mean hiding the remedy.
+    expect(screen.getByTestId('support-address')).toBeTruthy();
   });
 
   it('shows them the moment a mail sender exists', async () => {
@@ -190,6 +193,8 @@ describe('offering only the ways in that work', () => {
     render(<SignInScreen onSignedIn={jest.fn()} />);
     await waitFor(() => expect(screen.getByTestId('go-reset')).toBeTruthy());
     expect(screen.getByTestId('go-magic-link')).toBeTruthy();
+    // No apology for a gap that is not there.
+    expect(screen.queryByTestId('support-address')).toBeNull();
   });
 
   it('shows everything when the server cannot be reached', async () => {

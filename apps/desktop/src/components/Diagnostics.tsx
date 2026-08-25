@@ -136,6 +136,14 @@ export function Diagnostics() {
           {copied ? 'Copied' : 'Copy for support'}
         </button>
       </div>
+      {/* The button said "for support" and named no support. Someone who has
+          copied a report and has nowhere to send it has not been helped —
+          this is the only place either app states the address, which is
+          otherwise only in the website's footer. */}
+      <p className="muted" data-testid="support-address">
+        Send it to <strong>support@takedia.com</strong>, with what you were doing when it went
+        wrong.
+      </p>
 
       <SoftwareUpdate variant="panel" />
 
