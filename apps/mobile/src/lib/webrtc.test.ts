@@ -100,6 +100,7 @@ jest.mock('./signaling', () => {
           pause: jest.fn(),
           resume: jest.fn(),
           setCaptureMode: jest.fn(),
+          setDisplay: jest.fn(),
           heartbeat: jest.fn(),
           disconnect: jest.fn(),
           close: jest.fn(),
@@ -153,6 +154,7 @@ function makeCallbacks() {
     onError: jest.fn(),
     onStats: jest.fn(),
     onFrameSize: jest.fn(),
+    onDisplays: jest.fn(),
     onClipboardUpdate: jest.fn(),
     onAgentStep: jest.fn(),
     onAgentRunEnd: jest.fn(),
@@ -267,6 +269,77 @@ describe('ViewerConnection', () => {
     });
 
     expect(cb.onFrameSize).toHaveBeenCalledWith(2560, 1600, 'motion');
+  });
+
+  /**
+   * The display list rides `frame-size` rather than a message of its own,
+   * because the moments it changes are exactly the moments the frame size
+   * does: the pipeline starting, a mode switch, a display switch, and a
+   * monitor being plugged in or pulled out.
+   */
+  it('forwards the attached displays and the active one to onDisplays', async () => {
+    const cb = makeCallbacks();
+    const conn = new ViewerConnection('wss://x', 'room1', ['control'], cb);
+    await conn.start();
+
+    lastSignaling().onMessage({
+      type: 'frame-size',
+      roomId: 'room1',
+      from: 'desktop',
+      ts: 0,
+      payload: {
+        width: 2560,
+        height: 1600,
+        mode: 'motion',
+        displays: [
+          { id: 1, name: 'Built-in Display', width: 2560, height: 1600 },
+          { id: 2, name: 'Display 2', width: 3440, height: 1440 },
+        ],
+        activeDisplayId: 2,
+      },
+    });
+
+    expect(cb.onDisplays).toHaveBeenCalledWith(
+      [
+        { id: 1, name: 'Built-in Display', width: 2560, height: 1600 },
+        { id: 2, name: 'Display 2', width: 3440, height: 1440 },
+      ],
+      2,
+    );
+  });
+
+  /**
+   * A Mac on 0.1.9 or older sends `frame-size` with no display fields at all.
+   * The phone must not treat that as an error or as "zero displays with a
+   * broken active id" — it reports an empty list, which the viewer renders as
+   * no switcher, the same as a single-screen Mac.
+   */
+  it('treats a frame-size from an older desktop as simply having no display list', async () => {
+    const cb = makeCallbacks();
+    const conn = new ViewerConnection('wss://x', 'room1', ['control'], cb);
+    await conn.start();
+
+    lastSignaling().onMessage({
+      type: 'frame-size',
+      roomId: 'room1',
+      from: 'desktop',
+      ts: 0,
+      payload: { width: 1280, height: 720, mode: 'motion' },
+    });
+
+    expect(cb.onFrameSize).toHaveBeenCalledWith(1280, 720, 'motion');
+    expect(cb.onDisplays).toHaveBeenCalledWith([], null);
+  });
+
+  it('sends a set-display request when requestDisplay is called', async () => {
+    const cb = makeCallbacks();
+    const conn = new ViewerConnection('wss://x', 'room1', ['control'], cb);
+    await conn.start();
+    const sig = lastSignaling();
+
+    conn.requestDisplay(7);
+
+    expect(sig.setDisplay).toHaveBeenCalledWith(7);
   });
 
   it('sends a set-capture-mode request when requestCaptureMode is called (Finding 2)', async () => {

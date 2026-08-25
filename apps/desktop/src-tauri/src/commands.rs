@@ -94,6 +94,7 @@ pub fn get_state(state: State<'_, SharedState>) -> AppStateDto {
         plugin_health: crate::health::plugin_health(),
         connection_path: s.connection_path.clone(),
         presence: s.presence.clone(),
+        shared_display: s.shared_display.clone(),
     }
 }
 
@@ -373,8 +374,13 @@ fn apply_session_event(app: &AppHandle, ev: &SessionEvent) {
             log::info!(target: "lilypad::session", "connection path: {path}");
             s.connection_path = Some(path.clone());
         }
+        SessionEvent::SharedDisplay { name } => {
+            log::info!(target: "lilypad::session", "sharing display: {name}");
+            s.shared_display = Some(name.clone());
+        }
         SessionEvent::Ended { .. } => {
             s.session = SessionStatus::Idle;
+            s.shared_display = None;
             s.control_tx = None;
             s.current_room_id = None;
             s.pending_request = None;

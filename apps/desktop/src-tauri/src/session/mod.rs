@@ -100,6 +100,18 @@ pub enum SessionEvent {
     ConnectionPath {
         path: String,
     },
+    /// Which display the session is showing, by the name the phone's switcher
+    /// puts on its button. Emitted when media starts and on every switch, and
+    /// only when there is more than one display — on a one-screen Mac there is
+    /// nothing to disambiguate and a line saying so is noise.
+    ///
+    /// This is a consent signal, not a diagnostic. Before the switcher, "Lilypad
+    /// is sharing" could only mean the main display; now a phone can move the
+    /// view to another monitor, and the person sitting at the Mac should not
+    /// have to guess which one somebody else is looking at.
+    SharedDisplay {
+        name: String,
+    },
     Error {
         message: String,
     },
@@ -284,6 +296,10 @@ struct SessionRunner {
     media: MediaController,
     gate: InputGate,
     clipboard: ClipboardWatcher,
+    /// Displays attached as of the last check, in the Mac's own left-to-right
+    /// order. Re-read on the heartbeat so a monitor plugged in (or pulled out)
+    /// mid-session reaches the phone's switcher without a reconnect.
+    displays: Vec<crate::media::Display>,
     peer: Option<Arc<WebRtcPeer>>,
     peer_connected: bool,
     /// Set once, the first time `ConnectionState("connected")` is observed,
@@ -346,6 +362,7 @@ impl SessionRunner {
             media: MediaController::new(),
             gate: InputGate::new(),
             clipboard: ClipboardWatcher::new(),
+            displays: Vec::new(),
             peer: None,
             peer_connected: false,
             ever_connected: false,
@@ -578,6 +595,13 @@ impl SessionRunner {
                     self.handle_set_capture_mode(p.mode, sig).await;
                 }
             }
+            "set-display" => {
+                if let Ok(p) =
+                    serde_json::from_value::<messages::SetDisplayPayload>(env.payload.clone())
+                {
+                    self.handle_set_display(p.display_id, sig).await;
+                }
+            }
             "peer-status" => {
                 // Backend nudge: the phone's SIGNALING transport dropped
                 // (online:false) or came back (online:true). We don't end
@@ -645,7 +669,16 @@ impl SessionRunner {
             if s == "connected" && !self.media.is_started() {
                 if let Some(p) = self.peer.as_ref() {
                     match self.media.start(Arc::clone(p)).await {
-                        Ok(()) => self.send_frame_size(sig),
+                        Ok(()) => {
+                            // Enumerate before announcing: the first
+                            // `frame-size` is what builds the phone's
+                            // switcher, and an empty list there would hide it
+                            // until something else changed.
+                            self.refresh_displays();
+                            self.gate.set_target_display(self.media.display_id());
+                            self.send_frame_size(sig);
+                            self.emit_shared_display();
+                        }
                         Err(e) => self.emit(SessionEvent::Error {
                             message: format!("pipeline start: {e}"),
                         }),
@@ -820,9 +853,160 @@ impl SessionRunner {
             CaptureMode::Motion => messages::CaptureMode::Motion,
             CaptureMode::Text => messages::CaptureMode::Text,
         };
-        if let Err(e) = sig.send(Envelope::frame_size(&self.room_id, w, h, mode)) {
+        let displays: Vec<messages::DisplayInfo> = self
+            .displays
+            .iter()
+            .map(|d| messages::DisplayInfo {
+                id: d.id,
+                name: d.name.clone(),
+                width: d.width,
+                height: d.height,
+            })
+            .collect();
+        // The phone highlights a concrete id, so "no display chosen" has to be
+        // resolved to the main display's own id before it goes on the wire.
+        let active = self
+            .media
+            .display_id()
+            .or_else(crate::media::main_display_id);
+        if let Err(e) = sig.send(Envelope::frame_size(
+            &self.room_id,
+            w,
+            h,
+            mode,
+            &displays,
+            active,
+        )) {
             log::warn!(target: "lilypad::session", "frame-size send failed: {e}");
         }
+    }
+
+    /// Tell the Mac's own dashboard which screen is being shared, when there is
+    /// more than one it could be. See `SessionEvent::SharedDisplay`.
+    fn emit_shared_display(&mut self) {
+        let active = self
+            .media
+            .display_id()
+            .or_else(crate::media::main_display_id);
+        if let Some(name) = shared_display_name(&self.displays, active) {
+            self.emit(SessionEvent::SharedDisplay { name });
+        }
+    }
+
+    /// Re-read the attached displays; `true` when the set changed.
+    fn refresh_displays(&mut self) -> bool {
+        let now = crate::media::list_displays();
+        if now == self.displays {
+            return false;
+        }
+        self.displays = now;
+        true
+    }
+
+    /// True when `id` names a display that is still attached.
+    fn display_attached(&self, id: u32) -> bool {
+        self.displays.iter().any(|d| d.id == id)
+    }
+
+    /// Handle a mobile-initiated display switch. Same cost and same brief
+    /// glitch as a capture-mode switch — see `MediaController::set_display`.
+    /// An id that is no longer attached is answered with the main display
+    /// rather than an error: the phone's list can only ever be as fresh as
+    /// the last `frame-size`, and a monitor unplugged in between is the
+    /// person's own doing, not a failure to report.
+    async fn handle_set_display(&mut self, display_id: u32, sig: &SignalingClient) {
+        if !self.media.is_started() {
+            return;
+        }
+        let Some(peer) = self.peer.clone() else {
+            return;
+        };
+        self.refresh_displays();
+        let target = chosen_display(&self.displays, display_id);
+        if target.is_none() {
+            log::warn!(
+                target: "lilypad::session",
+                "display {display_id} is no longer attached — showing the main display instead"
+            );
+        }
+        match self.media.set_display(target, peer).await {
+            Ok(()) => {
+                log::info!(target: "lilypad::session", "capture switched to display {target:?}");
+                // Taps have to follow the picture: normalized coordinates mean
+                // nothing without knowing which screen they are normalized to.
+                self.gate.set_target_display(self.media.display_id());
+                self.send_frame_size(sig);
+                self.emit_shared_display();
+            }
+            Err(e) => {
+                log::error!(target: "lilypad::session", "display switch failed: {e}");
+                self.emit(SessionEvent::Error {
+                    message: format!("display switch failed: {e}"),
+                });
+            }
+        }
+    }
+
+    /// Notice a monitor plugged in or pulled out mid-session.
+    ///
+    /// Two different jobs. The cheap one: tell the phone, so its switcher is
+    /// the truth rather than a snapshot from when the session started. The
+    /// load-bearing one: if the display being CAPTURED just went away, move to
+    /// the main display before ScreenCaptureKit's now-dead stream takes the
+    /// session down with it — unplugging a monitor should cost a glitch, not a
+    /// reconnect.
+    /// After a media failure: was it the captured display being unplugged?
+    /// If so, rebuild on the main display and keep the session alive.
+    /// `false` means this was some other failure and the caller should end.
+    async fn recover_from_lost_display(&mut self, sig: &SignalingClient) -> bool {
+        self.refresh_displays();
+        let Some(lost) = self
+            .media
+            .display_id()
+            .filter(|id| !self.display_attached(*id))
+        else {
+            return false;
+        };
+        let Some(peer) = self.peer.clone() else {
+            return false;
+        };
+        log::warn!(
+            target: "lilypad::session",
+            "display {lost} was unplugged mid-session — rebuilding on the main display"
+        );
+        if let Err(e) = self.media.set_display(None, peer).await {
+            log::error!(target: "lilypad::session", "rebuild on the main display failed: {e}");
+            return false;
+        }
+        self.gate.set_target_display(None);
+        self.send_frame_size(sig);
+        self.emit_shared_display();
+        true
+    }
+
+    async fn poll_displays(&mut self, sig: &SignalingClient) {
+        if !self.refresh_displays() {
+            return;
+        }
+        let lost = self
+            .media
+            .display_id()
+            .is_some_and(|id| !self.display_attached(id));
+        if lost && self.media.is_started() {
+            if let Some(peer) = self.peer.clone() {
+                log::info!(
+                    target: "lilypad::session",
+                    "the captured display was unplugged — falling back to the main display"
+                );
+                if let Err(e) = self.media.set_display(None, peer).await {
+                    log::error!(target: "lilypad::session", "fallback to the main display failed: {e}");
+                    return; // the media-failure path owns ending the session
+                }
+                self.gate.set_target_display(None);
+            }
+        }
+        self.send_frame_size(sig);
+        self.emit_shared_display();
     }
 
     /// Handle a mobile-initiated capture/encode mode switch request. Forces a
@@ -988,6 +1172,14 @@ pub async fn run_session(
 
             fail = runner.media.poll_failure() => {
                 if let Some(reason) = fail {
+                    // Unplugging the monitor being captured kills the
+                    // ScreenCaptureKit stream, and the stream dying used to
+                    // end the whole session. It is a display change, not a
+                    // connection failure — rebuild on the main display and
+                    // keep the session.
+                    if runner.recover_from_lost_display(&sig).await {
+                        continue;
+                    }
                     log::error!(target: "lilypad::session", "{reason} — ending session");
                     // Stop injecting immediately: never let input act on a
                     // screen the viewer can no longer see updating.
@@ -1055,6 +1247,11 @@ pub async fn run_session(
                 // flap right after approval) gets it again instead of both
                 // sides waiting each other out.
                 runner.maybe_resend_offer(&sig);
+                // Monitors get plugged in and pulled out mid-session. This
+                // rides the 4s heartbeat rather than adding a timer: it is a
+                // cheap CoreGraphics call, and 4s is well inside "I plugged
+                // in a monitor and reached for my phone".
+                runner.poll_displays(&sig).await;
                 if let Some(deadline) = runner.recovery_deadline {
                     if runner.peer_traffic_fresh() {
                         // De-facto recovered: traffic is flowing even if the
@@ -1134,6 +1331,37 @@ pub async fn run_session(
     }
     log::info!(target: "lilypad::session", "session runner exited for room {room_id}");
     Ok(())
+}
+
+/// Which display to actually capture when the phone asks for `requested`.
+///
+/// `None` means the main display, and it is the answer for a monitor that is
+/// no longer attached: the phone's list can only ever be as fresh as the last
+/// `frame-size` it received, so a monitor unplugged in between is the person's
+/// own doing rather than a request to fail. What it actually got is reported
+/// back in the next `frame-size` either way.
+fn chosen_display(displays: &[crate::media::Display], requested: u32) -> Option<u32> {
+    displays
+        .iter()
+        .any(|d| d.id == requested)
+        .then_some(requested)
+}
+
+/// The name to show on the Mac itself for the screen being shared.
+///
+/// `None` on a Mac with one display: there is nothing to disambiguate, and a
+/// line naming the only screen there is would be noise on every ordinary
+/// session. Also `None` when the active id names nothing attached, which is the
+/// instant between a monitor being pulled out and the fallback completing —
+/// better to say nothing for a moment than to name the screen that just left.
+fn shared_display_name(displays: &[crate::media::Display], active: Option<u32>) -> Option<String> {
+    if displays.len() < 2 {
+        return None;
+    }
+    displays
+        .iter()
+        .find(|d| Some(d.id) == active)
+        .map(|d| d.name.clone())
 }
 
 #[cfg(test)]
@@ -1293,5 +1521,56 @@ mod tests {
             now,
             COUNTERPART_GONE_MEDIA_WINDOW
         ));
+    }
+}
+
+#[cfg(test)]
+mod display_tests {
+    use super::{chosen_display, shared_display_name};
+    use crate::media::Display;
+
+    fn display(id: u32, name: &str) -> Display {
+        Display {
+            id,
+            name: name.to_owned(),
+            width: 1920,
+            height: 1080,
+        }
+    }
+
+    #[test]
+    fn an_attached_display_is_the_one_captured() {
+        let displays = vec![display(1, "Built-in Display"), display(2, "Display 2")];
+        assert_eq!(chosen_display(&displays, 2), Some(2));
+    }
+
+    #[test]
+    fn a_display_unplugged_since_the_phone_last_looked_falls_back_to_the_main_one() {
+        // The phone's button list is a snapshot of the last `frame-size`. A
+        // monitor pulled out in between must cost a switch, not the session.
+        let displays = vec![display(1, "Built-in Display")];
+        assert_eq!(chosen_display(&displays, 2), None);
+    }
+
+    #[test]
+    fn a_one_screen_mac_says_nothing_about_which_screen() {
+        let displays = vec![display(1, "Built-in Display")];
+        assert_eq!(shared_display_name(&displays, Some(1)), None);
+    }
+
+    #[test]
+    fn a_two_screen_mac_names_the_one_being_watched() {
+        let displays = vec![display(1, "Built-in Display"), display(2, "Display 2")];
+        assert_eq!(
+            shared_display_name(&displays, Some(2)).as_deref(),
+            Some("Display 2")
+        );
+    }
+
+    #[test]
+    fn nothing_is_named_while_the_active_display_is_mid_disappearance() {
+        let displays = vec![display(1, "Built-in Display"), display(2, "Display 2")];
+        assert_eq!(shared_display_name(&displays, Some(99)), None);
+        assert_eq!(shared_display_name(&displays, None), None);
     }
 }

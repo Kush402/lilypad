@@ -20,7 +20,7 @@ use std::path::Path;
 
 use lilypad_desktop_lib::signaling::messages::{
     CaptureMode, IceCandidatePayload, PairRequestPayload, SdpPayload, SdpType, SessionScope,
-    SessionStartPayload, SetCaptureModePayload,
+    SessionStartPayload, SetCaptureModePayload, SetDisplayPayload,
 };
 use lilypad_desktop_lib::signaling::Envelope;
 use serde_json::Value;
@@ -46,6 +46,7 @@ const ALL_MESSAGE_TYPES: &[&str] = &[
     "frame-size",
     "clipboard-update",
     "set-capture-mode",
+    "set-display",
 ];
 
 fn load_fixtures() -> HashMap<String, Value> {
@@ -153,4 +154,12 @@ fn set_capture_mode_payload_matches_the_fixture() {
     let env: Envelope = serde_json::from_value(fixtures["set-capture-mode"].clone()).unwrap();
     let payload: SetCaptureModePayload = serde_json::from_value(env.payload).unwrap();
     assert_eq!(payload.mode, CaptureMode::Text);
+}
+
+#[test]
+fn set_display_payload_matches_the_fixture() {
+    let fixtures = load_fixtures();
+    let env: Envelope = serde_json::from_value(fixtures["set-display"].clone()).unwrap();
+    let payload: SetDisplayPayload = serde_json::from_value(env.payload).unwrap();
+    assert_eq!(payload.display_id, 2);
 }

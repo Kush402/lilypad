@@ -50,6 +50,12 @@ pub struct CaptureConfig {
     pub width: u32,
     pub height: u32,
     pub fps: u32,
+    /// Which display to capture (`CGDirectDisplayID`). `None` — the default
+    /// and the only value a synthetic source ever sees — means the main one.
+    /// A display that has been unplugged since the caller chose it falls back
+    /// to the main display rather than failing the session; the session's own
+    /// display poll then tells the phone what it actually got.
+    pub display_id: Option<u32>,
 }
 
 impl Default for CaptureConfig {
@@ -58,7 +64,54 @@ impl Default for CaptureConfig {
             width: 1280,
             height: 720,
             fps: 30,
+            display_id: None,
         }
+    }
+}
+
+/// One display attached to this Mac, as the phone's switcher shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Display {
+    /// The OS's `CGDirectDisplayID` — stable for as long as the display stays
+    /// attached, which is all the lifetime a session needs.
+    pub id: u32,
+    pub name: String,
+    /// Points, not backing pixels: this is the size a person recognises from
+    /// System Settings, and it is only ever shown, never captured with.
+    pub width: u32,
+    pub height: u32,
+}
+
+/// Every display attached right now, left to right, so "Display 2" means the
+/// same thing here as in the Mac's own arrangement. Empty when the platform
+/// has no implementation — which the phone reads as "no switcher", the same
+/// as a Mac with one screen.
+///
+/// Cheap by design (CoreGraphics, no window-server round trip, no Screen
+/// Recording grant needed) because a live session polls it to notice a
+/// monitor being plugged in or pulled out.
+pub fn list_displays() -> Vec<Display> {
+    #[cfg(target_os = "macos")]
+    {
+        screencapturekit::list_displays()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Vec::new()
+    }
+}
+
+/// The main display's id — the one a session captures when nothing else has
+/// been chosen. The phone highlights a concrete id in its switcher, so "the
+/// default" has to be resolvable to one.
+pub fn main_display_id() -> Option<u32> {
+    #[cfg(target_os = "macos")]
+    {
+        Some(core_graphics::display::CGDisplay::main().id)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
     }
 }
 

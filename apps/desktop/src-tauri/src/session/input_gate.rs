@@ -71,6 +71,13 @@ impl InputGate {
         self.worker.set_scopes(scopes);
     }
 
+    /// Aim injection at the display the session is showing. Called when media
+    /// starts and again on every display switch — a tap on the second monitor
+    /// must not land on the first.
+    pub fn set_target_display(&mut self, display_id: Option<u32>) {
+        self.worker.set_target_display(display_id);
+    }
+
     /// Force injection off, reset both gating flags, and clear any granted
     /// scope — used on session teardown (media failure, disconnect, ...).
     /// Never let input act on a screen the viewer can no longer see

@@ -22,11 +22,12 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Result};
+use core_graphics::display::CGDisplay;
 use screencapturekit::error::SCError;
 use screencapturekit::prelude::*;
 use screencapturekit::stream::delegate_trait::SCStreamDelegateTrait;
 
-use super::{CaptureBackend, CaptureConfig};
+use super::{CaptureBackend, CaptureConfig, Display};
 use crate::media::frame::RawFrame;
 use crate::permission::PermissionStatus;
 
@@ -57,14 +58,73 @@ const FRAME_WAIT_TIMEOUT: Duration = Duration::from_secs(2);
 /// resolution/aspect-ratio mismatch, the finding's primary complaint, not
 /// frame-rate matching. See `docs/audit/m3/streaming-media.md` Finding 1 and
 /// `docs/audit/m3/prior-art.md` Finding 2.
-pub fn primary_display_resolution(max_long_edge: u32) -> Option<(u32, u32)> {
+pub fn display_resolution(display_id: Option<u32>, max_long_edge: u32) -> Option<(u32, u32)> {
     let content = SCShareableContent::get().ok()?;
-    let display = content.displays().into_iter().next()?;
+    let displays = content.displays();
+    let display = pick_display(&displays, display_id)?;
     let (w, h) = (display.width(), display.height());
     if w == 0 || h == 0 {
         return None; // degenerate report — keep the caller's existing default
     }
     Some(downscale_to_fit(w, h, max_long_edge))
+}
+
+/// The requested display, or the first one when nothing was requested or the
+/// requested one is no longer attached. Falling back rather than failing is
+/// deliberate: a monitor unplugged between the moment the phone tapped its
+/// button and the moment the pipeline rebuilds should cost a switch, not the
+/// session.
+fn pick_display(displays: &[SCDisplay], display_id: Option<u32>) -> Option<&SCDisplay> {
+    match display_id {
+        Some(id) => displays
+            .iter()
+            .find(|d| d.display_id() == id)
+            .or_else(|| displays.first()),
+        None => displays.first(),
+    }
+}
+
+/// Every attached display, left to right by its position in the Mac's own
+/// arrangement — so the phone's second button is the person's second screen.
+///
+/// CoreGraphics rather than `SCShareableContent`: this is polled during a live
+/// session to notice a monitor being plugged in or pulled out, and
+/// `SCShareableContent::get()` is a window-server round trip that also
+/// requires the Screen Recording grant. `CGDisplay::active_displays()` is a
+/// local call that needs neither.
+pub(super) fn list_displays() -> Vec<Display> {
+    let Ok(ids) = CGDisplay::active_displays() else {
+        return Vec::new();
+    };
+    let mut ordered: Vec<(f64, CGDisplay)> = ids
+        .into_iter()
+        .map(|id| {
+            let d = CGDisplay::new(id);
+            (d.bounds().origin.x, d)
+        })
+        .collect();
+    ordered.sort_by(|a, b| a.0.total_cmp(&b.0));
+    ordered
+        .into_iter()
+        .enumerate()
+        .filter_map(|(i, (_, d))| {
+            let size = d.bounds().size;
+            let (w, h) = (size.width as u32, size.height as u32);
+            if w == 0 || h == 0 {
+                return None; // a display reporting no size is one we cannot offer
+            }
+            Some(Display {
+                id: d.id,
+                name: if d.is_builtin() {
+                    "Built-in Display".to_owned()
+                } else {
+                    format!("Display {}", i + 1)
+                },
+                width: w,
+                height: h,
+            })
+        })
+        .collect()
 }
 
 /// Scale `(width, height)` down (never up) so its long edge fits within
@@ -207,6 +267,9 @@ pub struct ScreenCaptureKitSource {
     width: u32,
     height: u32,
     fps: u32,
+    /// Which display to capture; `None` means the main one. See
+    /// `pick_display` for what happens when it is unplugged first.
+    display_id: Option<u32>,
     permission_cache: Cell<Option<(Instant, bool)>>,
     stream: Option<SCStream>,
     slot: Option<Arc<FrameSlot>>,
@@ -226,6 +289,7 @@ impl ScreenCaptureKitSource {
             width: cfg.width & !1,
             height: cfg.height & !1,
             fps: cfg.fps.max(1),
+            display_id: cfg.display_id,
             permission_cache: Cell::new(None),
             stream: None,
             slot: None,
@@ -271,14 +335,12 @@ impl CaptureBackend for ScreenCaptureKitSource {
 
     fn start(&mut self) -> Result<()> {
         let content = SCShareableContent::get().map_err(map_shareable_content_error)?;
-        let display = content
-            .displays()
-            .into_iter()
-            .next()
+        let displays = content.displays();
+        let display = pick_display(&displays, self.display_id)
             .ok_or_else(|| anyhow!("no display available to capture"))?;
 
         let filter = SCContentFilter::create()
-            .with_display(&display)
+            .with_display(display)
             .with_excluding_windows(&[])
             .build();
         let config = SCStreamConfiguration::new()
@@ -423,6 +485,7 @@ mod tests {
             width: 1281,
             height: 721,
             fps: 30,
+            display_id: None,
         });
         assert_eq!(src.resolution(), (1280, 720));
     }
@@ -463,13 +526,36 @@ mod tests {
     }
 
     #[test]
-    fn primary_display_resolution_never_panics_regardless_of_permission_state() {
+    fn display_resolution_never_panics_regardless_of_permission_state() {
         // On this dev machine Screen Recording may or may not be granted to
         // the test harness process — either way, this must return an Option,
         // never panic (mirrors the sandboxed-permission acknowledgment in
         // `initialize_without_permission_reports_actionable_error_not_a_panic`
         // below).
-        let _ = primary_display_resolution(1920);
+        let _ = display_resolution(None, 1920);
+        let _ = display_resolution(Some(0xDEAD_BEEF), 1920);
+    }
+
+    #[test]
+    fn every_listed_display_has_a_name_and_a_real_size() {
+        // Runs on whatever this machine actually has attached — one display
+        // on CI, two on a desk. The invariants hold either way, and a
+        // zero-sized or unnamed entry would be a button on the phone that
+        // means nothing.
+        for d in list_displays() {
+            assert!(!d.name.is_empty(), "display {} has no name", d.id);
+            assert!(d.width > 0 && d.height > 0, "display {} has no size", d.id);
+        }
+    }
+
+    #[test]
+    fn display_names_are_unique_so_the_switcher_is_unambiguous() {
+        let displays = list_displays();
+        let mut names: Vec<&str> = displays.iter().map(|d| d.name.as_str()).collect();
+        names.sort_unstable();
+        let before = names.len();
+        names.dedup();
+        assert_eq!(before, names.len(), "two displays share a name: {names:?}");
     }
 
     #[test]

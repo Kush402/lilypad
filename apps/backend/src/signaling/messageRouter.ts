@@ -184,9 +184,12 @@ export class MessageRouter {
         return [{ kind: 'relay', to: 'mobile', msg }];
 
       case 'set-capture-mode':
-        // Mobile → desktop only: only the viewer has the mode-toggle UI, and
+      case 'set-display':
+        // Mobile → desktop only: only the viewer has the mode/display UI, and
         // only the desktop can actually rebuild its capture pipeline
-        // (docs/audit/m3/prior-art.md Finding 2).
+        // (docs/audit/m3/prior-art.md Finding 2). A display switch is the
+        // same shape of request as a mode switch and is authorized the same
+        // way — the desktop decides whether the id it names still exists.
         if (from !== 'mobile') {
           return [
             {

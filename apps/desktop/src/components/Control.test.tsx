@@ -71,9 +71,39 @@ function dto(overrides: Partial<AppStateDto> = {}): AppStateDto {
     plugin_health: { ScreenCapture: 'ok', Accessibility: 'ok', Encoder: 'not yet tested this run' },
     connection_path: null,
     presence: { state: 'online' } as const,
+    shared_display: null,
     ...overrides,
   };
 }
+
+/**
+ * A Mac with two monitors can now be watched on either one, chosen from the
+ * phone. The person sitting at the Mac is the one who cannot see that choice,
+ * so the dashboard has to say it.
+ */
+describe('which screen is being shared', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('names the display while a session is live on a multi-display Mac', async () => {
+    vi.mocked(useAppState).mockReturnValue(dto({ session: 'active', shared_display: 'Display 2' }));
+    render(<Control />);
+    await waitFor(() =>
+      expect(screen.getByTestId('session-summary').textContent).toContain('showing Display 2'),
+    );
+  });
+
+  it('says nothing extra on a Mac with one screen', async () => {
+    vi.mocked(useAppState).mockReturnValue(dto({ session: 'active', shared_display: null }));
+    render(<Control />);
+    await waitFor(() =>
+      expect(screen.getByTestId('session-summary').textContent).toBe(
+        'A device is connected and in control.',
+      ),
+    );
+  });
+});
 
 describe('Control', () => {
   beforeEach(() => {

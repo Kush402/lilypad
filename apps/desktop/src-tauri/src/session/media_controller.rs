@@ -72,7 +72,7 @@ fn session_encoder_kind() -> crate::media::EncoderKind {
 /// dimensions — there's no real display to query in that case. See
 /// `docs/audit/m3/streaming-media.md` Finding 1 and
 /// `docs/audit/m3/prior-art.md` Finding 2 (`Text` mode).
-fn resolved_pipeline_config(mode: CaptureMode) -> PipelineConfig {
+fn resolved_pipeline_config(mode: CaptureMode, display_id: Option<u32>) -> PipelineConfig {
     let (w, h) = mode.fallback_dimensions();
     let fps = mode.fps();
     let mut config = PipelineConfig {
@@ -82,6 +82,7 @@ fn resolved_pipeline_config(mode: CaptureMode) -> PipelineConfig {
             width: w,
             height: h,
             fps,
+            display_id,
         },
         encoder: crate::media::EncoderSettings {
             width: w,
@@ -108,7 +109,8 @@ fn apply_real_display_resolution(config: &mut PipelineConfig, mode: CaptureMode)
         config.capture_kind,
         crate::media::CaptureKind::ScreenCaptureKit
     ) {
-        if let Some((w, h)) = crate::media::capture::screencapturekit::primary_display_resolution(
+        if let Some((w, h)) = crate::media::capture::screencapturekit::display_resolution(
+            config.capture.display_id,
             mode.max_capture_long_edge(),
         ) {
             config.capture.width = w;
@@ -137,6 +139,10 @@ pub struct MediaController {
     /// no-op instead of an unnecessary rebuild. See
     /// `docs/audit/m3/prior-art.md` Finding 2.
     mode: CaptureMode,
+    /// Which display the running pipeline is capturing (`None` = the main
+    /// one). Tracked for the same reason as `mode`: so a repeat request for
+    /// the display already on screen costs nothing.
+    display_id: Option<u32>,
     media_fail_tx: UnboundedSender<String>,
     media_fail_rx: UnboundedReceiver<String>,
     /// Set by `pause`/`resume` (phone backgrounded, or the user explicitly
@@ -165,6 +171,7 @@ impl MediaController {
             abr: None,
             frame_size: None,
             mode: CaptureMode::default(),
+            display_id: None,
             media_fail_tx,
             media_fail_rx,
             paused: Arc::new(AtomicBool::new(false)),
@@ -197,7 +204,28 @@ impl MediaController {
     /// the session rather than leave the viewer on a stale frame while input
     /// stays live.
     pub async fn start(&mut self, peer: Arc<WebRtcPeer>) -> Result<()> {
-        self.start_with_mode(peer, self.mode).await
+        self.start_with_mode(peer, self.mode, self.display_id).await
+    }
+
+    /// The display the running pipeline was built for (`None` = the main one).
+    pub fn display_id(&self) -> Option<u32> {
+        self.display_id
+    }
+
+    /// Show a different display mid-session. Same machinery, same cost and
+    /// same brief glitch as [`set_mode`](Self::set_mode) — capture and encoder
+    /// are both built around a fixed frame size, and a different display is
+    /// usually a different size. A no-op if it is already the one on screen.
+    pub async fn set_display(
+        &mut self,
+        display_id: Option<u32>,
+        peer: Arc<WebRtcPeer>,
+    ) -> Result<()> {
+        if display_id == self.display_id && self.pipeline.is_some() {
+            return Ok(());
+        }
+        self.stop_pipeline().await;
+        self.start_with_mode(peer, self.mode, display_id).await
     }
 
     /// Switch capture/encode mode mid-session. Unlike bitrate (a true
@@ -215,11 +243,16 @@ impl MediaController {
             return Ok(());
         }
         self.stop_pipeline().await;
-        self.start_with_mode(peer, mode).await
+        self.start_with_mode(peer, mode, self.display_id).await
     }
 
-    async fn start_with_mode(&mut self, peer: Arc<WebRtcPeer>, mode: CaptureMode) -> Result<()> {
-        let config = resolved_pipeline_config(mode);
+    async fn start_with_mode(
+        &mut self,
+        peer: Arc<WebRtcPeer>,
+        mode: CaptureMode,
+        display_id: Option<u32>,
+    ) -> Result<()> {
+        let config = resolved_pipeline_config(mode, display_id);
         let fps = config.capture.fps.max(1);
         let frame_dur = Duration::from_secs_f64(1.0 / fps as f64);
 
@@ -307,6 +340,7 @@ impl MediaController {
         self.abr = Some(BitrateController::new(initial_kbps, AbrConfig::default()));
         self.frame_size = Some(pipeline.frame_size());
         self.mode = mode;
+        self.display_id = display_id;
         self.pipeline = Some(pipeline);
         self.sleep_guard = Some(crate::power::DisplaySleepGuard::new());
         Ok(())
@@ -419,7 +453,7 @@ mod tests {
         // guards against: the encoder session built for one size fed frames
         // of another. See docs/audit/m3/streaming-media.md Finding 1.
         for mode in [CaptureMode::Motion, CaptureMode::Text] {
-            let config = resolved_pipeline_config(mode);
+            let config = resolved_pipeline_config(mode, None);
             assert_eq!(config.capture.width, config.encoder.width);
             assert_eq!(config.capture.height, config.encoder.height);
             assert_eq!(config.capture.width % 2, 0);
@@ -433,7 +467,7 @@ mod tests {
     fn synthetic_capture_kind_is_never_overridden_with_a_real_display_resolution() {
         let _guard = CAPTURE_KIND_ENV_LOCK.lock().unwrap();
         std::env::set_var("LILYPAD_CAPTURE_KIND", "synthetic");
-        let config = resolved_pipeline_config(CaptureMode::Motion);
+        let config = resolved_pipeline_config(CaptureMode::Motion, None);
         std::env::remove_var("LILYPAD_CAPTURE_KIND");
         assert_eq!(config.capture_kind, crate::media::CaptureKind::Synthetic);
         // The synthetic dev path has no real display to query — dimensions
@@ -447,7 +481,7 @@ mod tests {
     fn synthetic_text_mode_falls_back_to_the_literal_1080p_fixture() {
         let _guard = CAPTURE_KIND_ENV_LOCK.lock().unwrap();
         std::env::set_var("LILYPAD_CAPTURE_KIND", "synthetic");
-        let config = resolved_pipeline_config(CaptureMode::Text);
+        let config = resolved_pipeline_config(CaptureMode::Text, None);
         std::env::remove_var("LILYPAD_CAPTURE_KIND");
         // No real display to query — Text mode's own fallback (the literal
         // "1080p" the design doc promised) applies instead of Motion's.

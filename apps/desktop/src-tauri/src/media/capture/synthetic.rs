@@ -185,6 +185,7 @@ mod tests {
             width: 1281,
             height: 721,
             fps: 30,
+            display_id: None,
         });
         assert_eq!(s.resolution(), (1280, 720));
     }
@@ -196,6 +197,7 @@ mod tests {
                 width: 320,
                 height: 240,
                 fps: 30,
+                display_id: None,
             },
             3,
         );
@@ -215,6 +217,7 @@ mod tests {
             width: 320,
             height: 240,
             fps: 30,
+            display_id: None,
         });
         s.start().unwrap();
         let f0 = s.next_frame().unwrap();

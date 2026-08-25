@@ -142,7 +142,16 @@
     "roomId": "room-fixture-01",
     "from": "desktop",
     "ts": 1700000000000,
-    "payload": { "width": 1920, "height": 1080, "mode": "motion" }
+    "payload": {
+      "width": 1920,
+      "height": 1080,
+      "mode": "motion",
+      "displays": [
+        { "id": 1, "name": "Built-in Display", "width": 2560, "height": 1600 },
+        { "id": 2, "name": "Display 2", "width": 3440, "height": 1440 }
+      ],
+      "activeDisplayId": 1
+    }
   },
   "clipboard-update": {
     "type": "clipboard-update",
@@ -150,6 +159,13 @@
     "from": "desktop",
     "ts": 1700000000000,
     "payload": { "text": "copied from the fixture" }
+  },
+  "set-display": {
+    "type": "set-display",
+    "roomId": "room-fixture-01",
+    "from": "mobile",
+    "ts": 1700000000000,
+    "payload": { "displayId": 2 }
   },
   "set-capture-mode": {
     "type": "set-capture-mode",

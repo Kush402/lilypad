@@ -159,6 +159,12 @@ impl InputDispatcher {
         self.granted_scopes = scopes;
     }
 
+    /// Point injection at the display the session is currently showing. See
+    /// [`InputBackend::set_target_display`].
+    pub fn set_target_display(&mut self, display_id: Option<u32>) {
+        self.backend.set_target_display(display_id);
+    }
+
     pub fn process_batch(&mut self, batch: InputBatch) {
         for event in batch.events {
             self.process_event(event);

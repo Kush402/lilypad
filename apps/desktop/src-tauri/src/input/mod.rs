@@ -102,6 +102,14 @@ pub trait InputBackend: Send {
     /// The modifier this OS uses for "primary" shortcuts (Cmd on macOS, Ctrl
     /// elsewhere) — lets the shortcut mapping stay OS-agnostic.
     fn primary_modifier(&self) -> Modifier;
+    /// Aim normalized coordinates at a particular display (`CGDirectDisplayID`
+    /// on macOS); `None` means the main one. A session showing the second
+    /// monitor must inject into the second monitor's slice of the global
+    /// coordinate space, or every tap lands on the first — which is why this
+    /// is on the backend rather than the dispatcher: only the backend knows
+    /// the OS's geometry. Default no-op for a platform that only ever drives
+    /// its main display.
+    fn set_target_display(&mut self, _display_id: Option<u32>) {}
     fn inject_mouse(&mut self, action: MouseAction) -> Result<()>;
     fn inject_keyboard(&mut self, action: KeyAction) -> Result<()>;
     fn inject_scroll(&mut self, action: ScrollAction) -> Result<()>;

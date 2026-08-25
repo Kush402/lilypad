@@ -140,7 +140,7 @@ export function Control() {
           this line changing under them; `polite` is what makes it reach
           everyone else, without interrupting whatever is being read. */}
       <p className="dashboard__subtitle muted" aria-live="polite" data-testid="session-summary">
-        {sessionSummary(session)}
+        {sessionSummary(session, state?.shared_display ?? null)}
       </p>
 
       {/* Silent launch-time update check; renders only when an update exists. */}
@@ -283,10 +283,19 @@ function Reachability({ presence, linked }: { presence: PresenceDto | null; link
   );
 }
 
-function sessionSummary(session: string): string {
+/**
+ * `sharedDisplay` is only ever set on a Mac with more than one screen, and it
+ * belongs in this line rather than a badge somewhere: a phone can now move the
+ * view to a different monitor, and the person sitting here should not have to
+ * work out which screen somebody else is looking at. On a single-display Mac
+ * there is nothing to disambiguate, so the sentence stays as it was.
+ */
+function sessionSummary(session: string, sharedDisplay: string | null): string {
   switch (session) {
     case 'active':
-      return 'A device is connected and in control.';
+      return sharedDisplay
+        ? `A device is connected and in control, showing ${sharedDisplay}.`
+        : 'A device is connected and in control.';
     case 'awaiting_approval':
       return 'A device is asking to connect.';
     case 'connecting':

@@ -342,6 +342,29 @@ describe('MessageRouter — set-capture-mode', () => {
   });
 });
 
+describe('MessageRouter — set-display', () => {
+  it('relays mobile → desktop (only the Mac knows which displays it has)', () => {
+    const router = new MessageRouter();
+    const room = connectedSeatsRoom();
+    const m = msg('set-display', 'mobile', { displayId: 2 });
+    expect(router.route(room, 'mobile', m)).toEqual([{ kind: 'relay', to: 'desktop', msg: m }]);
+  });
+
+  it('rejects a desktop sender — a Mac does not tell a phone which screen to show', () => {
+    const router = new MessageRouter();
+    const room = connectedSeatsRoom();
+    const actions = router.route(room, 'desktop', msg('set-display', 'desktop', { displayId: 2 }));
+    expect(actions).toEqual([
+      {
+        kind: 'reject',
+        to: 'desktop',
+        code: 'forbidden',
+        message: 'only the mobile may send this',
+      },
+    ]);
+  });
+});
+
 describe('MessageRouter — clipboard-update', () => {
   it('relays desktop → mobile (the desktop-OS-clipboard-changed direction)', () => {
     const router = new MessageRouter();

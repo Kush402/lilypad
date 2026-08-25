@@ -49,6 +49,7 @@ const ALL_MESSAGE_TYPES: SignalingType[] = [
   'frame-size',
   'clipboard-update',
   'set-capture-mode',
+  'set-display',
 ];
 
 describe('protocol contract fixtures', () => {

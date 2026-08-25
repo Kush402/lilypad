@@ -235,6 +235,16 @@ export class MobileSignaling {
     });
   }
 
+  setDisplay(displayId: number): void {
+    this.emit({
+      type: 'set-display',
+      roomId: this.roomId,
+      from: 'mobile',
+      ts: Date.now(),
+      payload: { displayId },
+    });
+  }
+
   heartbeat(): void {
     this.emit({
       type: 'heartbeat',

@@ -24,7 +24,7 @@ import { useKeepAwake } from '@sayem314/react-native-keep-awake';
 import Clipboard from '@react-native-clipboard/clipboard';
 import { journalText } from '../lib/journal';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
-import type { Modifier, CaptureMode } from '@lilypad/protocol';
+import type { Modifier, CaptureMode, DisplayInfo } from '@lilypad/protocol';
 import type { RootStackParamList } from '../types';
 import { theme } from '../theme';
 import { ViewerConnection, type ViewerState, type RecoveryDetail } from '../lib/webrtc';
@@ -142,7 +142,14 @@ export function ViewerScreen({ route, navigation }: Props) {
   const [clipboardToast, setClipboardToast] = useState(false);
   const [logCopied, setLogCopied] = useState(false);
   const [captureMode, setCaptureModeState] = useState<CaptureMode>('motion');
-  const [modeToast, setModeToast] = useState(false);
+  // One notice covers both kinds of switch — they are the same rebuild on the
+  // Mac and never happen at once.
+  const [switchNotice, setSwitchNotice] = useState<string | null>(null);
+  // Every display attached to the Mac, and the one on screen. Empty until the
+  // first `frame-size`, and empty forever against a Mac older than 0.1.10 —
+  // both of which correctly render no switcher.
+  const [displays, setDisplays] = useState<DisplayInfo[]>([]);
+  const [activeDisplayId, setActiveDisplayId] = useState<number | null>(null);
   const [confirmingDisconnect, setConfirmingDisconnect] = useState(false);
   const connRef = useRef<ViewerConnection | null>(null);
   const layout = useRef({ w: 1, h: 1 });
@@ -171,7 +178,7 @@ export function ViewerScreen({ route, navigation }: Props) {
   const interp = useRef(new TouchInterpreter());
   const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const clipboardToastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const modeToastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const switchNoticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const confirmDisconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Read inside the memoized PanResponder closures, which would otherwise
   // capture a stale `stickyMods`.
@@ -223,6 +230,12 @@ export function ViewerScreen({ route, navigation }: Props) {
         syncGeometry();
         setCaptureModeState(mode);
       },
+      onDisplays: (list, activeId) => {
+        // The Mac is the only authority on what it has attached and what it
+        // is actually showing — an optimistic highlight is corrected here.
+        setDisplays(list);
+        setActiveDisplayId(activeId);
+      },
       onClipboardUpdate: (text) => {
         Clipboard.setString(text);
         if (clipboardToastTimer.current) clearTimeout(clipboardToastTimer.current);
@@ -261,7 +274,7 @@ export function ViewerScreen({ route, navigation }: Props) {
     return () => {
       if (longPressTimer.current) clearTimeout(longPressTimer.current);
       if (clipboardToastTimer.current) clearTimeout(clipboardToastTimer.current);
-      if (modeToastTimer.current) clearTimeout(modeToastTimer.current);
+      if (switchNoticeTimer.current) clearTimeout(switchNoticeTimer.current);
       if (confirmDisconnectTimer.current) clearTimeout(confirmDisconnectTimer.current);
       for (const repeater of toolbarRepeatersRef.current.values()) repeater.stop();
       conn.close();
@@ -288,16 +301,34 @@ export function ViewerScreen({ route, navigation }: Props) {
   // `frame-size` echo) so the button feels responsive; `onFrameSize` above
   // is still the source of truth and will correct this if the switch fails
   // silently (best-effort send) or the desktop was already mid-switch.
+  const showSwitchNotice = useCallback((text: string) => {
+    if (switchNoticeTimer.current) clearTimeout(switchNoticeTimer.current);
+    setSwitchNotice(text);
+    switchNoticeTimer.current = setTimeout(() => setSwitchNotice(null), MODE_TOAST_MS);
+  }, []);
+
   const requestCaptureMode = useCallback(
     (mode: CaptureMode) => {
       if (mode === captureMode) return;
       connRef.current?.requestCaptureMode(mode);
       setCaptureModeState(mode);
-      if (modeToastTimer.current) clearTimeout(modeToastTimer.current);
-      setModeToast(true);
-      modeToastTimer.current = setTimeout(() => setModeToast(false), MODE_TOAST_MS);
+      showSwitchNotice(`Switching to ${MODE_LABEL[mode]} Mode…`);
     },
-    [captureMode],
+    [captureMode, showSwitchNotice],
+  );
+
+  // Same optimism as the mode toggle: highlight the tapped display at once so
+  // the row feels immediate, and let the desktop's next `frame-size` be the
+  // final word — including when it answers with a different display because
+  // the one tapped had just been unplugged.
+  const requestDisplay = useCallback(
+    (display: DisplayInfo) => {
+      if (display.id === activeDisplayId) return;
+      connRef.current?.requestDisplay(display.id);
+      setActiveDisplayId(display.id);
+      showSwitchNotice(`Switching to ${display.name}…`);
+    },
+    [activeDisplayId, showSwitchNotice],
   );
 
   // "Still there?" nudge — only meaningful while genuinely waiting on a
@@ -572,8 +603,46 @@ export function ViewerScreen({ route, navigation }: Props) {
     }
   }, [navigation, isLandscape]);
 
+  // A Mac with one screen has nothing to switch between, so the row is not
+  // there at all — an Apple-shaped answer to "what does the empty state look
+  // like". Deliberately NOT gated on `canControl`: looking at the other
+  // monitor is exactly as useful in a view-only session.
+  const displayBlock =
+    displays.length > 1 ? (
+      <View style={styles.modeRow}>
+        <Text style={styles.rowLabel}>Screen</Text>
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          style={styles.displayScroll}
+          contentContainerStyle={styles.displayRow}
+        >
+          {displays.map((d) => {
+            const active = d.id === activeDisplayId;
+            return (
+              <Pressable
+                key={d.id}
+                testID={`display-${d.id}`}
+                style={[styles.modeKey, active && styles.modeKeyActive]}
+                onPress={() => requestDisplay(d)}
+                accessibilityRole="button"
+                accessibilityState={{ selected: active }}
+                accessibilityLabel={d.name}
+                // The size is the thing that tells two externals apart, and it
+                // is the one detail there is no room for on the button.
+                accessibilityHint={`Show this screen · ${d.width} by ${d.height}`}
+              >
+                <Text style={[styles.keyText, active && styles.stickyKeyTextActive]}>{d.name}</Text>
+              </Pressable>
+            );
+          })}
+        </ScrollView>
+      </View>
+    ) : null;
+
   const controlsBlock = (
     <>
+      {displayBlock}
       {canControl ? (
         <View style={styles.modeRow}>
           {(['motion', 'text'] as const).map((m) => {
@@ -855,9 +924,9 @@ export function ViewerScreen({ route, navigation }: Props) {
             <Text style={styles.toastText}>Copied from Mac</Text>
           </View>
         ) : null}
-        {modeToast ? (
+        {switchNotice ? (
           <View style={styles.toast} testID="mode-toast">
-            <Text style={styles.toastText}>Switching to {MODE_LABEL[captureMode]} Mode…</Text>
+            <Text style={styles.toastText}>{switchNotice}</Text>
           </View>
         ) : null}
       </View>
@@ -1168,6 +1237,11 @@ const styles = StyleSheet.create({
   stickyKeyTextActive: { color: theme.onAccent },
   stickyHint: { color: theme.muted, fontSize: 11, flex: 1 },
   modeRow: { flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' },
+  rowLabel: { color: theme.muted, fontSize: 13, fontWeight: '600' },
+  // `flexShrink` so the label keeps its width and the pills take the rest;
+  // without it the ScrollView claims the whole row and pushes the label out.
+  displayScroll: { flexGrow: 0, flexShrink: 1 },
+  displayRow: { flexDirection: 'row', gap: 8, alignItems: 'center' },
   modeKey: {
     backgroundColor: theme.panel,
     borderColor: theme.line,

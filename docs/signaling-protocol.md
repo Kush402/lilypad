@@ -39,8 +39,9 @@ Every message shares:
 | `disconnect`       | either                    | `{ reason? }` — graceful teardown                           |
 | `heartbeat`        | peer → server             | `{ seq? }` — liveness; stale peers are reaped               |
 | `session-end`      | server → both             | `{ reason }`                                                |
-| `frame-size`       | desktop → mobile          | `{ width, height, mode }` — capture size for touch mapping  |
+| `frame-size`       | desktop → mobile          | `{ width, height, mode, displays?, activeDisplayId? }`      |
 | `set-capture-mode` | mobile → desktop          | `{ mode: "motion" \| "text" }` — switch capture/encode mode |
+| `set-display`      | mobile → desktop          | `{ displayId }` — show a different attached display         |
 | `clipboard-update` | desktop → mobile          | `{ text }` — desktop clipboard changed                      |
 | `error`            | server → peer             | `{ code, message }`                                         |
 | `ping` / `pong`    | keepalive                 | `{}`                                                        |
@@ -119,3 +120,13 @@ peers + smoke-tested over live WebSockets); the Fastify route is a thin adapter.
 (react-native-webrtc) peers consuming this signaling, the full media path
 (capture → encode → RTP), `frame-size`/`set-capture-mode` mode switching, and
 `clipboard-update` sync — verified end-to-end on real hardware.
+
+**Displays.** `frame-size` carries the whole display picture — every attached
+display and which one is on screen — rather than a message of its own, because
+the moments it changes are exactly the moments the frame size does: the
+pipeline starting, a mode switch, a display switch, and a monitor being plugged
+in or pulled out. Both fields are optional, so a desktop older than 0.1.10
+still validates and the phone simply shows no switcher, which is also what a
+single-display Mac shows. `set-display` names an id from that list; the desktop
+answers with what it actually switched to, which may be the main display if the
+one named has since been unplugged.

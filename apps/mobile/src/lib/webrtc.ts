@@ -17,6 +17,7 @@ import {
   type SessionScope,
   type SignalingMessage,
   type CaptureMode,
+  type DisplayInfo,
   type AgentStep,
   type AgentRunEnd,
 } from '@lilypad/protocol';
@@ -57,6 +58,13 @@ export interface ViewerCallbacks {
    * on `session-start`'s follow-up `frame-size` message and on any later
    * resolution or mode change. */
   onFrameSize: (width: number, height: number, mode: CaptureMode) => void;
+  /** Which displays the Mac has attached and which one the video is showing.
+   * Rides the same `frame-size` message as the resolution, because those are
+   * the same moments: the pipeline starting, a mode switch, a display switch,
+   * and a monitor being plugged in or pulled out. Optional and possibly
+   * empty — a Mac running a version older than 0.1.10 sends no list, and the
+   * switcher stays hidden, exactly as it does on a single-screen Mac. */
+  onDisplays?: (displays: DisplayInfo[], activeId: number | null) => void;
   /** The desktop's OS clipboard changed. See
    * `docs/audit/m3/prior-art.md` Finding 6. */
   onClipboardUpdate: (text: string) => void;
@@ -323,6 +331,13 @@ export class ViewerConnection {
     this.sig.setCaptureMode(mode);
   }
 
+  /** Ask the desktop to show a different display. Costs the same rebuild as a
+   * mode switch, so the UI gives it the same brief "Switching…" feedback. */
+  requestDisplay(displayId: number): void {
+    record('display requested', String(displayId));
+    this.sig.setDisplay(displayId);
+  }
+
   /** Dispatch a natural-language task to the desktop agent. Returns the runId
    * so the caller can correlate the step feed and later stop/decision calls. */
   sendAgentCommand(text: string): string {
@@ -391,6 +406,7 @@ export class ViewerConnection {
         // touches onto the letterboxed video rather than the whole view.
         // See docs/audit/m3/input-touch.md Finding 1.
         this.cb.onFrameSize(m.payload.width, m.payload.height, m.payload.mode);
+        this.cb.onDisplays?.(m.payload.displays ?? [], m.payload.activeDisplayId ?? null);
         break;
       case 'clipboard-update':
         // The desktop's OS clipboard changed — mirror it onto the phone's.

@@ -35,6 +35,7 @@ describe('Diagnostics', () => {
       plugin_health: { ScreenCapture: 'ok', Accessibility: 'degraded: not granted' },
       connection_path: null,
       presence: { state: 'online' } as const,
+      shared_display: null,
     } satisfies AppStateDto);
 
     render(<Diagnostics />);
@@ -62,6 +63,7 @@ describe('Diagnostics', () => {
       plugin_health: {},
       connection_path: path,
       presence: { state: 'online' } as const,
+      shared_display: null,
     } satisfies AppStateDto);
 
     render(<Diagnostics />);
@@ -78,6 +80,7 @@ describe('Diagnostics', () => {
       plugin_health: {},
       connection_path: null,
       presence: { state: 'online' } as const,
+      shared_display: null,
     } satisfies AppStateDto);
 
     render(<Diagnostics />);
@@ -109,6 +112,7 @@ describe('the report a customer can send', () => {
     plugin_health: { ScreenCapture: 'ok', Accessibility: 'degraded: not granted' },
     connection_path: 'relay',
     presence: { state: 'refused' },
+    shared_display: null,
   } satisfies AppStateDto;
 
   it('carries every fact a support conversation opens with', () => {
@@ -161,6 +165,7 @@ describe('Diagnostics — the log file', () => {
     plugin_health: {},
     connection_path: null,
     presence: { state: 'online' } as const,
+    shared_display: null,
   } satisfies AppStateDto;
 
   it('names the log path in the report support is asked to paste', () => {

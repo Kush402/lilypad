@@ -37,6 +37,7 @@ jest.mock('../lib/webrtc', () => {
           start: jest.fn().mockResolvedValue(undefined),
           close: jest.fn(),
           requestCaptureMode: jest.fn(),
+          requestDisplay: jest.fn(),
         };
         instances.push(inst);
         return inst;
@@ -376,6 +377,115 @@ describe('ViewerScreen', () => {
       // Now already in 'text' — pressing "Text" again is a no-op.
       fireEvent.press(screen.getByTestId('mode-toggle-text'));
       expect(lastConn().requestCaptureMode).not.toHaveBeenCalled();
+    });
+  });
+
+  /**
+   * A laptop plugged into a monitor is the ordinary case, and until now
+   * Lilypad could only ever show the built-in screen — the second display
+   * existed and was unreachable.
+   */
+  describe('the display switcher', () => {
+    const twoDisplays = [
+      { id: 1, name: 'Built-in Display', width: 2560, height: 1600 },
+      { id: 2, name: 'Display 2', width: 3440, height: 1440 },
+    ];
+
+    it('is not there at all on a Mac with one screen', async () => {
+      renderViewer();
+      await act(async () => {
+        lastConn().cb.onDisplays?.(
+          [{ id: 1, name: 'Built-in Display', width: 2560, height: 1600 }],
+          1,
+        );
+      });
+      expect(screen.queryByTestId('display-1')).toBeNull();
+    });
+
+    it('appears once a second display is attached', async () => {
+      renderViewer();
+      await act(async () => {
+        lastConn().cb.onDisplays?.(twoDisplays, 1);
+      });
+      expect(screen.getByTestId('display-1')).toBeTruthy();
+      expect(screen.getByTestId('display-2')).toBeTruthy();
+      expect(screen.getByText('Built-in Display')).toBeTruthy();
+    });
+
+    it('asks the Mac to switch, and says so while it rebuilds', async () => {
+      renderViewer();
+      const conn = lastConn();
+      await act(async () => {
+        conn.cb.onDisplays?.(twoDisplays, 1);
+      });
+
+      fireEvent.press(screen.getByTestId('display-2'));
+
+      expect(conn.requestDisplay).toHaveBeenCalledWith(2);
+      expect(screen.getByText('Switching to Display 2…')).toBeTruthy();
+    });
+
+    it('does not re-request the display already on screen', async () => {
+      renderViewer();
+      const conn = lastConn();
+      await act(async () => {
+        conn.cb.onDisplays?.(twoDisplays, 1);
+      });
+
+      fireEvent.press(screen.getByTestId('display-1'));
+
+      expect(conn.requestDisplay).not.toHaveBeenCalled();
+    });
+
+    /**
+     * The optimistic highlight is a guess. If the tapped monitor was unplugged
+     * a moment earlier, the Mac answers with the display it actually switched
+     * to — and that answer, not the tap, is what the row must show.
+     */
+    it('defers to what the Mac says it actually switched to', async () => {
+      renderViewer();
+      const conn = lastConn();
+      await act(async () => {
+        conn.cb.onDisplays?.(twoDisplays, 1);
+      });
+
+      fireEvent.press(screen.getByTestId('display-2'));
+      expect(screen.getByTestId('display-2').props.accessibilityState).toMatchObject({
+        selected: true,
+      });
+
+      await act(async () => {
+        conn.cb.onDisplays?.(twoDisplays, 1); // the Mac stayed on the built-in
+      });
+      expect(screen.getByTestId('display-2').props.accessibilityState).toMatchObject({
+        selected: false,
+      });
+      expect(screen.getByTestId('display-1').props.accessibilityState).toMatchObject({
+        selected: true,
+      });
+    });
+
+    /** Looking at the other monitor is exactly as useful without control. */
+    it('is offered in a view-only session too', async () => {
+      renderViewer(['view']);
+      await act(async () => {
+        lastConn().cb.onDisplays?.(twoDisplays, 1);
+      });
+      expect(screen.getByTestId('display-2')).toBeTruthy();
+      expect(screen.queryByTestId('mode-toggle-text')).toBeNull();
+    });
+
+    it('drops the row again when the second monitor is unplugged', async () => {
+      renderViewer();
+      await act(async () => {
+        lastConn().cb.onDisplays?.(twoDisplays, 1);
+      });
+      expect(screen.getByTestId('display-2')).toBeTruthy();
+
+      await act(async () => {
+        lastConn().cb.onDisplays?.([twoDisplays[0]!], 1);
+      });
+      expect(screen.queryByTestId('display-2')).toBeNull();
     });
   });
 

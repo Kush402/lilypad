@@ -25,7 +25,7 @@ use core_graphics::event::{
     ScrollEventUnit,
 };
 use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
-use core_graphics::geometry::CGPoint;
+use core_graphics::geometry::{CGPoint, CGRect};
 
 use super::{
     InputBackend, KeyAction, Modifier, MouseAction, PermissionStatus, PointerButton, Result,
@@ -81,6 +81,9 @@ pub struct MacInputBackend {
     /// (checked_at, was_trusted) — see the module-level note on why this is
     /// cached instead of calling `AXIsProcessTrusted()` on every check.
     permission_cache: Cell<Option<(Instant, bool)>>,
+    /// The display the session is showing (`CGDirectDisplayID`), or `None` for
+    /// the main one. See `screen_point`.
+    target_display: Option<u32>,
 }
 
 impl MacInputBackend {
@@ -88,6 +91,7 @@ impl MacInputBackend {
         Self {
             initialized: false,
             permission_cache: Cell::new(None),
+            target_display: None,
         }
     }
 
@@ -111,8 +115,19 @@ impl MacInputBackend {
             .map_err(|_| anyhow::anyhow!("failed to create CGEventSource"))
     }
 
-    /// Main display size in points, used to map normalized 0..1 coordinates
-    /// to the absolute screen space CGEvent expects.
+    /// The captured display's rectangle in points, used to map normalized
+    /// 0..1 coordinates to the absolute screen space CGEvent expects.
+    ///
+    /// CGEvent coordinates are GLOBAL: every display occupies its own
+    /// rectangle in one shared space, with only the main display's origin at
+    /// (0, 0). So the origin has to be added, or a session showing the second
+    /// monitor injects every tap onto the first — the display switcher's
+    /// whole point, silently undone. For the main display the origin is (0, 0)
+    /// and this is arithmetically identical to what it replaced.
+    ///
+    /// A display that has been unplugged since the switch reports a zero rect;
+    /// fall back to the main display rather than injecting at (0, 0), which
+    /// on macOS is the menu bar.
     ///
     /// Coordinates arrive as raw `f64` from the phone (JSON), so a modified or
     /// buggy client could send out-of-range or non-finite values. Clamp to the
@@ -120,18 +135,19 @@ impl MacInputBackend {
     /// injected event must always land on the actual screen, never at a
     /// degenerate (NaN) or off-screen point. See the 2026-07-19 security audit.
     fn screen_point(&self, x: f64, y: f64) -> CGPoint {
-        let bounds = CGDisplay::main().bounds();
-        let clamp01 = |v: f64| {
-            if v.is_finite() {
-                v.clamp(0.0, 1.0)
-            } else {
-                0.0
+        map_normalized(self.target_bounds(), x, y)
+    }
+
+    /// The target display's global rectangle, or the main display's when no
+    /// display has been chosen or the chosen one has gone away.
+    fn target_bounds(&self) -> CGRect {
+        if let Some(id) = self.target_display {
+            let bounds = CGDisplay::new(id).bounds();
+            if bounds.size.width > 0.0 && bounds.size.height > 0.0 {
+                return bounds;
             }
-        };
-        CGPoint::new(
-            bounds.size.width * clamp01(x),
-            bounds.size.height * clamp01(y),
-        )
+        }
+        CGDisplay::main().bounds()
     }
 
     fn require_permission(&self) -> anyhow::Result<()> {
@@ -226,6 +242,10 @@ impl InputBackend for MacInputBackend {
             );
         }
         Ok(())
+    }
+
+    fn set_target_display(&mut self, display_id: Option<u32>) {
+        self.target_display = display_id;
     }
 
     fn permission_status(&self) -> PermissionStatus {
@@ -470,9 +490,98 @@ fn code_to_keycode(code: &str) -> Option<u16> {
     })
 }
 
+/// Normalized 0..1 → a point inside `bounds`, in CGEvent's global space.
+/// Free-standing so the arithmetic can be tested against a second display's
+/// rectangle without one being plugged in.
+fn map_normalized(bounds: CGRect, x: f64, y: f64) -> CGPoint {
+    let clamp01 = |v: f64| {
+        if v.is_finite() {
+            v.clamp(0.0, 1.0)
+        } else {
+            0.0
+        }
+    };
+    CGPoint::new(
+        bounds.origin.x + bounds.size.width * clamp01(x),
+        bounds.origin.y + bounds.size.height * clamp01(y),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core_graphics::geometry::CGSize;
+
+    fn rect(x: f64, y: f64, w: f64, h: f64) -> CGRect {
+        CGRect::new(&CGPoint::new(x, y), &CGSize::new(w, h))
+    }
+
+    /// The main display's origin is (0, 0), so this is the behaviour that
+    /// existed before displays could be switched — pinned so the added origin
+    /// term can never move a single-display session's taps.
+    #[test]
+    fn the_main_display_maps_exactly_as_it_always_did() {
+        let main = rect(0.0, 0.0, 1512.0, 982.0);
+        let p = map_normalized(main, 0.5, 0.25);
+        assert_eq!((p.x, p.y), (756.0, 245.5));
+    }
+
+    /// The whole point of the switcher: a tap on the second monitor has to
+    /// land on the second monitor. Without the origin term this returns
+    /// (1720, 720) — a point on the BUILT-IN display, which is what every tap
+    /// would have hit.
+    #[test]
+    fn a_second_display_maps_into_its_own_slice_of_the_global_space() {
+        let second = rect(1512.0, 0.0, 3440.0, 1440.0);
+        let p = map_normalized(second, 0.5, 0.5);
+        assert_eq!((p.x, p.y), (1512.0 + 1720.0, 720.0));
+    }
+
+    /// Displays can sit above or to the left of the main one, which macOS
+    /// expresses as a NEGATIVE origin.
+    #[test]
+    fn a_display_left_of_the_main_one_maps_into_negative_space() {
+        let left = rect(-1920.0, -200.0, 1920.0, 1080.0);
+        let p = map_normalized(left, 0.0, 0.0);
+        assert_eq!((p.x, p.y), (-1920.0, -200.0));
+    }
+
+    /// A modified client can send anything; an injected event must always land
+    /// on the target display, never outside it and never at NaN.
+    #[test]
+    fn hostile_coordinates_still_land_inside_the_target_display() {
+        let second = rect(1512.0, 0.0, 3440.0, 1440.0);
+        for (x, y) in [
+            (-5.0, -5.0),
+            (99.0, 99.0),
+            (f64::NAN, f64::NAN),
+            (f64::INFINITY, f64::NEG_INFINITY),
+        ] {
+            let p = map_normalized(second, x, y);
+            assert!(
+                (1512.0..=1512.0 + 3440.0).contains(&p.x),
+                "x {} escaped the display for input {x}",
+                p.x
+            );
+            assert!(
+                (0.0..=1440.0).contains(&p.y),
+                "y {} escaped the display for input {y}",
+                p.y
+            );
+        }
+    }
+
+    /// An id for a monitor that was unplugged mid-session reports a zero rect.
+    /// Falling back to the main display keeps taps on a real screen instead of
+    /// pinning them to the global origin, which on macOS is the menu bar.
+    #[test]
+    fn an_unplugged_display_falls_back_to_the_main_one() {
+        let mut backend = MacInputBackend::new();
+        backend.set_target_display(Some(0xDEAD_BEEF));
+        let bounds = backend.target_bounds();
+        assert_eq!(bounds.size.width, CGDisplay::main().bounds().size.width);
+        assert!(bounds.size.width > 0.0);
+    }
 
     #[test]
     fn maps_known_codes() {

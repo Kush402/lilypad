@@ -96,6 +96,11 @@ pub struct AppState {
     /// question asked *after* hanging up, and clearing it on `Ended` would
     /// answer it only while nobody was asking.
     pub connection_path: Option<String>,
+    /// The display the live session is showing, named as the phone names it.
+    /// `None` on a one-screen Mac (nothing to disambiguate) and cleared when
+    /// the session ends — unlike `connection_path`, this one is only ever
+    /// asked about while somebody is watching.
+    pub shared_display: Option<String>,
 }
 
 impl AppState {
@@ -113,6 +118,7 @@ impl AppState {
             link_state: crate::auth::LinkState::Unknown("not checked yet".to_owned()),
             presence: PresenceState::Starting,
             connection_path: None,
+            shared_display: None,
         }
     }
 }
@@ -166,4 +172,7 @@ pub struct AppStateDto {
     pub connection_path: Option<String>,
     /// Whether a phone can ring this Mac right now — see `PresenceState`.
     pub presence: PresenceState,
+    /// Which screen the live session is showing, when the Mac has more than
+    /// one. `null` otherwise.
+    pub shared_display: Option<String>,
 }

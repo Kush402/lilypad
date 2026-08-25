@@ -191,6 +191,22 @@ const disconnect = z.object({
 export const CaptureModeSchema = z.enum(['motion', 'text']);
 export type CaptureMode = z.infer<typeof CaptureModeSchema>;
 
+/** A Mac can have several displays and Lilypad shows one of them at a time.
+ * `id` is the OS's own `CGDirectDisplayID` — stable while the display stays
+ * attached, which is exactly the lifetime of a session's use of it. The name
+ * is what the phone puts on the button ("Built-in Display", "Display 2"). */
+export const DisplayInfoSchema = z.object({
+  id: z.number().int().nonnegative(),
+  name: z.string().min(1).max(64),
+  width: z.number().int().positive().max(16_384),
+  height: z.number().int().positive().max(16_384),
+});
+export type DisplayInfo = z.infer<typeof DisplayInfoSchema>;
+
+/** Nobody plugs sixteen monitors into a MacBook, and an unbounded array on a
+ * wire message is a memory-shaped hole. */
+const MAX_DISPLAYS = 16;
+
 /**
  * Desktop → mobile: the current capture resolution, in pixels, and which
  * capture mode produced it. The phone renders the video letterboxed
@@ -209,6 +225,13 @@ const frameSize = z.object({
     width: z.number().int().positive().max(16_384),
     height: z.number().int().positive().max(16_384),
     mode: CaptureModeSchema,
+    /** Every display attached to the Mac right now. Optional because a
+     * desktop older than 0.1.10 sends none, and a phone that has updated
+     * first must not reject its `frame-size` — the switcher simply stays
+     * hidden, which is also what a single-display Mac shows. */
+    displays: z.array(DisplayInfoSchema).max(MAX_DISPLAYS).optional(),
+    /** Which of `displays` the video is currently showing. */
+    activeDisplayId: z.number().int().nonnegative().optional(),
   }),
 });
 
@@ -224,6 +247,21 @@ const setCaptureMode = z.object({
   type: z.literal('set-capture-mode'),
   ...envelope,
   payload: z.object({ mode: CaptureModeSchema }),
+});
+
+/**
+ * Mobile → desktop: show a different display. Same cost as a mode switch —
+ * a full capture+encoder rebuild, since neither backend can be resized in
+ * place — so the phone shows the same kind of brief "Switching…" feedback.
+ *
+ * An unknown or unplugged id is not an error: the desktop falls back to its
+ * main display and reports what it actually did in the next `frame-size`,
+ * which is the only thing the phone ever trusts about the current display.
+ */
+const setDisplay = z.object({
+  type: z.literal('set-display'),
+  ...envelope,
+  payload: z.object({ displayId: z.number().int().nonnegative() }),
 });
 
 /**
@@ -311,6 +349,7 @@ export const SignalingMessageSchema = z.discriminatedUnion('type', [
   frameSize,
   clipboardUpdate,
   setCaptureMode,
+  setDisplay,
   peerStatus,
 ]);
 export type SignalingMessage = z.infer<typeof SignalingMessageSchema>;

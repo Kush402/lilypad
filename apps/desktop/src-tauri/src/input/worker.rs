@@ -18,6 +18,7 @@ enum Msg {
     Bytes(Vec<u8>),
     SetEnabled(bool),
     SetScopes(HashSet<Scope>),
+    SetTargetDisplay(Option<u32>),
     Shutdown,
 }
 
@@ -78,6 +79,7 @@ impl InputWorker {
                         }
                         Msg::SetEnabled(enabled) => dispatcher.set_enabled(enabled),
                         Msg::SetScopes(scopes) => dispatcher.set_scopes(scopes),
+                        Msg::SetTargetDisplay(id) => dispatcher.set_target_display(id),
                         Msg::Shutdown => break,
                     }
                 }
@@ -122,6 +124,12 @@ impl InputWorker {
     /// `InputDispatcher::process_batch`.
     pub fn set_scopes(&self, scopes: HashSet<Scope>) {
         let _ = self.tx.send(Msg::SetScopes(scopes));
+    }
+
+    /// Follow the session's display switch, so taps keep landing on the screen
+    /// the phone is actually looking at.
+    pub fn set_target_display(&self, display_id: Option<u32>) {
+        let _ = self.tx.send(Msg::SetTargetDisplay(display_id));
     }
 
     pub fn metrics(&self) -> Arc<InputMetrics> {

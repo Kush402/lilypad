@@ -41,6 +41,9 @@ export interface AppStateDto {
   connection_path: 'lan' | 'direct' | 'relay' | null;
   /** Whether a phone can ring this Mac right now — see `PresenceDto`. */
   presence: PresenceDto;
+  /** Which screen the live session is showing, when this Mac has more than
+   * one. `null` on a single-display Mac and once the session ends. */
+  shared_display: string | null;
 }
 
 export const api = {

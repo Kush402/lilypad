@@ -33,6 +33,7 @@ function mockState(session: string) {
     plugin_health: {},
     connection_path: null,
     presence: { state: 'online' } as const,
+    shared_display: null,
   });
 }
 

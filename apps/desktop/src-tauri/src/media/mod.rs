@@ -13,7 +13,10 @@ pub mod mode;
 pub mod pipeline;
 
 pub use abr::{AbrConfig, BitrateController};
-pub use capture::{create_capture, CaptureBackend, CaptureConfig, CaptureKind};
+pub use capture::{
+    create_capture, list_displays, main_display_id, CaptureBackend, CaptureConfig, CaptureKind,
+    Display,
+};
 pub use encoder::{create_encoder, EncodedSample, EncoderKind, EncoderSettings, VideoEncoder};
 pub use metrics::{MetricsSnapshot, PipelineMetrics};
 pub use mode::CaptureMode;

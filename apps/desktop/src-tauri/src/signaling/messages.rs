@@ -181,6 +181,23 @@ impl CaptureMode {
     }
 }
 
+/// One attached display, as the phone's switcher shows it. `id` is the OS's
+/// `CGDirectDisplayID`; `name` is ours to write, because neither
+/// ScreenCaptureKit nor CoreGraphics hands out the marketing name a person
+/// would recognise.
+///
+/// ponytail: names are positional ("Display 2") rather than the monitor's own
+/// EDID name. `NSScreen.localizedName` has the real one, but reading it means
+/// an AppKit main-thread hop from a pipeline that runs off-thread — worth
+/// doing the day a customer with two identical externals asks which is which.
+#[derive(Serialize, Debug, Clone, PartialEq, Eq)]
+pub struct DisplayInfo {
+    pub id: u32,
+    pub name: String,
+    pub width: u32,
+    pub height: u32,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Envelope {
     #[serde(rename = "type")]
@@ -270,11 +287,24 @@ impl Envelope {
     /// can map touches onto the letterboxed video content rect rather than
     /// the whole view (`docs/audit/m3/input-touch.md` Finding 1) and show
     /// which capture mode is active (`docs/audit/m3/prior-art.md` Finding 2).
-    pub fn frame_size(room_id: &str, width: u32, height: u32, mode: CaptureMode) -> Self {
+    pub fn frame_size(
+        room_id: &str,
+        width: u32,
+        height: u32,
+        mode: CaptureMode,
+        displays: &[DisplayInfo],
+        active_display_id: Option<u32>,
+    ) -> Self {
         Self::desktop(
             "frame-size",
             room_id,
-            serde_json::json!({ "width": width, "height": height, "mode": mode.as_str() }),
+            serde_json::json!({
+                "width": width,
+                "height": height,
+                "mode": mode.as_str(),
+                "displays": displays,
+                "activeDisplayId": active_display_id,
+            }),
         )
     }
     /// Desktop → mobile: the desktop's OS clipboard changed. See
@@ -395,6 +425,15 @@ pub struct SetCaptureModePayload {
     pub mode: CaptureMode,
 }
 
+/// Mobile → desktop: show a different display. The id is checked against the
+/// displays actually attached when the switch happens — an unplugged one
+/// falls back to the main display rather than failing the request.
+#[derive(Deserialize, Debug, Clone, Copy)]
+pub struct SetDisplayPayload {
+    #[serde(rename = "displayId")]
+    pub display_id: u32,
+}
+
 /// Server → desktop (presence room, M5.4): a trusted phone asked to connect
 /// without a QR. `session_room_id` is the fresh, room-auth-bound room the
 /// desktop's session runner should join; `auto_approve` reflects the pair's
@@ -464,12 +503,35 @@ mod tests {
 
     #[test]
     fn frame_size_payload_shape() {
-        let v =
-            serde_json::to_value(Envelope::frame_size("r", 1920, 1080, CaptureMode::Text)).unwrap();
+        let displays = vec![DisplayInfo {
+            id: 7,
+            name: "Built-in Display".to_owned(),
+            width: 2560,
+            height: 1600,
+        }];
+        let v = serde_json::to_value(Envelope::frame_size(
+            "r",
+            1920,
+            1080,
+            CaptureMode::Text,
+            &displays,
+            Some(7),
+        ))
+        .unwrap();
         assert_eq!(v["type"], "frame-size");
         assert_eq!(v["payload"]["width"], 1920);
         assert_eq!(v["payload"]["height"], 1080);
         assert_eq!(v["payload"]["mode"], "text");
+        assert_eq!(v["payload"]["displays"][0]["id"], 7);
+        assert_eq!(v["payload"]["displays"][0]["name"], "Built-in Display");
+        assert_eq!(v["payload"]["activeDisplayId"], 7);
+    }
+
+    #[test]
+    fn set_display_payload_parses_the_wire_camel_case_name() {
+        let payload: SetDisplayPayload =
+            serde_json::from_value(serde_json::json!({ "displayId": 42 })).unwrap();
+        assert_eq!(payload.display_id, 42);
     }
 
     #[test]
