@@ -225,12 +225,19 @@ export function AccountDevicesScreen({ route, navigation }: Props): React.JSX.El
                   ) : null}
                 </Text>
               )}
+              {/* When it was last used, then what it is running, then the id.
+                  The id led this line until 2026-08-25, back when every row
+                  was called "macos desktop" and a fingerprint was the only way
+                  to tell two of them apart. Now that a device carries its own
+                  name, leading with `…479b0d` is leading with the one thing
+                  the reader cannot use — it stays, last, because it is what
+                  support asks for. */}
               <Text style={styles.cardMeta}>
-                {item.fingerprint} · {lastSeenLabel(item)}
+                {lastSeenLabel(item)}
                 {/* The first question any support conversation asks, put where
                     the person answering it can read it out. Omitted rather
                     than guessed when the device has not reported one. */}
-                {item.appVersion ? ` · v${item.appVersion}` : ''}
+                {item.appVersion ? ` · v${item.appVersion}` : ''} · {item.fingerprint}
               </Text>
             </View>
 

@@ -112,6 +112,24 @@ describe('AccountDevicesScreen', () => {
     expect(screen.getByText(/ios phone/)).toBeTruthy();
   });
 
+  it('leads a row with when it was last used, not with its fingerprint', async () => {
+    // The id led this line back when every row was called "macos desktop" and
+    // a fingerprint was the only way to tell two of them apart. A device now
+    // carries its own name, so leading with `…123456` leads with the one thing
+    // the reader cannot use. It stays on the line — support asks for it — at
+    // the end.
+    (listAccountDevices as jest.Mock).mockResolvedValue([
+      device({ name: 'Work MacBook', appVersion: '0.1.11' }),
+    ]);
+
+    renderScreen();
+
+    const meta = await screen.findByText(/…123456/);
+    const text = meta.props.children.flat(9).join('');
+    expect(text.indexOf('…123456')).toBeGreaterThan(text.indexOf('v0.1.11'));
+    expect(text.indexOf('v0.1.11')).toBeGreaterThan(0);
+  });
+
   // The whole point of the indicator: it must come from a live session, and a
   // reachable-but-idle laptop is not one.
   it('says when a device is in a session right now', async () => {
