@@ -517,11 +517,34 @@ check(
   `HTTP ${refreshAfterRevoke.status} — a 200 means the stolen machine can still refresh`,
 );
 
-// Restoring a removed laptop is now "sign in on it again", which is what the
-// message on it says. It needs a FRESH account session: enrolling clears
-// `revoked_at`, so a token minted before the revocation is refused on purpose —
-// otherwise a stolen laptop could undo its own removal with the credential it
-// was already holding.
+// The stale-credential guard, FIRST — while the laptop is still removed, which
+// is the only state in which it means anything. Enrolling clears `revoked_at`,
+// so a token minted before the removal must not be accepted: otherwise a
+// stolen laptop undoes its own removal with the credential it was already
+// holding, and the ten-minute access-token lifetime becomes a ten-minute
+// window to reverse the one act that exists to stop it.
+//
+// Ordering matters and got this wrong once: run after the restore below, the
+// row is no longer revoked and a 200 means nothing at all.
+const staleToken = await post(
+  '/devices/enroll',
+  {
+    ...(await proof(laptop)),
+    kind: 'desktop',
+    fingerprint: `desktop-${tag}`,
+    platform: 'macos',
+  },
+  login.json.accessToken,
+);
+check(
+  'a token minted before the removal cannot undo it',
+  staleToken.status === 403 && staleToken.json.error === 'device_revoked',
+  `HTTP ${staleToken.status} ${staleToken.json.error ?? ''} — a 200 means a stolen laptop can un-revoke itself`,
+);
+
+// And then the legitimate recovery: signing in again on the machine, which is
+// what the message on it says. It needs a FRESH account session, which is
+// exactly the distinction the check above rests on.
 const freshLogin = await post('/auth/password', { email, password });
 const reEnroll = await post(
   '/devices/enroll',
@@ -538,22 +561,6 @@ check(
   'signing in again on a removed laptop restores it',
   reEnroll.status === 200 && restored.status === 200,
   `enroll ${reEnroll.status} ${reEnroll.json.error ?? ''}, token ${restored.status}`,
-);
-
-const staleToken = await post(
-  '/devices/enroll',
-  {
-    ...(await proof(laptop)),
-    kind: 'desktop',
-    fingerprint: `desktop-${tag}`,
-    platform: 'macos',
-  },
-  login.json.accessToken,
-);
-check(
-  'but a token minted before the removal cannot undo it',
-  staleToken.status !== 200,
-  `HTTP ${staleToken.status} — a 200 means a stolen laptop can un-revoke itself`,
 );
 
 // The other half, and the case with no second factor at all. A laptop is
