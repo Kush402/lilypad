@@ -64,6 +64,15 @@ jobs:
         run: pnpm install --frozen-lockfile
         working-directory: ${{ github.workspace }}
 
+      # Same latent defect the iOS lane hit on its first real run: Metro
+      # resolves `@lilypad/design` and `@lilypad/protocol` through `main`,
+      # which points into `dist/`, and installing a workspace package does not
+      # build it. This lane has never run either, so it has never found out.
+      - name: Build the workspace packages the app imports
+        if: steps.preflight.outputs.configured == 'true'
+        run: pnpm --filter "@lilypad/mobile^..." build
+        working-directory: ${{ github.workspace }}
+
       - name: Setup Java (Temurin 17)
         if: steps.preflight.outputs.configured == 'true'
         uses: actions/setup-java@v4

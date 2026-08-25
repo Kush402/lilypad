@@ -98,6 +98,24 @@ jobs:
         run: pnpm install --frozen-lockfile
         working-directory: ${{ github.workspace }}
 
+      # Metro resolves `@lilypad/design` and `@lilypad/protocol` through their
+      # `main` field, which points into `dist/` — so an unbuilt workspace
+      # package is not a stale import, it is an unresolvable one:
+      #
+      #     PackageResolutionError: … the package `@lilypad/design/package.json`
+      #     was successfully found. However, this package itself specifies a
+      #     `main` module field that could not be resolved
+      #     (`…/@lilypad/design/dist/index.js`). Indeed, none of these files exist
+      #
+      # Installing dependencies does not build them, and nothing here did. It
+      # never showed up locally because a developer machine has `dist/` from
+      # some earlier `pnpm build`, and it never showed up in CI because this
+      # workflow had never run. `^...` builds everything the app depends on and
+      # not the app itself.
+      - name: Build the workspace packages the app imports
+        run: pnpm --filter "@lilypad/mobile^..." build
+        working-directory: ${{ github.workspace }}
+
       - name: Setup Ruby + Bundler
         uses: ruby/setup-ruby@v1
         with:
