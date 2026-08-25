@@ -52,10 +52,33 @@ export function record(event: string, detail?: string): void {
   if (entries.length > MAX_ENTRIES) entries = entries.slice(-MAX_ENTRIES);
 }
 
+/** Last state recorded, so a transition is logged once rather than once per
+ * code path that reaches it. */
+let lastState: string | null = null;
+
+/**
+ * Record a state transition, ignoring a repeat of the state we are already in.
+ *
+ * `connected` is reached from five different places in `webrtc.ts` — the
+ * initial negotiation, an ICE recovery, a renegotiation, a signaling
+ * reconnect. Logging each one produces a column of identical lines and buries
+ * the transitions that explain the session, which is the same reason quality
+ * is sampled on change rather than on every poll.
+ *
+ * A genuine return to a state still records, because the state changed away
+ * and back — which is exactly the shape of a wobbly connection.
+ */
+export function recordState(state: string): void {
+  if (state === lastState) return;
+  lastState = state;
+  record(state);
+}
+
 /** Begin a fresh session's journal. */
 export function startSession(): void {
   entries = [];
   startedAt = Date.now();
+  lastState = null;
   record('session started', `app ${APP_VERSION}`);
 }
 

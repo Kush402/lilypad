@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import { Diagnostics, diagnosticsReport } from './Diagnostics';
 import { useAppState } from '../lib/useAppState';
 import type { AppStateDto } from '../lib/tauri';
@@ -179,8 +179,15 @@ describe('Diagnostics — the log file', () => {
   it('shows the path on screen, with a way to reach it', async () => {
     vi.mocked(useAppState).mockReturnValue(state);
     render(<Diagnostics />);
-    expect(await screen.findByTestId('log-path')).toHaveTextContent(
-      '/Users/x/Library/Logs/Lilypad/lilypad.log',
+    // `findByTestId` waits for the ELEMENT, and the element is there from the
+    // first paint carrying its placeholder — so it resolves immediately and
+    // the assertion runs before the path has been fetched. Waiting on the
+    // CONTENT is the difference between a test that passes alone and one that
+    // also passes under load, which is when it ran a race and lost.
+    await waitFor(() =>
+      expect(screen.getByTestId('log-path')).toHaveTextContent(
+        '/Users/x/Library/Logs/Lilypad/lilypad.log',
+      ),
     );
     expect(screen.getByTestId('reveal-log')).toBeEnabled();
   });

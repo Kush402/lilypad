@@ -1,4 +1,4 @@
-import { record, startSession, journalText, entryCount } from '../journal';
+import { record, recordState, startSession, journalText, entryCount } from '../journal';
 
 /**
  * The phone's half of a session story.
@@ -36,6 +36,27 @@ describe('the session journal', () => {
     expect(text).not.toContain('event 0 ');
     // Bounded, so a long session cannot grow without limit in memory.
     expect(entryCount()).toBeLessThanOrEqual(240);
+  });
+
+  /**
+   * `connected` is reached from five different places in `webrtc.ts`. Logging
+   * each one produces a column of identical lines and buries the transitions
+   * that explain the session — the same reason quality is sampled on change.
+   */
+  it('logs a state once, however many code paths reach it', () => {
+    recordState('connected');
+    recordState('connected');
+    recordState('connected');
+    expect(entryCount()).toBe(2); // the start line plus one 'connected'
+  });
+
+  it('still records a genuine return to a state, which is the wobble', () => {
+    recordState('connected');
+    recordState('reconnecting signaling');
+    recordState('connected');
+    const text = journalText();
+    expect(text.match(/connected/g)?.length).toBe(2);
+    expect(text).toMatch(/reconnecting signaling/);
   });
 
   it('carries detail that must never reach the screen', () => {
