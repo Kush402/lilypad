@@ -1,6 +1,6 @@
 import { Platform } from 'react-native';
 import type { ConnectResponse, PairingRedeemResponse } from '@lilypad/protocol';
-import { initDeviceIdentity } from './device';
+import { deviceLabel, initDeviceIdentity } from './device';
 import { accessToken, DeviceAuthError, unauthorizedError } from './auth';
 import { RedeemError, appError, classifyHttpStatus, classifyFetchError } from './errors';
 
@@ -80,7 +80,7 @@ export async function redeemToken(
       body: JSON.stringify({
         token,
         deviceId,
-        deviceName: `${Platform.OS} phone`,
+        deviceName: deviceLabel(),
         platform: Platform.OS === 'ios' ? 'ios' : 'android',
       }),
       signal: controller.signal,

@@ -16,6 +16,7 @@
  * before a rebuild), everything degrades to exactly the old per-launch
  * behavior instead of crashing.
  */
+import { Platform } from 'react-native';
 import * as Keychain from 'react-native-keychain';
 
 /** Keychain service namespace — distinct from any credential storage. */
@@ -93,4 +94,25 @@ export function getDeviceId(): string {
     cached = freshId();
   }
   return cached;
+}
+
+/**
+ * What this phone calls itself, for the two places its name is shown to a
+ * human: "Your devices" on the account, and the approve prompt on a Mac when
+ * this phone asks for a session.
+ *
+ * It used to send `` `${Platform.OS} phone` `` — so both surfaces said "ios
+ * phone", and an account with two phones on it showed two identical rows
+ * (reported with a screenshot, 2026-08-24).
+ *
+ * ponytail: the form factor, not the model. React Native exposes no model
+ * name, and `UIDevice.name` has returned the generic "iPhone" since iOS 16
+ * without a special entitlement — so the real model needs a native module.
+ * Add one if two phones of the same kind on one account turns out to be
+ * common; renaming from "Your devices" already covers it. Android reports no
+ * `isPad`, so a tablet there says "phone" until that native module exists.
+ */
+export function deviceLabel(): string {
+  if (Platform.OS === 'ios') return Platform.isPad ? 'iPad' : 'iPhone';
+  return 'Android phone';
 }

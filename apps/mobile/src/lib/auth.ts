@@ -5,7 +5,7 @@ import {
   type DesktopEnrollmentApproved,
 } from '@lilypad/protocol';
 import { clearDeviceKey, devicePublicKey, signChallenge } from './identity';
-import { clearDeviceId, initDeviceIdentity } from './device';
+import { clearDeviceId, deviceLabel, initDeviceIdentity } from './device';
 import { forgetAllPairs } from './pairs';
 import { APP_VERSION } from '../config/version';
 import { loadSession } from './session';
@@ -268,7 +268,7 @@ export async function enrollDevice(
       ...proof,
       kind: 'mobile',
       fingerprint: await initDeviceIdentity(),
-      name: `${Platform.OS} phone`,
+      name: deviceLabel(),
       platform: Platform.OS === 'ios' ? 'ios' : 'android',
     },
     accountAccessToken,
