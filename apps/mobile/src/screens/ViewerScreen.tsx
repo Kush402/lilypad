@@ -264,7 +264,7 @@ export function ViewerScreen({ route, navigation }: Props) {
         // Same explanation as the other revoke path (a rejected no-QR
         // reconnect attempt, `classifyHttpStatus`'s 'trust_revoked') — the
         // user should see identical copy either way.
-        Alert.alert('Access revoked', appError('trust_revoked').message, [
+        Alert.alert('Pairing ended', appError('trust_revoked').message, [
           { text: 'OK', onPress: () => navigation.popToTop() },
         ]);
       },

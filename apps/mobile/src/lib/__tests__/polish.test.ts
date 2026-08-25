@@ -136,7 +136,7 @@ describe('small controls are still reachable with a thumb', () => {
     ['AccountDevicesScreen.tsx', 'Rename ${item.name'],
     ['AccountDevicesScreen.tsx', 'Remove ${item.name'],
     // 14pt text, 10pt padding: ~37pt.
-    ['DeviceListScreen.tsx', 'Forget ${item.name'],
+    ['DeviceListScreen.tsx', 'Unpair ${item.name'],
     // Exactly 40x40.
     ['ViewerScreen.tsx', "'Hide controls' : 'Show controls'"],
   ];

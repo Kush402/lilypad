@@ -81,7 +81,7 @@ export function Control() {
   const now = useNow(5_000);
   const session = state?.session ?? 'idle';
   const pending = state?.pending_request ?? null;
-  // "Trust this device" (M5.4): default ON — the pairing ceremony (scan +
+  // "Keep this phone paired" (M5.4): default ON — the pairing ceremony (scan +
   // explicit approve) IS the trust decision; unchecking covers one-off
   // sessions on devices you don't own.
   const [trust, setTrust] = useState(true);
@@ -185,7 +185,8 @@ export function Control() {
           <label className="row trust-row">
             <input type="checkbox" checked={trust} onChange={(e) => setTrust(e.target.checked)} />
             <span>
-              Trust this device <span className="muted">— reconnects without a QR scan</span>
+              Keep this phone paired{' '}
+              <span className="muted">— it reconnects later without scanning again</span>
             </span>
           </label>
           <div className="row">
@@ -551,7 +552,7 @@ function TrustedDevices({ linked }: { linked: boolean }) {
                 {confirmingRevokeId === pair.pairId ? (
                   <div className="revoke-confirm">
                     <p className="muted device-row__meta">
-                      Revoke this phone? It will need a fresh QR pairing to reconnect.
+                      Unpair this phone? It will need to scan a fresh code to reconnect.
                     </p>
                     <div className="row revoke-confirm__actions">
                       <button
@@ -582,7 +583,7 @@ function TrustedDevices({ linked }: { linked: boolean }) {
                       setConfirmingRevokeId(pair.pairId);
                     }}
                   >
-                    Revoke
+                    Unpair
                   </button>
                 )}
               </div>

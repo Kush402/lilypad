@@ -64,7 +64,8 @@ Three different things, and the app keeps them apart on purpose.
 - **Removing a device** from _Your devices_ is stronger: it loses access
   immediately, including a session running at that moment. Sign in on it again
   to restore it.
-- **Forgetting a laptop** from _Your laptops_ ends just that one pairing.
+- **Unpairing** — from _Your laptops_ on the phone, or _Paired phones_ on the Mac —
+  ends just that one pairing, from either side.
 
 ## Controlling the Mac
 

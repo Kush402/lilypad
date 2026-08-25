@@ -144,12 +144,12 @@ export function DeviceListScreen({ navigation }: Props) {
   const confirmForget = useCallback(
     (pair: PairedDesktop) => {
       Alert.alert(
-        `Forget ${pair.name ?? 'this laptop'}?`,
+        `Unpair ${pair.name ?? 'this laptop'}?`,
         'It disappears from this list. You can pair again anytime by scanning its QR code.',
         [
           { text: 'Cancel', style: 'cancel' },
           {
-            text: 'Forget',
+            text: 'Unpair',
             style: 'destructive',
             onPress: () => {
               // Best-effort: also sever the pairing on the backend so it leaves the
@@ -241,11 +241,11 @@ export function DeviceListScreen({ navigation }: Props) {
                   style={styles.forget}
                   onPress={() => confirmForget(item)}
                   accessibilityRole="button"
-                  accessibilityLabel={`Forget ${item.name ?? 'laptop'}`}
+                  accessibilityLabel={`Unpair ${item.name ?? 'laptop'}`}
                   accessibilityHint="Ends this phone's pairing with that computer"
                   hitSlop={{ top: 14, bottom: 14, left: 12, right: 12 }}
                 >
-                  <Text style={styles.forgetText}>Forget</Text>
+                  <Text style={styles.forgetText}>Unpair</Text>
                 </Pressable>
               </View>
             </View>

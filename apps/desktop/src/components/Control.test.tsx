@@ -272,28 +272,28 @@ describe('Control', () => {
       vi.mocked(useAppState).mockReturnValue(dto({ session: 'idle' }));
     });
 
-    it('clicking Revoke alone does not call api.revokePair (two-step guard)', async () => {
+    it('clicking Unpair alone does not call api.revokePair (two-step guard)', async () => {
       vi.mocked(api.listTrustedDevices).mockResolvedValue([pair()]);
       render(<Control />);
 
       await waitFor(() => expect(screen.getByText("Kush's iPhone")).toBeInTheDocument());
       screen.getByText("Kush's iPhone").click(); // expand the row
-      await waitFor(() => expect(screen.getByText('Revoke')).toBeInTheDocument());
+      await waitFor(() => expect(screen.getByText('Unpair')).toBeInTheDocument());
 
-      screen.getByText('Revoke').click(); // reveals the inline confirm
+      screen.getByText('Unpair').click(); // reveals the inline confirm
       await waitFor(() => expect(screen.getByText('Confirm')).toBeInTheDocument());
       expect(api.revokePair).not.toHaveBeenCalled();
     });
 
-    it('expand -> Revoke -> Confirm calls api.revokePair with the pairId', async () => {
+    it('expand -> Unpair -> Confirm calls api.revokePair with the pairId', async () => {
       vi.mocked(api.listTrustedDevices).mockResolvedValue([pair({ pairId: 'p42' })]);
       render(<Control />);
 
       await waitFor(() => expect(screen.getByText("Kush's iPhone")).toBeInTheDocument());
       screen.getByText("Kush's iPhone").click();
-      await waitFor(() => expect(screen.getByText('Revoke')).toBeInTheDocument());
+      await waitFor(() => expect(screen.getByText('Unpair')).toBeInTheDocument());
 
-      screen.getByText('Revoke').click();
+      screen.getByText('Unpair').click();
       await waitFor(() => expect(screen.getByText('Confirm')).toBeInTheDocument());
       screen.getByText('Confirm').click();
 
@@ -304,7 +304,7 @@ describe('Control', () => {
      * A revoke that fails must never look like one that worked.
      *
      * Both mutations here were `.then(refresh).catch(refresh)` — refresh
-     * either way, say nothing either way. Someone presses Revoke because a
+     * either way, say nothing either way. Someone presses Unpair because a
      * phone was lost, confirms a destructive action, watches the row stay
      * exactly where it was, and has no way to know the phone still has access.
      * Silence there is not a missing message, it is a false one.
@@ -316,8 +316,8 @@ describe('Control', () => {
 
       await waitFor(() => expect(screen.getByText("Kush's iPhone")).toBeInTheDocument());
       screen.getByText("Kush's iPhone").click();
-      await waitFor(() => expect(screen.getByText('Revoke')).toBeInTheDocument());
-      screen.getByText('Revoke').click();
+      await waitFor(() => expect(screen.getByText('Unpair')).toBeInTheDocument());
+      screen.getByText('Unpair').click();
       await waitFor(() => expect(screen.getByText('Confirm')).toBeInTheDocument());
       screen.getByText('Confirm').click();
 
@@ -365,13 +365,13 @@ describe('Control', () => {
 
       await waitFor(() => expect(screen.getByText("Kush's iPhone")).toBeInTheDocument());
       screen.getByText("Kush's iPhone").click();
-      await waitFor(() => expect(screen.getByText('Revoke')).toBeInTheDocument());
+      await waitFor(() => expect(screen.getByText('Unpair')).toBeInTheDocument());
 
-      screen.getByText('Revoke').click();
+      screen.getByText('Unpair').click();
       await waitFor(() => expect(screen.getByText('Cancel')).toBeInTheDocument());
       screen.getByText('Cancel').click();
 
-      await waitFor(() => expect(screen.getByText('Revoke')).toBeInTheDocument());
+      await waitFor(() => expect(screen.getByText('Unpair')).toBeInTheDocument());
       expect(api.revokePair).not.toHaveBeenCalled();
     });
   });

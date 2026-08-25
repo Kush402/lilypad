@@ -22,6 +22,7 @@ export type AppErrorCode =
   | 'not_trusted'
   | 'trust_revoked'
   | 'desktop_offline'
+  | 'different_account'
   | 'unknown';
 
 export interface AppError {
@@ -47,9 +48,13 @@ const COPY: Record<AppErrorCode, string> = {
   session_gone: 'That session ended. Reconnecting to the laptop…',
   peer_denied: 'The laptop denied this request. Approve it there, then try again.',
   ice_failed: 'Could not reach the laptop. Check that both devices are online, then try again.',
-  not_trusted: "This laptop hasn't trusted this phone yet. Scan its QR code once to pair.",
-  trust_revoked: 'This pairing was revoked on the laptop. Scan its QR code to pair again.',
+  not_trusted: 'This phone isn’t paired with that laptop yet. Scan its code once to pair.',
+  trust_revoked: 'That pairing was ended on the laptop. Scan its code to pair again.',
   desktop_offline: 'The laptop is offline. Make sure Lilypad is running on it.',
+  // A pair joins two devices on ONE account (ADR-0015). Reachable by scanning a
+  // colleague's Mac, and the remedy is not guessable from a 403.
+  different_account:
+    'That computer is on a different Lilypad account. Sign in to the same account on both, then pair again.',
   unknown: 'Something went wrong. Try again in a moment.',
 };
 
@@ -67,6 +72,8 @@ const RETRYABLE: Record<AppErrorCode, boolean> = {
   not_trusted: false,
   trust_revoked: false,
   desktop_offline: true,
+  // Retrying with the same two devices can only fail the same way.
+  different_account: false,
   unknown: true,
 };
 
@@ -120,7 +127,11 @@ export class RedeemError extends UserFacingError implements AppError {
  * a server sends is copy this app is willing to show.
  */
 export function classifyHttpStatus(status: number, body: string): AppError {
-  void body;
+  // The one 403 with a remedy of its own. A pair joins two devices on ONE
+  // account (ADR-0015), so scanning a colleague's Mac is refused — and the
+  // generic `unknown` would say "try again in a moment" about the one failure
+  // that trying again cannot fix.
+  if (status === 403 && body.includes('different_account')) return appError('different_account');
   // Gone, not expired-and-gone: the same remedy either way, and "ask for a new
   // one on the laptop" is the true instruction for both.
   if (status === 410 || status === 404) return appError('token_expired');

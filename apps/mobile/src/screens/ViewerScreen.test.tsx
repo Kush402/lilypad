@@ -533,8 +533,11 @@ describe('ViewerScreen', () => {
 
       expect(forgetPair).toHaveBeenCalledWith('desktop-1');
       expect(alertSpy).toHaveBeenCalledWith(
-        'Access revoked',
-        expect.stringContaining('revoked'),
+        'Pairing ended',
+        // "Ended", not "revoked". Three words used to mean this one act —
+        // Revoke on the Mac, Forget on the phone, "Access revoked" here — and
+        // a customer had no way to know they were the same thing.
+        expect.stringContaining('pair again'),
         expect.arrayContaining([expect.objectContaining({ text: 'OK' })]),
       );
       // Not the same as a generic terminal state's copy — no double message.

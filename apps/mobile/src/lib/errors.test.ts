@@ -145,3 +145,28 @@ describe('classifyHubError', () => {
     expect(classifyHubError('unauthorized_room', 'whatever').code).toBe('session_gone');
   });
 });
+
+/**
+ * A pair joins two devices on ONE account
+ * ([ADR-0015](../../../docs/adr/0015-ownership-follows-sign-in.md)), so
+ * scanning a colleague's Mac is refused.
+ *
+ * Without its own branch it lands on `unknown` — "Something went wrong. Try
+ * again in a moment." — about the one failure where trying again can only fail
+ * the same way, and where the remedy (sign in to the same account on both) is
+ * not guessable from a 403.
+ */
+describe('a laptop on someone else’s account', () => {
+  it('is named, and is not offered as retryable', () => {
+    const err = classifyHttpStatus(403, '{"error":"different_account","message":"…"}');
+    expect(err.code).toBe('different_account');
+    expect(err.message).toMatch(/different Lilypad account/i);
+    expect(err.retryable).toBe(false);
+  });
+
+  /** Other 403s must not be relabelled as this one — they have no such remedy
+   * and saying so would send the user to change an account that is fine. */
+  it('does not claim it about every refusal', () => {
+    expect(classifyHttpStatus(403, '{"error":"forbidden"}').code).not.toBe('different_account');
+  });
+});
