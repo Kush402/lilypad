@@ -54,7 +54,7 @@ vi.mock('../services/trust.js', () => ({
 
 vi.mock('../services/auditLog.js', () => ({
   AuditLogService: class {
-    sessionEnd = async () => {};
+    sessionsRevoked = async () => {};
   },
   createDrizzleAuditLogStore: () => ({}),
 }));

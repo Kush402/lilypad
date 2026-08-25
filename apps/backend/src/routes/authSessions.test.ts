@@ -54,7 +54,7 @@ vi.mock('../services/auditLog.js', () => ({
   AuditLogService: class {
     login = vi.fn(async () => {});
     loginFailed = vi.fn(async () => {});
-    sessionEnd = vi.fn(async () => {});
+    sessionsRevoked = vi.fn(async () => {});
   },
   createDrizzleAuditLogStore: () => ({}),
 }));

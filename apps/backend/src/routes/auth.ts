@@ -92,7 +92,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       'proven email claimed an account whose password was never verified — password cleared and sessions revoked',
     );
     await auditLog
-      .sessionEnd({ userId, ip, metadata: { event: 'unproven_account_claimed', via } })
+      .sessionsRevoked({ userId, ip, metadata: { event: 'unproven_account_claimed', via } })
       .catch((err) => log.audit.error({ err }, 'failed to write account-claim audit log'));
   }
 
@@ -381,7 +381,11 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       // Revoked before the new session is issued, so this one survives.
       await refreshTokens.revokeUser(userId);
       void auditLog
-        .sessionEnd({ userId, ip: req.ip, metadata: { event: 'password_reset_revoked_sessions' } })
+        .sessionsRevoked({
+          userId,
+          ip: req.ip,
+          metadata: { event: 'password_reset_revoked_sessions' },
+        })
         .catch((err) => log.audit.error({ err }, 'failed to write password-reset audit log'));
       return reply.code(200).send(await issueSession(userId, req.ip));
     },

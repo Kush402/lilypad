@@ -158,7 +158,7 @@ export async function deviceRoutes(
         await refreshTokens.revokeUser(userId);
       }
       void auditLog
-        .sessionEnd({
+        .sessionsRevoked({
           userId,
           metadata: { event: 'device_revoked', deviceId: params.data.deviceId },
         })
@@ -272,7 +272,7 @@ export async function deviceRoutes(
         }
       }
       void auditLog
-        .sessionEnd({ metadata: { event: 'device_revoked', pairId: params.data.pairId } })
+        .sessionsRevoked({ metadata: { event: 'device_revoked', pairId: params.data.pairId } })
         .catch((err) => log.audit.error({ err }, 'failed to write device_revoked audit log'));
       return reply.code(200).send({ ok: true });
     },
@@ -309,7 +309,7 @@ export async function deviceRoutes(
         await trust.revoke(pair.pairId);
         const ended = hub.endRoomsForDevicePair(desktopDeviceId, mobileDeviceId, 'unpaired');
         void auditLog
-          .sessionEnd({
+          .sessionsRevoked({
             metadata: {
               event: 'device_unpaired_by_mobile',
               pairId: pair.pairId,

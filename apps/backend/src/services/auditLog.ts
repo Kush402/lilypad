@@ -27,7 +27,13 @@ import { auditLogs } from '../db/schema.js';
  *    carries whatever string the room actually ended with.
  */
 export type AuditEventType =
-  'login' | 'login_failed' | 'device_paired' | 'session_start' | 'session_end' | 'pair_denied';
+  | 'login'
+  | 'login_failed'
+  | 'device_paired'
+  | 'session_start'
+  | 'session_end'
+  | 'sessions_revoked'
+  | 'pair_denied';
 
 export interface AuditLogFields {
   /** The authenticated `users.id`. Written by the auth routes since M8;
@@ -117,6 +123,22 @@ export class AuditLogService {
    * after a session existed, graceful shutdown, ...). */
   sessionEnd(fields: AuditLogFields = {}): Promise<void> {
     return this.write('session_end', fields);
+  }
+
+  /**
+   * Access was withdrawn, and whatever it was holding was torn down with it —
+   * a revoked device, a severed pair, a deleted account, a password reset.
+   *
+   * Separate from `sessionEnd`, which it used to share. Both are true
+   * statements about sessions, and conflating them made the log unreadable in
+   * exactly the way an audit log must not be: 59 `session_end` rows in
+   * production on 2026-08-24, of which **11** were sessions ending and 48 were
+   * revocations, most with no session to end at all. "Somebody stopped
+   * watching their screen" and "somebody's laptop lost access" are the two
+   * facts an incident is reconstructed from, and they were the same row.
+   */
+  sessionsRevoked(fields: AuditLogFields = {}): Promise<void> {
+    return this.write('sessions_revoked', fields);
   }
 
   /** The desktop explicitly denied a pending pair request, before any

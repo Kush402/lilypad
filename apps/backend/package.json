@@ -16,7 +16,8 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx src/db/migrate.ts",
     "db:studio": "drizzle-kit studio",
-    "support": "tsx src/support.ts"
+    "support": "tsx src/support.ts",
+    "stats": "tsx src/stats.ts"
   },
   "dependencies": {
     "@fastify/cors": "^10.0.2",

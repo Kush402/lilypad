@@ -212,14 +212,14 @@ issued to, so it cannot be backfilled.
 
 ### `audit_logs`
 
-| column              | type        | notes                                                                                                                    |
-| ------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------ |
-| id                  | uuid PK     |                                                                                                                          |
-| user_id / device_id | uuid FK     | nullable                                                                                                                 |
-| event_type          | text        | `login`, `login_failed`, `device_paired`, `session_start`, `session_end`, `pair_denied`, `panic_disconnect`, … (indexed) |
-| metadata            | jsonb       | default `{}`                                                                                                             |
-| ip                  | inet        |                                                                                                                          |
-| created_at          | timestamptz |                                                                                                                          |
+| column              | type        | notes                                                                                                                                        |
+| ------------------- | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| id                  | uuid PK     |                                                                                                                                              |
+| user_id / device_id | uuid FK     | nullable                                                                                                                                     |
+| event_type          | text        | `login`, `login_failed`, `device_paired`, `session_start`, `session_end`, `sessions_revoked`, `pair_denied`, `panic_disconnect`, … (indexed) |
+| metadata            | jsonb       | default `{}`                                                                                                                                 |
+| ip                  | inet        |                                                                                                                                              |
+| created_at          | timestamptz |                                                                                                                                              |
 
 **Retention: 2 days.** This was the one unbounded table
 ([ADR-0007](adr/0007-cloud-is-control-plane-only.md)) and it no longer is:

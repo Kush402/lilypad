@@ -92,7 +92,7 @@ export async function accountRoutes(
       // little as it can. What an operator needs is that it happened and how
       // much went with it.
       void auditLog
-        .sessionEnd({
+        .sessionsRevoked({
           metadata: {
             event: 'account_deleted',
             devicesRemoved: removed.length,

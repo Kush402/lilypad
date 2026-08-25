@@ -30,10 +30,10 @@ vi.mock('../auth/ownership.js', () => ({
   deviceOwnershipById: vi.fn(),
 }));
 
-const sessionEnd = vi.fn(async () => {});
+const sessionsRevoked = vi.fn(async () => {});
 vi.mock('../services/auditLog.js', () => ({
   AuditLogService: class {
-    sessionEnd = sessionEnd;
+    sessionsRevoked = sessionsRevoked;
   },
   createDrizzleAuditLogStore: () => ({}),
 }));
@@ -212,8 +212,8 @@ describe('DELETE /account', () => {
     const app = await buildApp();
     await del(app, { confirmEmail: EMAIL });
 
-    expect(sessionEnd).toHaveBeenCalledTimes(1);
-    const fields = sessionEnd.mock.calls[0]?.[0] as { userId?: unknown; metadata: unknown };
+    expect(sessionsRevoked).toHaveBeenCalledTimes(1);
+    const fields = sessionsRevoked.mock.calls[0]?.[0] as { userId?: unknown; metadata: unknown };
     expect(fields.userId).toBeUndefined();
     expect(fields.metadata).toMatchObject({ event: 'account_deleted', devicesRemoved: 2 });
     expect(JSON.stringify(fields)).not.toContain(EMAIL);

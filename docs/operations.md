@@ -123,6 +123,31 @@ what the field is actually running first:
   peer-to-peer; the hub resurrects room records from Redis on boot; clients
   reconnect signaling with backoff.
 
+## How the product is doing
+
+    pnpm stats
+
+Read-only, against the production `DATABASE_URL`, and deliberately a script for
+the same reason as the customer lookup below.
+
+`/metrics` answers "is the server working". This answers the questions a
+decision turns on, which nothing could answer without SSH and hand-written
+joins:
+
+- **Activation, not signups.** An account with no devices is somebody who
+  filled in a form. An account with a paired laptop is somebody using the
+  product. The gap between those two lines is the funnel.
+- **Versions in the field** — written on every token exchange, so it is what
+  customers are RUNNING, not what was released. "We shipped it" and "people
+  have it" are different claims.
+- **Failed sign-ins.** Normally ordinary: a desktop polls `/devices/token`
+  between install and linking and each poll writes one. A RISE is the first
+  sign of something broken that nobody has reported yet.
+
+`session_start` / `session_end` count screens actually being watched.
+`sessions_revoked` counts access being withdrawn. Those were one event type
+until 2026-08-25, which made 11 real sessions read as 59.
+
 ## Diagnosing one customer
 
     pnpm support <email>
