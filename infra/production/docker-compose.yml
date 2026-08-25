@@ -1,6 +1,20 @@
 # Lilypad production control plane — one VM, four containers.
 #
-#   docker compose --env-file .env.production -f infra/production/docker-compose.yml up -d
+#   docker compose --env-file .env.production \
+#     -f infra/production/docker-compose.yml \
+#     -f cloudflared-local.yml up -d
+#
+# **Both -f flags, always.** The second one is not optional and not a
+# convenience: this tunnel is locally-managed (created from the CLI with an
+# origin certificate) while the `cloudflared` service below is written for a
+# dashboard-issued token. Run the first file alone and `${CLOUDFLARE_TUNNEL_TOKEN}`
+# interpolates to the empty string, cloudflared starts with `--token ""`, and
+# api.takedia.com is off the internet until somebody notices. That has now
+# happened twice: seven minutes on 2026-08-20, and one minute forty-six on
+# 2026-08-25 by an operator who read this header and followed it.
+#
+# The line above used to be the short form, which is why. `deploy.yml` has
+# always passed the override; only a human at a terminal could get this wrong.
 #
 # This is the CONTROL PLANE only: accounts, pairing, signaling. Screen and
 # input never traverse it — they are peer-to-peer, and on a LAN they never
