@@ -135,7 +135,19 @@ services:
   # renewal — three things that otherwise break at 3am. Also gives DDoS
   # absorption and a stable hostname for free.
   cloudflared:
-    image: cloudflare/cloudflared:latest
+    # Pinned, for the reason the backend image is pinned two services up: this
+    # is the ONLY thing standing between the internet and every request, and
+    # `latest` made "which version is serving?" unanswerable. It was also not
+    # buying updates — `--no-autoupdate` is set and nothing re-pulls it, so the
+    # tag floated while the running binary stayed on whatever was pulled once,
+    # ten days before anyone looked. Pinned to the version production is
+    # already running, so this changes nothing today.
+    #
+    # Cloudflare deprecates old tunnel clients, so this needs a deliberate bump
+    # a few times a year: read the release notes, change the tag here, deploy.
+    # `docker exec lilypad-prod-cloudflared-1 cloudflared --version` says what
+    # is actually running.
+    image: cloudflare/cloudflared:2026.8.2
     restart: unless-stopped
     command: ['tunnel', '--no-autoupdate', 'run', '--token', '${CLOUDFLARE_TUNNEL_TOKEN}']
     depends_on:
