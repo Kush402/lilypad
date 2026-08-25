@@ -139,7 +139,7 @@ export function Control() {
               busySession
                 ? 'Disconnect the current session to pair a new device'
                 : !pairable
-                  ? 'Link this computer to your account first — pairing comes after'
+                  ? 'This computer isn’t on your account yet — sign in first'
                   : 'Pair a new device'
             }
             aria-label="Pair a new device"
@@ -281,7 +281,7 @@ function Reachability({ presence, linked }: { presence: PresenceDto | null; link
     },
     refused: {
       title: 'Your phone can’t reach this Mac',
-      body: 'Lilypad’s server won’t accept this Mac right now. If you removed it from your account, link it again above.',
+      body: 'Lilypad’s server won’t accept this Mac right now. If you removed it from your account, sign in again above to restore it.',
     },
     no_identity: {
       title: 'Your phone can’t reach this Mac',

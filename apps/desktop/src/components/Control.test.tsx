@@ -512,7 +512,7 @@ describe('Control — can a phone actually reach this Mac', () => {
     const panel = await screen.findByTestId('reachability');
     expect(panel).toHaveTextContent(/can’t reach this Mac/i);
     // Names the remedy, not the mechanism. "unauthorized_room" helps nobody.
-    expect(panel).toHaveTextContent(/link it again/i);
+    expect(panel).toHaveTextContent(/sign in again above to restore it/i);
     expect(panel.textContent).not.toMatch(/presence|register|4403|room/i);
   });
 
