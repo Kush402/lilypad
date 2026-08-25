@@ -1,6 +1,7 @@
 import { and, count, eq, gt, isNotNull, isNull, sql } from 'drizzle-orm';
 import { db } from './db/client.js';
 import { auditLogs, devices, trustedDevices, users } from './db/schema.js';
+import { env } from './config.js';
 
 /**
  * `pnpm stats` — how the product is actually doing, from the only source that
@@ -49,8 +50,24 @@ function only(rows: { value: number }[]): number {
   return rows[0]?.value ?? 0;
 }
 
+/** Host only, never the credentials in front of it. */
+function databaseHost(): string {
+  try {
+    return new URL(env.DATABASE_URL).host;
+  } catch {
+    return 'an unparseable DATABASE_URL';
+  }
+}
+
 export async function report(out: (l: string) => void = (l) => console.log(l)): Promise<void> {
   emit = out;
+
+  // Which database these numbers came from, said first.
+  //
+  // A developer's machine points at localhost by default, where this prints 29
+  // accounts and 19 desktops — none of them customers. Numbers with no host
+  // beside them are numbers somebody will eventually quote as production's.
+  say(`\nFrom ${databaseHost()}.`);
 
   // ── Accounts ───────────────────────────────────────────────────────────
   const accounts = only(await db.select({ value: count() }).from(users));
