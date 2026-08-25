@@ -107,7 +107,9 @@ fn adopt_device_id(app: &AppHandle, canonical: &str) {
         return;
     };
     {
-        let mut current = state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut current = state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if current.device_id == canonical {
             return; // the ordinary case, every launch: nothing has drifted
         }
