@@ -68,7 +68,9 @@ describe('the dashboard’s pair button', () => {
     render(<Control />);
 
     await waitFor(() => expect(pairButton()).toBeDisabled());
-    expect(pairButton()).toHaveAttribute('title', expect.stringMatching(/link this computer/i));
+    // Names the step that unlocks it, and that step is signing in — pairing an
+    // unowned machine is what `/pairing/create` refuses.
+    expect(pairButton()).toHaveAttribute('title', expect.stringMatching(/sign in first/i));
   });
 
   it('is disabled after ownership is revoked', async () => {
