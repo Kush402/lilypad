@@ -115,7 +115,7 @@ it mints Redis state per call). 🔒 device token when `deviceId` is linked.
 
 ```jsonc
 // request
-{ "deviceId": "desktop-…", "deviceName": "macos desktop", "platform": "macos",
+{ "deviceId": "desktop-…", "deviceName": "Ada’s MacBook Pro", "platform": "macos",
   "scopes": ["view","control"] }   // scopes optional; defaults to view+control
 // 201 Created
 { "token": "…", "roomId": "uuid", "apiBaseUrl": "http://…",
@@ -129,10 +129,10 @@ Called by the **mobile** app after scanning. Atomically burns the token.
 
 ```jsonc
 // request
-{ "token": "…", "deviceId": "mobile-…", "deviceName": "ios phone", "platform": "ios" }
+{ "token": "…", "deviceId": "mobile-…", "deviceName": "iPhone", "platform": "ios" }
 // 200 OK
 { "roomId": "uuid", "signalingUrl": "ws://…", "scopes": ["view","control"],
-  "desktopDeviceName": "macos desktop" }
+  "desktopDeviceName": "Ada’s MacBook Pro" }
 // 410 Gone  — token invalid, expired, or already used
 { "error": "token_invalid", "message": "…" }
 ```
@@ -153,12 +153,12 @@ thing between an attacker and it was knowing two device ids and a secret.
 ```jsonc
 // request
 { "desktopDeviceId": "desktop-…", "mobileDeviceId": "mobile-…",
-  "mobileDeviceName": "ios phone",   // optional
+  "mobileDeviceName": "iPhone",   // optional
   "pairSecret": "…" }                // per-pair secret; required — a pair
                                      // without one is refused (SEC-5)
 // 200 OK
 { "roomId": "uuid", "signalingUrl": "wss://…", "scopes": ["view","control"],
-  "desktopDeviceName": "macos desktop" }
+  "desktopDeviceName": "Ada’s MacBook Pro" }
 // 404 not_trusted   — no pair, or a bad pairSecret (reported identically on
 //                     purpose, so device-id guessing can't probe for existence)
 // 403 revoked       — the pairing was revoked; re-pair with a QR
@@ -650,6 +650,7 @@ itself back in after a restart, with no user interaction. Rate-limited to
   "publicKey": "…",
   "signature": "…",
   "appVersion": "0.1.4", // optional
+  "deviceName": "Ada’s MacBook Pro", // optional
   "proofOrigin": "api.takedia.com",
 } // optional; selects the v2 message
 // 200 OK — same shape as /devices/enroll
@@ -664,6 +665,16 @@ one request every client makes on launch and every renewal, so
 `devices.app_version` stays current without a heartbeat. Free-form and capped
 at 40 characters; an older client's version format is not something a newer
 server gets to reject.
+
+`deviceName` rides along for the same reason and with the same rules — never
+signed, never an authorization input, and a client that omits it still signs
+in. It exists so a device that enrolled under a placeholder heals itself:
+desktops used to enroll as the literal `"macos desktop"` and phones as
+`"ios phone"`, so an account with several listed rows that were word-for-word
+identical. The server writes it **only over one of those placeholders**, in the
+UPDATE's own `CASE` rather than by a read-then-write a rename could land inside
+of — "Your devices" has a Rename button, and a name a person typed being
+reverted by the machine ten minutes later would be worse than identical rows.
 
 `proofOrigin`, when present, is the host the client is talking to — and the
 host it signed. Its presence selects the origin-bound message
