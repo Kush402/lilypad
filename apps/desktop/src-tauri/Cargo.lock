@@ -2549,7 +2549,7 @@ dependencies = [
 
 [[package]]
 name = "lilypad-desktop"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "anyhow",
  "apple-cf",
