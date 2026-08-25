@@ -168,7 +168,7 @@ export function DeviceListScreen({ navigation }: Props) {
   const confirmSignOut = useCallback(() => {
     Alert.alert(
       'Sign out?',
-      'Your paired laptops are removed from this phone. This phone stays on your account until you remove it from "Your devices".',
+      'Your pairings end — on this phone and on the laptops. This phone stays on your account until you remove it from "Your devices", and you can pair again by scanning each laptop’s code.',
       [
         { text: 'Cancel', style: 'cancel' },
         { text: 'Sign out', style: 'destructive', onPress: () => void signOut() },
@@ -192,9 +192,15 @@ export function DeviceListScreen({ navigation }: Props) {
         <View style={styles.empty}>
           <Text style={styles.emptyIcon}>💻</Text>
           <Text style={styles.emptyTitle}>No paired laptops yet</Text>
+          {/* The distinction a first-time customer trips on. Signing in on a
+              Mac puts it on the account, so it is already in "Your devices" —
+              and a list here that says "no laptops" while that one says
+              otherwise reads as a bug rather than as two different questions.
+              Say which is which before they go looking. */}
           <Text style={styles.emptyBody}>
-            Click the Lilypad bubble on your laptop to show a QR code, then scan it here. You only
-            do this once per laptop.
+            Signing in on a computer puts it on your account — see them under Your devices. Pairing
+            is the separate step that lets THIS phone see one. On the laptop: click the Lilypad
+            bubble to show a QR code, then scan it here. Once per laptop.
           </Text>
         </View>
       ) : (
@@ -272,9 +278,9 @@ export function DeviceListScreen({ navigation }: Props) {
           </Text>
         </Pressable>
 
-        {/* Signing out is phone-side: the session record and the saved pairs go,
-            the device stays on the account until it is revoked from "Your
-            devices". Confirmed because the paired laptops go with it. */}
+        {/* Signing out ends this phone's pairings on both sides; the device
+            itself stays on the account until it is revoked from "Your
+            devices". Confirmed because the pairings go with it. */}
         <Pressable
           style={styles.signOut}
           testID="sign-out"

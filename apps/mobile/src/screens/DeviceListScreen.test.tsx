@@ -104,4 +104,26 @@ describe('which backend “Your devices” asks', () => {
 
     await waitFor(() => expect(screen.getByText(`account-devices:${ACCOUNT_API}`)).toBeTruthy());
   });
+
+  /**
+   * The first thing a customer sees after signing in on a phone, and the place
+   * the product is most easily read as broken.
+   *
+   * Signing in on a Mac puts it on the account
+   * ([ADR-0015](../../../../docs/adr/0015-ownership-follows-sign-in.md)), so it
+   * is already in "Your devices" while this screen still says "no paired
+   * laptops". Two lists, two questions — but only if this one says so. An empty
+   * state that reads as "you have no computers" contradicts the other screen,
+   * and the customer believes the one they are looking at.
+   */
+  it('explains that an empty list is not an empty account', async () => {
+    renderScreen();
+
+    const body = await screen.findByText(/Signing in on a computer puts it on your account/);
+    const text = body.props.children as string;
+    // Names where the computers ARE…
+    expect(text).toMatch(/Your devices/);
+    // …and what this list is separately about.
+    expect(text).toMatch(/[Pp]airing is the separate step/);
+  });
 });

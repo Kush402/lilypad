@@ -191,15 +191,21 @@ export function AccountDevicesScreen({ route, navigation }: Props): React.JSX.El
   return (
     <View style={[styles.container, padding]} testID="account-devices">
       <Text style={styles.subtitle}>
-        Everything signed in to your account. Removing a device signs it out everywhere — different
-        from forgetting a laptop, which only ends this phone&apos;s pairing with it.
+        Every computer and phone signed in to your account. A computer appears here as soon as you
+        sign in on it — pairing it with a phone is a separate step, on Your laptops. Removing a
+        device here signs it out everywhere.
       </Text>
 
       <FlatList
         data={devices}
         keyExtractor={(d) => d.id}
         contentContainerStyle={styles.list}
-        ListEmptyComponent={<Text style={styles.empty}>No devices on this account yet.</Text>}
+        ListEmptyComponent={
+          // Unreachable in practice — the phone reading this list is itself on
+          // the account, so there is always at least one row. It stays as the
+          // honest answer if a race or a revoke ever makes it true.
+          <Text style={styles.empty}>No devices on this account yet.</Text>
+        }
         renderItem={({ item }) => (
           <View style={[styles.card, item.state === 'revoked' && styles.cardRevoked]}>
             <View style={styles.cardInfo}>
