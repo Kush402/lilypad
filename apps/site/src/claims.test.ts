@@ -224,6 +224,20 @@ describe('release status', () => {
     expect(html).not.toMatch(/not notarized|unsigned|not signed/i);
   });
 
+  /**
+   * Added in v0.1.10. It is on the page because both halves shipped together:
+   * the Mac enumerates its displays and carries them on `frame-size`, the
+   * phone draws the row. A page promising it while only one half was released
+   * would be a claim the download cannot keep — which is the whole reason
+   * these tests exist.
+   */
+  it('claims the screen switcher only in the shape both apps actually deliver', () => {
+    expect(html).toMatch(/switch between them from\s+the phone/i);
+    // Not "all your screens at once": Lilypad shows ONE display at a time and
+    // the phone picks which. A visitor expecting a mosaic would be misled.
+    expect(html).not.toMatch(/all (your |of your )?(screens|displays) at once/i);
+  });
+
   it('does not send iPhone users to Xcode now that TestFlight exists', () => {
     expect(html).not.toMatch(/built from source/i);
     expect(html).toMatch(/TestFlight/i);
