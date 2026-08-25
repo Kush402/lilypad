@@ -121,7 +121,7 @@ impl Account {
             email: email.to_owned(),
             user_id: session.user_id.clone(),
         };
-        let json = serde_json::to_vec(&stored)?;
+        let json = serde_json::to_vec(&stored).context("could not prepare the account session")?;
         Self::entry()?
             .set_secret(&json)
             .context("could not store the account session")
@@ -157,7 +157,16 @@ impl Account {
     pub fn sign_out() -> Result<()> {
         match Self::entry()?.delete_credential() {
             Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-            Err(e) => bail!("could not clear the stored account session: {e}"),
+            Err(e) => {
+                // Every string an account command returns is rendered verbatim
+                // by the sign-in form (`setError(String(err))`), so the
+                // keychain's own words would go on screen — a customer signing
+                // out would read "Platform secure storage failure: Keychain
+                // error: -25300". The reason belongs in the log, where whoever
+                // has to diagnose it will actually look.
+                log::warn!(target: "lilypad::account", "keychain delete failed: {e}");
+                bail!("macOS would not let Lilypad clear the saved sign-in. Try again in a moment.")
+            }
         }
     }
 

@@ -40,19 +40,22 @@ const RELAUNCH_THRESHOLD = 3;
  *
  * A restart that does not fix the permission means the problem is not the
  * one a restart fixes. The remaining cause is verified and specific: macOS
- * binds a TCC grant to the *code signature* of the app that asked for it, and
- * Lilypad is ad-hoc signed, so every build has a different cdhash. TCC keeps
- * showing the switch as on — it is on, for the version that asked — while
- * denying the running binary, whose hash no longer matches. Confirmed on this
- * Mac: the recorded requirement named two cdhashes, and the installed app's
- * was neither.
+ * binds a TCC grant to the *code signature* of the app that asked for it. TCC
+ * keeps showing the switch as on — it is on, for the version that asked —
+ * while denying the running binary, whose signature no longer matches.
+ * Confirmed on this Mac: the recorded requirement named two cdhashes, and the
+ * installed app's was neither.
  *
  * Re-adding the app in System Settings rewrites the requirement against the
- * installed binary, which is the only user-side repair. The real fix is a
- * Developer ID signature, which gives TCC a stable identity that survives
- * updates; until Lilypad has one, this will recur on every single update, and
- * the copy below says so rather than looping the user through a button that
- * cannot work.
+ * installed binary, which is the only user-side repair.
+ *
+ * Since v0.1.7 Lilypad ships with a Developer ID signature and an Apple
+ * notarization, which is exactly the stable identity TCC needs — so a grant
+ * now survives an update, and this is no longer the permanent condition the
+ * copy used to describe. It still happens ONCE on a Mac that granted an
+ * earlier, ad-hoc-signed build: that grant is bound to a cdhash no signed
+ * build will ever have again. The copy below says that, rather than the old
+ * "Lilypad is not signed yet", which stopped being true two releases ago.
  */
 const RESTART_TRIED_KEY = 'lilypad.permission.restart-tried';
 
@@ -271,11 +274,12 @@ export function Setup() {
                 switch being on in System Settings is not the whole story.
               </p>
               <p className="muted">
-                macOS ties a permission to the exact version of the app that asked for it. Lilypad
-                is not signed yet, so this update looks like a different app to macOS: the switch
-                stays on for the old version while the new one is refused. To repair it, open
+                macOS ties a permission to the exact app that asked for it. If this Mac granted
+                Lilypad access before the app was signed by Apple, that old grant no longer matches:
+                the switch stays on while the current version is refused. To repair it, open
                 Settings, select Lilypad in the list, remove it with the “−” button, then add
-                Lilypad back. Until Lilypad is signed, this can recur after an update.
+                Lilypad back. Signed builds keep their permissions across updates, so this is a
+                one-time repair.
               </p>
               <div className="row">
                 {KINDS.filter((kind) => !status[kind]).map((kind) => (

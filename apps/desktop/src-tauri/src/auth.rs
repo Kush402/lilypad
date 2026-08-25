@@ -305,7 +305,15 @@ impl DeviceAuth {
         }
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
-            bail!("device sign-in failed (HTTP {status}): {body}");
+            // Same rule as `request_enrollment_code` above, for the same
+            // reason: this string can reach the dashboard, and a status code
+            // with a JSON body pasted after it names the one thing a person
+            // cannot act on and none of the things they can.
+            log::warn!(
+                target: "lilypad::auth",
+                "device sign-in refused (HTTP {status}): {body}",
+            );
+            bail!("Lilypad couldn’t confirm this computer with the server. Try again in a moment.");
         }
         let session: DeviceSession = response
             .json()
@@ -405,8 +413,10 @@ impl DesktopAuth {
     ///
     /// Keychain failures here are transient and ordinary: a login keychain not
     /// yet unlocked, a first-unlock race, or an access prompt dismissed by
-    /// accident — and the prompt reappears on every update while the app is
-    /// ad-hoc signed, because the code requirement changes with the cdhash.
+    /// accident. (It reappeared on every update while the app was ad-hoc
+    /// signed, because the code requirement changed with the cdhash; v0.1.7's
+    /// Developer ID signature made that stable, which makes this rarer rather
+    /// than impossible.)
     /// `identity.ts` on the phone already refuses to memoize a failure for
     /// these exact reasons; this is the same rule on the other client.
     fn device_auth(&self) -> Option<&DeviceAuth> {
@@ -843,8 +853,9 @@ mod tests {
     /// included — so one dismissed access prompt left the dashboard saying
     /// "this computer has no secure identity, so it cannot be linked", with
     /// the linking UI hidden and no retry anywhere on screen. The prompt
-    /// reappears on every update while the app is ad-hoc signed, which makes
-    /// this the ordinary case rather than the unlucky one.
+    /// reappeared on every update while the app was ad-hoc signed; a stable
+    /// Developer ID signature made that rare, not impossible, and a locked
+    /// keychain never needed an update to happen.
     #[test]
     fn a_failed_keychain_read_is_retried_rather_than_remembered() {
         use std::sync::atomic::{AtomicUsize, Ordering};

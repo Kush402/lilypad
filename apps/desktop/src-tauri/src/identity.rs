@@ -51,7 +51,16 @@ impl DeviceIdentity {
                     .context("could not store the device key in the OS credential store")?;
                 Self::from_pkcs8(pkcs8.as_ref())
             }
-            Err(e) => Err(anyhow::anyhow!("could not read the device key: {e}")),
+            Err(e) => {
+                // The keychain's own words ("Platform secure storage failure:
+                // Keychain error: -25300") end up on the dashboard's linking
+                // card, which is the least useful place for them.
+                log::warn!(target: "lilypad::identity", "keychain read failed: {e}");
+                Err(anyhow::anyhow!(
+                    "macOS would not let Lilypad read this computer’s key. If a keychain \
+                     permission box appeared, allow it and try again."
+                ))
+            }
         }
     }
 

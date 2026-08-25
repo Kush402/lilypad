@@ -133,9 +133,11 @@ export function AccountPanel({ onLinked }: AccountPanelProps = {}) {
         </p>
       ) : link.state === 'no_identity' ? (
         // A dead end until 2026-08-22, and reachable by accident: this is what
-        // a dismissed or not-yet-unlocked login keychain looks like, and the
-        // access prompt returns on every update while the app is ad-hoc
-        // signed. The failure is no longer remembered for the life of the
+        // a dismissed or not-yet-unlocked login keychain looks like. (The
+        // access prompt used to return on every update, when the app was
+        // ad-hoc signed and its code requirement changed with each build;
+        // since v0.1.7's Developer ID signature it does not, which makes this
+        // rarer but no less reachable.) The failure is no longer remembered for the life of the
         // process (`DesktopAuth::device_auth`), so a second attempt can
         // genuinely succeed — but only if something asks for one, and nothing
         // on this screen did.
