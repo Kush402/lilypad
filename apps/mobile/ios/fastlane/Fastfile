@@ -101,12 +101,27 @@ platform :ios do
     api_key = asc_api_key
     key_path = asc_key_path
 
-    # Keep the lane self-sufficient — CocoaPods is idempotent, so this is safe
-    # even though CI also runs `pod install` before invoking the lane.
-    cocoapods(
-      podfile: "Podfile",
-      try_repo_update_on_error: true
-    )
+    # Keep the lane self-sufficient — but only install when the sandbox is
+    # actually out of date, which is the same question Xcode's own
+    # "[CP] Check Pods Manifest.lock" phase asks.
+    #
+    # It used to install unconditionally, on the reasoning that CocoaPods is
+    # idempotent. It is idempotent in EFFECT and not in RISK: `pod install`
+    # fails intermittently in pnpm monorepos with `ArgumentError - pathname
+    # contains null byte` (CocoaPods #12798, #12866), so running it a second
+    # time for no reason is a second chance to lose. That is exactly what
+    # happened on 2026-08-25 — the workflow's own install succeeded on its
+    # retry, this call then ran it again, hit the bug, and took the archive
+    # down with it.
+    manifest = "Pods/Manifest.lock"
+    if !File.exist?(manifest) || File.read(manifest) != File.read("Podfile.lock")
+      cocoapods(
+        podfile: "Podfile",
+        try_repo_update_on_error: true
+      )
+    else
+      UI.message("Pods match Podfile.lock — skipping pod install")
+    end
 
     # Bump the build number to something unique per CI run so TestFlight never
     # rejects a duplicate. Overridable; defaults to the CI run number or epoch.
