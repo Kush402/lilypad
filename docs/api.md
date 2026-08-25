@@ -375,6 +375,33 @@ Two rules apply across all of them:
 - **Every attempt is audited** — `login` on success, `login_failed` with the
   real reason in `metadata` otherwise.
 
+### `GET /auth/methods` ✅
+
+Which ways in this server can actually perform. **Unauthenticated**, because a
+client needs it before it can have a token, and it discloses only what one
+request to each route reveals anyway.
+
+```jsonc
+// 200 OK — production today
+{ "email": false, "apple": true, "google": false }
+```
+
+`email` is a mail sender being configured, and gates **both** magic-link sign-in
+and password reset — they share the sender, so they are never available apart.
+Password sign-in and signup carry no flag: they depend on nothing external and
+are always available.
+
+Both clients hide the flows this marks unavailable, and **fail open** — only a
+definite `false` hides anything, so an unreachable server shows every method
+rather than removing the way in. Setting `RESEND_API_KEY` and `MAIL_FROM` is
+therefore the whole change: the email flows come back with no client release.
+
+It exists because production has never had a mail sender, so
+`POST /auth/magic-link/request` and both password-reset routes answered 503 to
+every call ever made — while the phone offered "Email me a sign-in link" and
+"Forgot your password?" on its first screen, and the Mac offered "Forgot
+password".
+
 ### `POST /auth/oauth` ✅
 
 Sign in with an Apple or Google ID token the client already obtained from the

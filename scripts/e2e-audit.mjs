@@ -100,6 +100,7 @@ async function req(method, path, body, bearer) {
   return { status: res.status, json: text ? JSON.parse(text) : {} };
 }
 const post = (p, b, t) => req('POST', p, b, t);
+const get = (p, t) => req('GET', p, undefined, t);
 
 /** An Ed25519 identity, exactly as a real client holds one. `jwk.x` is the raw
  * 32-byte public key in base64url — the encoding the wire format uses. */
@@ -115,6 +116,31 @@ async function proof(key) {
   const signature = nodeSign(null, Buffer.from(PREFIX + json.challenge, 'utf8'), key.privateKey);
   return { challenge: json.challenge, publicKey: key.publicKey, signature: b64u(signature) };
 }
+
+// ── 0. What this server says it can do ───────────────────────────────────────
+//
+// Both clients hide sign-in methods this answer marks unavailable, so a wrong
+// answer here removes a way into the product for every user at once. Checked
+// against production first, before anything else runs, because the rest of
+// this script depends on the one method it reports nothing about — password —
+// always being available.
+const methods = await get('/auth/methods');
+check(
+  'the server publishes which ways in it can perform',
+  methods.status === 200 && typeof methods.json.email === 'boolean',
+  `HTTP ${methods.status} ${JSON.stringify(methods.json)}`,
+);
+check(
+  'and it agrees with what the mail-dependent routes actually do',
+  // Not a check that mail IS configured — that is an operator's decision. A
+  // check that the ANSWER matches the behaviour: a server claiming it can send
+  // mail while 503-ing every request to do so is the failure both clients
+  // would render as two buttons that do nothing.
+  methods.json.email ===
+    ((await post('/auth/magic-link/request', { email: 'audit-methods@example.test' })).status !==
+      503),
+  `methods.email=${methods.json.email}`,
+);
 
 // ── 1. Signup + login ────────────────────────────────────────────────────────
 const email = `audit-${tag}@example.test`;
