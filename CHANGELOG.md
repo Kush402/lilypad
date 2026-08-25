@@ -6,6 +6,49 @@ All notable changes to Lilypad are documented here. The format follows
 
 ## [Unreleased]
 
+### P8 — every screen a Mac has, and names people recognise
+
+A Mac with a monitor plugged into it showed only its main display, and both
+device lists named every machine after its operating system.
+
+#### Added
+
+- **The screen switcher.** A Mac's displays are enumerated with
+  `CGDisplay::active_displays` (cheap, local, and — unlike
+  `SCShareableContent` — needing no Screen-Recording grant to answer), reported
+  on `frame-size`, and chosen from the phone with a new `set-display` message.
+  The row appears only when there is more than one screen, because a laptop
+  with one has nothing to switch between. Three things beyond showing a
+  different picture: input coordinates are mapped against the CAPTURED
+  display's global rect rather than the main display's size, so a tap lands on
+  the screen the viewer is looking at; unplugging the captured monitor rebuilds
+  capture on the main display instead of ending the session; and the Mac's own
+  dashboard names the screen being shared, since a remote phone moving the view
+  is not something to leave silent.
+- **`GET /auth/methods`** — which ways in a server can actually perform. Both
+  clients hide the flows it marks unavailable and fail open, so a server that
+  cannot be reached still shows every method. Production has never had a mail
+  sender, so the phone's "Email me a sign-in link" and "Forgot your password?"
+  and the Mac's "Forgot password" were three buttons whose only possible
+  outcome was a 503.
+
+#### Fixed
+
+- **Every machine had the same name.** Desktops enrolled as the literal
+  `"macos desktop"` and phones as `"ios phone"`, so an account with several
+  listed rows that were word-for-word identical. A Mac now sends what `scutil
+--get ComputerName` reports — the name macOS itself shows in Sharing settings
+  — and a phone sends its form factor. Existing rows heal themselves on the
+  next `/devices/token`, which carries the name the way it already carries
+  `appVersion`; a name the user typed is never overwritten, enforced in the
+  UPDATE's own CASE.
+- **Neither device list had an order.** `GET /devices` had no `ORDER BY` and
+  rendered the heap order; "Your laptops" rendered the order they were paired
+  in. Both now lead with what the reader is using and what they used last.
+- **Test budgets that were about the machine.** `waitFor` at one second and a
+  media-pipeline sample at five made `pnpm -w test` fail on a loaded laptop
+  while passing alone.
+
 ### P7 — consumer onboarding
 
 Both clients now present the product in the order it is actually used, and both
