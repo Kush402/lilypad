@@ -287,6 +287,11 @@ impl DeviceAuth {
                 // heartbeat of its own — and the only way to answer "which
                 // build is this customer running?" at all.
                 "appVersion": env!("CARGO_PKG_VERSION"),
+                // Same ride, same reasoning: this Mac's real name, kept
+                // current without a heartbeat. The server applies it only over
+                // the placeholder every desktop used to enroll under, so a
+                // name the owner typed in "Your devices" is never overwritten.
+                "deviceName": crate::identity::device_name(),
             }))
             .send()
             .await

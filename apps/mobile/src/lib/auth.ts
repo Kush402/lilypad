@@ -222,6 +222,7 @@ async function signedProof(apiBaseUrl: string): Promise<{
   publicKey: string;
   signature: string;
   appVersion: string;
+  deviceName: string;
   proofOrigin?: string;
 }> {
   const { status, text } = await postJson(endpoint(apiBaseUrl, '/devices/challenge'), {});
@@ -250,6 +251,11 @@ async function signedProof(apiBaseUrl: string): Promise<{
     // own. Not part of what is signed: it is bookkeeping, and a signature over
     // it would only make an old client unable to talk to a new server.
     appVersion: APP_VERSION,
+    // Rides along for the same reason, and heals the same defect: every phone
+    // used to enroll as the literal "ios phone", so two of them on one account
+    // were two identical rows. The server applies this only over that
+    // placeholder, never over a name the user chose.
+    deviceName: deviceLabel(),
   };
 }
 

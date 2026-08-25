@@ -121,6 +121,20 @@ const proofFields = {
   signature: SignatureSchema,
   appVersion: z.string().min(1).max(40).nullish(),
   /**
+   * What this machine currently calls itself.
+   *
+   * Rides along for the same reason `appVersion` does, and it is bookkeeping
+   * in the same way: never part of the proof, never an authorization input,
+   * and a client that omits it still signs in.
+   *
+   * It exists so a device that enrolled under a placeholder heals itself.
+   * Every Mac used to enroll as the literal `"macos desktop"` and every phone
+   * as `"ios phone"`, and an account with three of them listed three
+   * indistinguishable rows. The server only applies this over a placeholder it
+   * recognises, so a name the USER chose is never overwritten by the machine.
+   */
+  deviceName: z.string().min(1).max(120).nullish(),
+  /**
    * The host this client believes it is talking to, and therefore the host it
    * signed ([`deviceProofMessage`](#)). Its PRESENCE selects v2 — there is no
    * separate version field, because "did you name a server?" is the only

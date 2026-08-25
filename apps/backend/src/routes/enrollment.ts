@@ -161,7 +161,7 @@ export async function enrollmentRoutes(app: FastifyInstance): Promise<void> {
       if (!parsed.success) {
         return reply.code(400).send({ error: 'invalid_request', issues: parsed.error.issues });
       }
-      const { challenge, publicKey, signature, appVersion, proofOrigin } = parsed.data;
+      const { challenge, publicKey, signature, appVersion, deviceName, proofOrigin } = parsed.data;
 
       if (!(await proofHolds(challenge, publicKey, signature, proofOrigin))) {
         return invalidSignature(reply, req.ip, { step: 'device_token' });
@@ -201,7 +201,13 @@ export async function enrollmentRoutes(app: FastifyInstance): Promise<void> {
       return reply
         .code(200)
         .send(
-          await deviceSession(authenticated.deviceId, authenticated.userId, req.ip, appVersion),
+          await deviceSession(
+            authenticated.deviceId,
+            authenticated.userId,
+            req.ip,
+            appVersion,
+            deviceName,
+          ),
         );
     },
   );
@@ -418,6 +424,7 @@ export async function enrollmentRoutes(app: FastifyInstance): Promise<void> {
     userId: string,
     ip: string,
     appVersion?: string | null,
+    deviceName?: string | null,
   ): Promise<DeviceSession> {
     const accessToken = await signAccessToken({ userId, deviceId });
     // Every path that hands out a device token comes through here, which makes
@@ -427,7 +434,7 @@ export async function enrollmentRoutes(app: FastifyInstance): Promise<void> {
     // Fire-and-forget for the same reason as the audit write below: a
     // bookkeeping column must never fail the sign-in it describes.
     void registry
-      .markSeen(deviceId, appVersion)
+      .markSeen(deviceId, appVersion, deviceName)
       .catch((err) => log.audit.warn({ err }, 'failed to mark device as seen'));
     void auditLog
       .login({ userId, deviceId, ip, metadata: { subject: 'device' } })

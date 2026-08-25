@@ -32,47 +32,6 @@ fn lock_state(state: &SharedState) -> MutexGuard<'_, AppState> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// What this computer calls itself, for the name a phone sees.
-///
-/// Every desktop used to enroll as the literal string `"macos desktop"`, which
-/// is also what every OTHER Mac enrolled as — so "Your devices" on the phone
-/// listed three rows with identical names and no way to tell which was which
-/// (reported with a screenshot, 2026-08-24). `scutil --get ComputerName` is
-/// the name macOS itself shows in Sharing settings and AirDrop, so it is the
-/// name its owner already knows the machine by.
-///
-/// Falls back through `hostname` to the old string, because a name is a label
-/// and nothing authorizes on it: failing to read one must never fail the
-/// pairing it is attached to.
-fn device_name() -> String {
-    #[cfg(target_os = "macos")]
-    if let Some(name) = command_line("scutil", &["--get", "ComputerName"]) {
-        return name;
-    }
-    command_line("hostname", &[]).unwrap_or_else(|| format!("{} desktop", current_platform()))
-}
-
-/// One line of a command's stdout, cleaned for use as a device name, or `None`
-/// if it produced nothing usable.
-fn command_line(program: &str, args: &[&str]) -> Option<String> {
-    let out = std::process::Command::new(program).args(args).output().ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    clean_device_name(&String::from_utf8_lossy(&out.stdout))
-}
-
-/// Trim, drop the `.local` that `hostname` appends on macOS, and refuse an
-/// empty result. Capped at the 120 characters the rename endpoint accepts, so
-/// a hostile hostname cannot make enrollment fail validation.
-fn clean_device_name(raw: &str) -> Option<String> {
-    let name = raw.trim().trim_end_matches(".local").trim();
-    if name.is_empty() {
-        return None;
-    }
-    Some(name.chars().take(120).collect())
-}
-
 fn current_platform() -> &'static str {
     #[cfg(target_os = "macos")]
     {
@@ -209,7 +168,7 @@ pub async fn create_pairing(
         )
     };
 
-    let device_name = device_name();
+    let device_name = crate::identity::device_name();
     let url = format!("{}/pairing/create", base_url.trim_end_matches('/'));
     let body = serde_json::json!({
         "deviceId": device_id,
@@ -1079,7 +1038,7 @@ pub async fn start_enrollment(
     auth: State<'_, Arc<DesktopAuth>>,
 ) -> Result<EnrollmentQrDto, String> {
     let device_id = lock_state(&state).device_id.clone();
-    let device_name = device_name();
+    let device_name = crate::identity::device_name();
     // `device_id` and not some other identifier: the backend resolves ownership
     // by (kind, fingerprint), and enrolling under anything else would link a
     // second row while every authorization check kept seeing the unlinked one.
@@ -1238,32 +1197,6 @@ pub fn account_sign_out() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// The name a phone will show for this computer.
-    ///
-    /// Three Macs on one account all enrolled as `"macos desktop"`, so "Your
-    /// devices" was three identical rows. These pin the cleanup, which is the
-    /// only part that can turn a machine's real name into an unusable one.
-    #[test]
-    fn a_computer_name_is_cleaned_before_it_becomes_a_label() {
-        assert_eq!(clean_device_name("  Kush's MacBook Pro\n").as_deref(), Some("Kush's MacBook Pro"));
-        // `hostname` appends this on macOS; the phone should not see it.
-        assert_eq!(clean_device_name("Kushs-MacBook-Pro.local\n").as_deref(), Some("Kushs-MacBook-Pro"));
-        // Nothing usable is NOT a name — the caller falls back instead.
-        assert_eq!(clean_device_name("   \n"), None);
-        assert_eq!(clean_device_name(""), None);
-        assert_eq!(clean_device_name(".local"), None);
-        // `/devices/:id` accepts 120 characters. A hostname longer than that
-        // must not make enrollment fail validation.
-        let long = clean_device_name(&"n".repeat(500)).unwrap();
-        assert_eq!(long.chars().count(), 120);
-    }
-
-    /// Whatever the machine is called, enrollment gets SOMETHING to send.
-    #[test]
-    fn a_device_always_has_a_name() {
-        assert!(!device_name().is_empty());
-    }
 
     /// What the pairing window puts in front of someone adding their phone.
     ///

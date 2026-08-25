@@ -1,4 +1,4 @@
-import { and, eq, isNull, lt, or } from 'drizzle-orm';
+import { and, eq, isNull, lt, or, sql } from 'drizzle-orm';
 import type { DeviceKind } from '@lilypad/protocol';
 import { db as defaultDb } from '../db/client.js';
 import { devices } from '../db/schema.js';
@@ -22,6 +22,33 @@ import { devices } from '../db/schema.js';
  *    relationships survive the introduction of accounts instead of being
  *    orphaned.
  */
+
+/**
+ * Names no human chose.
+ *
+ * Both clients used to enroll under a literal built from their platform, so an
+ * account with three Macs on it listed three rows reading `"macos desktop"` —
+ * a screenshot on 2026-08-24 showed five rows with two names between them.
+ * They now send what the machine is really called, and `touchLastSeen` applies
+ * it OVER one of these and nothing else, so the existing rows heal on their
+ * next token exchange while a name the user typed is never overwritten.
+ *
+ * Frozen list, deliberately: it is the set of strings the old clients could
+ * produce, and it can only ever shrink in relevance.
+ */
+const PLACEHOLDER_NAMES = [
+  'macos desktop',
+  'windows desktop',
+  'linux desktop',
+  'ios phone',
+  'android phone',
+];
+
+/** Whether a stored name is a machine's placeholder rather than a person's
+ * choice — the condition under which a client may replace it. */
+export function isPlaceholderName(name: string | null): boolean {
+  return name === null || PLACEHOLDER_NAMES.includes(name.trim().toLowerCase());
+}
 
 export type EnrollFailure =
   'public_key_in_use' | 'device_owned_by_another_account' | 'device_revoked';
@@ -78,7 +105,7 @@ export interface DeviceIdentityStore {
    * absent `appVersion` leaves the stored one alone rather than clearing it:
    * a client that does not send one knows nothing, and knowing nothing is not
    * grounds to forget what the last one told us. */
-  touchLastSeen(id: string, appVersion?: string | null): Promise<void>;
+  touchLastSeen(id: string, appVersion?: string | null, deviceName?: string | null): Promise<void>;
 }
 
 export type DevicePlatform = 'macos' | 'windows' | 'linux' | 'ios' | 'android';
@@ -213,8 +240,12 @@ export class DeviceRegistry {
    * `last_seen_at IS NULL` while its owner was holding it, and "Your devices"
    * had to describe it as never having connected.
    */
-  async markSeen(deviceId: string, appVersion?: string | null): Promise<void> {
-    await this.store.touchLastSeen(deviceId, appVersion);
+  async markSeen(
+    deviceId: string,
+    appVersion?: string | null,
+    deviceName?: string | null,
+  ): Promise<void> {
+    await this.store.touchLastSeen(deviceId, appVersion, deviceName);
   }
 }
 
@@ -288,7 +319,7 @@ export function createDrizzleDeviceIdentityStore(
         .returning({ id: devices.id });
       return claimed.length > 0;
     },
-    async touchLastSeen(id, appVersion) {
+    async touchLastSeen(id, appVersion, deviceName) {
       await database
         .update(devices)
         .set({
@@ -297,6 +328,17 @@ export function createDrizzleDeviceIdentityStore(
           // through would erase a known version every time a client that does
           // not send one signs in — including every build already installed.
           ...(appVersion == null ? {} : { appVersion }),
+          // Only over a placeholder, and the WHERE clause is what enforces it
+          // rather than a read-then-write that a rename could land inside of.
+          // `sql` because the condition is about the row's CURRENT value.
+          ...(deviceName == null
+            ? {}
+            : {
+                name: sql`CASE WHEN ${devices.name} IS NULL OR lower(trim(${devices.name})) IN (${sql.join(
+                  PLACEHOLDER_NAMES.map((n) => sql`${n}`),
+                  sql`, `,
+                )}) THEN ${deviceName} ELSE ${devices.name} END`,
+              }),
         })
         .where(eq(devices.id, id));
     },
