@@ -2,12 +2,24 @@
 status: Reference
 owner: @kushsharma024
 last-verified: 2026-08-13
-summary: Why an account never discovers devices, and an explicit linking ceremony establishes ownership.
+summary: Why an account never discovers devices, and an explicit linking ceremony establishes ownership. Its central rule is superseded by ADR-0015.
 ---
 
 # ADR-0010 — Explicit device linking establishes ownership
 
 **Supersedes [ADR-0003](0003-same-account-device-visibility.md).**
+
+> **Its central rule is reversed by
+> [ADR-0015](0015-ownership-follows-sign-in.md) (2026-08-25).** Signing in on a
+> device is now what puts it on the account, on every platform, and pairing is a
+> separate relationship between two devices that already belong to one.
+>
+> Everything else here still holds and is still enforced: one owner per device,
+> ownership-gated routes, no unowned lane in `actAsDevice`, revocation as a
+> first-class act, and — the part most easily misread as lost — **ownership
+> buys no reach.** `/connect/request` authorizes on a `trusted_devices` row and
+> a per-pair secret and never consults `devices.user_id`. Read the sections
+> below with that one substitution.
 
 ## Context
 

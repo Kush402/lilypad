@@ -53,7 +53,11 @@ export function isPlaceholderName(name: string | null): boolean {
 export type EnrollFailure =
   'public_key_in_use' | 'device_owned_by_another_account' | 'device_revoked';
 
-export type EnrollResult = { ok: true; deviceId: string } | { ok: false; reason: EnrollFailure };
+export type EnrollResult =
+  /** `fingerprint` is the wire id the row ACTUALLY carries, which is not always
+   * the one the caller asserted — see `attempt`'s drift branch. The caller
+   * hands it back so the client can adopt it. */
+  { ok: true; deviceId: string; fingerprint: string } | { ok: false; reason: EnrollFailure };
 
 export interface DeviceRow {
   id: string;
@@ -138,7 +142,8 @@ export interface EnrollInput {
 export type DeviceAuthFailure = 'device_not_enrolled' | 'device_revoked';
 
 export type DeviceAuthResult =
-  { ok: true; deviceId: string; userId: string } | { ok: false; reason: DeviceAuthFailure };
+  | { ok: true; deviceId: string; userId: string; fingerprint: string }
+  | { ok: false; reason: DeviceAuthFailure };
 
 export class DeviceRegistry {
   constructor(private readonly store: DeviceIdentityStore) {}
@@ -172,9 +177,57 @@ export class DeviceRegistry {
     const byKey = await this.store.findByPublicKey(input.publicKey);
     const byFingerprint = await this.store.findByFingerprint(input.kind, input.fingerprint);
 
+    // This key is already enrolled, under something other than the row the
+    // caller's fingerprint names. Two very different situations share that
+    // shape, and only one of them is a conflict.
     if (byKey && byKey.id !== byFingerprint?.id) {
-      return { ok: false, reason: 'public_key_in_use' };
+      // **Conflict.** Either the asserted fingerprint belongs to a DIFFERENT
+      // device, or the key would have to name both a laptop and a phone. A key
+      // that identifies two devices is not an identity.
+      //
+      // Cross-kind is refused rather than adopted because `claim` does not
+      // patch `kind`: adopting would hand a phone a desktop's row and leave the
+      // two disagreeing about what the device is.
+      if (byFingerprint || byKey.kind !== input.kind) {
+        return { ok: false, reason: 'public_key_in_use' };
+      }
+
+      // **Drift.** One row, two names: the same machine, under a fingerprint it
+      // no longer recognises as its own. On macOS the fingerprint is a file in
+      // the app's data directory and the key is in the login keychain, so
+      // clearing one and not the other renames a computer without changing who
+      // it is.
+      //
+      // This used to answer `public_key_in_use`, permanently: removing the
+      // device from the account did not help — revocation leaves the row, so
+      // the key still resolves — and only deleting the keychain entry cleared
+      // it, which is not something a customer can be told. Kanban L-153.
+      //
+      // The key is the identity
+      // ([ADR-0002](../../../../docs/adr/0002-device-identity.md)), so the row
+      // wins and the asserted fingerprint is DISCARDED rather than written.
+      // Rewriting `devices.fingerprint` would move the wire id that every pair,
+      // room and connect resolves through, stranding every phone that had
+      // paired with this machine. The caller is told what the row is called and
+      // adopts it.
+      if (byKey.userId !== null && byKey.userId !== input.userId) {
+        return { ok: false, reason: 'device_owned_by_another_account' };
+      }
+      const claimed = await this.store.claim(byKey.id, {
+        userId: input.userId,
+        publicKey: input.publicKey,
+        name: input.name ?? null,
+        platform: input.platform ?? null,
+        credentialIssuedAt: input.credentialIssuedAt,
+      });
+      // `claim` is the decision, not the advice: it refuses a row revoked at or
+      // after `credentialIssuedAt`, which is the same guard the fingerprint
+      // path relies on and the reason a revoked device cannot un-revoke itself
+      // with a token it was already holding.
+      if (!claimed) return { ok: false, reason: 'device_revoked' };
+      return { ok: true, deviceId: byKey.id, fingerprint: byKey.fingerprint };
     }
+
     if (byFingerprint && byFingerprint.userId !== null && byFingerprint.userId !== input.userId) {
       return { ok: false, reason: 'device_owned_by_another_account' };
     }
@@ -204,14 +257,14 @@ export class DeviceRegistry {
         credentialIssuedAt: input.credentialIssuedAt,
       });
       if (!claimed) return { ok: false, reason: 'device_revoked' };
-      return { ok: true, deviceId: byFingerprint.id };
+      return { ok: true, deviceId: byFingerprint.id, fingerprint: byFingerprint.fingerprint };
     }
     const id = await this.store.create({
       ...patch,
       kind: input.kind,
       fingerprint: input.fingerprint,
     });
-    return id === null ? null : { ok: true, deviceId: id };
+    return id === null ? null : { ok: true, deviceId: id, fingerprint: input.fingerprint };
   }
 
   /**
@@ -227,7 +280,7 @@ export class DeviceRegistry {
     if (!row || row.userId === null) return { ok: false, reason: 'device_not_enrolled' };
     if (row.revokedAt !== null) return { ok: false, reason: 'device_revoked' };
     await this.store.touchLastSeen(row.id);
-    return { ok: true, deviceId: row.id, userId: row.userId };
+    return { ok: true, deviceId: row.id, userId: row.userId, fingerprint: row.fingerprint };
   }
 
   /**

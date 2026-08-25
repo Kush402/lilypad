@@ -48,15 +48,21 @@ const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
 /// What the backend returns from every sign-in.
 ///
-/// Only the user id is captured. `accessToken`, `refreshToken`, and
-/// `expiresInSeconds` are all deliberately dropped on the floor: nothing on the
-/// desktop acts as the ACCOUNT — every call it makes is authorised by the
-/// device key — so each of them would be a credential with no caller, and a
-/// credential with no caller is only ever a liability.
+/// `refreshToken` and `expiresInSeconds` are deliberately dropped on the floor:
+/// nothing here renews an account session, so each would be a credential with
+/// no caller, and a credential with no caller is only ever a liability.
+///
+/// `accessToken` is captured, and has exactly one caller: enrolling this Mac on
+/// the account that just signed in
+/// ([ADR-0015](../../../../docs/adr/0015-ownership-follows-sign-in.md)). It
+/// lives in a local variable for the length of that one request. **It is never
+/// stored** — `StoredAccount` below is what reaches the keychain, and it holds
+/// two labels and no secret.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct AuthSession {
     user_id: String,
+    access_token: String,
 }
 
 /// The access token, captured transiently by `Account::delete` and by nothing
@@ -67,6 +73,16 @@ struct AuthSession {
 #[serde(rename_all = "camelCase")]
 struct AccessToken {
     access_token: String,
+}
+
+/// A completed sign-in, before the account token is spent.
+///
+/// Not `Serialize`, and never returned to the webview: the token in it is the
+/// one thing on this machine that can act AS the account, and it exists only
+/// long enough for `commands::account_sign_in` to enrol this Mac with it.
+pub struct SignedIn {
+    pub state: AccountState,
+    pub access_token: String,
 }
 
 /// What the UI needs to render the account section.
@@ -139,7 +155,21 @@ impl Account {
     /// on every open, and a laptop that is offline is not a laptop whose user
     /// signed out.
     pub fn state() -> AccountState {
-        match Self::stored() {
+        Self::state_of(Self::stored())
+    }
+
+    /// The mapping, split out from the keychain read so a test can exercise it
+    /// without one.
+    ///
+    /// Not a gratuitous seam. `state()` opens the login keychain, and opening
+    /// it can block on an OS prompt that a headless `cargo test` cannot answer
+    /// — which is exactly what happened on 2026-08-25: the whole suite sat on
+    /// `state_is_signed_out_when_nothing_is_stored` past sixty seconds with no
+    /// dialog anyone could see. A rebuilt binary has a new code signature, so
+    /// the prompt can return on any build. The keychain read has no assertion
+    /// worth making anyway; the mapping does.
+    fn state_of(stored: Option<StoredAccount>) -> AccountState {
+        match stored {
             Some(stored) => AccountState {
                 signed_in: true,
                 email: Some(stored.email),
@@ -206,7 +236,7 @@ impl Account {
     }
 
     /// Create an account, then remember it.
-    pub async fn sign_up(&self, name: &str, email: &str, password: &str) -> Result<AccountState> {
+    pub async fn sign_up(&self, name: &str, email: &str, password: &str) -> Result<SignedIn> {
         let (status, text) = self
             .post(
                 "/auth/signup",
@@ -222,7 +252,7 @@ impl Account {
     }
 
     /// Sign in, then remember it.
-    pub async fn sign_in(&self, email: &str, password: &str) -> Result<AccountState> {
+    pub async fn sign_in(&self, email: &str, password: &str) -> Result<SignedIn> {
         let (status, text) = self
             .post(
                 "/auth/password",
@@ -262,7 +292,7 @@ impl Account {
         email: &str,
         code: &str,
         password: &str,
-    ) -> Result<AccountState> {
+    ) -> Result<SignedIn> {
         let (status, text) = self
             .post(
                 "/auth/password/reset/confirm",
@@ -335,15 +365,18 @@ impl Account {
         Self::sign_out()
     }
 
-    fn remember(&self, body: &str, email: &str) -> Result<AccountState> {
+    fn remember(&self, body: &str, email: &str) -> Result<SignedIn> {
         let session: AuthSession =
             serde_json::from_str(body).context("the server’s sign-in response was not valid")?;
         let email = email.trim().to_lowercase();
         Self::store(&session, &email)?;
-        Ok(AccountState {
-            signed_in: true,
-            email: Some(email),
-            user_id: Some(session.user_id),
+        Ok(SignedIn {
+            state: AccountState {
+                signed_in: true,
+                email: Some(email),
+                user_id: Some(session.user_id),
+            },
+            access_token: session.access_token,
         })
     }
 }
@@ -403,19 +436,24 @@ mod tests {
 
     #[test]
     fn state_is_signed_out_when_nothing_is_stored() {
-        // Reads the real keychain, so it asserts only the shape that holds
-        // either way: a machine with no entry must report signed out, and a
-        // developer machine with one must never report a session with no email.
-        let state = Account::state();
-        if state.signed_in {
-            assert!(
-                state.email.is_some(),
-                "a stored session must know its email"
-            );
-            assert!(state.user_id.is_some());
-        } else {
-            assert!(state.email.is_none());
-        }
+        let state = Account::state_of(None);
+        assert!(!state.signed_in);
+        assert!(state.email.is_none());
+        assert!(state.user_id.is_none());
+    }
+
+    /// The invariant the dashboard depends on: signed in is never signed in
+    /// as nobody. A card that says "Signed in as" with nothing after it is
+    /// worse than one that says signed out.
+    #[test]
+    fn a_stored_session_always_knows_who_it_is() {
+        let state = Account::state_of(Some(StoredAccount {
+            email: "ada@example.com".to_owned(),
+            user_id: "user-1".to_owned(),
+        }));
+        assert!(state.signed_in);
+        assert_eq!(state.email.as_deref(), Some("ada@example.com"));
+        assert_eq!(state.user_id.as_deref(), Some("user-1"));
     }
 
     #[test]

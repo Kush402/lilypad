@@ -185,6 +185,24 @@ export const DeviceSessionSchema = z.object({
   /** `devices.id` — a real server-side uuid, not the self-asserted string. */
   deviceId: z.string().uuid(),
   userId: z.string().uuid(),
+  /**
+   * `devices.fingerprint` — the WIRE id this device is actually known by, which
+   * is not always the one it just claimed.
+   *
+   * A client asserts its fingerprint, but the server resolves identity by
+   * PUBLIC KEY, and the two can drift apart: on macOS the fingerprint is a file
+   * in the app's data directory while the key is in the login keychain, so
+   * clearing one and not the other gives a machine a new name for the same
+   * identity. Every route that authorizes a device — `/pairing/create`,
+   * `/connect/request`, the presence room — resolves by fingerprint, so a
+   * client running under a name the server does not use is silently unable to
+   * do anything, and re-enrolling answers `public_key_in_use` forever.
+   *
+   * Returning it makes the drift self-healing: the client adopts this value and
+   * is itself again. Optional so a client can still read an older server's
+   * response, which simply cannot tell it.
+   */
+  fingerprint: WireDeviceIdSchema.optional(),
 });
 export type DeviceSession = z.infer<typeof DeviceSessionSchema>;
 

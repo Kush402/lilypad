@@ -39,6 +39,9 @@ pub struct DeviceAuth {
     /// never completes would now hold every other caller, where before each
     /// hung alone. `http` is built with one for that reason.
     signing_in: tokio::sync::Mutex<()>,
+    /// Told the wire id the backend actually knows this computer by, every time
+    /// one comes back. See `IdentitySink`.
+    sink: Option<IdentitySink>,
 }
 
 /// Bound on any single backend call. Matches `account.rs`, and exists here for
@@ -99,6 +102,20 @@ pub struct DeviceSession {
     pub expires_in_seconds: u64,
     pub device_id: String,
     pub user_id: String,
+    /// The WIRE id the backend actually knows this computer by, which is not
+    /// always the one it just claimed.
+    ///
+    /// `AppState.device_id` is a uuid in a file under the app's data directory;
+    /// the key that proves this machine's identity is in the login keychain.
+    /// Clearing one and not the other renames the computer without changing who
+    /// it is — and every route that authorizes a device (`/pairing/create`,
+    /// `/connect/request`, the presence room) resolves by fingerprint, so the
+    /// machine goes quietly unable to do anything.
+    ///
+    /// The server resolves by key and reports the row's own name here.
+    /// `IdentitySink` is what makes that self-healing. `None` from a server too
+    /// old to say, which is not evidence of anything.
+    pub fingerprint: Option<String>,
 }
 
 /// A backend error that a client should NOT retry blindly, because retrying
@@ -125,6 +142,14 @@ impl std::error::Error for AuthError {}
 
 impl DeviceAuth {
     pub fn new(identity: DeviceIdentity, base_url: String) -> Self {
+        Self::with_sink(identity, base_url, None)
+    }
+
+    pub fn with_sink(
+        identity: DeviceIdentity,
+        base_url: String,
+        sink: Option<IdentitySink>,
+    ) -> Self {
         Self {
             identity,
             base_url,
@@ -134,6 +159,23 @@ impl DeviceAuth {
                 .unwrap_or_default(),
             cached: Mutex::new(None),
             signing_in: tokio::sync::Mutex::new(()),
+            sink,
+        }
+    }
+
+    /// Hand the wire id the backend actually knows this computer by to whoever
+    /// owns the local copy.
+    ///
+    /// Called from BOTH token exchanges, not only from enrollment. The token
+    /// exchange is the one that matters: it authenticates by key alone, so a
+    /// machine whose local id has drifted still gets a valid answer, and this is
+    /// what turns that answer into a repair. Enrollment would otherwise be the
+    /// only cure, and enrollment is exactly the call a customer has no reason to
+    /// make again.
+    fn adopt(&self, session: &DeviceSession) {
+        if let (Some(sink), Some(canonical)) = (self.sink.as_ref(), session.fingerprint.as_deref())
+        {
+            sink(canonical);
         }
     }
 
@@ -186,17 +228,71 @@ impl DeviceAuth {
         ))
     }
 
-    // `enroll()` used to live here: a desktop enrolling ITSELF with an account
-    // access token, "because enrollment is the moment the device gains an
-    // owner". It had no callers, and as of ADR-0012 it could not work —
-    // `/devices/enroll` refuses `kind: "desktop"`, because a computer must be
-    // adopted by a phone approving its enrollment code (ADR-0010) rather than
-    // by whoever happens to be signed in on it. Removed rather than left as a
-    // method that compiles and 403s.
-    //
-    // Its doc comment was left behind as `///`, which meant rustdoc attached
-    // the removed method's description to `request_enrollment_code` below —
-    // documentation for one function rendered on a different one.
+    /// Put this Mac on the account that just signed in
+    /// ([ADR-0015](../../../../docs/adr/0015-ownership-follows-sign-in.md)).
+    ///
+    /// Called once, straight after a successful sign-in, with an account access
+    /// token that lives in a local variable and is never stored. Signing in is
+    /// what makes a machine yours — on a phone it always was, and a Mac that
+    /// behaved differently is why a customer who had signed in on both saw one
+    /// device in "Your devices".
+    ///
+    /// **`fingerprint` MUST be `AppState.device_id`.** The backend resolves
+    /// ownership by `(kind, fingerprint)`, so enrolling under any other value
+    /// creates a second device row: the machine would be owned, and every
+    /// authorization check would still see the unowned one.
+    ///
+    /// Failure is deliberately not fatal to the sign-in — see the caller. The
+    /// account session on this Mac is real either way, and the enrollment-code
+    /// QR remains a second route to the same ownership.
+    pub async fn enroll(
+        &self,
+        account_token: &str,
+        fingerprint: &str,
+        name: &str,
+        platform: &str,
+    ) -> Result<DeviceSession> {
+        let (challenge, public_key, signature, proof_origin) = self.signed_proof().await?;
+        let response = self
+            .http
+            .post(self.url("/devices/enroll"))
+            .bearer_auth(account_token)
+            .json(&serde_json::json!({
+                "challenge": challenge,
+                "publicKey": public_key,
+                "signature": signature,
+                "proofOrigin": proof_origin,
+                "kind": "desktop",
+                "fingerprint": fingerprint,
+                "name": name,
+                "platform": platform,
+                "appVersion": env!("CARGO_PKG_VERSION"),
+            }))
+            .send()
+            .await
+            .context("Couldn’t reach Lilypad. Check your internet connection and try again.")?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            log::warn!(
+                target: "lilypad::auth",
+                "enrollment refused (HTTP {status}): {body}",
+            );
+            bail!("{}", enroll_failure(status.as_u16(), &body));
+        }
+        let session: DeviceSession = response
+            .json()
+            .await
+            .context("Lilypad’s server sent something this app didn’t understand.")?;
+        // Seed the cache from the response instead of making the next caller
+        // re-authenticate. It is the same token `/devices/token` would mint,
+        // and skipping it removes the one window where a Mac is owned and the
+        // dashboard still says it is not.
+        self.cache(&session);
+        self.adopt(&session);
+        Ok(session)
+    }
 
     /// Ask for an enrollment code to show as a QR.
     ///
@@ -336,6 +432,7 @@ impl DeviceAuth {
             .await
             .context("the backend's device token response was not valid JSON")?;
         self.cache(&session);
+        self.adopt(&session);
         Ok(session)
     }
 
@@ -386,6 +483,16 @@ impl DeviceAuth {
     }
 }
 
+/// Where `DesktopAuth` reports the wire id the backend actually knows this
+/// computer by.
+///
+/// A callback rather than a direct write because the two halves live in
+/// different worlds: the answer arrives inside an HTTP response in this module,
+/// which knows nothing about Tauri, while the local copy lives in `AppState`
+/// and in a file under the app's data directory. `lib.rs` owns both and wires
+/// them together at startup.
+pub type IdentitySink = std::sync::Arc<dyn Fn(&str) + Send + Sync>;
+
 /// The app-wide handle every backend call reaches for, managed by Tauri.
 ///
 /// The identity is loaded on FIRST USE, not at startup. Opening the OS
@@ -411,15 +518,28 @@ pub struct DesktopAuth {
     /// keychain no longer has — a machine that silently changes identity. The
     /// old `get_or_init` gave this for free; retrying means providing it.
     retry: Mutex<()>,
+    /// Told the wire id the backend actually knows this computer by, every time
+    /// one comes back. See `IdentitySink`.
+    sink: Option<IdentitySink>,
 }
 
 impl DesktopAuth {
     pub fn new(base_url: String) -> Self {
+        Self::with_sink(base_url, None)
+    }
+
+    /// As `new`, plus somewhere to report the canonical wire id.
+    ///
+    /// Separate constructor rather than a setter: the sink has to be in place
+    /// before the first backend call, and a setter invites the version where it
+    /// is not.
+    pub fn with_sink(base_url: String, sink: Option<IdentitySink>) -> Self {
         Self {
             base_url,
             inner: OnceLock::new(),
             load: DeviceIdentity::load_or_create,
             retry: Mutex::new(()),
+            sink,
         }
     }
 
@@ -452,9 +572,11 @@ impl DesktopAuth {
         }
         match (self.load)() {
             Ok(identity) => {
-                let _ = self
-                    .inner
-                    .set(Some(DeviceAuth::new(identity, self.base_url.clone())));
+                let _ = self.inner.set(Some(DeviceAuth::with_sink(
+                    identity,
+                    self.base_url.clone(),
+                    self.sink.clone(),
+                )));
                 self.inner.get().and_then(Option::as_ref)
             }
             Err(e) => {
@@ -530,6 +652,30 @@ impl DesktopAuth {
             .device_auth()
             .ok_or_else(|| anyhow::anyhow!("this computer has no durable identity to link"))?;
         auth.request_enrollment_code(fingerprint, name, platform)
+            .await
+    }
+
+    /// Put this Mac on the account that just signed in. See `DeviceAuth::enroll`.
+    ///
+    /// The `no durable identity` case is the same one `request_enrollment_code`
+    /// hits and reads the same way: without a keypair in the login keychain
+    /// there is nothing to enrol, and the sentence has to say so rather than
+    /// fail as a network error.
+    pub async fn enroll(
+        &self,
+        account_token: &str,
+        fingerprint: &str,
+        name: &str,
+        platform: &str,
+    ) -> Result<DeviceSession> {
+        let auth = self.device_auth().ok_or_else(|| {
+            anyhow::anyhow!(
+                "Lilypad couldn’t save this computer’s key to the macOS keychain, so it can’t \
+                 join your account. If a keychain permission box appeared, allow it and sign in \
+                 again."
+            )
+        })?;
+        auth.enroll(account_token, fingerprint, name, platform)
             .await
     }
 
@@ -631,6 +777,36 @@ fn enrollment_code_failure(status: u16) -> &'static str {
     }
 }
 
+/// What a person reads when signing in worked but putting this Mac on the
+/// account did not.
+///
+/// The 409 is the one worth spelling out: one machine has one owner, so the
+/// second account to sign in on a shared Mac is refused, and the remedy —
+/// remove it from the first account's "Your devices" — is not guessable. The
+/// server sends that sentence; it is preferred over anything written here so
+/// the wording lives in one place.
+fn enroll_failure(status: u16, body: &str) -> String {
+    if status == 409 {
+        if let Some(message) = serde_json::from_str::<serde_json::Value>(body)
+            .ok()
+            .and_then(|v| v["message"].as_str().map(str::to_owned))
+        {
+            return message;
+        }
+        return "This computer already belongs to a different Lilypad account.".to_owned();
+    }
+    match status {
+        429 => "Too many attempts just now. Wait a minute, then try again.",
+        401 | 403 => {
+            "This computer couldn’t prove its identity to Lilypad’s server. \
+             Try again in a moment."
+        }
+        400 => "Lilypad’s server rejected this request. Please update the app.",
+        _ => "Lilypad couldn’t add this computer to your account right now. Try again in a moment.",
+    }
+    .to_owned()
+}
+
 /// Attach a bearer token to a request when there is one to attach.
 pub fn with_bearer(req: reqwest::RequestBuilder, token: Option<String>) -> reqwest::RequestBuilder {
     match token {
@@ -665,6 +841,56 @@ mod tests {
                 "{status}: not a finished sentence: {message:?}"
             );
             // No status codes, no JSON, no internal nouns.
+            for leak in ["HTTP", "{", "statusCode", "backend", "endpoint", "null"] {
+                assert!(
+                    !message.contains(leak),
+                    "{status}: {leak:?} leaked into a customer message: {message:?}"
+                );
+            }
+        }
+    }
+
+    /// The same rule for the sentences a failed enrollment produces, plus the
+    /// one thing that is specific to this path: the 409.
+    ///
+    /// A machine has one owner, so signing in on a Mac that already belongs to
+    /// somebody else is refused — and it is the only failure here whose remedy
+    /// is a thing the customer must go and do somewhere else. The server writes
+    /// that sentence, and this asserts the client actually SHOWS it rather than
+    /// replacing it with a generic one.
+    #[test]
+    fn an_enrollment_failure_names_the_remedy_the_server_named() {
+        let body = r#"{"error":"device_in_use","message":"this device already belongs to a different Lilypad account. Remove it from that account first, then sign in again here."}"#;
+        assert!(super::enroll_failure(409, body).contains("Remove it from that account first"));
+
+        // A 409 whose body is not the shape we expect must still say the true
+        // thing, not fall through to "try again in a moment" — retrying is
+        // exactly what will not help.
+        for junk in ["", "not json", "{}"] {
+            let message = super::enroll_failure(409, junk);
+            assert!(
+                message.contains("already belongs to a different"),
+                "409 with body {junk:?} lost the reason: {message:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_enrollment_failure_reads_like_a_sentence() {
+        for status in [400_u16, 401, 403, 404, 409, 429, 500, 503] {
+            let message = super::enroll_failure(status, "{}");
+            assert!(
+                !message.contains("  "),
+                "{status}: doubled spacing inside the message: {message:?}"
+            );
+            assert!(
+                !message.contains('\n'),
+                "{status}: newline in a UI string: {message:?}"
+            );
+            assert!(
+                message.ends_with('.'),
+                "{status}: not a finished sentence: {message:?}"
+            );
             for leak in ["HTTP", "{", "statusCode", "backend", "endpoint", "null"] {
                 assert!(
                     !message.contains(leak),
@@ -748,6 +974,87 @@ mod tests {
             1,
             "8 concurrent callers must burn ONE challenge, not one each"
         );
+    }
+
+    /// A stub that answers the token exchange with a fingerprint of its own —
+    /// the shape of a backend telling a client it is calling itself the wrong
+    /// thing.
+    async fn stub_backend_named(canonical: Option<&'static str>) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    return;
+                };
+                tokio::spawn(async move {
+                    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                    let mut buf = vec![0u8; 4096];
+                    let n = socket.read(&mut buf).await.unwrap_or(0);
+                    let req = String::from_utf8_lossy(&buf[..n]).to_string();
+                    let body = if req.contains("/devices/challenge") {
+                        r#"{"challenge":"nonce-abcdefgh"}"#.to_owned()
+                    } else {
+                        match canonical {
+                            Some(fp) => format!(
+                                r#"{{"accessToken":"tok","expiresInSeconds":600,"deviceId":"d-1","userId":"u-1","fingerprint":"{fp}"}}"#
+                            ),
+                            // An older backend, which cannot say.
+                            None => r#"{"accessToken":"tok","expiresInSeconds":600,"deviceId":"d-1","userId":"u-1"}"#.to_owned(),
+                        }
+                    };
+                    let res = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    let _ = socket.write_all(res.as_bytes()).await;
+                    let _ = socket.shutdown().await;
+                });
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    /// The repair for kanban L-153.
+    ///
+    /// `device_id` is a file under the app's data directory and the key is in
+    /// the login keychain, so clearing one and not the other renames this
+    /// computer without changing who it is. The backend resolves by key and
+    /// reports the row's own wire id; this is the client half that hears it.
+    #[tokio::test]
+    async fn a_drifted_computer_is_told_what_it_is_really_called() {
+        let heard: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink_target = heard.clone();
+        let auth = DeviceAuth::with_sink(
+            DeviceIdentity::generate_ephemeral().unwrap(),
+            stub_backend_named(Some("desktop-canonical")).await,
+            Some(Arc::new(move |canonical: &str| {
+                sink_target.lock().unwrap().push(canonical.to_owned());
+            })),
+        );
+
+        assert_eq!(auth.access_token().await.unwrap(), "tok");
+        assert_eq!(heard.lock().unwrap().as_slice(), ["desktop-canonical"]);
+    }
+
+    /// A server too old to name the device must not be read as naming it
+    /// nothing. Adopting an empty id would rename a working computer to garbage
+    /// — strictly worse than the drift this exists to fix.
+    #[tokio::test]
+    async fn a_silent_backend_renames_nothing() {
+        let heard: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink_target = heard.clone();
+        let auth = DeviceAuth::with_sink(
+            DeviceIdentity::generate_ephemeral().unwrap(),
+            stub_backend_named(None).await,
+            Some(Arc::new(move |canonical: &str| {
+                sink_target.lock().unwrap().push(canonical.to_owned());
+            })),
+        );
+
+        assert_eq!(auth.access_token().await.unwrap(), "tok");
+        assert!(heard.lock().unwrap().is_empty());
     }
 
     /// What "Link this computer" says when it fails.
@@ -857,6 +1164,7 @@ mod tests {
             expires_in_seconds,
             device_id: "device-uuid".to_owned(),
             user_id: "user-uuid".to_owned(),
+            fingerprint: None,
         }
     }
 

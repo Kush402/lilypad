@@ -131,18 +131,33 @@ fn set_presence(app: &AppHandle, next: crate::state::PresenceState) {
 }
 
 async fn run(app: AppHandle) {
-    let (device_id, base_url) = {
+    let base_url = {
         let state = app.state::<SharedState>();
         let s = state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        (s.device_id.clone(), s.backend_base_url.clone())
+        s.backend_base_url.clone()
     };
     let url = ws_url_from_base(&base_url);
-    let room = presence_room_id(&device_id);
 
     let mut attempt: usize = 0;
     loop {
+        // Re-read per attempt, like the token below, and for a related reason:
+        // this computer's wire id can CHANGE under us. The first token exchange
+        // is the one that discovers a drifted `device_id` and adopts the
+        // backend's name (`lib::adopt_device_id`), and that exchange happens
+        // inside this loop. Read once above it, this task would spend the whole
+        // session registering a room nobody is looking for, and the phone would
+        // report the Mac offline until it was relaunched.
+        let device_id = {
+            let state = app.state::<SharedState>();
+            let s = state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            s.device_id.clone()
+        };
+        let room = presence_room_id(&device_id);
+
         // Freshly per attempt: the backend gates presence on proving this
         // computer is the one it names (M9/SEC-4), and a token minted for an
         // earlier attempt may well have expired during a long backoff. `None`

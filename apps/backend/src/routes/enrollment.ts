@@ -36,6 +36,13 @@ import { log } from '../logging.js';
  * credential is a non-exportable private key rather than a stored bearer
  * string. That is why there is no device refresh token.
  *
+ * **Every kind of device enrols the same way** — signing in on a machine is
+ * what puts it on the account
+ * ([ADR-0015](../../../../docs/adr/0015-ownership-follows-sign-in.md)). The
+ * enrollment-code routes further down are no longer how a Mac gains an owner;
+ * they are how a Mac that cannot sign in gets adopted, and how one ceremony
+ * both adopts and pairs.
+ *
  * Both proof-carrying routes burn the challenge BEFORE checking the signature.
  * The other order leaves a failed attempt's nonce spendable, which hands an
  * attacker unlimited tries against one challenge.
@@ -87,20 +94,29 @@ export async function enrollmentRoutes(app: FastifyInstance): Promise<void> {
       } = parsed.data;
       const actor = actorOf(req);
 
-      // A computer may NEVER put itself on an account, however well it proves
-      // who is signed in ([ADR-0010](../../../../docs/adr/0010-explicit-device-linking.md)):
-      // linking requires a phone to approve an enrollment code, which is the
-      // physical-possession second factor on the highest-privilege action in
-      // the product. Before ADR-0012 nothing could reach this branch, because
-      // no desktop client could hold an account token; giving the desktop a
-      // password sign-in is exactly what makes the guard load-bearing.
-      if (kind === 'desktop') {
-        return reply.code(403).send({
-          error: 'desktop_enrollment_requires_approval',
-          message:
-            'a computer is linked by a phone approving its enrollment code, not by signing in on it',
-        });
-      }
+      // A desktop used to be refused here — ownership was supposed to cost a
+      // phone approving an enrollment code
+      // ([ADR-0010](../../../../docs/adr/0010-explicit-device-linking.md)).
+      // [ADR-0015](../../../../docs/adr/0015-ownership-follows-sign-in.md)
+      // reverses that, for two reasons.
+      //
+      // **It protected nothing.** The capability it meant to withhold is a
+      // device token, and the same account password already mints one through
+      // this very route with `kind: "mobile"` — install the phone app, sign
+      // in, self-enrol. Every `requireDevice` route (list, rename, revoke,
+      // approve an enrollment) was reachable that way the whole time. The
+      // guard constrained one client, never the capability.
+      //
+      // **It made ownership mean two different things per platform.** A phone
+      // joined the account at sign-in; a Mac did not, so a customer who signed
+      // in on both saw one device in "Your devices" and reasonably read it as
+      // a broken product.
+      //
+      // What is NOT reversed: ownership still buys no reach. `/connect/request`
+      // authorizes on a `trusted_devices` row and a per-pair secret and never
+      // consults `devices.user_id`, so a stolen password still cannot see a
+      // screen — that costs the QR ceremony, which is where the
+      // physical-possession factor actually lives.
 
       if (!(await proofHolds(challenge, publicKey, signature, proofOrigin))) {
         return invalidSignature(reply, req.ip, { userId: actor.userId, step: 'enroll' });
@@ -133,18 +149,37 @@ export async function enrollmentRoutes(app: FastifyInstance): Promise<void> {
             message: 'this device was removed from the account — sign in again on it to restore it',
           });
         }
+        // Reachable on any device now that a Mac enrols itself (ADR-0015), and
+        // the likeliest way to reach it is account switching: one machine, one
+        // owner, and the second person to sign in is refused. The message has
+        // to name the remedy, because there is exactly one and it is not
+        // obvious — the FIRST account has to remove the device from "Your
+        // devices", which is what frees the row.
         return reply.code(409).send({
           error: enrolled.reason,
           message:
             enrolled.reason === 'public_key_in_use'
-              ? 'that key already identifies a different device'
-              : 'this device is already enrolled on another account',
+              ? // This device's key is enrolled under a DIFFERENT wire id, which
+                // means its local id and its key have drifted apart — the app's
+                // data directory was cleared while the keychain entry survived.
+                // There is no self-service fix today (see kanban L-153), so the
+                // message names the situation rather than pretending otherwise.
+                'this device’s saved key belongs to a different device record. Contact support@takedia.com — this needs a reset on our side.'
+              : 'this device already belongs to a different Lilypad account. Remove it from that account first, then sign in again here.',
         });
       }
 
       return reply
         .code(200)
-        .send(await deviceSession(enrolled.deviceId, actor.userId, req.ip, appVersion));
+        .send(
+          await deviceSession(
+            enrolled.deviceId,
+            actor.userId,
+            enrolled.fingerprint,
+            req.ip,
+            appVersion,
+          ),
+        );
     },
   );
 
@@ -204,6 +239,7 @@ export async function enrollmentRoutes(app: FastifyInstance): Promise<void> {
           await deviceSession(
             authenticated.deviceId,
             authenticated.userId,
+            authenticated.fingerprint,
             req.ip,
             appVersion,
             deviceName,
@@ -422,6 +458,7 @@ export async function enrollmentRoutes(app: FastifyInstance): Promise<void> {
   async function deviceSession(
     deviceId: string,
     userId: string,
+    fingerprint: string,
     ip: string,
     appVersion?: string | null,
     deviceName?: string | null,
@@ -439,6 +476,15 @@ export async function enrollmentRoutes(app: FastifyInstance): Promise<void> {
     void auditLog
       .login({ userId, deviceId, ip, metadata: { subject: 'device' } })
       .catch((err) => log.audit.error({ err }, 'failed to write login audit log'));
-    return { accessToken, expiresInSeconds: ACCESS_TOKEN_TTL_SECONDS, deviceId, userId };
+    // `fingerprint` is the row's, never the caller's claim. A client whose
+    // local id has drifted from the one its key is enrolled under adopts this
+    // and becomes reachable again — see `DeviceSessionSchema`.
+    return {
+      accessToken,
+      expiresInSeconds: ACCESS_TOKEN_TTL_SECONDS,
+      deviceId,
+      userId,
+      fingerprint,
+    };
   }
 }

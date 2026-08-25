@@ -429,7 +429,7 @@ pub fn simulate_pair_request(app: AppHandle, state: State<'_, SharedState>) -> R
             }
         }
         log::info!(target: "lilypad::audit", "pair_request — phone requested control");
-        open_window(&app, "control", "Lilypad — Session", CONTROL_WINDOW)?;
+        open_window(&app, "control", "Lilypad", CONTROL_WINDOW)?;
         crate::sync_tray_menu(&app);
         Ok(())
     }
@@ -638,7 +638,7 @@ pub fn show_qr_overlay(app: &AppHandle) -> Result<(), String> {
 }
 
 pub fn show_control(app: &AppHandle) -> Result<(), String> {
-    open_window(app, "control", "Lilypad — Session", CONTROL_WINDOW)
+    open_window(app, "control", "Lilypad", CONTROL_WINDOW)
 }
 
 /// Open (create-if-absent, else focus) the dashboard. Unlike the ring path in
@@ -1098,9 +1098,16 @@ pub async fn revoke_pair(
 // password is the one method that needs neither, which is what makes an
 // account identity possible on this machine.
 //
-// **Signing in here never links this machine.** That still costs a phone
-// approving an enrollment code, and the backend enforces it rather than
-// trusting this client to — `/devices/enroll` refuses `kind: "desktop"`.
+// **Signing in here is what puts this machine on the account**
+// ([ADR-0015](../../../../docs/adr/0015-ownership-follows-sign-in.md)). It used
+// to cost a separate ceremony — a phone scanning an enrollment QR — which made
+// ownership mean one thing on a phone (immediate, at sign-in) and another on a
+// Mac, and left a customer who had signed in on both looking at a "Your
+// devices" list with one device in it.
+//
+// Ownership still buys no REACH. A phone can only see this screen through a
+// `trusted_devices` pair with a per-pair secret, which is what the QR ceremony
+// creates and the only thing `/connect/request` consults.
 
 /// The account this laptop is signed in to, read from the keychain only.
 #[tauri::command]
@@ -1112,29 +1119,64 @@ fn account_client(state: &State<'_, SharedState>) -> account::Account {
     account::Account::new(lock_state(state).backend_base_url.clone())
 }
 
+/// Sign-in, and then the thing that makes signing in mean something: this Mac
+/// joins the account it just signed in to.
+///
+/// **The enrollment failure is reported, and the sign-in is not undone.** Those
+/// are two different facts and a customer is entitled to both. The account
+/// session is genuinely established — the keychain has it, the dashboard will
+/// say who is signed in, and nothing is gained by pretending otherwise. But a
+/// silent failure here would leave the exact state this change exists to
+/// remove: signed in on a Mac that is on no account, with no indication why.
+/// The likeliest cause is a machine already owned by a different account, whose
+/// remedy the server spells out.
+async fn sign_in_and_enrol(
+    state: &State<'_, SharedState>,
+    auth: &State<'_, Arc<DesktopAuth>>,
+    signed_in: account::SignedIn,
+) -> Result<account::AccountState, String> {
+    let device_id = lock_state(state).device_id.clone();
+    // `device_id`, not any other identifier: the backend resolves ownership by
+    // (kind, fingerprint), and enrolling under anything else would own a second
+    // row while every authorization check kept reading the unowned one.
+    auth.enroll(
+        &signed_in.access_token,
+        &device_id,
+        &crate::identity::device_name(),
+        current_platform(),
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(signed_in.state)
+}
+
 #[tauri::command]
 pub async fn account_sign_up(
     state: State<'_, SharedState>,
+    auth: State<'_, Arc<DesktopAuth>>,
     name: String,
     email: String,
     password: String,
 ) -> Result<account::AccountState, String> {
-    account_client(&state)
+    let signed_in = account_client(&state)
         .sign_up(&name, &email, &password)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    sign_in_and_enrol(&state, &auth, signed_in).await
 }
 
 #[tauri::command]
 pub async fn account_sign_in(
     state: State<'_, SharedState>,
+    auth: State<'_, Arc<DesktopAuth>>,
     email: String,
     password: String,
 ) -> Result<account::AccountState, String> {
-    account_client(&state)
+    let signed_in = account_client(&state)
         .sign_in(&email, &password)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    sign_in_and_enrol(&state, &auth, signed_in).await
 }
 
 /// Whether the backend can send mail, so the dashboard can stop offering a
@@ -1159,14 +1201,16 @@ pub async fn account_request_password_reset(
 #[tauri::command]
 pub async fn account_confirm_password_reset(
     state: State<'_, SharedState>,
+    auth: State<'_, Arc<DesktopAuth>>,
     email: String,
     code: String,
     password: String,
 ) -> Result<account::AccountState, String> {
-    account_client(&state)
+    let signed_in = account_client(&state)
         .confirm_password_reset(&email, &code, &password)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    sign_in_and_enrol(&state, &auth, signed_in).await
 }
 
 /// Delete the account permanently — every device, every pairing, every session.

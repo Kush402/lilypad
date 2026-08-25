@@ -82,6 +82,52 @@ fn load_or_create_device_id(app: &tauri::App) -> String {
     format!("desktop-{}", uuid::Uuid::new_v4())
 }
 
+/// Take the backend's word for what this computer is called.
+///
+/// **Two stores, one identity, and they can come apart.** `device_id` is a uuid
+/// in a file under the app's data directory; the Ed25519 key that actually
+/// proves who this machine is lives in the login keychain. Clearing the first
+/// and not the second — a "clear app data" step, a partial uninstall — gives
+/// the same computer a new name. Every route that authorizes a device resolves
+/// by that name, so the machine goes quietly unable to pair, connect, or claim
+/// its presence room, and re-enrolling answered `public_key_in_use` forever:
+/// removing the device from the account did not help, because revocation leaves
+/// the row and the key still resolves. Kanban L-153.
+///
+/// The backend resolves by KEY and reports the row's own wire id on every token
+/// exchange, so the repair costs nothing extra and happens on the next launch.
+///
+/// **Both halves, in this order.** `AppState` is what the next `/pairing/create`
+/// reads; the file is what the launch after that reads. Writing only one leaves
+/// the drift to come back.
+fn adopt_device_id(app: &AppHandle, canonical: &str) {
+    let Some(state) = app.try_state::<Mutex<AppState>>() else {
+        // Only reachable if a token exchange somehow beat `setup` to it. The
+        // next exchange reports the same value, so nothing is lost by skipping.
+        return;
+    };
+    {
+        let mut current = state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if current.device_id == canonical {
+            return; // the ordinary case, every launch: nothing has drifted
+        }
+        log::warn!(
+            target: "lilypad::auth",
+            "this computer was calling itself {} but the backend knows it as {canonical} —              adopting the backend's name",
+            current.device_id,
+        );
+        current.device_id = canonical.to_owned();
+    }
+    if let Ok(dir) = app.path().app_config_dir() {
+        let _ = fs::create_dir_all(&dir);
+        if let Err(e) = fs::write(dir.join("device_id"), canonical) {
+            // Not fatal: the in-memory copy above is already right, so this run
+            // works and the next launch simply repeats the repair.
+            log::warn!(target: "lilypad::auth", "could not persist the adopted device id: {e}");
+        }
+    }
+}
+
 /// The tray's menu item handles, kept around (via `app.manage`) so their
 /// enabled/disabled state can be updated as the session progresses —
 /// previously every item was created `true` (enabled) and never touched
@@ -315,7 +361,16 @@ pub fn run() {
             // (M9). Managed separately from `AppState` because obtaining a
             // token is async and `AppState` lives behind a sync Mutex — a
             // command must never hold that lock across a network round trip.
-            app.manage(std::sync::Arc::new(auth::DesktopAuth::new(backend.clone())));
+            //
+            // The sink is how this machine finds out what the backend actually
+            // calls it. See `adopt_device_id`.
+            let sink_handle = app.handle().clone();
+            app.manage(std::sync::Arc::new(auth::DesktopAuth::with_sink(
+                backend.clone(),
+                Some(std::sync::Arc::new(move |canonical: &str| {
+                    adopt_device_id(&sink_handle, canonical);
+                })),
+            )));
 
             app.manage(Mutex::new(AppState::new(device_id, backend)));
 

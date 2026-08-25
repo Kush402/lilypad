@@ -606,14 +606,17 @@ machine gains an owner, so an owner must be present to gain: it requires an
 Also **claims a pre-account row with the same fingerprint** if one exists, so
 trust relationships created before accounts survive rather than being orphaned.
 
-**`kind: "desktop"` is refused — 403, before the signature is even checked.** A
-computer may never put itself on an account, however well it proves who is
-signed in: linking costs a phone approving an enrollment code
-([ADR-0010](adr/0010-explicit-device-linking.md)), which is the
-physical-possession second factor on the highest-privilege action in the
-product. Nothing could reach this branch while the desktop had no way to hold an
-account token; [ADR-0012](adr/0012-password-authentication.md) gives it one, so
-the rule is enforced here rather than by client convention.
+**Every `kind` enrols the same way.** Signing in on a device is what puts it on
+the account ([ADR-0015](adr/0015-ownership-follows-sign-in.md)) — a Mac no less
+than a phone. This route used to answer `403
+desktop_enrollment_requires_approval` to `kind: "desktop"`; the refusal was
+removed because it withheld nothing (the capability behind it is a device token,
+and the same account password minted one here with `kind: "mobile"`) while
+making ownership mean one thing on a phone and another on a Mac.
+
+Ownership still buys no reach. `/connect/request` authorizes on a
+`trusted_devices` row and a per-pair secret and never reads `devices.user_id`,
+so the QR pairing ceremony remains the physical-possession factor.
 
 ```jsonc
 // request
@@ -625,14 +628,25 @@ the rule is enforced here rather than by client convention.
 // 200 OK
 { "accessToken": "eyJ…", "expiresInSeconds": 600,
   "deviceId": "uuid",       // devices.id — a real server-side uuid
-  "userId": "uuid" }
+  "userId": "uuid",
+  "fingerprint": "desktop-…" }  // the WIRE id this row actually carries
 // 401 — unknown, expired, already-spent, or wrongly-signed challenge
 { "error": "invalid_signature" }
-// 403 — kind was "desktop"; use /devices/enrollment-code instead
-{ "error": "desktop_enrollment_requires_approval", "message": "…" }
-// 409
+// 403 — the device was removed from the account after this token was minted
+{ "error": "device_revoked", "message": "…" }
+// 409 — one device has one owner; or one key names both a laptop and a phone
 { "error": "device_owned_by_another_account" }  // or "public_key_in_use"
 ```
+
+**`fingerprint` is the row's, not the caller's claim.** Identity is resolved by
+PUBLIC KEY, and a client's local id can drift away from it — on macOS the
+fingerprint is a file in the app's data directory while the key is in the login
+keychain, so clearing one and not the other renames a computer without changing
+who it is. When that happens the existing row wins, the asserted fingerprint is
+discarded rather than written (it is the wire id every pair, room and connect
+resolves through), and this field tells the client what it is really called so
+it can adopt it. Returned by `/devices/token` as well, which is what makes the
+repair cost no extra call.
 
 Re-enrolling the same device on the same account is idempotent, rotates the
 stored key, and lifts a revocation — that is how a user restores a device they

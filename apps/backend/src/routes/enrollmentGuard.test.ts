@@ -41,17 +41,22 @@ vi.mock('../auth/ownership.js', () => ({
 const { enrollmentRoutes } = await import('./enrollment.js');
 
 /**
- * A signed-in computer may not link itself
- * ([ADR-0010](../../../../docs/adr/0010-explicit-device-linking.md),
- * [ADR-0012](../../../../docs/adr/0012-password-authentication.md)).
+ * Signing in on a machine is what puts it on the account — on every platform
+ * ([ADR-0015](../../../../docs/adr/0015-ownership-follows-sign-in.md)).
  *
- * `/devices/enroll` takes an account token and writes `devices.user_id`, which
- * is precisely the ownership relationship ADR-0010 says must cost a phone
- * approval. Nothing could reach that branch while the desktop had no way to
- * hold an account token — ADR-0012 gives it one, so the rule has to be enforced
- * on the server rather than by client convention.
+ * This file used to assert the opposite: a `403
+ * desktop_enrollment_requires_approval` for `kind: "desktop"`. The refusal was
+ * removed because it withheld nothing — the capability behind it is a device
+ * token, and the same account password mints one through this same route with
+ * `kind: "mobile"` — while making ownership mean one thing on a phone and
+ * another on a Mac.
+ *
+ * What the tests below pin is that removing it did not weaken the route: a
+ * token is still required, and both kinds are now treated identically, failing
+ * together at the proof they cannot forge rather than at a guard on the word
+ * "desktop".
  */
-describe('/devices/enroll — desktops cannot self-link', () => {
+describe('/devices/enroll — ownership follows sign-in, on every platform', () => {
   let app: FastifyInstance;
 
   beforeEach(async () => {
@@ -74,27 +79,32 @@ describe('/devices/enroll — desktops cannot self-link', () => {
     platform: 'macos',
   });
 
-  it('refuses kind:"desktop" with a valid account token', async () => {
+  /** The reported bug, at the route. A Mac signing in used to be told its own
+   * kind was the problem; now it is admitted and judged on its proof like
+   * anything else. `deviceIdentity` is stubbed to refuse every challenge, so
+   * "got past the guard" is observable as the LATER failure. */
+  it('admits kind:"desktop" with a valid account token', async () => {
     const res = await app.inject({
       method: 'POST',
       url: '/devices/enroll',
       headers: { authorization: 'Bearer account-token' },
       payload: body('desktop'),
     });
-    expect(res.statusCode).toBe(403);
-    expect(res.json().error).toBe('desktop_enrollment_requires_approval');
+    expect(res.statusCode).not.toBe(403);
+    expect(res.json().error).not.toBe('desktop_enrollment_requires_approval');
   });
 
-  /** The refusal must be about the KIND, not about the credential — otherwise
-   * a future change that fixes the token could silently reopen the hole. */
-  it('still refuses before it ever checks the signature', async () => {
+  /** Ownership at sign-in must not become ownership WITHOUT sign-in. A machine
+   * that cannot prove possession of its key is still refused, so the account
+   * token alone never enrols a key the caller does not hold. */
+  it('still refuses a desktop whose signature does not verify', async () => {
     const res = await app.inject({
       method: 'POST',
       url: '/devices/enroll',
       headers: { authorization: 'Bearer account-token' },
       payload: { ...body('desktop'), signature: 'z'.repeat(86) },
     });
-    expect(res.statusCode).toBe(403);
+    expect(res.statusCode).toBe(401);
   });
 
   it('still requires a token at all', async () => {
@@ -106,16 +116,20 @@ describe('/devices/enroll — desktops cannot self-link', () => {
     expect(res.statusCode).toBe(401);
   });
 
-  /** Phones enrol exactly as before: this guard must not have closed the path
-   * the whole account model depends on. A mobile request gets past the guard
-   * and fails later, on the challenge it cannot have — a different failure. */
-  it('does not refuse kind:"mobile" at the guard', async () => {
-    const res = await app.inject({
-      method: 'POST',
-      url: '/devices/enroll',
-      headers: { authorization: 'Bearer account-token' },
-      payload: body('mobile'),
-    });
-    expect(res.statusCode).not.toBe(403);
+  /** The point of the change: the two kinds are no longer treated differently.
+   * Both reach the proof and both fail there, identically. */
+  it('treats desktop and mobile identically', async () => {
+    const [desktop, mobile] = await Promise.all(
+      (['desktop', 'mobile'] as const).map((kind) =>
+        app.inject({
+          method: 'POST',
+          url: '/devices/enroll',
+          headers: { authorization: 'Bearer account-token' },
+          payload: body(kind),
+        }),
+      ),
+    );
+    expect(desktop!.statusCode).toBe(mobile!.statusCode);
+    expect(desktop!.json()).toEqual(mobile!.json());
   });
 });

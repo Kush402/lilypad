@@ -128,7 +128,7 @@ describe('DeviceRegistry.enroll', () => {
   it('claims a pre-account row for the same fingerprint instead of orphaning it', async () => {
     const legacyId = seedLegacyDevice(store, 'desktop', 'desktop-abcdef');
     const result = await registry.enroll(enrollment);
-    expect(result).toEqual({ ok: true, deviceId: legacyId });
+    expect(result).toEqual({ ok: true, deviceId: legacyId, fingerprint: 'desktop-abcdef' });
     expect(store.rows.size).toBe(1);
     expect(store.rows.get(legacyId)).toMatchObject({ userId: 'user-1', publicKey: 'key-one' });
   });
@@ -142,15 +142,50 @@ describe('DeviceRegistry.enroll', () => {
     expect(store.rows.size).toBe(1);
   });
 
-  // A key that names two devices is not an identity.
-  it('refuses a public key already bound to a different device', async () => {
-    await registry.enroll(enrollment);
-    const reused = await registry.enroll({
+  /**
+   * The same machine under a new name, which is what a partial wipe produces:
+   * on macOS the fingerprint is a file in the app's data directory and the key
+   * is in the login keychain, so clearing one and not the other renames a
+   * computer without changing who it is (kanban L-153).
+   *
+   * This used to answer `public_key_in_use`, permanently — removing the device
+   * from the account did not help, because revocation leaves the row and the
+   * key still resolves. The key is the identity
+   * ([ADR-0002](../../../../docs/adr/0002-device-identity.md)), so the existing
+   * row wins.
+   *
+   * **The asserted fingerprint must be discarded, not written.** Every pair,
+   * room and connect resolves through `devices.fingerprint`; rewriting it would
+   * strand every phone already paired with this machine.
+   */
+  it('adopts a drifted fingerprint onto the row its key already owns', async () => {
+    const first = await registry.enroll(enrollment);
+    const renamed = await registry.enroll({
       ...enrollment,
       fingerprint: 'desktop-different',
       publicKey: 'key-one',
     });
-    expect(reused).toEqual({ ok: false, reason: 'public_key_in_use' });
+
+    if (!first.ok || !renamed.ok) throw new Error('both enrollments must succeed');
+    expect(renamed.deviceId).toBe(first.deviceId);
+    expect(store.rows.size).toBe(1);
+    // Told what it is really called, and the stored value is untouched.
+    expect(renamed.fingerprint).toBe('desktop-abcdef');
+    expect([...store.rows.values()][0]!.fingerprint).toBe('desktop-abcdef');
+  });
+
+  /** Drift is a rename, not a change of species. `claim` does not patch `kind`,
+   * so adopting across kinds would leave the row and its client disagreeing
+   * about what the device is. */
+  it('refuses a key that would name both a laptop and a phone', async () => {
+    await registry.enroll(enrollment);
+    const crossKind = await registry.enroll({
+      ...enrollment,
+      kind: 'mobile' as DeviceKind,
+      fingerprint: 'mobile-abcdef',
+      publicKey: 'key-one',
+    });
+    expect(crossKind).toEqual({ ok: false, reason: 'public_key_in_use' });
   });
 
   it('refuses a key belonging to another account even on a fresh fingerprint', async () => {
@@ -218,17 +253,24 @@ describe('DeviceRegistry.enroll', () => {
     expect(store.rows.size).toBe(1);
   });
 
-  /** The same interleaving, but the racers are genuinely different devices
-   * claiming one key. Losing the insert must not turn into a 500 either — it
-   * has an honest answer, and it is the one the sequential case already gives. */
-  it('reports public_key_in_use when a concurrent insert took the key first', async () => {
+  /**
+   * The same interleaving, with the racers disagreeing about what this machine
+   * is called — the shape a partial wipe produces when the app is already
+   * running. One key is one device, so both must converge on one row, and the
+   * loser must be told the name that won rather than handed a 500.
+   *
+   * This expected `public_key_in_use` from the loser until 2026-08-25, back
+   * when a key naming two fingerprints was treated as a conflict rather than as
+   * a rename (kanban L-153).
+   */
+  it('two racers disagreeing about this machine’s name converge on one row', async () => {
     const [a, b] = await Promise.all([
       registry.enroll(enrollment),
       registry.enroll({ ...enrollment, fingerprint: 'desktop-other' }),
     ]);
-    const outcomes = [a, b];
-    expect(outcomes.filter((r) => r.ok)).toHaveLength(1);
-    expect(outcomes.filter((r) => !r.ok)).toEqual([{ ok: false, reason: 'public_key_in_use' }]);
+    if (!a.ok || !b.ok) throw new Error('both must succeed: one key is one device');
+    expect(a.deviceId).toBe(b.deviceId);
+    expect(a.fingerprint).toBe(b.fingerprint);
     expect(store.rows.size).toBe(1);
   });
 });
@@ -361,6 +403,9 @@ describe('DeviceRegistry.authenticate', () => {
       ok: true,
       deviceId: enrolled.deviceId,
       userId: 'user-1',
+      // The row's own wire id, which is what lets a client whose local one has
+      // drifted find out what it is really called.
+      fingerprint: 'desktop-abcdef',
     });
   });
 
