@@ -4,19 +4,21 @@ import { api, type EnrollmentQrDto, type LinkStateDto } from '../lib/tauri';
 import { useLiveResource } from '../lib/useLiveResource';
 
 /**
- * This computer's account, on the dashboard (P1).
+ * Whether this computer is on the account, and what to do when it is not.
  *
- * The product rule this panel exists to make visible
- * ([ADR-0010](../../../../docs/adr/0010-explicit-device-linking.md)): **an
- * account never discovers devices.** Signing in tells Lilypad who you are;
- * linking tells it which computer is yours. So this panel says **Not linked**
- * until a phone has actually approved this machine, and never implies
- * availability before that.
+ * **This is a status card, not a step.** Signing in is what puts a Mac on an
+ * account ([ADR-0015](../../../../docs/adr/0015-ownership-follows-sign-in.md)),
+ * so by the time anyone reads this the answer is normally already yes and the
+ * card is one line long. It used to be the ceremony itself — a QR the customer
+ * had to scan before the machine was theirs — which is the step ADR-0015
+ * removed.
  *
- * The desktop has no OAuth client of its own
- * ([ADR-0008](../../../../docs/adr/0008-desktop-enrollment-via-phone.md)): it
- * shows a QR, a signed-in phone scans it, and that phone's account adopts the
- * machine. The WhatsApp Web / Steam model.
+ * The QR did not go away, it stopped being the front door. It is the recovery
+ * path for the two states sign-in cannot fix by itself: a Mac whose enrollment
+ * failed (already on another account, offline at the wrong moment), and a Mac
+ * whose access was revoked. A signed-in phone scanning it adopts the machine
+ * onto that phone's account — the WhatsApp Web / Steam model
+ * ([ADR-0008](../../../../docs/adr/0008-desktop-enrollment-via-phone.md)).
  */
 
 /** How often to re-ask while a code is on screen. Each poll is a challenge
@@ -50,14 +52,11 @@ export function AccountPanel({ onLinked }: AccountPanelProps = {}) {
 
   // Poll only while a code is showing. Approval happens on the PHONE, so
   // there is nothing local to react to — but polling a machine nobody is
-  // trying to link would be a request every 3s, forever, for no reason.
+  // trying to adopt would be a request every 3s, forever, for no reason.
   //
-  // This is not merely an optimisation, it is the whole rule: a desktop can
-  // become linked ONLY inside the 120s life of a code minted here.
-  // `/devices/enroll` answers 403 `desktop_enrollment_requires_approval` for
-  // `kind: "desktop"`, so a Mac cannot enrol itself, and the only other path
-  // burns a code bound at mint time to this machine's public key. Outside that
-  // window no transition can happen, so a poll cannot observe one.
+  // The other transition — a sign-in enrolling this Mac (ADR-0015) — needs no
+  // poll at all: it completes inside the sign-in call, and the screens hosting
+  // this card re-read the state when `AccountSignIn` reports success.
   //
   // `expired` is part of the guard, not just the badge. The code dies
   // server-side after `DESKTOP_ENROLLMENT_TTL_SECONDS` (120s), but
@@ -129,7 +128,7 @@ export function AccountPanel({ onLinked }: AccountPanelProps = {}) {
         <p className="muted">Checking…</p>
       ) : link.state === 'linked' ? (
         <p className="muted" data-testid="link-state-linked">
-          <strong>Linked</strong> — this computer belongs to your account.
+          <strong>On your account</strong> — you can see and remove this computer from your phone.
         </p>
       ) : link.state === 'no_identity' ? (
         // A dead end until 2026-08-22, and reachable by accident: this is what
@@ -143,8 +142,8 @@ export function AccountPanel({ onLinked }: AccountPanelProps = {}) {
         // on this screen did.
         <div data-testid="link-state-no-identity">
           <p className="error">
-            Lilypad couldn’t save this computer’s key to the macOS keychain, so it can’t be linked
-            yet. If a keychain permission box appeared, allow it and try again.
+            Lilypad couldn’t save this computer’s key to the macOS keychain, so it can’t join your
+            account yet. If a keychain permission box appeared, allow it and try again.
           </p>
           <div className="row">
             <button className="btn" data-testid="retry-identity" onClick={refresh}>
@@ -153,17 +152,21 @@ export function AccountPanel({ onLinked }: AccountPanelProps = {}) {
           </div>
         </div>
       ) : link.state === 'unknown' ? (
-        // NOT "not linked": we do not know, and saying the wrong one invites a
-        // linked user to redo a ceremony they already completed.
+        // NOT "not on your account": we do not know, and saying the wrong one
+        // sends someone to redo a step they already completed.
         <p className="muted" data-testid="link-state-unknown">
           Can’t reach Lilypad’s server, so the account status is unknown right now.
         </p>
       ) : (
+        // Signing in should have handled this, so reaching it means something
+        // went wrong that the customer cannot see — most often a Mac that is
+        // already on somebody else's account. Say what is true and offer the
+        // one thing that still works.
         <p className="muted" data-testid="link-state-unlinked">
-          <strong>Not linked</strong> —{' '}
+          <strong>Not on your account</strong> —{' '}
           {link.state === 'revoked'
-            ? 'access to this computer was revoked. Link it again to restore it.'
-            : 'no account owns this computer yet, so it can’t pair a phone. Linking is what makes it yours.'}
+            ? 'this computer was removed from the account. Add it again below to restore it.'
+            : 'signing in should have added this computer. It didn’t, so it can’t pair a phone yet — add it from your phone below.'}
         </p>
       )}
 
@@ -173,11 +176,16 @@ export function AccountPanel({ onLinked }: AccountPanelProps = {}) {
             <div className="account__enroll">
               <p className="muted">
                 On your phone: open Lilypad, sign in, then scan this code to add this computer to
-                your account.
+                that phone’s account.
               </p>
               <div className={`qr__frame ${expired ? 'qr__frame--expired' : ''}`}>
                 {dataUrl ? (
-                  <img src={dataUrl} alt="Link this computer" width={200} height={200} />
+                  <img
+                    src={dataUrl}
+                    alt="Add this computer to your account"
+                    width={200}
+                    height={200}
+                  />
                 ) : null}
                 {expired ? <div className="qr__expired-badge">Expired</div> : null}
               </div>
@@ -193,7 +201,7 @@ export function AccountPanel({ onLinked }: AccountPanelProps = {}) {
               disabled={busy}
               onClick={() => void startLinking()}
             >
-              {enrollment ? 'New code' : 'Link this computer'}
+              {enrollment ? 'New code' : 'Add this computer from my phone'}
             </button>
           </div>
         </>

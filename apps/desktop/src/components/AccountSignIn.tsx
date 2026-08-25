@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, type AccountStateDto } from '../lib/tauri';
 
 /**
@@ -11,13 +11,16 @@ import { api, type AccountStateDto } from '../lib/tauri';
  * not have. Email + password needs neither, which is the whole reason ADR-0012
  * added it.
  *
- * **Signing in here does not link this computer, and the copy says so.** That
- * is the product rule ([ADR-0010](../../../../docs/adr/0010-explicit-device-linking.md)):
- * an account never discovers devices — a phone approving this machine's
- * enrollment code is what makes it yours. The backend enforces it rather than
- * trusting this screen: `/devices/enroll` refuses `kind: "desktop"` outright.
- * So the two panels are deliberately separate and deliberately in this order —
- * "who you are", then "which computer is yours".
+ * **Signing in here is what puts this computer on the account**
+ * ([ADR-0015](../../../../docs/adr/0015-ownership-follows-sign-in.md)), and the
+ * copy says so. The panel below it reports the result rather than asking for a
+ * second ceremony.
+ *
+ * This block used to say the opposite, and correctly: under ADR-0010 a Mac was
+ * adopted only by a phone approving its enrollment code, so the screen had to
+ * warn that signing in changed nothing. What survives from that rule, and what
+ * the copy must still not overclaim, is that ownership is not REACH — a phone
+ * sees this screen only through a pairing, which is step 3.
  */
 
 type Mode = 'signin' | 'signup' | 'reset';
@@ -58,13 +61,30 @@ export function AccountSignIn({ onChange, initialMode = 'signin' }: AccountSignI
   const [deleteEmail, setDeleteEmail] = useState('');
   const [deletePassword, setDeletePassword] = useState('');
 
-  const apply = useCallback(
-    (next: AccountStateDto) => {
-      setAccount(next);
-      onChange?.(next);
-    },
-    [onChange],
-  );
+  /**
+   * `onChange` through a ref, for the same reason `useLiveResource` reads its
+   * fetcher through one: **so a caller's inline closure cannot re-identify
+   * anything this component runs effects on.**
+   *
+   * It used to be a dependency of `apply`, and `apply` a dependency of the
+   * mount effect below. A parent that passed `onChange={(n) => {…}}` — the
+   * obvious way to write it — handed over a new function every render, so the
+   * effect re-ran, re-read the account, called `onChange`, set state in the
+   * parent, re-rendered, and handed over another new function. An infinite
+   * loop, in a component nobody had touched, caused entirely by how it was
+   * called. It presented as a test suite that stopped producing output rather
+   * than as an error, and it starved the macrotask queue, so every `waitFor`
+   * in the file timed out with nothing to say.
+   *
+   * Callers should still memoise; this is what makes forgetting survivable.
+   */
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
+
+  const apply = useCallback((next: AccountStateDto) => {
+    setAccount(next);
+    onChangeRef.current?.(next);
+  }, []);
 
   useEffect(() => {
     api
@@ -122,10 +142,13 @@ export function AccountSignIn({ onChange, initialMode = 'signin' }: AccountSignI
         <p className="muted">
           Signed in as <strong>{account.email}</strong>.
         </p>
-        {/* The one thing a user is most likely to assume and be wrong about. */}
+        {/* Says what signing in DID do, and draws the one line that still
+            matters: on the account is not the same as reachable. Someone who
+            assumes otherwise stops at step 2 and wonders why their phone shows
+            nothing. */}
         <p className="muted">
-          Being signed in here does not put this computer on your account — that is the next step,
-          and it takes your phone.
+          This computer is on your account. Pairing a phone is what lets it connect — that is the
+          last step.
         </p>
         <div className="row">
           <button

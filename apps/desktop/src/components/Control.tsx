@@ -94,7 +94,9 @@ export function Control() {
   const pairable =
     link.value === null || !['unlinked', 'revoked', 'no_identity'].includes(link.value.state);
 
-  // Read once, then again only when `AccountPanel` reports the transition.
+  // Read once, then again when either thing that can change it says so:
+  // `AccountSignIn` (sign-in enrols this Mac — ADR-0015) or `AccountPanel`
+  // (the recovery QR was approved).
   //
   // This used to poll every 3s for as long as the dashboard was open on an
   // unlinked machine. Each poll is a challenge plus a signed token exchange,
@@ -106,6 +108,18 @@ export function Control() {
   const refreshLink = link.refresh;
   useEffect(refreshLink, [refreshLink]);
 
+  /** Sign-in puts this Mac on the account (ADR-0015), so the card below is
+   * stale the moment this fires. Memoised for the reason spelled out in
+   * `Setup.tsx`: an inline arrow here is an infinite render loop, because
+   * `AccountSignIn` runs its mount effect on the identity of this function. */
+  const onAccountChange = useCallback(
+    (next: AccountStateDto) => {
+      setAccount(next);
+      refreshLink();
+    },
+    [refreshLink],
+  );
+
   return (
     <div className="page control dashboard">
       <header className="control__header">
@@ -115,7 +129,8 @@ export function Control() {
           {/* Mirrors the tray's `show_qr` rule exactly, and for the same two
            * reasons: not while a session is already underway, and not before
            * this computer is on an account — pairing an unowned machine writes
-           * a trust relationship nobody can see or revoke (ADR-0010). */}
+           * a trust relationship nobody can see or revoke (ADR-0010 §consequences,
+           * still in force under ADR-0015). */}
           <button
             className="btn btn--primary btn--icon"
             data-testid="pair-new-device"
@@ -214,12 +229,15 @@ export function Control() {
         </section>
       ) : null}
 
-      {/* Order is the product's own: who you are, then which computer is
-          yours, then which phones may reach it. Signing in does not link
-          (ADR-0010), so the two account panels are separate — and the second
-          waits for the first, because offering a live enrollment QR to someone
-          who has not said who they are puts the last step before the first. */}
-      <AccountSignIn onChange={setAccount} />
+      {/* Order is the product's own: who you are, then whether this computer
+          is on that account, then which phones may reach it. The second panel
+          is a status card now that signing in is what puts a Mac on an account
+          ([ADR-0015](../../../../docs/adr/0015-ownership-follows-sign-in.md)),
+          but it still waits for the first: the recovery QR it falls back to
+          adopts this machine onto whichever account the scanning PHONE holds,
+          which is the last step, and offering it to someone who has not said
+          who they are puts it before the first. */}
+      <AccountSignIn onChange={onAccountChange} />
       <LinkStep signedIn={account?.signedIn ?? false} onLinked={refreshLink} />
       <Reachability presence={state?.presence ?? null} linked={link.value?.state === 'linked'} />
       <TrustedDevices linked={link.value?.state === 'linked'} />
@@ -303,7 +321,7 @@ function sessionSummary(session: string, sharedDisplay: string | null): string {
     case 'pairing':
       return 'Waiting for a phone to scan the QR code.';
     default:
-      return 'Ready. Trusted devices can connect anytime.';
+      return 'Ready. Paired phones can connect anytime.';
   }
 }
 
@@ -329,7 +347,7 @@ function pairedLabel(iso: string): string {
 }
 
 /**
- * Trusted devices — every phone paired with this Mac, with the per-pair
+ * Paired phones — every phone paired with this Mac, with the per-pair
  * "connect without approval" toggle and Revoke. The list refreshes
  * race-safely (poll + reconcile-after-mutation can't clobber each other).
  *
@@ -448,10 +466,11 @@ function TrustedDevices({ linked }: { linked: boolean }) {
 
   return (
     <section className="control__devices card">
-      <h2 className="section-title">Trusted devices</h2>
+      <h2 className="section-title">Paired phones</h2>
       {!linked ? (
         <p className="muted" data-testid="trusted-devices-unlinked">
-          This computer isn’t on an account yet, so it has no trusted phones. Link it above first.
+          This computer isn’t on your account yet, so it can’t pair a phone. The card above says
+          what to do.
         </p>
       ) : null}
       {/* "is the backend running?" was the previous copy — a question a
@@ -475,7 +494,8 @@ function TrustedDevices({ linked }: { linked: boolean }) {
       ) : null}
       {linked && pairs !== null && pairs.length === 0 ? (
         <p className="muted">
-          No trusted phones yet. Pair once with the QR and leave “Trust this device” checked.
+          No phones paired yet. Show the pairing code once and scan it — after that the phone
+          reconnects on its own.
         </p>
       ) : null}
       {(pairs ?? []).map((pair) => {
@@ -661,7 +681,7 @@ function SystemPanel({ backendUrl }: { backendUrl: string | null }) {
           onChange={(e) => setLogin(e.target.checked)}
         />
         <span>
-          Launch at login <span className="muted">— stay ready for trusted devices</span>
+          Launch at login <span className="muted">— stay ready for your paired phones</span>
         </span>
       </label>
     </section>

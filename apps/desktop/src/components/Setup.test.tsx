@@ -93,6 +93,38 @@ describe('Setup', () => {
   });
 
   /**
+   * The count is a promise, and a customer checks it against the screen.
+   *
+   * It said "Four steps" while the third and fourth were the same act — pick up
+   * the phone, scan a QR — performed twice with two different codes. ADR-0015
+   * removed the first of those, so the number had to move with it: a wizard
+   * that promises four and shows three has miscounted in front of the person
+   * it is trying to reassure.
+   */
+  it('promises exactly as many steps as it numbers', async () => {
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === 'get_permission_status') return status();
+      if (cmd === 'get_link_state') return { state: 'linked' };
+      if (cmd === 'get_account_state')
+        return { signedIn: true, email: 'ada@example.com', userId: 'user-1' };
+      return undefined;
+    });
+
+    render(<Setup />);
+    await waitFor(() => expect(listen).toHaveBeenCalled());
+    grantAll(eventHandler);
+
+    await screen.findByText('3 · Pair your phone');
+    const numbered = screen
+      .getAllByRole('heading', { level: 2 })
+      .map((h) => h.textContent ?? '')
+      .filter((text) => /^\d+ · /.test(text));
+    expect(numbered).toEqual(['1 · Your account', '2 · Permissions', '3 · Pair your phone']);
+    expect(screen.getByText(/Three steps\./)).toBeInTheDocument();
+    expect(screen.queryByText(/Four steps/)).not.toBeInTheDocument();
+  });
+
+  /**
    * Reported from the installed build: first run showed "Sign in",
    * "Permissions" and "Ask" together, so a stranger who had not yet made an
    * account was being asked for Screen Recording — the most alarming thing
@@ -187,32 +219,36 @@ describe('Setup', () => {
   });
 
   // ── First run as a whole (P1) ───────────────────────────────────────────
-  // Offering to put a computer on an account, or to pair a phone with it,
-  // before it can capture or type is a step out of order — neither would work.
-  it('withholds linking and pairing until the permissions are granted', async () => {
+  // Offering to pair a phone with a computer that cannot capture or type is a
+  // step out of order — it would connect and then show nothing.
+  //
+  // The ownership card is NOT withheld the same way, and that is the change of
+  // 2026-08-25: it moved under step 1 because signing in is what fills it in
+  // ([ADR-0015](../../../docs/adr/0015-ownership-follows-sign-in.md)). It is a
+  // statement about the account, not a step between the user and a session.
+  it('withholds pairing until the permissions are granted', async () => {
     render(<Setup />);
     await waitFor(() => expect(listen).toHaveBeenCalled());
 
-    expect(screen.queryByTestId('link-step-locked')).not.toBeInTheDocument();
     expect(screen.queryByTestId('pair-step-locked')).not.toBeInTheDocument();
+    // …while the ownership card is already there, saying what it needs.
+    expect(await screen.findByTestId('link-step-locked')).toBeInTheDocument();
 
     grantAll(eventHandler);
 
-    // Both steps appear, both still waiting on the one before them.
-    expect(await screen.findByTestId('link-step-locked')).toBeInTheDocument();
-    expect(screen.getByTestId('pair-step-locked')).toBeInTheDocument();
+    expect(await screen.findByTestId('pair-step-locked')).toBeInTheDocument();
   });
 
   /**
    * Ordering, reported from the running app: signed out, the dashboard offered
    * "Sign in to Lilypad" and directly beneath it a live enrollment QR counting
    * down — the last step of a flow whose first step had not happened, with
-   * nothing relating the two. Linking does not technically need the desktop to
-   * be signed in (a phone adopts the machine), which is exactly why it has to
-   * be ORDERED rather than left to sit there looking like a second way to log
-   * in.
+   * nothing relating the two. The QR is now a recovery path rather than the
+   * front door, and it still adopts this machine onto whichever account the
+   * scanning PHONE holds — so it still has to be ordered rather than left
+   * sitting there looking like a second way to log in.
    */
-  it('does not offer to link this computer until somebody has signed in on it', async () => {
+  it('says nothing about this computer until somebody has signed in on it', async () => {
     render(<Setup />);
     await waitFor(() => expect(listen).toHaveBeenCalled());
     grantAll(eventHandler);
@@ -229,17 +265,23 @@ describe('Setup', () => {
    * revoked from nowhere, which is the state
    * [ADR-0010](../../../docs/adr/0010-explicit-device-linking.md) rejected and
    * `docs/api.md` said would end "when P1 makes enrolment mandatory".
+   *
+   * Signing in is now what puts a Mac on an account (ADR-0015), so reaching
+   * this state means the sign-in enrollment did not land. The step still has
+   * to refuse rather than offer a button `/pairing/create` answers 404 to.
    */
-  it('does not offer to pair a phone until this computer is linked', async () => {
+  it('does not offer to pair a phone while this computer is on no account', async () => {
     render(<Setup />);
     await waitFor(() => expect(listen).toHaveBeenCalled());
     grantAll(eventHandler);
 
-    expect(await screen.findByTestId('pair-step-locked')).toHaveTextContent(/finish step 3 first/i);
+    expect(await screen.findByTestId('pair-step-locked')).toHaveTextContent(
+      /isn’t on your account yet/i,
+    );
     expect(screen.queryByText('Show pairing code')).not.toBeInTheDocument();
   });
 
-  it('offers pairing once this computer is linked', async () => {
+  it('offers pairing once this computer is on the account', async () => {
     vi.mocked(invoke).mockImplementation(async (cmd: string) => {
       if (cmd === 'get_permission_status') return status();
       if (cmd === 'get_link_state') return { state: 'linked' };
@@ -254,7 +296,7 @@ describe('Setup', () => {
     expect(screen.queryByTestId('pair-step-locked')).not.toBeInTheDocument();
   });
 
-  it('offers linking once signed in', async () => {
+  it('shows this computer’s account status once signed in', async () => {
     vi.mocked(invoke).mockImplementation(async (cmd: string) => {
       if (cmd === 'get_permission_status') return status();
       if (cmd === 'get_link_state') return { state: 'unlinked' };
@@ -335,7 +377,7 @@ describe('Setup', () => {
     expect(screen.queryByTestId('setup-done-linked')).not.toBeInTheDocument();
   });
 
-  it('says the computer belongs to the account once a phone has adopted it', async () => {
+  it('says the computer belongs to the account once it is on one', async () => {
     vi.mocked(invoke).mockImplementation(async (cmd: string) => {
       if (cmd === 'get_permission_status') return status();
       if (cmd === 'get_link_state') return { state: 'linked' };

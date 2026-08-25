@@ -141,18 +141,54 @@ describe('AccountSignIn', () => {
   });
 
   /**
-   * The product rule this panel is most likely to be misread as breaking
-   * (ADR-0010): an account never discovers devices. Being signed in on this Mac
-   * is not the same as this Mac belonging to the account, and the copy has to
-   * say so — the backend refuses `kind: "desktop"` at `/devices/enroll`, so a
-   * screen that implied otherwise would be promising something impossible.
+   * The line this panel exists to draw, and it moved on 2026-08-25.
+   *
+   * It used to be "signing in does NOT put this computer on your account",
+   * which was the truth under ADR-0010 and stopped being one under
+   * [ADR-0015](../../../docs/adr/0015-ownership-follows-sign-in.md). The line
+   * that still has to be drawn is the next one along: on the account is not the
+   * same as reachable. Someone who reads "on your account" as "my phone can see
+   * it now" stops at step 2 and finds nothing on their phone.
+   *
+   * The retired sentence is asserted absent, not merely replaced: it is now
+   * false, and a screen carrying both would contradict itself.
    */
-  it('says signing in does not put this computer on the account', async () => {
+  it('says the computer is on the account, and that pairing is still needed', async () => {
     vi.mocked(api.getAccountState).mockResolvedValue(SIGNED_IN);
     render(<AccountSignIn />);
-    expect(await screen.findByTestId('account-signed-in')).toHaveTextContent(
-      /does not put this computer on your account/i,
-    );
+    const panel = await screen.findByTestId('account-signed-in');
+    expect(panel).toHaveTextContent(/This computer is on your account/i);
+    expect(panel).toHaveTextContent(/Pairing a phone is what lets it connect/i);
+    expect(panel).not.toHaveTextContent(/does not put this computer on your account/i);
+  });
+
+  /**
+   * A render loop, caught as a number rather than as a hang.
+   *
+   * `onChange` used to be a dependency of the effect that reads the account, so
+   * a parent passing an inline arrow — the obvious way to write it, and what
+   * `Setup` was changed to do on 2026-08-25 — re-ran that effect on every
+   * render: read → `onChange` → parent state → render → new arrow → read.
+   *
+   * It never threw. It starved the macrotask queue, so every `waitFor` in the
+   * file timed out at once and the suite simply stopped producing output. This
+   * counts instead: a fresh `onChange` on every render must not buy a second
+   * read.
+   */
+  it('does not re-read the account when the caller passes a new onChange', async () => {
+    vi.mocked(api.getAccountState).mockResolvedValue(SIGNED_IN);
+
+    const { rerender } = render(<AccountSignIn onChange={() => {}} />);
+    await screen.findByTestId('account-signed-in');
+
+    for (let i = 0; i < 5; i += 1) {
+      // A different function identity each time, exactly as an inline arrow in
+      // a re-rendering parent produces.
+      rerender(<AccountSignIn onChange={() => {}} />);
+    }
+    await screen.findByTestId('account-signed-in');
+
+    expect(api.getAccountState).toHaveBeenCalledTimes(1);
   });
 
   it('signs out without revoking anything', async () => {

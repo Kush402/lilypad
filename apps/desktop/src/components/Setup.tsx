@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
@@ -60,37 +60,34 @@ const RELAUNCH_THRESHOLD = 3;
 const RESTART_TRIED_KEY = 'lilypad.permission.restart-tried';
 
 /**
- * First run, end to end: **your account → permissions → link this computer →
- * pair a phone**, in that order, in one window.
+ * First run, end to end: **your account → permissions → pair your phone**, in
+ * that order, in one window.
  *
- * It used to stop after the permissions and say "All set — you can start
- * pairing now", which was the one thing P1's definition of done forbids: the
- * desktop announcing it is ready before a phone has approved it. Permissions
- * let the machine capture and type; they say nothing about whose machine it is.
+ * **It used to be four steps, and one of them was not a step.** Between the
+ * permissions and pairing sat "3 · Link this computer": show a QR, pick up the
+ * phone, scan, put the phone down, then show a SECOND QR and scan again. Both
+ * scans were real ceremonies with real backend routes, and to the person doing
+ * them they were the same act performed twice.
  *
- * **Linking is required, and the words here have to say so.** They did not.
+ * [ADR-0015](../../../../docs/adr/0015-ownership-follows-sign-in.md) removed
+ * the first one: signing in is what puts this Mac on the account, exactly as
+ * signing in on a phone always did. What is left is the step that was doing
+ * real work all along — pairing a phone to this computer — and it is now the
+ * only time anyone picks up a phone.
+ *
+ * **Pairing still requires ownership, and the words here have to say so.**
  * `/pairing/create` resolves the desktop's ownership and refuses a computer
  * that belongs to no account — `actAsDevice`'s only `allow` is `owner`, since
- * the unowned lane closed. An unlinked Mac holds no device token at all
- * (`/devices/enroll` answers 403 `desktop_enrollment_requires_approval` to a
- * desktop trying to link itself), so it is refused before it can ask. Verified
- * against a running backend: `POST /pairing/create` with no token answers
- * `404 not_found`.
- *
- * Step 4 already waited for step 3. The closing card did not, and told an
- * unlinked user "you can pair a phone" four lines below the panel explaining
- * that they could not
- * ([ADR-0010](../../../../docs/adr/0010-explicit-device-linking.md)).
+ * the unowned lane closed. That state should now be unreachable after a
+ * successful sign-in, but "should" is not "is", so step 3 still checks rather
+ * than assuming.
  *
  * Sign-in used to have no step here at all, because the desktop had no way to
  * perform one: [ADR-0008](../../../../docs/adr/0008-desktop-enrollment-via-phone.md)
  * gives it no OAuth client, and magic link needs a mail sender production does
  * not have. [ADR-0012](../../../../docs/adr/0012-password-authentication.md)
- * adds email + password, which needs neither — so step 1 exists now.
- *
- * It is still true that the LINKING half happens on the phone: the QR in step 3
- * tells the phone which backend to sign in to, and that phone's approval is
- * what adopts this machine. Signing in here changes nothing about that.
+ * adds email + password, which needs neither — so step 1 exists, and ADR-0015
+ * is what makes it carry the weight the removed step used to.
  *
  * The permission half is unchanged from the original wizard. Previously the
  * ONLY signal a permission problem existed was a passive TCC preflight
@@ -216,6 +213,26 @@ export function Setup() {
   // round-trips every three seconds.
   useEffect(refreshLink, [refreshLink]);
 
+  /**
+   * Sign-in is the moment this Mac joins the account, so the ownership card
+   * below is stale the instant this fires — and nothing else will tell it. The
+   * old flow had a QR ceremony to poll; this one completes inside the sign-in
+   * call ([ADR-0015](../../../../docs/adr/0015-ownership-follows-sign-in.md)).
+   *
+   * **`useCallback` is load-bearing, not tidiness.** `AccountSignIn` builds its
+   * `apply` from `onChange` and runs its mount effect on `[apply]`, so an inline
+   * arrow here is a new identity every render: effect → `onChange` →
+   * `refreshLink` → state → render → new arrow → effect. That is an infinite
+   * loop, and it presents as a test that never finishes rather than as an error.
+   */
+  const onAccountChange = useCallback(
+    (next: AccountStateDto) => {
+      setAccount(next);
+      refreshLink();
+    },
+    [refreshLink],
+  );
+
   const grant = async (kind: PermissionKind) => {
     const granted = await invoke<boolean>('request_permission', { kind });
     setStatus((prev) => ({ ...prev, [kind]: granted }));
@@ -241,16 +258,15 @@ export function Setup() {
   return (
     <div className="page setup">
       <h1>Set up Lilypad</h1>
-      <p className="muted">Four steps, and the last two take a phone.</p>
+      <p className="muted">Three steps. Only the last one needs your phone.</p>
 
-      {/* Step 1 because it is step 1 of the product, not because anything
-          below needs it. Linking is approved by a signed-in PHONE, so this Mac
-          can complete every remaining step signed out — but a first run that
-          never mentions an account, and ends at a QR code, teaches the wrong
-          model of what Lilypad is. Same component as the dashboard's: one
+      {/* Step 1 is now load-bearing rather than merely first: signing in is
+          what puts this Mac on the account (ADR-0015), so everything below
+          genuinely depends on it. Same component as the dashboard's: one
           sign-in form, two places it is reachable. */}
       <h2 className="section-title">1 · Your account</h2>
-      <AccountSignIn onChange={setAccount} initialMode="signup" />
+      <AccountSignIn onChange={onAccountChange} initialMode="signup" />
+      <LinkStep signedIn={signedIn} onLinked={refreshLink} />
 
       <h2 className="section-title">2 · Permissions</h2>
       {!signedIn ? (
@@ -260,8 +276,8 @@ export function Setup() {
            been given no reason to say yes. Locked rather than hidden, so the
            flow still reads as four steps rather than appearing to end here. */
         <p className="muted" data-testid="permissions-step-locked">
-          Finish step 1 first. Lilypad asks for Screen Recording and Accessibility only once there
-          is an account to attach this Mac to.
+          Finish step 1 first. Lilypad asks for Screen Recording and Accessibility only once this
+          Mac is on an account.
         </p>
       ) : (
         <>
@@ -341,23 +357,16 @@ export function Setup() {
         </>
       )}
 
-      {/* Steps 3 and 4 only once the Mac can actually do anything — offering to
-          put an unusable computer on an account is a step out of order. */}
+      {/* Step 3 only once the Mac can actually do anything — offering to pair a
+          computer that cannot capture or type is a step out of order. */}
       {allGranted ? (
         <>
-          <h2 className="section-title">3 · Link this computer</h2>
-          <p className="muted">
-            Linking is what puts this Mac on your account, so you can see it — and remove it — from
-            your phone. Pairing comes after it.
-          </p>
-          <LinkStep signedIn={signedIn} onLinked={refreshLink} />
-
-          <h2 className="section-title">4 · Pair a phone</h2>
+          <h2 className="section-title">3 · Pair your phone</h2>
           {linked ? (
             <>
               <p className="muted">
                 Show the pairing code and scan it with Lilypad on your phone. Pair once — after that
-                the phone reconnects on its own.
+                the phone reconnects on its own, and this Mac appears in its list.
               </p>
               <section className="control__approve">
                 <div className="row">
@@ -370,11 +379,11 @@ export function Setup() {
           ) : (
             /* Pairing an unowned computer writes a trust relationship that
                belongs to no account: it cannot appear in anyone's "Your
-               devices" and nobody can revoke it. ADR-0010 rejected that state,
-               so this waits for step 3 rather than producing one. */
+               devices" and nobody can revoke it. `/pairing/create` refuses it
+               outright, so saying so beats a button that answers 404. */
             <p className="muted" data-testid="pair-step-locked">
-              Finish step 3 first. A phone paired with a computer that is on no account can’t be
-              managed or removed from anywhere, so pairing waits until this Mac is yours.
+              This Mac isn’t on your account yet, so it can’t pair a phone. Step 1 is what puts it
+              there — the card under it says what went wrong.
             </p>
           )}
         </>
@@ -393,13 +402,12 @@ export function Setup() {
           ) : linkUnknown ? (
             <p data-testid="setup-done-unknown">
               Permissions are done. We could not check whether this computer is on an account — if
-              you have already linked it, it stays linked, and pairing will work. If you have not,
-              step 3 comes first.
+              it already is, it stays that way and pairing will work.
             </p>
           ) : (
             <p data-testid="setup-done-unlinked">
               Permissions are done, but this computer is not on an account yet, so it can’t pair a
-              phone. Step 3 is what changes that.
+              phone. The card under step 1 says what to do.
             </p>
           )}
           <div className="row">

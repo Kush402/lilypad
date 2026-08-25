@@ -17,11 +17,15 @@ import { api, type LinkStateDto } from '../lib/tauri';
  * Measured against production on 2026-08-21 during a real first-run test: 64
  * challenges and 61 rejected token exchanges in the 3m21s before the phone
  * approved, stopping at the exact second it did. Every one of them was
- * pointless, because only `AccountPanel` can cause that transition — a desktop
- * cannot enrol itself (`/devices/enroll` answers 403
- * `desktop_enrollment_requires_approval` for `kind: "desktop"`) and the only
- * other path burns a code bound at mint time to this machine's public key,
- * with a 120-second life. Outside that window there is nothing to observe.
+ * pointless: the only transition a poll could observe is a phone approving a
+ * code minted here, which is bound at mint time to this machine's public key
+ * and lives 120 seconds. Outside that window there is nothing to see.
+ *
+ * Since [ADR-0015](../../../docs/adr/0015-ownership-follows-sign-in.md) a Mac
+ * also joins the account by SIGNING IN — which needs no poll at all, because it
+ * completes inside the sign-in call and the hosting screens re-read the state
+ * when `AccountSignIn` reports success. Both routes to ownership are covered
+ * without a timer; this file pins the one that used to run forever.
  *
  * These tests are the guard. They assert the CALL COUNT over time, because
  * that is the customer-visible cost — battery and radio on their Mac, and
@@ -95,7 +99,7 @@ describe('an unlinked Mac left sitting on screen', () => {
     render(<AccountPanel />);
     await elapse(0);
 
-    const button = await screen.findByRole('button', { name: 'Link this computer' });
+    const button = await screen.findByRole('button', { name: 'Add this computer from my phone' });
     await act(async () => {
       button.click();
     });
@@ -136,7 +140,7 @@ describe('an enrollment code nobody scanned', () => {
     render(<AccountPanel />);
     await elapse(0);
 
-    const button = await screen.findByRole('button', { name: 'Link this computer' });
+    const button = await screen.findByRole('button', { name: 'Add this computer from my phone' });
     await act(async () => {
       button.click();
     });
@@ -157,7 +161,7 @@ describe('an enrollment code nobody scanned', () => {
   it('still says so on screen, so the user knows to mint another', async () => {
     render(<AccountPanel />);
     await elapse(0);
-    const button = await screen.findByRole('button', { name: 'Link this computer' });
+    const button = await screen.findByRole('button', { name: 'Add this computer from my phone' });
     await act(async () => {
       button.click();
     });

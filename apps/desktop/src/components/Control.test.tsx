@@ -497,7 +497,7 @@ describe('Control — can a phone actually reach this Mac', () => {
 
     render(<Control />);
     // Wait for the link state to resolve before asserting on an absence.
-    await screen.findByText('Trusted devices');
+    await screen.findByText('Paired phones');
 
     // A badge that is always on screen becomes furniture.
     expect(screen.queryByTestId('reachability')).not.toBeInTheDocument();
@@ -545,7 +545,7 @@ describe('Control — can a phone actually reach this Mac', () => {
     vi.mocked(api.getLinkState).mockResolvedValue({ state: 'unlinked' } as never);
 
     render(<Control />);
-    await screen.findByText('Trusted devices');
+    await screen.findByText('Paired phones');
 
     expect(screen.queryByTestId('reachability')).not.toBeInTheDocument();
   });
@@ -556,7 +556,7 @@ describe('Control — can a phone actually reach this Mac', () => {
 
     render(<Control />);
     // Wait for the link state to resolve before asserting on an absence.
-    await screen.findByText('Trusted devices');
+    await screen.findByText('Paired phones');
 
     // `LinkStep` is already asking for the step that matters; a second
     // complaint about a consequence of it is noise.

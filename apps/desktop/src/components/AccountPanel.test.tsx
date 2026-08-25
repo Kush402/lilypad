@@ -26,7 +26,7 @@ const linkState = (over: Partial<LinkStateDto> = {}): LinkStateDto => ({
 /** The repo's components are driven with plain DOM clicks (see
  * `Control.test.tsx`); `act` flushes the async state updates that follow. */
 async function clickLink(): Promise<void> {
-  const button = await screen.findByRole('button', { name: 'Link this computer' });
+  const button = await screen.findByRole('button', { name: 'Add this computer from my phone' });
   await act(async () => {
     button.click();
   });
@@ -47,11 +47,15 @@ beforeEach(() => {
 describe('AccountPanel — what it is willing to claim', () => {
   // The product rule (ADR-0010): an account never discovers devices. A
   // computer nobody has linked must say so, not imply availability.
-  it('says NOT LINKED, and offers linking, when no account owns this computer', async () => {
+  it('says NOT ON YOUR ACCOUNT, and offers the recovery QR, when no account owns this computer', async () => {
     render(<AccountPanel />);
 
-    expect(await screen.findByTestId('link-state-unlinked')).toHaveTextContent('Not linked');
-    expect(screen.getByRole('button', { name: 'Link this computer' })).toBeInTheDocument();
+    expect(await screen.findByTestId('link-state-unlinked')).toHaveTextContent(
+      'Not on your account',
+    );
+    expect(
+      screen.getByRole('button', { name: 'Add this computer from my phone' }),
+    ).toBeInTheDocument();
   });
 
   it('says LINKED once an account owns it, and stops offering to link', async () => {
@@ -61,8 +65,10 @@ describe('AccountPanel — what it is willing to claim', () => {
 
     render(<AccountPanel />);
 
-    expect(await screen.findByTestId('link-state-linked')).toHaveTextContent('Linked');
-    expect(screen.queryByRole('button', { name: 'Link this computer' })).not.toBeInTheDocument();
+    expect(await screen.findByTestId('link-state-linked')).toHaveTextContent('On your account');
+    expect(
+      screen.queryByRole('button', { name: 'Add this computer from my phone' }),
+    ).not.toBeInTheDocument();
   });
 
   // The distinction that keeps the panel honest in both directions: an
@@ -79,15 +85,22 @@ describe('AccountPanel — what it is willing to claim', () => {
     expect(screen.queryByTestId('link-state-unlinked')).not.toBeInTheDocument();
   });
 
-  it('explains a revoked computer as revoked rather than as never linked', async () => {
+  /** Two ways to be off an account, and they need different things done. A
+   * computer that was REMOVED is restored by adding it back; one that was
+   * never added has a sign-in that did not finish. The word is "removed"
+   * rather than "revoked" because that is the word the phone's own button
+   * uses, and one product should not have two names for one act. */
+  it('explains a removed computer as removed rather than as never added', async () => {
     vi.mocked(api.getLinkState).mockResolvedValue(linkState({ state: 'revoked' }));
 
     render(<AccountPanel />);
 
-    expect(await screen.findByTestId('link-state-unlinked')).toHaveTextContent(/revoked/i);
+    const line = await screen.findByTestId('link-state-unlinked');
+    expect(line).toHaveTextContent(/removed from the account/i);
+    expect(line).not.toHaveTextContent(/signing in should have/i);
   });
 
-  // A machine that cannot hold a key cannot be linked at all, so offering the
+  // A machine that cannot hold a key cannot join an account at all, so offering the
   // button would be offering something guaranteed to fail.
   it('offers no linking at all when this computer has no durable identity', async () => {
     vi.mocked(api.getLinkState).mockResolvedValue(linkState({ state: 'no_identity' }));
@@ -95,7 +108,9 @@ describe('AccountPanel — what it is willing to claim', () => {
     render(<AccountPanel />);
 
     expect(await screen.findByTestId('link-state-no-identity')).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Link this computer' })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Add this computer from my phone' }),
+    ).not.toBeInTheDocument();
   });
 
   // ...but it must not be a dead end. This is what a login keychain that is
@@ -144,7 +159,7 @@ describe('AccountPanel — the enrollment code', () => {
     render(<AccountPanel />);
     await clickLink();
 
-    expect(await screen.findByAltText('Link this computer')).toBeInTheDocument();
+    expect(await screen.findByAltText('Add this computer to your account')).toBeInTheDocument();
     expect(screen.getByText(/Expires in 120s/)).toBeInTheDocument();
   });
 
@@ -153,14 +168,15 @@ describe('AccountPanel — the enrollment code', () => {
   it('drops the code once a phone has approved', async () => {
     render(<AccountPanel />);
     await clickLink();
-    expect(await screen.findByAltText('Link this computer')).toBeInTheDocument();
+    expect(await screen.findByAltText('Add this computer to your account')).toBeInTheDocument();
 
     vi.mocked(api.getLinkState).mockResolvedValue(
       linkState({ state: 'linked', user_id: 'u-1', device_id: 'd-1' }),
     );
 
     await waitFor(
-      () => expect(screen.queryByAltText('Link this computer')).not.toBeInTheDocument(),
+      () =>
+        expect(screen.queryByAltText('Add this computer to your account')).not.toBeInTheDocument(),
       { timeout: 5_000 },
     );
     expect(screen.getByTestId('link-state-linked')).toBeInTheDocument();
@@ -173,6 +189,6 @@ describe('AccountPanel — the enrollment code', () => {
     await clickLink();
 
     expect(await screen.findByText(/HTTP 500/)).toBeInTheDocument();
-    expect(screen.queryByAltText('Link this computer')).not.toBeInTheDocument();
+    expect(screen.queryByAltText('Add this computer to your account')).not.toBeInTheDocument();
   });
 });
