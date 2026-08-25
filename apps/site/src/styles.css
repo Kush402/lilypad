@@ -279,6 +279,26 @@ a {
 }
 
 /* ── Platform table ──────────────────────────────────────────────────────── */
+/* FAQ. A definition list rather than headings, because these are questions
+   with answers and not sections of the page — a screen reader announcing eight
+   more <h3>s buries the ones that are really structure. */
+.faq {
+  margin: 0;
+  max-width: var(--measure);
+}
+.faq dt {
+  font-weight: 650;
+  color: var(--ink);
+  margin-top: 22px;
+}
+.faq dt:first-of-type {
+  margin-top: 0;
+}
+.faq dd {
+  margin: 6px 0 0;
+  color: var(--muted);
+}
+
 .platforms {
   border-collapse: collapse;
   width: 100%;

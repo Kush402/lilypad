@@ -262,6 +262,40 @@ describe('setting it up', () => {
 });
 
 /**
+ * The FAQ, and the two answers on this page that would be easiest to overclaim.
+ *
+ * "Can you see my screen?" and "does my Mac have to be awake?" are the
+ * questions where a marketing instinct says yes-and-no-respectively, and where
+ * both of those would be false. A sleeping Mac cannot be reached by anything,
+ * and the relayed path DOES carry the bytes — the claim that survives is that
+ * they stay encrypted, not that they never travel.
+ */
+describe('the questions section', () => {
+  const prose = html.replace(/\s+/g, ' ');
+
+  it('admits a sleeping Mac cannot be reached', () => {
+    expect(prose).toMatch(/a sleeping Mac cannot be reached/i);
+    expect(prose).not.toMatch(/works even when your Mac is asleep/i);
+  });
+
+  it('does not claim the relay never carries your screen', () => {
+    // The honest pair: never on the first two paths, encrypted on the third.
+    expect(prose).toMatch(/never passes through our servers at all/i);
+    expect(prose).toMatch(/it does pass through, and stays end-to-end encrypted/i);
+  });
+
+  /** A support instruction that names a button which does not exist is worse
+   * than no instruction. This is the label `Diagnostics.tsx` actually renders. */
+  it('names the support button by the words on it', () => {
+    expect(prose).toMatch(/Copy for support/);
+  });
+
+  it('is reachable from the nav', () => {
+    expect(html).toMatch(/<a href="#faq">/);
+  });
+});
+
+/**
  * The page shipped saying "Not yet released publicly" in its hero while
  * linking a public v0.1.1 download further down the same page. Both cannot be
  * true, and the visitor reads the hero first — so the honest half was the one

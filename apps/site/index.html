@@ -49,6 +49,7 @@
         <a href="#pricing">Pricing</a>
         <a href="#setup">Setup</a>
         <a href="#get">Get it</a>
+        <a href="#faq">Questions</a>
       </nav>
     </header>
 
@@ -336,6 +337,74 @@
               >Ask for a TestFlight invite</a
             ><!--email_on-->
           </p>
+        </div>
+      </section>
+      <!-- The questions a buyer actually asks, answered in the product's own
+           vocabulary. Every answer here is one the repo can demonstrate; the
+           two that would be easiest to overclaim — sleep and privacy — are the
+           two written most carefully. -->
+      <section id="faq" class="band band--alt">
+        <div class="band__inner">
+          <h2>Questions</h2>
+          <dl class="faq">
+            <dt>Does my Mac have to be awake?</dt>
+            <dd>
+              Yes — a sleeping Mac cannot be reached, and no remote-control app can change that.
+              Lilypad launches at login and reconnects by itself within seconds of the Mac waking,
+              so you do not have to touch it.
+            </dd>
+
+            <dt>Does it work away from home?</dt>
+            <dd>
+              Yes, over cellular as well as Wi-Fi. Lilypad tries your own network first, then a
+              direct connection across the internet, and relays only when a network blocks both.
+            </dd>
+
+            <dt>Can you see my screen?</dt>
+            <dd>
+              On your own network and on a direct connection it never passes through our servers at
+              all. On the relayed path it does pass through, and stays end-to-end encrypted in
+              transit the whole way — we carry bytes we cannot read.
+            </dd>
+
+            <dt>Do I need an account?</dt>
+            <dd>
+              Yes. An account is what owns your devices, and it is the only place you can see them,
+              rename them, or take one away. Email and a password — no phone number, no third party
+              required.
+            </dd>
+
+            <dt>What if I lose my phone?</dt>
+            <dd>
+              Remove it from <strong>Your devices</strong> on any other device on your account. It
+              loses access immediately, including a session running at that moment — it does not
+              wait for anything to expire.
+            </dd>
+
+            <dt>Can someone start a session without me knowing?</dt>
+            <dd>
+              A first pairing always needs Approve on the Mac. After that a paired phone can
+              reconnect on its own, which is the point of pairing — and you can turn that off per
+              phone, or unpair it, from the Mac.
+            </dd>
+
+            <dt>Is it really free?</dt>
+            <dd>
+              Using Lilypad on your own network is free and stays free — it costs us nothing to run.
+              Paid plans are planned only around the two things that cost real money: relayed
+              minutes and AI we pay for. Nothing on this page is an offer.
+            </dd>
+
+            <dt>Something is wrong. What do you need from me?</dt>
+            <dd>
+              On the Mac: the tray menu → <strong>Diagnostics</strong> →
+              <strong>Copy for support</strong>. It is written to be pasted into an email, and it
+              says which build you are on, whether a phone can reach this Mac, and where the log
+              file is.
+              <!--email_off--><a href="mailto:support@takedia.com">support@takedia.com</a
+              ><!--email_on-->.
+            </dd>
+          </dl>
         </div>
       </section>
     </main>
