@@ -193,10 +193,34 @@ describe('what the page must not say', () => {
     expect(html).not.toMatch(/not written yet/i);
   });
 
-  // The product's own non-negotiable, and the reason the security section leads
-  // with linking rather than with sign-in.
-  it('does not promise that an account finds your computers', () => {
-    expect(html).toMatch(/[Ss]igning in does not reveal a computer/);
+  /**
+   * The product's own non-negotiable, and the one claim on this page that a
+   * customer could be harmed by believing wrongly.
+   *
+   * The wording it asserts changed on 2026-08-25
+   * ([ADR-0015](../../../docs/adr/0015-ownership-follows-sign-in.md)). It used
+   * to be "signing in does not reveal a computer", which stopped being true:
+   * signing in is now exactly what puts a computer on the account. The
+   * SECURITY claim underneath it did not change at all — ownership buys no
+   * reach, because `/connect/request` authorizes on a pair and a per-pair
+   * secret and never reads `devices.user_id` — so the page must go on making
+   * it, in words that are still true.
+   *
+   * Both halves are asserted deliberately. A page that says only "pairing is
+   * required" has not told the visitor that signing in gives away a device
+   * list; a page that says only "signing in adds a computer" has dropped the
+   * promise the product is sold on.
+   */
+  it('separates what signing in gives from what it does not', () => {
+    // Collapsed, because the source is wrapped: "It does\n  not let anything
+    // reach it" is one sentence to a reader and two lines to a matcher.
+    const prose = html.replace(/\s+/g, ' ');
+    expect(prose).toMatch(/[Ss]igning in puts a computer on your account/);
+    expect(prose).toMatch(/does not let anything reach it/i);
+    expect(prose).toMatch(/a stolen password is not a stolen laptop/);
+    // The retired claim must not survive anywhere on the page: it is now false,
+    // and a false security claim is worse than a missing one.
+    expect(prose).not.toMatch(/[Ss]igning in does not reveal a computer/);
   });
 });
 
