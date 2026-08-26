@@ -327,6 +327,13 @@ Nothing was revoked to unblock this: the existing certificates stay valid for
 whoever holds their private keys, and the ceiling stops mattering once no run
 asks for another.
 
+Verified on 2026-08-26, run
+[32926554387](https://github.com/Kush402/lilypad/actions/runs/32926554387): `Set
+Code Sign identity ... for build configuration: Release`, `Code Sign Style =
+'Manual'`, `Archive Succeeded`, `Successfully exported and signed the ipa file`,
+`Successfully uploaded the new binary to App Store Connect` — nine minutes,
+against the same ceiling that failed the previous run in 23 seconds.
+
 ## Adding the secrets
 
 Repo → Settings → Secrets and variables → Actions. Or:
