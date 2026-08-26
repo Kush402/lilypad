@@ -1,3 +1,4 @@
+import type * as NodeFs from 'node:fs';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('@apple/app-store-server-library', () => {
@@ -47,7 +48,7 @@ vi.mock('../db/client.js', () => ({
 }));
 
 vi.mock('node:fs', async () => {
-  const actual = await vi.importActual<typeof import('node:fs')>('node:fs');
+  const actual = await vi.importActual<typeof NodeFs>('node:fs');
   return {
     ...actual,
     readdirSync: () => ['AppleRootCA-G3.cer'],
