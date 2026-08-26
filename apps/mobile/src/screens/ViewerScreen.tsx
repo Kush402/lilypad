@@ -218,70 +218,76 @@ export function ViewerScreen({ route, navigation }: Props) {
     setStillThere(false);
     videoSize.current = null;
     syncGeometry();
-    const conn = new ViewerConnection(signalingUrl, roomId, scopes, {
-      onStream: setStream,
-      onState: (next, detail) => {
-        setState(next);
-        setRecovery(next === 'recovering_ice' ? (detail ?? null) : null);
+    const conn = new ViewerConnection(
+      signalingUrl,
+      roomId,
+      scopes,
+      {
+        onStream: setStream,
+        onState: (next, detail) => {
+          setState(next);
+          setRecovery(next === 'recovering_ice' ? (detail ?? null) : null);
+        },
+        onError: setError,
+        onStats: setQuality,
+        onFrameSize: (w, h, mode) => {
+          videoSize.current = { x: w, y: h };
+          syncGeometry();
+          setCaptureModeState(mode);
+        },
+        onDisplays: (list, activeId) => {
+          // The Mac is the only authority on what it has attached and what it
+          // is actually showing — an optimistic highlight is corrected here.
+          setDisplays(list);
+          setActiveDisplayId(activeId);
+        },
+        onClipboardUpdate: (text) => {
+          Clipboard.setString(text);
+          if (clipboardToastTimer.current) clearTimeout(clipboardToastTimer.current);
+          setClipboardToast(true);
+          clipboardToastTimer.current = setTimeout(
+            () => setClipboardToast(false),
+            CLIPBOARD_TOAST_MS,
+          );
+        },
+        onAgentStep: (step) => dispatchAgent({ type: 'step', step }),
+        onAgentRunEnd: (end) => dispatchAgent({ type: 'run_end', end }),
+        onPairSecret: (secret) => {
+          // Persist the connect secret against this desktop pair (M5.4), so
+          // future no-QR reconnects present it. Only possible when we know which
+          // desktop this is (always true for QR pairs via the redeem response).
+          if (desktopDeviceId) void setPairSecret(desktopDeviceId, secret).catch(() => {});
+        },
+        onLanEndpoints: (endpoints) => {
+          if (desktopDeviceId) void setPairLanEndpoints(desktopDeviceId, endpoints).catch(() => {});
+        },
+        onRevoked: () => {
+          // The desktop revoked this phone's trust — the stale local pairing
+          // can never reconnect (the backend pair row is gone), so drop it
+          // now rather than leave a phantom entry in My Devices that just
+          // fails the next time it's tapped. Reuses the same removal
+          // mechanism as the user-initiated "Forget" in DeviceListScreen,
+          // just triggered by the backend instead of a tap.
+          if (desktopDeviceId) void forgetPair(desktopDeviceId).catch(() => {});
+          // Same explanation as the other revoke path (a rejected no-QR
+          // reconnect attempt, `classifyHttpStatus`'s 'trust_revoked') — the
+          // user should see identical copy either way.
+          Alert.alert('Pairing ended', appError('trust_revoked').message, [
+            { text: 'OK', onPress: () => navigation.popToTop() },
+          ]);
+        },
+        onDeviceRemoved: () => {
+          // Note what is NOT here: `forgetPair`. The laptop left the account, the
+          // pairing did not, and the connect secret this phone holds is the only
+          // copy in existence — dropping it would turn a reversible thing into a
+          // re-scan. The laptop reappears the moment somebody signs in on it.
+          Alert.alert('That laptop left your account', appError('desktop_not_on_account').message, [
+            { text: 'OK', onPress: () => navigation.popToTop() },
+          ]);
+        },
       },
-      onError: setError,
-      onStats: setQuality,
-      onFrameSize: (w, h, mode) => {
-        videoSize.current = { x: w, y: h };
-        syncGeometry();
-        setCaptureModeState(mode);
-      },
-      onDisplays: (list, activeId) => {
-        // The Mac is the only authority on what it has attached and what it
-        // is actually showing — an optimistic highlight is corrected here.
-        setDisplays(list);
-        setActiveDisplayId(activeId);
-      },
-      onClipboardUpdate: (text) => {
-        Clipboard.setString(text);
-        if (clipboardToastTimer.current) clearTimeout(clipboardToastTimer.current);
-        setClipboardToast(true);
-        clipboardToastTimer.current = setTimeout(
-          () => setClipboardToast(false),
-          CLIPBOARD_TOAST_MS,
-        );
-      },
-      onAgentStep: (step) => dispatchAgent({ type: 'step', step }),
-      onAgentRunEnd: (end) => dispatchAgent({ type: 'run_end', end }),
-      onPairSecret: (secret) => {
-        // Persist the connect secret against this desktop pair (M5.4), so
-        // future no-QR reconnects present it. Only possible when we know which
-        // desktop this is (always true for QR pairs via the redeem response).
-        if (desktopDeviceId) void setPairSecret(desktopDeviceId, secret).catch(() => {});
-      },
-      onLanEndpoints: (endpoints) => {
-        if (desktopDeviceId) void setPairLanEndpoints(desktopDeviceId, endpoints).catch(() => {});
-      },
-      onRevoked: () => {
-        // The desktop revoked this phone's trust — the stale local pairing
-        // can never reconnect (the backend pair row is gone), so drop it
-        // now rather than leave a phantom entry in My Devices that just
-        // fails the next time it's tapped. Reuses the same removal
-        // mechanism as the user-initiated "Forget" in DeviceListScreen,
-        // just triggered by the backend instead of a tap.
-        if (desktopDeviceId) void forgetPair(desktopDeviceId).catch(() => {});
-        // Same explanation as the other revoke path (a rejected no-QR
-        // reconnect attempt, `classifyHttpStatus`'s 'trust_revoked') — the
-        // user should see identical copy either way.
-        Alert.alert('Pairing ended', appError('trust_revoked').message, [
-          { text: 'OK', onPress: () => navigation.popToTop() },
-        ]);
-      },
-      onDeviceRemoved: () => {
-        // Note what is NOT here: `forgetPair`. The laptop left the account, the
-        // pairing did not, and the connect secret this phone holds is the only
-        // copy in existence — dropping it would turn a reversible thing into a
-        // re-scan. The laptop reappears the moment somebody signs in on it.
-        Alert.alert('That laptop left your account', appError('desktop_not_on_account').message, [
-          { text: 'OK', onPress: () => navigation.popToTop() },
-        ]);
-      },
-    }, lanTlsCertSha256);
+      lanTlsCertSha256,
+    );
     connRef.current = conn;
     conn.start().catch((e) => setError(toAppError(e)));
     return () => {
@@ -292,7 +298,15 @@ export function ViewerScreen({ route, navigation }: Props) {
       for (const repeater of toolbarRepeatersRef.current.values()) repeater.stop();
       conn.close();
     };
-  }, [signalingUrl, roomId, scopes, reconnectAttempt, syncGeometry, desktopDeviceId, lanTlsCertSha256]);
+  }, [
+    signalingUrl,
+    roomId,
+    scopes,
+    reconnectAttempt,
+    syncGeometry,
+    desktopDeviceId,
+    lanTlsCertSha256,
+  ]);
 
   // Lazily create (once per action) and start/stop the toolbar's held-repeat
   // timer. See docs/audit/m3/input-touch.md Finding 14.

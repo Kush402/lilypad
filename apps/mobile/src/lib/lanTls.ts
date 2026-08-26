@@ -48,13 +48,7 @@ export async function lanFetch(
       : typeof init.body === 'string'
         ? init.body
         : JSON.stringify(init.body);
-  const result = await Native!.fetch(
-    url,
-    expectedSha256,
-    init?.method ?? 'GET',
-    headers,
-    body,
-  );
+  const result = await Native!.fetch(url, expectedSha256, init?.method ?? 'GET', headers, body);
   return new Response(result.body, { status: result.status });
 }
 

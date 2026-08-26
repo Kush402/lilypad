@@ -6,10 +6,10 @@ import { LAN_CONTROL_PORT } from '@lilypad/protocol';
 
 const Native = NativeModules.LilypadLanTls as
   | {
-      browseLilypad?: (desktopDeviceId: string, timeoutMs: number) => Promise<
-        | { host: string; port: number; deviceId: string }
-        | null
-      >;
+      browseLilypad?: (
+        desktopDeviceId: string,
+        timeoutMs: number,
+      ) => Promise<{ host: string; port: number; deviceId: string } | null>;
     }
   | undefined;
 

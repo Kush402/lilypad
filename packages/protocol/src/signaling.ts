@@ -337,7 +337,10 @@ const trustRecord = z.object({
   ...envelope,
   payload: z.object({
     mobileDeviceId: z.string().min(8).max(MAX_ID_LEN),
-    connectSecretHash: z.string().length(64).regex(/^[0-9a-f]+$/),
+    connectSecretHash: z
+      .string()
+      .length(64)
+      .regex(/^[0-9a-f]+$/),
     autoApprove: z.boolean(),
     displayName: z.string().max(MAX_NAME_LEN).nullable(),
   }),
@@ -353,7 +356,10 @@ const lanEndpoints = z.object({
   payload: z.object({
     apiBaseUrl: z.string().url(),
     signalingUrl: z.string().min(1),
-    tlsCertSha256: z.string().length(64).regex(/^[0-9a-f]+$/),
+    tlsCertSha256: z
+      .string()
+      .length(64)
+      .regex(/^[0-9a-f]+$/),
   }),
 });
 

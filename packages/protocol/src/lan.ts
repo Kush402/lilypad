@@ -22,6 +22,9 @@ export const LanEndpointsSchema = z.object({
   apiBaseUrl: z.string().url(),
   signalingUrl: z.string().min(1),
   /** SHA-256 (hex) of the DER TLS certificate — pinned at first use. */
-  tlsCertSha256: z.string().length(64).regex(/^[0-9a-f]+$/),
+  tlsCertSha256: z
+    .string()
+    .length(64)
+    .regex(/^[0-9a-f]+$/),
 });
 export type LanEndpoints = z.infer<typeof LanEndpointsSchema>;

@@ -17,12 +17,12 @@ half-finished run tells you less than none.
 
 ## Before you start
 
-| You need                      | Notes                                                                                                                 |
-| ----------------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| A Mac, macOS 12.3 or newer    | `minimumSystemVersion` in `tauri.conf.json`. Below this the app will not install.                                     |
+| You need                      | Notes                                                                                                                               |
+| ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| A Mac, macOS 12.3 or newer    | `minimumSystemVersion` in `tauri.conf.json`. Below this the app will not install.                                                   |
 | An iPhone                     | Install from **TestFlight** — see [Installing on the iPhone](#installing-on-the-iphone). Need v0.1.19+ for LAN-direct connectivity. |
-| Two networks                  | Home Wi-Fi and phone cellular, at minimum. A second Wi-Fi network is better still.                                    |
-| An email address you can read | Only for the Resend-dependent steps, which are currently **blocked** — see [Password reset](#password-reset-blocked). |
+| Two networks                  | Home Wi-Fi and phone cellular, at minimum. A second Wi-Fi network is better still.                                                  |
+| An email address you can read | Only for the Resend-dependent steps, which are currently **blocked** — see [Password reset](#password-reset-blocked).               |
 
 Production is `https://api.takedia.com`. Confirm it is up before you start —
 if this is not `ok`, stop, because every failure below will be this one:
@@ -189,17 +189,17 @@ the source:
 > device key is the one that matters most: the Mac would rejoin its old identity
 > and the pairing steps would not be testing what they claim to.
 
-| #   | Do                                                                  | Expect                                                                                                                                                                                            |
-| --- | ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1.1 | Open <https://lilypadhome.takedia.com>, then **Download for macOS** | The site serves `Lilypad.dmg` from `/download/` — universal (`x86_64 arm64`), **v0.1.19** or newer. No GitHub account, no sign-in. |
-| 1.2 | Double-click the DMG                                                | It mounts and shows `Lilypad.app` next to an Applications alias.                                                                                                                                  |
-| 1.3 | Drag Lilypad to Applications                                        | Copies without error.                                                                                                                                                                             |
-| 1.4 | Double-click Lilypad in Applications                                | **v0.1.19+ is notarized** — it should open with no “unidentified developer” warning. If macOS still blocks, check the site version is current.                                                    |
-| 1.5 | (Only if blocked) Right-click → **Open** → **Open**                 | It launches.                                                                                                                                                                                      |
-| 1.6 | Look at the screen                                                  | A small green **bubble** floats near the top-left.                                                                                                                                                |
-| 1.7 | Look at the menu bar                                                | A Lilypad **menu bar icon**, with: Open Dashboard, Pair a phone…, Approve, Deny, Disconnect, Panic disconnect, Settings…, Diagnostics…                                                            |
-| 1.8 | Leave it running for 10 minutes while you use the Mac normally      | No crash, no beachball, no runaway CPU (check Activity Monitor: idle should be low single-digit %).                                                                                               |
-| 1.9 | Tray → **Diagnostics…**                                             | A window opens showing Health, Last connection, and `backend: https://api.takedia.com`. **If the backend is anything else, stop and report it.**                                                  |
+| #   | Do                                                                  | Expect                                                                                                                                           |
+| --- | ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 1.1 | Open <https://lilypadhome.takedia.com>, then **Download for macOS** | The site serves `Lilypad.dmg` from `/download/` — universal (`x86_64 arm64`), **v0.1.19** or newer. No GitHub account, no sign-in.               |
+| 1.2 | Double-click the DMG                                                | It mounts and shows `Lilypad.app` next to an Applications alias.                                                                                 |
+| 1.3 | Drag Lilypad to Applications                                        | Copies without error.                                                                                                                            |
+| 1.4 | Double-click Lilypad in Applications                                | **v0.1.19+ is notarized** — it should open with no “unidentified developer” warning. If macOS still blocks, check the site version is current.   |
+| 1.5 | (Only if blocked) Right-click → **Open** → **Open**                 | It launches.                                                                                                                                     |
+| 1.6 | Look at the screen                                                  | A small green **bubble** floats near the top-left.                                                                                               |
+| 1.7 | Look at the menu bar                                                | A Lilypad **menu bar icon**, with: Open Dashboard, Pair a phone…, Approve, Deny, Disconnect, Panic disconnect, Settings…, Diagnostics…           |
+| 1.8 | Leave it running for 10 minutes while you use the Mac normally      | No crash, no beachball, no runaway CPU (check Activity Monitor: idle should be low single-digit %).                                              |
+| 1.9 | Tray → **Diagnostics…**                                             | A window opens showing Health, Last connection, and `backend: https://api.takedia.com`. **If the backend is anything else, stop and report it.** |
 
 > **Signed builds behave differently at 1.4/1.5.** A Developer-ID-signed,
 > notarized build opens on the first double-click with no warning at all. Until
