@@ -489,13 +489,35 @@ const ringRevoked = await post(
 );
 check(
   'a revoked laptop cannot be rung, and says so honestly',
-  // Not merely `!== 200`. It used to answer 503 `desktop_offline`, because
-  // device revocation withdraws ownership while the `trusted_devices` row
-  // survives as audit trail — so the pair authorized and the ring failed later,
-  // at the presence check. Telling the owner their Mac is offline when it was
-  // removed from the account is the one thing they would want to know.
-  ringRevoked.status === 404 && ringRevoked.json.error === 'not_trusted',
+  // Not merely `!== 200`, and the sentence has been wrong twice.
+  //
+  // It first answered 503 `desktop_offline`, because device revocation
+  // withdraws ownership while the `trusted_devices` row survives as audit
+  // trail — so the pair authorized and the ring failed later, at the presence
+  // check, telling the owner their switched-on Mac was off. Then it answered
+  // the anonymous 404 `not_trusted`, whose remedy is "pair again with a QR" —
+  // advice that leads in a circle, because `/pairing/create` refuses a computer
+  // no account owns.
+  //
+  // It now names the fact, because past `authorizeConnect` this caller has
+  // proved it is the phone it names AND presented this laptop's per-pair
+  // secret, so there is nothing left for the anonymous answer to protect.
+  ringRevoked.status === 403 && ringRevoked.json.error === 'desktop_not_on_account',
   `HTTP ${ringRevoked.status} ${ringRevoked.json.error}`,
+);
+
+// …and the enumeration protection the reorder had to preserve. Same request,
+// no token: a caller that could tell "removed from the account" from "no such
+// pair" could walk the id space looking for real laptops.
+const ringRevokedAnon = await post('/connect/request', {
+  desktopDeviceId: `desktop-${tag}`,
+  mobileDeviceId: `mobile-${tag}`,
+  pairSecret: approved.json.pairSecret,
+});
+check(
+  'an unproven caller learns nothing about that laptop',
+  ringRevokedAnon.status === 404 && ringRevokedAnon.json.error === 'not_trusted',
+  `HTTP ${ringRevokedAnon.status} ${ringRevokedAnon.json.error}`,
 );
 
 // The half this suite used to miss entirely. It checked that a revoked
