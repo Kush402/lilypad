@@ -322,6 +322,25 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+/// One log line for a panic: where it happened and what it said.
+///
+/// Separated from the hook because a panic hook is global process state and a
+/// test cannot install one without fighting every other test in the binary.
+/// `panic!` produces a payload of either `&str` (a literal) or `String` (a
+/// formatted message), and a payload of any other type is possible through
+/// `panic_any`, so all three are handled rather than two and a surprise.
+fn panic_line(where_: Option<String>, payload: &(dyn std::any::Any + Send)) -> String {
+    let what = payload
+        .downcast_ref::<&str>()
+        .map(|s| (*s).to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "panicked with a non-string payload".to_string());
+    match where_ {
+        Some(w) => format!("panic at {w}: {what}"),
+        None => format!("panic at an unknown location: {what}"),
+    }
+}
+
 pub fn run() {
     // `log::` macros are no-ops until a logger is installed — without this,
     // input-injection and session errors vanish instead of reaching stderr.
@@ -340,6 +359,29 @@ pub fn run() {
     if let Some(path) = logfile::path() {
         log::info!(target: "lilypad::logging", "logging to {}", path.display());
     }
+
+    // A panic is the one event a customer most needs us to have recorded, and
+    // it was the one event that reached nothing. The default hook writes to
+    // stderr, and stderr goes nowhere for a `.app` launched from Finder — the
+    // same reason the file target above exists. So Lilypad could crash on
+    // somebody's Mac and leave its own log file with no mention of it, and the
+    // "Copy for support" report they then sent would describe a healthy app.
+    //
+    // Deliberately narrow: the panic message and its location, and nothing
+    // else. No backtrace by default (it names our symbols, not the customer's
+    // data, but it is noise in a report a person is asked to read before
+    // sending), and nothing is transmitted anywhere. This only makes the crash
+    // visible in the log the customer already chooses whether to share.
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let where_ = info
+            .location()
+            .map(|l| format!("{}:{}", l.file(), l.line()));
+        log::error!(target: "lilypad::panic", "{}", panic_line(where_, info.payload()));
+        // Still do whatever the default hook would have: a developer running
+        // from a terminal should not lose the output they expect.
+        previous(info);
+    }));
 
     // Refuse to be the second instance. The launch-at-login LaunchAgent and a
     // manual/dev launch would otherwise both register the same presence room
@@ -482,6 +524,7 @@ pub fn run() {
             commands::set_bubble_visible,
             commands::show_setup_window,
             commands::show_control_window,
+            commands::log_ui_error,
             commands::log_file_path,
             commands::reveal_log_file,
             commands::get_account_state,
@@ -588,5 +631,44 @@ mod pairing_order_tests {
                 "updates are served from the public site; got {url}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod panic_hook_tests {
+    use super::panic_line;
+
+    #[test]
+    fn a_panic_says_where_it_happened_and_what_it_said() {
+        let line = panic_line(Some("src/session/mod.rs:412".into()), &"seat already taken");
+        assert_eq!(line, "panic at src/session/mod.rs:412: seat already taken");
+    }
+
+    #[test]
+    fn a_formatted_panic_message_survives_too() {
+        // `panic!("{x}")` produces a String, not a &str. Handling only the
+        // literal case would log every interesting panic as "panicked".
+        let line = panic_line(
+            Some("src/media/mod.rs:9".into()),
+            &String::from("no display 3"),
+        );
+        assert_eq!(line, "panic at src/media/mod.rs:9: no display 3");
+    }
+
+    #[test]
+    fn a_panic_with_no_location_still_logs_something_useful() {
+        let line = panic_line(None, &"unwound through a foreign frame");
+        assert_eq!(
+            line,
+            "panic at an unknown location: unwound through a foreign frame"
+        );
+    }
+
+    #[test]
+    fn an_exotic_payload_does_not_get_logged_as_a_lie() {
+        // `panic_any(42)` is legal. Reporting it as "panicked" would read as a
+        // message the code never produced.
+        let line = panic_line(Some("x.rs:1".into()), &42u32);
+        assert_eq!(line, "panic at x.rs:1: panicked with a non-string payload");
     }
 }

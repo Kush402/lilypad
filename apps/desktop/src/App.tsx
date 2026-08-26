@@ -4,6 +4,7 @@ import { QrOverlay } from './components/QrOverlay';
 import { Control } from './components/Control';
 import { Diagnostics } from './components/Diagnostics';
 import { Setup } from './components/Setup';
+import { ErrorBoundary } from './components/ErrorBoundary';
 
 type WindowKind = 'bubble' | 'qr-overlay' | 'control' | 'diagnostics' | 'setup';
 
@@ -21,8 +22,8 @@ function currentWindowKind(): WindowKind {
   }
 }
 
-export function App() {
-  switch (currentWindowKind()) {
+function windowContent(kind: WindowKind) {
+  switch (kind) {
     case 'qr-overlay':
       return <QrOverlay />;
     case 'control':
@@ -34,4 +35,13 @@ export function App() {
     default:
       return <Bubble />;
   }
+}
+
+export function App() {
+  const kind = currentWindowKind();
+  // Per window rather than once around everything, because each window mounts
+  // this bundle separately: a boundary here names the window that failed, and
+  // a failure in one cannot take out another that is not even in the same
+  // webview.
+  return <ErrorBoundary where={kind}>{windowContent(kind)}</ErrorBoundary>;
 }

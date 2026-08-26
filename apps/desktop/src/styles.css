@@ -660,3 +660,23 @@ body {
   max-height: 120px;
   overflow: auto;
 }
+
+/* The render-error fallback (components/ErrorBoundary.tsx).
+   Scrolls because the same fallback has to be legible in the 108px bubble
+   window as well as in the dashboard, and clipped text explaining a fault is
+   worse than no explanation. */
+.error-page {
+  overflow: auto;
+  max-height: 100vh;
+}
+
+.error-page__detail {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  color: var(--danger);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  overflow-wrap: anywhere;
+}

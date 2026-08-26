@@ -1570,6 +1570,34 @@ mod tests {
     }
 }
 
+/// A render error from one of the webviews, written where support can find it.
+///
+/// The webview console does NOT reach `~/Library/Logs/Lilypad`: that would need
+/// `tauri-plugin-log` with a webview target, and this app installs `env_logger`
+/// directly. So a React error boundary that only called `console.error` would
+/// tell the customer their crash "has been written to the log" while writing
+/// nothing, and the report they then sent would describe a healthy app. This is
+/// the one line that makes that claim true.
+///
+/// Bounded, because a component stack is unbounded and a log file is not.
+#[tauri::command]
+pub fn log_ui_error(window_label: String, message: String) {
+    const LIMIT: usize = 4_000;
+    let mut message = message;
+    if message.len() > LIMIT {
+        // On a char boundary — `String::truncate` panics in the middle of a
+        // multi-byte character, and an error report is the worst possible place
+        // to introduce a second crash.
+        let cut = (0..=LIMIT)
+            .rev()
+            .find(|i| message.is_char_boundary(*i))
+            .unwrap_or(0);
+        message.truncate(cut);
+        message.push_str("… (truncated)");
+    }
+    log::error!(target: "lilypad::ui", "{window_label} failed to render: {message}");
+}
+
 /// Where this Mac writes its log, and a way to get to it.
 ///
 /// A log a customer cannot find is a log that only helps developers. The path
