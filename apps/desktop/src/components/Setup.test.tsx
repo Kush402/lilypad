@@ -126,6 +126,11 @@ describe('Setup', () => {
     grantAll(eventHandler);
 
     await screen.findByText('3 · Pair your phone');
+    // Step 3 appears as soon as the permissions land, which can beat the
+    // account read — and step 1's heading is whatever that card is currently
+    // showing. Wait for it, or this asserts against "1 · Create your account"
+    // whenever the machine is busy enough.
+    await screen.findByTestId('account-signed-in');
     const numbered = screen
       .getAllByRole('heading', { level: 2 })
       .map((h) => h.textContent ?? '')
