@@ -77,7 +77,7 @@ export function AgentProviderCard() {
       {config?.source === 'env' ? (
         <p className="muted">
           <em>
-            A developer environment override is active — it takes precedence over these settings.
+            A developer environment override is active. It takes precedence over these settings.
           </em>
         </p>
       ) : null}
@@ -113,7 +113,7 @@ export function AgentProviderCard() {
         <input
           type="password"
           aria-label="API key"
-          placeholder={config?.hasKey ? 'API key saved — enter to replace' : 'API key'}
+          placeholder={config?.hasKey ? 'API key saved. Enter a new one to replace it' : 'API key'}
           value={apiKey}
           onChange={(e) => setApiKey(e.target.value)}
           autoComplete="off"

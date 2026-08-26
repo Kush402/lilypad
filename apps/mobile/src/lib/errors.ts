@@ -64,7 +64,7 @@ const COPY: Record<AppErrorCode, string> = {
   // Named for the FACT, not for either cause, because the backend cannot tell
   // them apart and both have the same remedy.
   desktop_not_on_account:
-    'That laptop is not on your Lilypad account right now. Sign in to Lilypad on it to bring it back — your pairing is still there.',
+    'That laptop is not on your Lilypad account right now. Sign in to Lilypad on it to bring it back. Your pairing is still there.',
   // A pair joins two devices on ONE account (ADR-0015). Reachable by scanning a
   // colleague's Mac, and the remedy is not guessable from a 403.
   different_account:

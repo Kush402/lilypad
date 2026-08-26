@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Keyboard, View, Text, TextInput, Pressable, ScrollView, StyleSheet } from 'react-native';
 import { theme } from '../theme';
 import { heldStep, type AgentFeedState, type AgentStepView } from '../lib/agentFeed';
+import { CheckGlyph, CrossGlyph, IdleGlyph, PauseGlyph, RunningGlyph } from '../components/Glyph';
 
 /**
  * The "Ask" panel — command entry + the AI agent's live step feed, with an
@@ -36,20 +37,25 @@ function stateColor(view: AgentStepView): string {
   }
 }
 
-function stateGlyph(view: AgentStepView): string {
+/**
+ * Drawn, not dingbats. These were '⏸', '▶', '✓', '⤫', '✕' and '·': six glyphs
+ * from whichever font the OS picked, in that font's own weight, on a feed whose
+ * every other pixel comes from design tokens. VoiceOver read them out by their
+ * Unicode names, which described none of these states.
+ */
+function StateGlyph({ view, color }: { view: AgentStepView; color: string }) {
   switch (view.state) {
     case 'held':
-      return '⏸';
+      return <PauseGlyph color={color} />;
     case 'running':
-      return '▶';
+      return <RunningGlyph color={color} />;
     case 'done':
-      return '✓';
+      return <CheckGlyph color={color} />;
     case 'denied':
-      return '⤫';
     case 'failed':
-      return '✕';
+      return <CrossGlyph color={color} />;
     default:
-      return '·';
+      return <IdleGlyph color={color} />;
   }
 }
 
@@ -169,12 +175,14 @@ export function AgentPanel({ feed, onSend, onStop, onDecide }: AgentPanelProps):
       <ScrollView style={styles.feed} contentContainerStyle={styles.feedContent}>
         {feed.steps.length === 0 ? (
           <Text style={styles.empty}>
-            {feed.running ? 'Thinking…' : 'Type a task above — the assistant acts on your Mac.'}
+            {feed.running ? 'Thinking…' : 'Type a task above. The assistant acts on your Mac.'}
           </Text>
         ) : (
           feed.steps.map((s) => (
             <View key={s.stepId} style={styles.stepRow}>
-              <Text style={[styles.glyph, { color: stateColor(s) }]}>{stateGlyph(s)}</Text>
+              <View style={styles.glyph}>
+                <StateGlyph view={s} color={stateColor(s)} />
+              </View>
               <Text style={styles.stepText} numberOfLines={2}>
                 {s.summary}
               </Text>
@@ -249,7 +257,7 @@ const styles = StyleSheet.create({
   feedContent: { gap: 6, paddingVertical: 2 },
   empty: { color: theme.muted, fontSize: 13, fontStyle: 'italic' },
   stepRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 8 },
-  glyph: { fontSize: 14, width: 16, textAlign: 'center' },
+  glyph: { width: 16, alignItems: 'center', justifyContent: 'center' },
   stepText: { color: theme.ink, fontSize: 13, flex: 1 },
   outcome: { color: theme.accent, fontWeight: '700', fontSize: 13, marginTop: 4 },
   outcomeBad: { color: theme.danger },

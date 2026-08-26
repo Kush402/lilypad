@@ -42,11 +42,11 @@ const PATH_LABEL: Record<string, string> = {
 const PRESENCE_LABEL: Record<string, string> = {
   starting: 'Starting up',
   connecting: 'Connecting to Lilypad',
-  online: 'Reachable — a phone can ring this Mac',
+  online: 'Reachable. A phone can ring this Mac',
   unreachable: 'Cannot reach Lilypad’s server',
-  refused: 'Lilypad refused this Mac — most likely it was removed from the account',
+  refused: 'Lilypad refused this Mac. Most likely it was removed from the account',
   no_identity: 'This Mac has no saved key, so it cannot be reached',
-  not_linked: 'This Mac is on no account yet — sign in on it, so there is something to ring',
+  not_linked: 'This Mac is on no account yet. Sign in on it, so there is something to ring',
 };
 
 /**
@@ -125,7 +125,7 @@ export function Diagnostics() {
   return (
     <div className="page diagnostics">
       <h1>Diagnostics</h1>
-      <p className="muted">Support/developer information — not shown during normal use.</p>
+      <p className="muted">Support and developer information. Not shown during normal use.</p>
 
       <div className="row">
         <button

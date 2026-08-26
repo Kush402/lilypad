@@ -147,7 +147,7 @@ export async function signInWithGoogle(apiBaseUrl: string): Promise<DeviceSessio
     // surface as a confusing generic failure.
     throw new SignInError(
       'not_configured',
-      'Google did not return an identity token — check the web client id.',
+      'Google did not return an identity token. Check the web client id.',
     );
   }
   return completeSignIn(apiBaseUrl, await exchangeIdToken(apiBaseUrl, 'google', idToken));

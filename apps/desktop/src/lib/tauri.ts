@@ -48,7 +48,10 @@ export interface AppStateDto {
 
 export const api = {
   getState: () => invoke<AppStateDto>('get_state'),
-  createPairing: () => invoke<QrPayloadDto>('create_pairing'),
+  /** `force` ends a live session on purpose — only the QR window's explicit
+   * confirm passes it. Everything else must be refused with `session_active`
+   * rather than silently disconnecting whoever is connected. */
+  createPairing: (force = false) => invoke<QrPayloadDto>('create_pairing', { force }),
   showQrWindow: () => invoke<void>('show_qr_window'),
   /** DEV-only (M1): stand in for a phone redeeming the token. Refuses in
    * release builds server-side too (see `commands::simulate_pair_request`). */

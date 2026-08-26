@@ -530,7 +530,7 @@ describe('Setup — wizard or settings', () => {
     render(<Setup />);
 
     await screen.findByTestId('setup-settings');
-    await waitFor(() => expect(setTitle).toHaveBeenCalledWith('Lilypad — Settings'));
+    await waitFor(() => expect(setTitle).toHaveBeenCalledWith('Lilypad Settings'));
   });
 
   /** The whole point of the change: the one field people come back for. */
@@ -609,5 +609,81 @@ describe('Setup — wizard or settings', () => {
     await screen.findByTestId('setup-done');
     expect(screen.getByTestId('setup-wizard')).toBeInTheDocument();
     expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Set up Lilypad');
+  });
+});
+
+/**
+ * Reported from the running product on 2026-08-26, with a session live and a
+ * phone in control.
+ *
+ * Minting a pairing code ends whatever session is running: a fresh runner
+ * overwrites `AppState.control_tx`, and the live session reads its sender being
+ * dropped as an explicit Disconnect. Three surfaces knew that and gated
+ * themselves — the bubble refuses mid-session, the dashboard's "+" is disabled,
+ * the QR window asks before REGENERATING. This one knew none of it, so one
+ * click on "Show pairing code" disconnected the phone with no warning and
+ * nothing on screen to explain it.
+ *
+ * The real guard is now in `create_pairing`, where all four meet. This pins the
+ * surface a person actually touches.
+ */
+describe('pairing while a session is live', () => {
+  function mockSession(session: string) {
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === 'get_permission_status')
+        return status({ screen_capture: true, accessibility: true });
+      if (cmd === 'get_link_state') return { state: 'linked' };
+      if (cmd === 'get_account_state')
+        return { signedIn: true, email: 'ada@example.com', userId: 'user-1' };
+      if (cmd === 'get_state')
+        return {
+          device_id: 'd',
+          backend_base_url: 'https://api.example.test',
+          session,
+          current_room_id: null,
+          pending_request: null,
+          plugin_health: {},
+          connection_path: null,
+          presence: { state: 'online' },
+          shared_display: null,
+        };
+      return undefined;
+    });
+    vi.mocked(getCurrentWindow).mockReturnValue({
+      close: vi.fn(),
+      setTitle: vi.fn(),
+    } as unknown as ReturnType<typeof getCurrentWindow>);
+  }
+
+  it('does not offer a pairing code that would end the session', async () => {
+    mockSession('active');
+    render(<Setup />);
+
+    const button = await screen.findByTestId('show-pairing-code');
+    expect(button).toBeDisabled();
+    expect(screen.getByTestId('pairing-blocked-by-session')).toHaveTextContent(
+      /disconnect it from the Lilypad dashboard first/i,
+    );
+  });
+
+  it('does not open the QR window even if the button is clicked anyway', async () => {
+    mockSession('active');
+    render(<Setup />);
+
+    fireEvent.click(await screen.findByTestId('show-pairing-code'));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('get_state'));
+    expect(invoke).not.toHaveBeenCalledWith('show_qr_window');
+  });
+
+  it('offers it normally when nothing is connected', async () => {
+    mockSession('idle');
+    render(<Setup />);
+
+    const button = await screen.findByTestId('show-pairing-code');
+    expect(button).toBeEnabled();
+    expect(screen.queryByTestId('pairing-blocked-by-session')).toBeNull();
+
+    fireEvent.click(button);
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('show_qr_window'));
   });
 });

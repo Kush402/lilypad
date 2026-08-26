@@ -37,14 +37,14 @@ export function QrOverlay() {
   // `docs/audit/m3/desktop-ux.md` Finding 9.
   const [pendingDisruptiveRegen, setPendingDisruptiveRegen] = useState(false);
 
-  const doGenerate = useCallback(async () => {
+  const doGenerate = useCallback(async (force = false) => {
     if (inFlightRef.current) return;
     setPendingDisruptiveRegen(false);
     setError('');
     setDataUrl('');
     inFlightRef.current = true;
     try {
-      const p = await api.createPairing();
+      const p = await api.createPairing(force);
       hasPayloadRef.current = true;
       setPayload(p);
       setSecondsLeft(p.expiresInSeconds);
@@ -60,7 +60,11 @@ export function QrOverlay() {
       // Setup for permissions, the dashboard for linking. Rendering them as
       // errors here would put a red string on top of the screen that already
       // says what to do.
-      const handled = ['permissions_required', 'link_required'];
+      // `session_active` joins them: the backend refuses to mint a code that
+      // would end a live session, and raises the dashboard — which carries
+      // Disconnect — instead. A red string here would be a second, worse
+      // explanation of a window the user is already looking at.
+      const handled = ['permissions_required', 'link_required', 'session_active'];
       if (!handled.includes(String(err))) setError(String(err));
     } finally {
       inFlightRef.current = false;
@@ -139,7 +143,7 @@ export function QrOverlay() {
         <div className="revoke-confirm">
           <p className="muted">This will end the current pending request or session. Continue?</p>
           <div className="row revoke-confirm__actions">
-            <button className="btn btn--danger btn--small" onClick={() => void doGenerate()}>
+            <button className="btn btn--danger btn--small" onClick={() => void doGenerate(true)}>
               Confirm
             </button>
             <button

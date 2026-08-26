@@ -101,7 +101,7 @@ describe('SoftwareUpdate — when a step fails', () => {
 
     render(<SoftwareUpdate variant="banner" />);
 
-    expect(await screen.findByText(/Couldn’t check for updates — no network/)).toBeInTheDocument();
+    expect(await screen.findByText(/Couldn’t check for updates\. no network/)).toBeInTheDocument();
   });
 
   it('names the download when the download is what failed', async () => {
@@ -115,7 +115,7 @@ describe('SoftwareUpdate — when a step fails', () => {
     render(<SoftwareUpdate variant="banner" />);
     (await screen.findByRole('button', { name: 'Download & install' })).click();
 
-    expect(await screen.findByText(/Couldn’t download the update — disk full/)).toBeInTheDocument();
+    expect(await screen.findByText(/Couldn’t download the update\. disk full/)).toBeInTheDocument();
   });
 
   it('offers a retry rather than leaving a dead end', async () => {

@@ -3,10 +3,12 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { AgentProviderCard } from './AgentProviderCard';
+import { IconCheck } from './Icon';
 import { AccountSignIn } from './AccountSignIn';
 import { LinkStep } from './LinkStep';
 import { api, type AccountStateDto, type LinkStateDto } from '../lib/tauri';
 import { useLiveResource } from '../lib/useLiveResource';
+import { useAppState } from '../lib/useAppState';
 
 type PermissionKind = 'screen_capture' | 'accessibility';
 const KINDS: readonly PermissionKind[] = ['screen_capture', 'accessibility'];
@@ -156,16 +158,26 @@ export function Setup() {
   // The title bar is the one part of this window Rust names, and it names it
   // once, at creation. A window that has become Settings must not keep saying
   // Setup in the place macOS puts it in the Window menu and in Mission Control.
+  //
+  // Each title is the window's own heading, verbatim. They used to be
+  // "Lilypad — Setup": macOS already puts the app's name in the menu bar, so
+  // that repeated a word the customer did not need behind a dash they did not
+  // need either.
   useEffect(() => {
     if (mode === null) return;
     try {
-      void getCurrentWindow().setTitle(
-        mode === 'wizard' ? 'Lilypad — Setup' : 'Lilypad — Settings',
-      );
+      void getCurrentWindow().setTitle(mode === 'wizard' ? 'Set up Lilypad' : 'Lilypad Settings');
     } catch {
       /* not running inside Tauri */
     }
   }, [mode]);
+
+  // Minting a pairing code ends whatever session is running — see
+  // `create_pairing`. The dashboard's "+" has always known that; this window
+  // did not, so one click here disconnected a phone mid-session.
+  const appState = useAppState();
+  const session = appState?.session ?? 'idle';
+  const busySession = session === 'active' || session === 'connecting';
 
   const [restarting, setRestarting] = useState(false);
   // Read here as well as inside AccountPanel: the final card has to say which
@@ -319,7 +331,7 @@ export function Setup() {
       <p className="muted">
         {wizard
           ? 'Three steps. Only the last one needs your phone.'
-          : 'Everything about this Mac. Nothing here is a step — change what you like and close the window.'}
+          : 'Everything about this Mac. Nothing here is a step, so change what you like and close the window.'}
       </p>
 
       {/* Step 1 is now load-bearing rather than merely first: signing in is
@@ -351,8 +363,8 @@ export function Setup() {
           {needsRestart && restartAlreadyTried ? (
             <section className="control__approve" data-testid="permission-stale-tcc">
               <p>
-                <strong>macOS is still refusing</strong> — and restarting did not help, so the
-                switch being on in System Settings is not the whole story.
+                <strong>macOS is still refusing</strong>, and restarting did not help, so the switch
+                being on in System Settings is not the whole story.
               </p>
               <p className="muted">
                 macOS ties a permission to the exact app that asked for it. If this Mac granted
@@ -373,7 +385,7 @@ export function Setup() {
           ) : needsRestart ? (
             <section className="control__approve">
               <p>
-                <strong>Finish setup</strong> — Lilypad needs to restart once to pick up the new
+                <strong>Finish setup.</strong> Lilypad needs to restart once to pick up the new
                 permission.
               </p>
               <div className="row">
@@ -433,15 +445,36 @@ export function Setup() {
           {linked ? (
             <>
               <p className="muted">
-                Show the pairing code and scan it with Lilypad on your phone. Pair once — after that
+                Show the pairing code and scan it with Lilypad on your phone. Pair once. After that
                 the phone reconnects on its own, and this Mac appears in its list.
               </p>
               <section className="control__approve">
                 <div className="row">
-                  <button className="btn btn--primary" onClick={() => void api.showQrWindow()}>
+                  {/* Disabled, not merely refused. `create_pairing` now says no
+                      as well, and that is the guarantee — but a button that
+                      looks live and answers with a refusal is a worse screen
+                      than one that says why before you press it. Mirrors the
+                      dashboard's "+" exactly, including the sentence. */}
+                  <button
+                    className="btn btn--primary"
+                    data-testid="show-pairing-code"
+                    disabled={busySession}
+                    title={
+                      busySession
+                        ? 'Disconnect the current session to pair a new device'
+                        : 'Show the pairing code'
+                    }
+                    onClick={() => void api.showQrWindow()}
+                  >
                     Show pairing code
                   </button>
                 </div>
+                {busySession ? (
+                  <p className="muted" data-testid="pairing-blocked-by-session">
+                    A phone is connected right now. Pairing another would end that session, so
+                    disconnect it from the Lilypad dashboard first.
+                  </p>
+                ) : null}
               </section>
             </>
           ) : (
@@ -451,7 +484,7 @@ export function Setup() {
                outright, so saying so beats a button that answers 404. */
             <p className="muted" data-testid="pair-step-locked">
               This Mac isn’t on your account yet, so it can’t pair a phone.{' '}
-              {wizard ? 'Step 1' : 'Signing in above'} is what puts it there — the card under it
+              {wizard ? 'Step 1' : 'Signing in above'} is what puts it there, and the card under it
               says what went wrong.
             </p>
           )}
@@ -466,12 +499,12 @@ export function Setup() {
               wifi dropped is worse than admitting we do not know. */}
           {linked ? (
             <p data-testid="setup-done-linked">
-              ✓ This computer is set up and belongs to your account.
+              <IconCheck /> This computer is set up and belongs to your account.
             </p>
           ) : linkUnknown ? (
             <p data-testid="setup-done-unknown">
-              Permissions are done. We could not check whether this computer is on an account — if
-              it already is, it stays that way and pairing will work.
+              Permissions are done. We could not check whether this computer is on an account. If it
+              already is, it stays that way and pairing will work.
             </p>
           ) : (
             <p data-testid="setup-done-unlinked">

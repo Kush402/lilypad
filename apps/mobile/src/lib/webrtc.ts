@@ -961,7 +961,7 @@ export class ViewerConnection {
       this.lastQualityLevel = level;
       record(
         `quality ${level}`,
-        `rtt ${rttMs ?? '—'}ms · ${bitrateKbps ?? '—'}kbps · ${fps ?? '—'}fps · loss ${packetLossPct ?? '—'}%`,
+        `rtt ${rttMs ?? '--'}ms · ${bitrateKbps ?? '--'}kbps · ${fps ?? '--'}fps · loss ${packetLossPct ?? '--'}%`,
       );
     }
 

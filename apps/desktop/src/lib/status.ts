@@ -34,9 +34,16 @@ export const STATUS_COLOR: Record<SessionStatus, string> = {
  * changed, misleadingly implying "pair a phone" even mid-session). See
  * `docs/audit/m3/desktop-ux.md` Finding 14. */
 export const STATUS_ARIA_LABEL: Record<SessionStatus, string> = {
-  idle: 'Lilypad — click to show a pairing QR code',
-  pairing: 'Lilypad — waiting for a phone to scan, click to reopen the QR code',
-  awaiting_approval: 'Lilypad — a phone wants to connect, click to review',
-  connecting: 'Lilypad — connecting to device, click to review',
-  active: 'Lilypad — session active, click to disconnect',
+  // Two of these described a bubble that no longer exists, and they are the
+  // tooltip as well as the screen-reader name — so both audiences were told
+  // the wrong thing. `idle` has opened the DASHBOARD since the QR stopped
+  // being the front door, and `active` opens the dashboard too: the click
+  // never disconnected anything, it showed you the window where Disconnect
+  // lives. Promising a destructive action a click does not perform is the
+  // worse half of that.
+  idle: 'Lilypad. Click to open the dashboard',
+  pairing: 'Lilypad. Waiting for a phone to scan. Click to reopen the pairing code',
+  awaiting_approval: 'Lilypad. A phone wants to connect. Click to review',
+  connecting: 'Lilypad. Connecting to a phone. Click to review',
+  active: 'Lilypad. A phone is connected. Click to open the dashboard',
 };

@@ -217,7 +217,7 @@ describe('what the page must not say', () => {
     const prose = html.replace(/\s+/g, ' ');
     expect(prose).toMatch(/[Ss]igning in puts a computer on your account/);
     expect(prose).toMatch(/does not let anything reach it/i);
-    expect(prose).toMatch(/a stolen password is not a stolen laptop/);
+    expect(prose).toMatch(/[Aa] stolen password is not a stolen laptop/);
     // The retired claim must not survive anywhere on the page: it is now false,
     // and a false security claim is worse than a missing one.
     expect(prose).not.toMatch(/[Ss]igning in does not reveal a computer/);
@@ -253,7 +253,7 @@ describe('setting it up', () => {
    * deliberately — that is the whole security claim two sections up. */
   it('says that being on the account is not the same as being reachable', () => {
     expect(prose).toMatch(/[Ss]igning in is what puts that computer on your account/);
-    expect(prose).toMatch(/being on the same account is not enough/);
+    expect(prose).toMatch(/[Bb]eing on the same account is not enough/);
   });
 
   it('is reachable from the nav, not only by scrolling', () => {
@@ -574,5 +574,43 @@ describe('what a shared link looks like', () => {
     expect(png.toString('ascii', 12, 16)).toBe('IHDR');
     expect(png.readUInt32BE(16)).toBe(1200);
     expect(png.readUInt32BE(20)).toBe(630);
+  });
+});
+
+/**
+ * House style for everything a visitor reads.
+ *
+ * Two rules, both about the page sounding like a product rather than like
+ * generated text.
+ *
+ * **No em dashes in prose.** They were the page's default joint: 28 of them,
+ * several per paragraph, and a reader clocks that rhythm long before they can
+ * name it. Every one is now a full stop, a comma, a colon or a bracket, chosen
+ * per sentence. HTML COMMENTS are exempt: they are notes to whoever maintains
+ * the page, not copy.
+ *
+ * **No emoji.** An emoji is drawn by whichever font the visitor's OS ships, so
+ * it changes shape between platforms, carries its own colours, and matches
+ * nothing else in the product. The brand mark is inline SVG on `currentColor`,
+ * the same geometry as the app icon the visitor is about to install.
+ */
+describe('house style in customer copy', () => {
+  /** The page minus its comments: what a visitor can actually read. */
+  const copy = html.replace(/<!--[\s\S]*?-->/g, '');
+
+  it('joins its sentences with punctuation, not em dashes', () => {
+    const offenders = copy
+      .split('\n')
+      .map((line, i) => [i + 1, line] as const)
+      .filter(([, line]) => line.includes('\u2014'));
+    expect(offenders.map(([n, l]) => `${n}: ${l.trim()}`)).toEqual([]);
+  });
+
+  it('draws its mark instead of borrowing an emoji font', () => {
+    expect(copy).not.toMatch(/\u{1FAB7}/u);
+    // Nothing in the pictographic ranges, so this does not quietly come back
+    // as a different glyph next time.
+    expect(copy).not.toMatch(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u);
+    expect(html).toMatch(/class="brand-mark"/);
   });
 });

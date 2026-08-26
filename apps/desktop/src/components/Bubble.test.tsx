@@ -121,29 +121,65 @@ describe('Bubble', () => {
     expect(api.createPairing).not.toHaveBeenCalled();
   });
 
+  /**
+   * These three used to require the OPPOSITE, and the suite was what kept the
+   * mistake alive.
+   *
+   * They asserted the active label says "disconnect" and the idle label says
+   * "pairing QR" — written when an idle click really did open the QR. That
+   * changed (see the first test in this file: the dashboard, not the pairing
+   * QR), the labels were never revisited, and these tests then guarded the
+   * stale copy against being corrected.
+   *
+   * The label is the `title` tooltip AND the accessible name, so both audiences
+   * were told the wrong thing — and the active one promised a DESTRUCTIVE
+   * action that the click does not perform. That is the worse half: a
+   * screen-reader user was told this button ends the session, when it opens the
+   * window where Disconnect lives.
+   *
+   * What is still worth pinning is what these were reaching for: the label is
+   * specific to the state, not one static sentence for all five.
+   */
   it('shows a status-appropriate tooltip so the click target is discoverable', () => {
     mockState('active');
     render(<Bubble />);
     expect(screen.getByRole('button')).toHaveAttribute(
       'title',
-      expect.stringContaining('disconnect'),
+      expect.stringContaining('connected'),
     );
   });
 
   // Color-only status encoding fails WCAG 1.4.1 and specifically misleads
   // assistive-tech users when the announced label is static and wrong for
   // the current state. See docs/audit/m3/desktop-ux.md Finding 14.
-  it('gives an active session an accessible label that says "disconnect", not the generic idle "pair a phone" text', () => {
+  it('describes an active session without promising a disconnect the click does not do', () => {
     mockState('active');
     render(<Bubble />);
     const button = screen.getByRole('button');
-    expect(button).toHaveAccessibleName(expect.stringContaining('disconnect'));
+    expect(button).toHaveAccessibleName(expect.stringContaining('phone is connected'));
+    // The click calls `showControl`. Saying "click to disconnect" would be the
+    // app describing a destructive act it is not about to perform.
+    expect(button).not.toHaveAccessibleName(expect.stringContaining('disconnect'));
+  });
+
+  it('gives idle its own label, and does not promise a QR the click no longer shows', () => {
+    mockState('idle');
+    render(<Bubble />);
+    const button = screen.getByRole('button');
+    expect(button).toHaveAccessibleName(expect.stringContaining('dashboard'));
     expect(button).not.toHaveAccessibleName(expect.stringContaining('pairing QR'));
   });
 
-  it('gives idle a distinct accessible label describing the pair action', () => {
-    mockState('idle');
-    render(<Bubble />);
-    expect(screen.getByRole('button')).toHaveAccessibleName(expect.stringContaining('pairing QR'));
+  it('gives every state a label of its own', () => {
+    const seen = new Set<string>();
+    for (const state of ['idle', 'pairing', 'awaiting_approval', 'connecting', 'active'] as const) {
+      mockState(state);
+      const { unmount } = render(<Bubble />);
+      const name = screen.getByRole('button').getAttribute('aria-label') ?? '';
+      expect(name).not.toBe('');
+      seen.add(name);
+      unmount();
+    }
+    expect(seen.size).toBe(5);
   });
 });

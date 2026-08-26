@@ -132,8 +132,8 @@ pub enum AuthError {
 impl std::fmt::Display for AuthError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::NotEnrolled => write!(f, "this device is not enrolled — sign in to enroll it"),
-            Self::Revoked => write!(f, "this device was revoked — sign in to enroll it again"),
+            Self::NotEnrolled => write!(f, "this device is not enrolled. Sign in to enroll it"),
+            Self::Revoked => write!(f, "this device was revoked. Sign in to enroll it again"),
         }
     }
 }

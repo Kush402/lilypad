@@ -97,7 +97,7 @@ export function journalText(): string {
   if (entries.length === 0) return 'Lilypad session log\n(nothing recorded yet)';
   const lines = entries.map((e) => {
     const t = (e.atMs / 1000).toFixed(1).padStart(6, ' ');
-    return `${t}s  ${e.event}${e.detail ? ` — ${e.detail}` : ''}`;
+    return `${t}s  ${e.event}${e.detail ? `: ${e.detail}` : ''}`;
   });
   return [`Lilypad session log · app ${APP_VERSION}`, ...lines].join('\n');
 }

@@ -33,7 +33,14 @@ import { api, type LinkStateDto } from '../lib/tauri';
  */
 
 vi.mock('../lib/tauri', () => ({
-  api: { getLinkState: vi.fn(), startEnrollment: vi.fn(), showQrWindow: vi.fn() },
+  api: {
+    getLinkState: vi.fn(),
+    startEnrollment: vi.fn(),
+    showQrWindow: vi.fn(),
+    // Setup reads the live session so it can refuse to offer a pairing code
+    // that would end one. An idle snapshot keeps these tests about polling.
+    getState: vi.fn().mockResolvedValue({ session: 'idle' }),
+  },
 }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn().mockResolvedValue(() => {}) }));

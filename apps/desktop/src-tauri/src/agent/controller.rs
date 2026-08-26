@@ -148,7 +148,7 @@ impl AgentController {
                 Self::send_refusal(
                     &peer,
                     &run_id,
-                    "This session is view-only — grant control to let the assistant act.",
+                    "This session is view-only. Grant control to let the assistant act.",
                 );
                 return;
             }

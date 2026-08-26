@@ -122,7 +122,44 @@ pub async fn create_pairing(
     app: AppHandle,
     state: State<'_, SharedState>,
     auth: State<'_, Arc<DesktopAuth>>,
+    force: bool,
 ) -> Result<QrPayloadDto, String> {
+    // **Minting a pairing ENDS whatever session is running.** A fresh runner
+    // overwrites `AppState.control_tx`, and the live session reads its sender
+    // being dropped as an explicit Disconnect. That is not a bug in this
+    // function — regenerating a code is supposed to start over — but it means
+    // every entry point has to know, and until now each one knew separately:
+    // the bubble refuses mid-session, the dashboard's "+" is disabled, and the
+    // QR window asks before REGENERATING. The Settings window's "Show pairing
+    // code" knew none of it, so one click there killed a session that was
+    // streaming, with no warning and nothing on screen to explain it.
+    //
+    // Reported from the running product on 2026-08-26.
+    //
+    // The rule belongs here, where all of them meet, rather than in a fourth
+    // copy. `force` is how the ONE deliberate path — the QR window's "yes, end
+    // it and give me a new code" confirm — still gets through.
+    //
+    // `Pairing` is not in the list: a code on screen that nobody has scanned is
+    // exactly what "New code" is for, and refusing it would break the button
+    // this guard is meant to leave working.
+    if !force {
+        let live = lock_state(&state).session;
+        if matches!(
+            live,
+            SessionStatus::AwaitingApproval | SessionStatus::Connecting | SessionStatus::Active
+        ) {
+            log::info!(
+                target: "lilypad::audit",
+                "pairing refused — a session is {live:?} and pairing would end it",
+            );
+            // The dashboard is where Disconnect lives, so send them to the
+            // thing they need rather than only saying no.
+            let _ = show_control(&app);
+            return Err("session_active".to_owned());
+        }
+    }
+
     // Never let a user pair into a session that will silently fail: a
     // session with either permission missing would show a QR, connect the
     // phone, then never stream/inject anything with no explanation. See
@@ -227,7 +264,7 @@ pub async fn create_pairing(
     );
     log::info!(target: "lilypad::audit", "pairing_created — room started, awaiting scan");
 
-    open_window(&app, "qr-overlay", "Lilypad — Pair", QR_WINDOW)?;
+    open_window(&app, "qr-overlay", "Pair a phone", QR_WINDOW)?;
     crate::sync_tray_menu(&app);
     Ok(payload)
 }
@@ -445,7 +482,7 @@ pub fn simulate_pair_request(app: AppHandle, state: State<'_, SharedState>) -> R
 /// room. One creator, no race.
 #[tauri::command]
 pub fn show_qr_window(app: AppHandle) -> Result<(), String> {
-    open_window(&app, "qr-overlay", "Lilypad — Pair", QR_WINDOW)
+    open_window(&app, "qr-overlay", "Pair a phone", QR_WINDOW)
 }
 
 #[tauri::command]
@@ -618,7 +655,7 @@ pub fn show_setup(app: &AppHandle) -> Result<(), String> {
     let claimed = SETUP_POLL
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
         .is_ok();
-    open_window(app, "setup", "Lilypad — Setup", SETUP_WINDOW)?;
+    open_window(app, "setup", "Set up Lilypad", SETUP_WINDOW)?;
     if claimed {
         let app = app.clone();
         tauri::async_runtime::spawn(async move {
@@ -650,16 +687,11 @@ pub fn show_setup(app: &AppHandle) -> Result<(), String> {
 // ── window helpers (also called from the tray menu in lib.rs) ────────────────
 
 pub fn show_diagnostics(app: &AppHandle) -> Result<(), String> {
-    open_window(
-        app,
-        "diagnostics",
-        "Lilypad — Diagnostics",
-        DIAGNOSTICS_WINDOW,
-    )
+    open_window(app, "diagnostics", "Diagnostics", DIAGNOSTICS_WINDOW)
 }
 
 pub fn show_qr_overlay(app: &AppHandle) -> Result<(), String> {
-    open_window(app, "qr-overlay", "Lilypad — Pair", QR_WINDOW)
+    open_window(app, "qr-overlay", "Pair a phone", QR_WINDOW)
 }
 
 pub fn show_control(app: &AppHandle) -> Result<(), String> {
@@ -1435,6 +1467,40 @@ pub async fn account_sign_out(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Which session states make minting a pairing code destructive.
+    ///
+    /// Extracted so the rule is testable without a Tauri app: `create_pairing`
+    /// is an async command that needs an `AppHandle`, a `SharedState` and a
+    /// backend, and none of that is needed to answer the question that was
+    /// actually wrong.
+    ///
+    /// `Pairing` must stay OUT. A code on screen that nobody has scanned is
+    /// exactly what the QR window's "New code" button replaces, and refusing
+    /// that would break the button this guard exists to leave working.
+    #[test]
+    fn pairing_is_refused_only_when_it_would_end_something() {
+        let destructive = |s: SessionStatus| {
+            matches!(
+                s,
+                SessionStatus::AwaitingApproval | SessionStatus::Connecting | SessionStatus::Active
+            )
+        };
+        assert!(destructive(SessionStatus::Active), "a live session");
+        assert!(
+            destructive(SessionStatus::Connecting),
+            "a session mid-negotiation"
+        );
+        assert!(
+            destructive(SessionStatus::AwaitingApproval),
+            "a phone waiting on an answer"
+        );
+        assert!(!destructive(SessionStatus::Idle), "nothing to end");
+        assert!(
+            !destructive(SessionStatus::Pairing),
+            "an unscanned code is what New code replaces"
+        );
+    }
 
     /// One window at a time — and the one exception that keeps it safe.
     #[test]

@@ -23,6 +23,7 @@ import {
   revokeAccountDevice,
 } from '../lib/accountDevices';
 import { DeviceAuthError } from '../lib/auth';
+import { LaptopGlyph, PhoneGlyph } from '../components/Glyph';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'AccountDevices'>;
 
@@ -38,7 +39,10 @@ type Props = NativeStackScreenProps<RootStackParamList, 'AccountDevices'>;
  * than they intended or far more.
  */
 
-const KIND_GLYPH: Record<string, string> = { desktop: '💻', mobile: '📱' };
+/** Drawn, not an emoji. See `components/Glyph.tsx` for why. */
+function KindGlyph({ kind }: { kind: string }) {
+  return kind === 'mobile' ? <PhoneGlyph size={15} /> : <LaptopGlyph size={13} />;
+}
 
 function lastSeenLabel(device: AccountDevice): string {
   if (device.state === 'revoked') return 'removed';
@@ -192,7 +196,7 @@ export function AccountDevicesScreen({ route, navigation }: Props): React.JSX.El
     <View style={[styles.container, padding]} testID="account-devices">
       <Text style={styles.subtitle}>
         Every computer and phone signed in to your account. A computer appears here as soon as you
-        sign in on it — pairing it with a phone is a separate step, on Your laptops. Removing a
+        sign in on it. Pairing it with a phone is a separate step, on Your laptops. Removing a
         device here signs it out everywhere.
       </Text>
 
@@ -221,15 +225,22 @@ export function AccountDevicesScreen({ route, navigation }: Props): React.JSX.El
                   onSubmitEditing={() => void commitRename(item)}
                 />
               ) : (
-                <Text style={styles.cardName}>
-                  {KIND_GLYPH[item.kind] ?? ''} {item.name ?? `Unnamed ${item.kind}`}
-                  {item.isCurrentDevice ? (
-                    <Text testID="current-device" style={styles.thisDevice}>
-                      {' '}
-                      · this phone
-                    </Text>
-                  ) : null}
-                </Text>
+                /* The glyph sits BESIDE the name, not inside the text run. It
+                   used to be an emoji inline in the string, which put it on the
+                   text baseline at the font's own size; a drawn glyph is a box,
+                   so the row centres it against the name instead. */
+                <View style={styles.cardNameRow}>
+                  <KindGlyph kind={item.kind} />
+                  <Text style={styles.cardName}>
+                    {item.name ?? `Unnamed ${item.kind}`}
+                    {item.isCurrentDevice ? (
+                      <Text testID="current-device" style={styles.thisDevice}>
+                        {' '}
+                        · this phone
+                      </Text>
+                    ) : null}
+                  </Text>
+                </View>
               )}
               {/* When it was last used, then what it is running, then the id.
                   The id led this line until 2026-08-25, back when every row
@@ -368,6 +379,7 @@ const styles = StyleSheet.create({
   card: { backgroundColor: theme.panel, borderRadius: 14, padding: 16, gap: 10 },
   cardRevoked: { opacity: 0.55 },
   cardInfo: { gap: 3 },
+  cardNameRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   cardName: { color: theme.ink, fontSize: 16, fontWeight: '600' },
   thisDevice: { color: theme.muted, fontWeight: '400' },
   cardMeta: { color: theme.muted, fontSize: 13 },

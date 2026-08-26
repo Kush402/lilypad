@@ -713,7 +713,7 @@ export function ViewerScreen({ route, navigation }: Props) {
           </Pressable>
           <Text style={styles.stickyHint}>
             {zoomLock
-              ? 'Zoom lock: drag pans, pinch zooms — taps stay local'
+              ? 'Zoom lock: drag pans, pinch zooms, taps stay local'
               : 'Text mode trades frame rate for sharper detail'}
           </Text>
         </View>
@@ -899,9 +899,9 @@ export function ViewerScreen({ route, navigation }: Props) {
           </View>
           {hudExpanded && quality ? (
             <View style={styles.hud}>
-              <Text style={styles.hudText}>{quality.rttMs ?? '—'} ms</Text>
-              <Text style={styles.hudText}>{quality.bitrateKbps ?? '—'} kbps</Text>
-              <Text style={styles.hudText}>{quality.fps ?? '—'} fps</Text>
+              <Text style={styles.hudText}>{quality.rttMs ?? '--'} ms</Text>
+              <Text style={styles.hudText}>{quality.bitrateKbps ?? '--'} kbps</Text>
+              <Text style={styles.hudText}>{quality.fps ?? '--'} fps</Text>
             </View>
           ) : null}
         </Pressable>

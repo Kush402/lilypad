@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { IconClose } from './Icon';
 import { updater } from '../lib/tauri';
 import { useUpdater } from '../lib/useUpdater';
 
@@ -39,8 +40,8 @@ export function SoftwareUpdate({ variant }: { variant: 'banner' | 'panel' }) {
    * wrong place. */
   const failureText =
     failedStep === 'download'
-      ? `Couldn’t download the update — ${error}`
-      : `Couldn’t check for updates — ${error}`;
+      ? `Couldn’t download the update. ${error}`
+      : `Couldn’t check for updates. ${error}`;
   const busy = phase === 'downloading';
 
   const actions = (
@@ -103,7 +104,7 @@ export function SoftwareUpdate({ variant }: { variant: 'banner' | 'panel' }) {
             aria-label="Dismiss update notice"
             onClick={() => setDismissed(true)}
           >
-            ✕
+            <IconClose />
           </button>
         ) : null}
       </section>
@@ -126,7 +127,7 @@ export function SoftwareUpdate({ variant }: { variant: 'banner' | 'panel' }) {
 
       <div className="status-row">
         <span className="status-row__label">Current version</span>
-        <span className="status-row__value mono">{currentVersion ?? '—'}</span>
+        <span className="status-row__value mono">{currentVersion ?? 'unknown'}</span>
       </div>
 
       {phase === 'uptodate' ? (
@@ -138,7 +139,7 @@ export function SoftwareUpdate({ variant }: { variant: 'banner' | 'panel' }) {
           <p className="update__msg">
             {phase === 'ready' ? (
               <>
-                <strong>Version {newVersion}</strong> downloaded — restart to finish.
+                <strong>Version {newVersion}</strong> downloaded. Restart to finish.
               </>
             ) : (
               <>

@@ -151,7 +151,7 @@ export function AccountSignIn({ onChange, initialMode = 'signin' }: AccountSignI
             assumes otherwise stops at step 2 and wonders why their phone shows
             nothing. */}
         <p className="muted">
-          This computer is on your account. Pairing a phone is what lets it connect — that is the
+          This computer is on your account. Pairing a phone is what lets it connect, and that is the
           last step.
         </p>
         <div className="row">
@@ -206,7 +206,7 @@ export function AccountSignIn({ onChange, initialMode = 'signin' }: AccountSignI
             <p className="muted">
               This Mac leaves your account. Your paired phones stop being able to connect to it, and
               a session running right now ends. Signing back in here restores everything, including
-              the pairings — you will not need to scan a QR again.
+              the pairings, so you will not need to scan a QR again.
             </p>
             <div className="row">
               <button
@@ -397,8 +397,8 @@ export function AccountSignIn({ onChange, initialMode = 'signin' }: AccountSignI
 
       {mode === 'signup' ? (
         <p className="muted">
-          At least 12 characters. Length is the only rule — a phrase you can remember beats a short
-          password with symbols in it.
+          At least 12 characters. Length is the only rule, so a phrase you can remember beats a
+          short password with symbols in it.
         </p>
       ) : null}
 

@@ -78,7 +78,12 @@ body {
    * now the accent itself; the dark end is a shade of it rather than an
    * unrelated hex. */
   background: radial-gradient(circle at 35% 30%, var(--accent), #0f6b47);
+  /* The hairline rim is what gives the disc a defined edge. Without it the
+   * only thing at the boundary is a 24px shadow, so the bubble dissolves into
+   * whatever is behind it and the whole widget reads as slightly out of
+   * focus — most visibly on a light or busy desktop. */
   box-shadow:
+    0 0 0 0.5px rgba(0, 0, 0, 0.28),
     0 8px 24px rgba(0, 0, 0, 0.45),
     inset 0 1px 2px rgba(255, 255, 255, 0.25);
   display: grid;
@@ -110,16 +115,33 @@ body {
   /* Light rather than the accent green: at 38px on a green bubble, a green
      pad does not read. The icon can afford the tonal version; this cannot. */
   fill: #eafaf2;
-  filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.4));
+  /* NO `filter: drop-shadow()`. A CSS filter promotes the element to its own
+   * compositing layer, and WebKit rasterizes that layer at 1x before scaling it
+   * to the display's 2x — so the one shape with a crisp edge in the whole
+   * window was the one drawn soft. It is why the mark looked out of focus
+   * against a bubble that did not. The shadow was buying separation the light
+   * fill on a dark green already provides. */
+  shape-rendering: geometricPrecision;
 }
 .bubble__dot {
   position: absolute;
-  right: 8px;
-  top: 8px;
+  right: 7px;
+  top: 7px;
   width: 14px;
   height: 14px;
   border-radius: 50%;
-  border: 2px solid #0e1512;
+  /* A LIGHT rim, not a near-black one.
+   *
+   * Idle's colour is `--accent`, which is the same green as the light end of
+   * the bubble's own gradient — so the commonest state rendered as a dark ring
+   * with the bubble showing through the middle. It read as a hole punched in
+   * the widget rather than as a status light, which is what it looked like in
+   * the report that prompted this.
+   *
+   * The rim now separates the dot from the bubble instead of blending into it,
+   * and every state keeps its own colour inside. */
+  border: 2px solid rgba(255, 255, 255, 0.92);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
 }
 @keyframes pulse {
   50% {
@@ -578,6 +600,17 @@ body {
  * what draws the eye, and nothing here is asking for it. */
 .status-dot--off {
   background: var(--line);
+}
+
+/* Drawn icons, replacing the emoji and dingbats that used to sit in these
+ * places. See `Icon.tsx` for why. Aligned optically rather than on the text
+ * baseline: a 24px-grid glyph sits a little high against lowercase text. */
+.icon {
+  vertical-align: -0.145em;
+  flex: none;
+}
+.btn .icon {
+  margin-right: 0.35em;
 }
 .system-toggle {
   margin-top: 10px;

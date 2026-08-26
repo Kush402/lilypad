@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Lilypad — your Mac, on your phone</title>
+    <title>Lilypad: your Mac, on your phone</title>
     <meta
       name="description"
       content="Phone-first remote control for your Mac. At home it connects directly over your own network. Pair once with a QR code, reconnect forever."
@@ -19,7 +19,7 @@
          scripts/icons.py. -->
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="Lilypad" />
-    <meta property="og:title" content="Lilypad — your Mac, on your phone" />
+    <meta property="og:title" content="Lilypad: your Mac, on your phone" />
     <meta
       property="og:description"
       content="Phone-first remote control for your Mac. At home it connects directly over your own network. Pair once with a QR code, reconnect forever."
@@ -41,7 +41,7 @@
   <body>
     <a class="skip" href="#top">Skip to content</a>
     <header class="nav">
-      <a class="nav__brand" href="#top"><span aria-hidden="true">🪷</span> Lilypad</a>
+      <a class="nav__brand" href="#top"><svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 12 L20.25 7.71 A9.3 9.3 0 1 1 18.16 5.04 Z" /></svg> Lilypad</a>
       <nav class="nav__links" aria-label="Sections">
         <a href="#how">How it works</a>
         <a href="#security">Security</a>
@@ -59,15 +59,15 @@
         <h1>Your Mac, on your phone.</h1>
         <p class="hero__sub">
           Pair once with a QR code, then reconnect forever. At home, Lilypad connects
-          <strong>directly over your own network</strong> — no internet required.
+          <strong>directly over your own network</strong>, with no internet required.
         </p>
         <p class="hero__platforms"><span class="chip">macOS</span> <span class="chip">iOS</span></p>
         <p class="hero__note">
-          Plugged into a monitor? Lilypad shows any screen your Mac has — switch between them from
+          Plugged into a monitor? Lilypad shows any screen your Mac has. Switch between them from
           the phone, mid-session.
         </p>
         <p class="hero__note">
-          macOS build available now — <a href="#get">v0.1.16</a>, signed and notarized by Apple, so
+          macOS build available now: <a href="#get">v0.1.16</a>, signed and notarized by Apple, so
           it opens with no warning. iPhone is in TestFlight, by invitation while it is in beta.
         </p>
       </section>
@@ -99,14 +99,14 @@
               <p>
                 When a network blocks a direct connection, traffic is relayed, staying end-to-end
                 encrypted in transit (DTLS-SRTP) the whole way. The relay is live, and carries
-                traffic over UDP, TCP, and TLS on port 443 — so it still works on networks that
+                traffic over UDP, TCP, and TLS on port 443, so it still works on networks that
                 allow nothing but HTTPS.
               </p>
             </li>
           </ol>
           <p class="footnote">
             On the first two paths your screen never passes through our servers. Lilypad is built on
-            WebRTC — there is no custom video protocol.
+            WebRTC. There is no custom video protocol.
           </p>
         </div>
       </section>
@@ -119,8 +119,8 @@
               <h3>A password is not a screen</h3>
               <p>
                 Signing in puts a computer on your account, so you can see it and remove it. It does
-                not let anything reach it. A phone sees a screen only after pairing — scanning the
-                code that computer shows — so a stolen password is not a stolen laptop.
+                not let anything reach it. A phone sees a screen only after pairing, which means scanning the
+                code that computer shows. A stolen password is not a stolen laptop.
               </p>
             </article>
             <article>
@@ -140,7 +140,7 @@
             <article>
               <h3>Removing a device is immediate</h3>
               <p>
-                Remove one from your account and it loses access straight away — including a session
+                Remove one from your account and it loses access straight away, including a session
                 running at that moment. It does not wait for a token to expire.
               </p>
             </article>
@@ -152,14 +152,14 @@
         <div class="band__inner">
           <h2>Ask it to do things</h2>
           <p class="lede">
-            Ask is an assistant that drives your Mac. It runs <strong>on the Mac itself</strong> —
+            Ask is an assistant that drives your Mac. It runs <strong>on the Mac itself</strong>,
             not in our cloud.
           </p>
           <ul class="ticks">
             <li>It asks your phone before it does anything consequential.</li>
             <li>You can take over at any moment.</li>
             <li>
-              Bring your own API key — Anthropic, or any OpenAI-compatible endpoint. Your key stays
+              Bring your own API key from Anthropic, or any OpenAI-compatible endpoint. Your key stays
               in your Mac's keychain.
             </li>
           </ul>
@@ -184,7 +184,7 @@
                 <th scope="row">macOS</th>
                 <td>
                   <span class="tag tag--yes">Supported</span> Universal build, signed with a
-                  Developer ID and notarized by Apple — it opens with no warning
+                  Developer ID and notarized by Apple, so it opens with no warning
                 </td>
               </tr>
               <tr>
@@ -216,7 +216,7 @@
           <h2>Plans</h2>
           <p class="lede">
             <strong>Using Lilypad on your own network is always free.</strong> It costs us nothing
-            to run, so there is nothing to charge for — and that stays true whatever else changes.
+            to run, so there is nothing to charge for. That stays true whatever else changes.
             Everything the app does today is free; paid plans are planned around the only two things
             that cost real money: relayed minutes, and AI we pay for on your behalf.
           </p>
@@ -240,7 +240,7 @@
               <ul>
                 <li>Everything in Free</li>
                 <li>A larger relay allowance</li>
-                <li>Managed AI — no key of your own to supply</li>
+                <li>Managed AI, with no key of your own to supply</li>
                 <li>Premium models</li>
                 <li>Extended history</li>
                 <li>Priority support</li>
@@ -280,7 +280,7 @@
               <h3>Make an account</h3>
               <p>
                 On the Mac. Signing in is what puts that computer on your account, so you can see it
-                — and remove it — from your phone later. Do the same on the phone with the same
+                (and remove it) from your phone later. Do the same on the phone with the same
                 account.
               </p>
             </li>
@@ -296,7 +296,7 @@
               <h3>Pair your phone</h3>
               <p>
                 The Mac shows a code, the phone scans it. That pairing is what lets that phone reach
-                that Mac — being on the same account is not enough, which is the point. Once per
+                that Mac. Being on the same account is not enough, which is the point. Once per
                 phone; after that it reconnects on its own.
               </p>
             </li>
@@ -304,7 +304,7 @@
           <p class="footnote">
             Pair a second Mac the same way. Every computer and phone you sign in on appears under
             <strong>Your devices</strong>, and you can rename or remove any of them from your phone
-            — a removed device loses access immediately, including a session running at that moment.
+            A removed device loses access immediately, including a session running at that moment.
             Signing out on the Mac itself does the same thing from that end, and is reversible by
             signing back in. Ending a single pairing is <strong>Unpair</strong>, from either side,
             and leaves both devices on your account.
@@ -316,19 +316,19 @@
         <div class="band__inner">
           <h2>Get it</h2>
           <p class="lede">
-            <a href="/download/Lilypad.dmg">Download for macOS</a> — v0.1.16, universal, 20&nbsp;MB.
+            <a href="/download/Lilypad.dmg">Download for macOS</a>. v0.1.16, universal, 20&nbsp;MB.
           </p>
           <p>
             macOS ships as a universal build served from this site, and installed copies update
             themselves from it. It is
             <strong>signed with a Developer ID and notarized by Apple</strong>, and the disk image
-            carries its own stapled ticket — so it opens on a first double-click with no Gatekeeper
+            carries its own stapled ticket, so it opens on a first double-click with no Gatekeeper
             warning, nothing to approve in System Settings, and no need to be online for the check.
           </p>
           <p>
             <strong>The iPhone app ships through TestFlight, by invitation</strong> while it is in
             beta. There is no public App Store listing yet, so ask for an invite rather than looking
-            for it in the store — the Mac app on its own is half the product.
+            for it in the store. The Mac app on its own is half the product.
           </p>
           <p class="cta">
             <a class="btn btn--primary" href="/download/Lilypad.dmg">Download for macOS</a>
@@ -350,7 +350,7 @@
           <dl class="faq">
             <dt>Does my Mac have to be awake?</dt>
             <dd>
-              Yes — a sleeping Mac cannot be reached, and no remote-control app can change that.
+              Yes. A sleeping Mac cannot be reached, and no remote-control app can change that.
               Lilypad launches at login and reconnects by itself within seconds of the Mac waking,
               so you do not have to touch it.
             </dd>
@@ -365,20 +365,20 @@
             <dd>
               On your own network and on a direct connection it never passes through our servers at
               all. On the relayed path it does pass through, and stays end-to-end encrypted in
-              transit the whole way — we carry bytes we cannot read.
+              transit the whole way. We carry bytes we cannot read.
             </dd>
 
             <dt>Do I need an account?</dt>
             <dd>
               Yes. An account is what owns your devices, and it is the only place you can see them,
-              rename them, or take one away. Email and a password — no phone number, no third party
+              rename them, or take one away. Email and a password, with no phone number and no third party
               required.
             </dd>
 
             <dt>What if I lose my phone?</dt>
             <dd>
               Remove it from <strong>Your devices</strong> on any other device on your account. It
-              loses access immediately, including a session running at that moment — it does not
+              loses access immediately, including a session running at that moment. It does not
               wait for anything to expire.
             </dd>
 
@@ -386,20 +386,20 @@
             <dd>
               That Mac leaves your account, and leaves it properly: a session running at that moment
               ends, and your paired phones stop being able to reach it. Sign in again on that Mac
-              and everything comes back, pairings included — you will not need to scan a code a
+              and everything comes back, pairings included. You will not need to scan a code a
               second time. It is the right thing to do before you hand a Mac to somebody else.
             </dd>
 
             <dt>Can someone start a session without me knowing?</dt>
             <dd>
               A first pairing always needs Approve on the Mac. After that a paired phone can
-              reconnect on its own, which is the point of pairing — and you can turn that off per
+              reconnect on its own, which is the point of pairing. You can turn that off per
               phone, or unpair it, from the Mac.
             </dd>
 
             <dt>Is it really free?</dt>
             <dd>
-              Using Lilypad on your own network is free and stays free — it costs us nothing to run.
+              Using Lilypad on your own network is free and stays free, because it costs us nothing to run.
               Paid plans are planned only around the two things that cost real money: relayed
               minutes and AI we pay for. Nothing on this page is an offer.
             </dd>
@@ -419,7 +419,7 @@
     </main>
 
     <footer class="foot">
-      <p>🪷 Lilypad</p>
+      <p class="foot__brand"><svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 12 L20.25 7.71 A9.3 9.3 0 1 1 18.16 5.04 Z" /></svg> Lilypad</p>
       <p class="foot__legal">
         <a href="/privacy.html">Privacy</a> · <a href="/terms.html">Terms</a> ·
         <!--email_off--><a href="mailto:support@takedia.com">support@takedia.com</a><!--email_on-->

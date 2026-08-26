@@ -232,7 +232,12 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     let approve = MenuItem::with_id(app, "approve", "Approve", false, None::<&str>)?;
     let deny = MenuItem::with_id(app, "deny", "Deny", false, None::<&str>)?;
     let disconnect = MenuItem::with_id(app, "disconnect", "Disconnect", false, None::<&str>)?;
-    let panic = MenuItem::with_id(app, "panic", "⛔  Panic disconnect", false, None::<&str>)?;
+    // No "⛔" glyph. A native menu draws it in whatever emoji font the OS ships,
+    // in that font's own red, so it clashed with the menu's own text colour and
+    // changed shape between macOS versions. macOS menus do not carry icons on
+    // items like this; the words are the affordance, and "Panic disconnect" is
+    // already the loudest phrase in the menu.
+    let panic = MenuItem::with_id(app, "panic", "Panic disconnect", false, None::<&str>)?;
     // Ask AI, the two OS permissions and this Mac's account all live behind
     // this one item. Without it the ONLY route back to them was the dashboard's
     // own button, which meant a customer who had finished the first-run wizard

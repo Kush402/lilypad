@@ -18,13 +18,15 @@ import { theme } from '../theme';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Scanner'>;
 
-const PLATFORM_GLYPH: Record<string, string> = {
-  macos: '🍎',
-  windows: '🪟',
-  linux: '🐧',
-  ios: '📱',
-  android: '📱',
-};
+/**
+ * The platform glyphs are gone rather than redrawn.
+ *
+ * They were an Apple logo, a Windows pane and a penguin sitting in front of a
+ * line that already spelled the platform out in words. That is decoration on a
+ * screen whose whole job is telling someone exactly which computer they are
+ * about to give control of, and the Apple mark is somebody else's trademark
+ * besides. The name is the information.
+ */
 
 /**
  * QR scanner (react-native-vision-camera).
@@ -277,7 +279,6 @@ export function ScannerScreen({ navigation }: Props) {
               computer to an account permanently; pairing starts one session.
               A user must be able to tell which they just agreed to. */}
           <Text style={styles.cardTitle}>
-            {scanned.payload.platform ? `${PLATFORM_GLYPH[scanned.payload.platform] ?? ''} ` : ''}
             Add {scanned.payload.deviceName ?? 'this computer'} to your account?
           </Text>
           <Text style={styles.cardMeta}>
@@ -319,7 +320,6 @@ export function ScannerScreen({ navigation }: Props) {
       ) : (
         <View style={styles.card} testID="pair-confirm">
           <Text style={styles.cardTitle}>
-            {scanned.payload.platform ? `${PLATFORM_GLYPH[scanned.payload.platform] ?? ''} ` : ''}
             Pair with {scanned.payload.deviceName ?? 'this laptop'}?
           </Text>
           {error ? <Text style={styles.error}>{error.message}</Text> : null}

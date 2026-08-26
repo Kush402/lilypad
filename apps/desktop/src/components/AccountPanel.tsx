@@ -128,7 +128,7 @@ export function AccountPanel({ onLinked }: AccountPanelProps = {}) {
         <p className="muted">Checking…</p>
       ) : link.state === 'linked' ? (
         <p className="muted" data-testid="link-state-linked">
-          <strong>On your account</strong> — you can see and remove this computer from your phone.
+          <strong>On your account.</strong> You can see and remove this computer from your phone.
         </p>
       ) : link.state === 'no_identity' ? (
         // A dead end until 2026-08-22, and reachable by accident: this is what
@@ -163,10 +163,10 @@ export function AccountPanel({ onLinked }: AccountPanelProps = {}) {
         // already on somebody else's account. Say what is true and offer the
         // one thing that still works.
         <p className="muted" data-testid="link-state-unlinked">
-          <strong>Not on your account</strong> —{' '}
+          <strong>Not on your account.</strong>{' '}
           {link.state === 'revoked'
-            ? 'this computer was removed from the account. Add it again below to restore it.'
-            : 'signing in should have added this computer. It didn’t, so it can’t pair a phone yet — add it from your phone below.'}
+            ? 'This computer was removed from the account. Add it again below to restore it.'
+            : 'Signing in should have added this computer. It didn’t, so it can’t pair a phone yet. Add it from your phone below.'}
         </p>
       )}
 

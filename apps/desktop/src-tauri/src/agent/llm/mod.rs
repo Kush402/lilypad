@@ -242,8 +242,8 @@ pub(crate) fn provider_error_message(body: &serde_json::Value) -> String {
 
 /// User-facing guidance when no provider is configured. Lives here (provider
 /// land) so the engine never has to name a vendor.
-pub const NOT_CONFIGURED_MESSAGE: &str = "No AI provider is configured on the desktop — \
-open Lilypad's Setup window to add one (or set LILYPAD_ANTHROPIC_API_KEY / \
+pub const NOT_CONFIGURED_MESSAGE: &str = "No AI provider is configured on the desktop. \
+Open Lilypad Settings on the Mac to add one (or set LILYPAD_ANTHROPIC_API_KEY / \
 LILYPAD_OPENAI_API_KEY for a dev override).";
 
 /// Dispatch wrapper so the engine can hold "whichever provider is configured"

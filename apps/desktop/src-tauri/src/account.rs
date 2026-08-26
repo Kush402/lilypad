@@ -356,7 +356,7 @@ impl Account {
         match response.status().as_u16() {
             200 => {}
             400 => bail!("Type the email address on this account to confirm."),
-            401 | 404 => bail!("That account could not be deleted — sign in again."),
+            401 | 404 => bail!("That account could not be deleted. Sign in again."),
             _ => bail!("That account could not be deleted."),
         }
 

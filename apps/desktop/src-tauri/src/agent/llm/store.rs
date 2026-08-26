@@ -109,7 +109,7 @@ fn quote(value: &str) -> String {
 fn reject_control_characters(api_key: &str) -> Result<()> {
     if api_key.chars().any(char::is_control) {
         anyhow::bail!(
-            "That key has a line break or control character in it — copy just the key itself and try again."
+            "That key has a line break or control character in it. Copy just the key itself and try again."
         );
     }
     Ok(())

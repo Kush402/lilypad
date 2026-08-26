@@ -215,7 +215,7 @@ export function SignInScreen({ apiBaseUrl, onSignedIn }: SignInScreenProps): Rea
           that being on the account is not the same as being reachable. */}
       <Text style={styles.subtitle}>
         Signing in puts this phone on your account, alongside every computer you sign in on. Pairing
-        with one — by scanning the code it shows — is what lets you see its screen.
+        with one, by scanning the code it shows, is what lets you see its screen.
       </Text>
 
       {/* Which server this is about to create an account on.
@@ -293,7 +293,7 @@ export function SignInScreen({ apiBaseUrl, onSignedIn }: SignInScreenProps): Rea
             editable={!disabled}
           />
           <Text style={styles.hint}>
-            At least 12 characters. Length is the only rule — a phrase you can remember beats a
+            At least 12 characters. Length is the only rule, so a phrase you can remember beats a
             short password with symbols in it.
           </Text>
           <Primary
@@ -361,7 +361,7 @@ export function SignInScreen({ apiBaseUrl, onSignedIn }: SignInScreenProps): Rea
                nowhere to go, and neither app named a human anywhere. Shown
                only in the state where self-service recovery does not exist. */
             <Text testID="support-address" style={styles.hint}>
-              Forgotten your password? Email support@takedia.com — password reset by email is not
+              Forgotten your password? Email support@takedia.com. Password reset by email is not
               available on this server yet.
             </Text>
           )}

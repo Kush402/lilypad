@@ -218,7 +218,7 @@ describe('Control', () => {
     render(<Control />);
 
     screen.getByText('Disconnect').click();
-    screen.getByText('⛔ Panic').click();
+    screen.getByRole('button', { name: 'Panic' }).click();
     expect(api.disconnect).toHaveBeenCalled();
     expect(api.panic).toHaveBeenCalled();
   });
@@ -228,7 +228,7 @@ describe('Control', () => {
     render(<Control />);
 
     screen.getByText('Disconnect').click();
-    screen.getByText('⛔ Panic').click();
+    screen.getByRole('button', { name: 'Panic' }).click();
     expect(api.disconnect).toHaveBeenCalled();
     expect(api.panic).toHaveBeenCalled();
   });

@@ -73,7 +73,7 @@ async function request(
 function deviceListFailure(status: number, what: 'devices' | 'laptops'): string {
   if (status === 429) return 'Too many requests just now. Wait a moment, then try again.';
   if (status >= 500)
-    return `Lilypad’s server is having trouble. Your ${what} are safe — try again in a moment.`;
+    return `Lilypad’s server is having trouble. Your ${what} are safe. Try again in a moment.`;
   return `Could not load your ${what}. Check your connection and try again.`;
 }
 

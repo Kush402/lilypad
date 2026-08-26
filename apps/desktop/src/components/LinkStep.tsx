@@ -30,8 +30,8 @@ export function LinkStep({ signedIn, onLinked }: { signedIn: boolean; onLinked?:
     <section className="control__account card" data-testid="link-step-locked">
       <h2 className="section-title">This computer</h2>
       <p className="muted">
-        Sign in above first. Signing in is what puts this Mac on your account — there has to be an
-        account on this Mac to put it on.
+        Sign in above first. Signing in is what puts this Mac on your account, and there has to be
+        an account on this Mac to put it on.
       </p>
     </section>
   );

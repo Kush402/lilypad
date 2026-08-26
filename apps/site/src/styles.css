@@ -55,6 +55,32 @@ a {
   margin: 0 auto;
   padding: 20px 24px;
 }
+/* The product's own mark, replacing a lotus emoji.
+ *
+ * An emoji is drawn by whichever font the visitor's OS ships: it changed shape
+ * between platforms, carried its own colours, and matched nothing else in the
+ * product, least of all the app icon the visitor is about to install. Same
+ * geometry as the desktop bubble and `scripts/icons.py`, so the first thing on
+ * the page is the same shape as the thing in their dock.
+ *
+ * `currentColor` is what makes it belong in both the nav and the footer without
+ * a second rule, and in both colour schemes. */
+.brand-mark {
+  width: 1.15em;
+  height: 1.15em;
+  fill: currentColor;
+  vertical-align: -0.18em;
+}
+.foot__brand {
+  display: flex;
+  align-items: center;
+  gap: 0.4em;
+  justify-content: center;
+}
+.foot__brand .brand-mark {
+  vertical-align: baseline;
+}
+
 .nav__brand {
   font-weight: 700;
   font-size: 18px;

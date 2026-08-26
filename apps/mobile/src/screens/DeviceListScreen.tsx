@@ -16,6 +16,7 @@ import { requestConnect, requestUnpair } from '../lib/api';
 import { toAppError } from '../lib/errors';
 import { useSession } from '../lib/sessionContext';
 import { listMyPairs } from '../lib/accountDevices';
+import { LaptopGlyph } from '../components/Glyph';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Devices'>;
 
@@ -131,7 +132,7 @@ export function DeviceListScreen({ navigation }: Props) {
         // actually fixes it, not just "try again".
         const message =
           err.code === 'server_error' || err.code === 'network_unreachable'
-            ? `${err.message}\n\nIf this keeps happening, the laptop's server address may have changed — scan its QR code once to refresh it.`
+            ? `${err.message}\n\nIf this keeps happening, the laptop's server address may have changed. Scan its QR code once to refresh it.`
             : err.message;
         Alert.alert(pair.name ?? 'Laptop', message);
       } finally {
@@ -168,7 +169,7 @@ export function DeviceListScreen({ navigation }: Props) {
   const confirmSignOut = useCallback(() => {
     Alert.alert(
       'Sign out?',
-      'Your pairings end — on this phone and on the laptops. This phone stays on your account until you remove it from "Your devices", and you can pair again by scanning each laptop’s code.',
+      'Your pairings end, on this phone and on the laptops. This phone stays on your account until you remove it from "Your devices", and you can pair again by scanning each laptop’s code.',
       [
         { text: 'Cancel', style: 'cancel' },
         { text: 'Sign out', style: 'destructive', onPress: () => void signOut() },
@@ -190,7 +191,9 @@ export function DeviceListScreen({ navigation }: Props) {
     >
       {pairs.length === 0 ? (
         <View style={styles.empty}>
-          <Text style={styles.emptyIcon}>💻</Text>
+          <View style={styles.emptyIcon}>
+            <LaptopGlyph size={34} />
+          </View>
           <Text style={styles.emptyTitle}>No paired laptops yet</Text>
           {/* The distinction a first-time customer trips on. Signing in on a
               Mac puts it on the account, so it is already in "Your devices" —
@@ -198,9 +201,9 @@ export function DeviceListScreen({ navigation }: Props) {
               otherwise reads as a bug rather than as two different questions.
               Say which is which before they go looking. */}
           <Text style={styles.emptyBody}>
-            Signing in on a computer puts it on your account — see them under Your devices. Pairing
-            is the separate step that lets THIS phone see one. On the laptop: click the Lilypad
-            bubble to show a QR code, then scan it here. Once per laptop.
+            Signing in on a computer puts it on your account, and you can see them under Your
+            devices. Pairing is the separate step that lets THIS phone see one. On the laptop: click
+            the Lilypad bubble to show a QR code, then scan it here. Once per laptop.
           </Text>
         </View>
       ) : (
@@ -300,7 +303,7 @@ export function DeviceListScreen({ navigation }: Props) {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: theme.bg, justifyContent: 'space-between' },
   empty: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 10 },
-  emptyIcon: { fontSize: 52 },
+  emptyIcon: { marginBottom: 4, opacity: 0.7 },
   emptyTitle: { color: theme.ink, fontSize: 18, fontWeight: '600' },
   emptyBody: { color: theme.muted, textAlign: 'center', paddingHorizontal: 20 },
   list: { gap: 12, paddingBottom: 16 },

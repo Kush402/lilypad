@@ -10,6 +10,7 @@ import { useAppState } from '../lib/useAppState';
 import { useLiveResource } from '../lib/useLiveResource';
 import { STATUS_LABEL } from '../lib/status';
 import { SoftwareUpdate } from './SoftwareUpdate';
+import { IconPanic } from './Icon';
 import { AccountSignIn } from './AccountSignIn';
 import { LinkStep } from './LinkStep';
 
@@ -139,7 +140,7 @@ export function Control() {
               busySession
                 ? 'Disconnect the current session to pair a new device'
                 : !pairable
-                  ? 'This computer isn’t on your account yet — sign in first'
+                  ? 'This computer isn’t on your account yet. Sign in first'
                   : 'Pair a new device'
             }
             aria-label="Pair a new device"
@@ -186,7 +187,7 @@ export function Control() {
             <input type="checkbox" checked={trust} onChange={(e) => setTrust(e.target.checked)} />
             <span>
               Keep this phone paired{' '}
-              <span className="muted">— it reconnects later without scanning again</span>
+              <span className="muted">so it reconnects later without scanning again</span>
             </span>
           </label>
           <div className="row">
@@ -210,7 +211,7 @@ export function Control() {
               Disconnect
             </button>
             <button className="btn btn--danger" onClick={() => void api.panic()}>
-              ⛔ Panic
+              <IconPanic /> Panic
             </button>
           </div>
         </section>
@@ -224,7 +225,7 @@ export function Control() {
               Disconnect
             </button>
             <button className="btn btn--danger" onClick={() => void api.panic()}>
-              ⛔ Panic
+              <IconPanic /> Panic
             </button>
           </div>
         </section>
@@ -278,7 +279,7 @@ function Reachability({ presence, linked }: { presence: PresenceDto | null; link
     },
     unreachable: {
       title: 'Your phone can’t reach this Mac',
-      body: 'This Mac can’t reach Lilypad’s server. Check its internet connection — the phone will work again on its own once it’s back.',
+      body: 'This Mac can’t reach Lilypad’s server. Check its internet connection. The phone will work again on its own once it’s back.',
     },
     refused: {
       title: 'Your phone can’t reach this Mac',
@@ -286,7 +287,7 @@ function Reachability({ presence, linked }: { presence: PresenceDto | null; link
     },
     no_identity: {
       title: 'Your phone can’t reach this Mac',
-      body: 'This Mac can’t prove who it is — macOS may have denied Lilypad access to the keychain. Allow it and this will clear on its own.',
+      body: 'This Mac can’t prove who it is. macOS may have denied Lilypad access to the keychain. Allow it and this will clear on its own.',
     },
   };
   const copy = COPY[presence.state];
@@ -445,7 +446,7 @@ function TrustedDevices({ linked }: { linked: boolean }) {
       .then(refresh)
       .catch(() => {
         setActionError(
-          'Couldn’t change that setting — Lilypad couldn’t be reached. It is unchanged.',
+          'Couldn’t change that setting. Lilypad couldn’t be reached, so it is unchanged.',
         );
         refresh();
       });
@@ -459,7 +460,7 @@ function TrustedDevices({ linked }: { linked: boolean }) {
       .then(refresh)
       .catch(() => {
         setActionError(
-          `Couldn’t remove ${pair.displayName ?? 'that phone'} — Lilypad couldn’t be reached, and it still has access. Try again.`,
+          `Couldn’t remove ${pair.displayName ?? 'that phone'}. Lilypad couldn’t be reached, and it still has access. Try again.`,
         );
         refresh();
       });
@@ -495,7 +496,7 @@ function TrustedDevices({ linked }: { linked: boolean }) {
       ) : null}
       {linked && pairs !== null && pairs.length === 0 ? (
         <p className="muted">
-          No phones paired yet. Show the pairing code once and scan it — after that the phone
+          No phones paired yet. Show the pairing code once and scan it. After that the phone
           reconnects on its own.
         </p>
       ) : null}
@@ -696,7 +697,8 @@ function SystemPanel({ backendUrl }: { backendUrl: string | null }) {
           onChange={(e) => setLogin(e.target.checked)}
         />
         <span>
-          Launch at login <span className="muted">— stay ready for your paired phones</span>
+          Launch at login{' '}
+          <span className="muted">so this Mac stays ready for your paired phones</span>
         </span>
       </label>
 
@@ -721,7 +723,7 @@ function SystemPanel({ backendUrl }: { backendUrl: string | null }) {
         />
         <span>
           Show the floating bubble{' '}
-          <span className="muted">— the menu bar icon still opens everything</span>
+          <span className="muted">The menu bar icon still opens everything</span>
         </span>
       </label>
     </section>
