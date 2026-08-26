@@ -63,11 +63,16 @@ describe('Setup', () => {
       if (cmd === 'get_link_state') return { state: 'unlinked' };
       return undefined;
     });
+    // Keyed on the event NAME. This window listens to two events now —
+    // `lilypad://permission` for the live TCC poll and `lilypad://account`
+    // for sign-in that happened in the other window — and a double that keeps
+    // only the last handler registered hands `eventHandler` to whichever
+    // effect ran second, so firing a permission update did nothing.
     vi.mocked(listen).mockImplementation((async (
-      _name: string,
+      name: string,
       handler: (e: { payload: unknown }) => void,
     ) => {
-      eventHandler = handler;
+      if (name === 'lilypad://permission') eventHandler = handler;
       return vi.fn();
     }) as unknown as typeof listen);
   });
@@ -83,13 +88,19 @@ describe('Setup', () => {
     render(<Setup />);
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('get_permission_status'));
 
-    // `AccountSignIn` renders its own h2, so filter to the numbered steps.
+    // The account card carries its own step number now (`AccountSignInProps.step`)
+    // rather than sitting under a second heading that repeated the words — so
+    // step 1 is whatever that card is currently headed, which depends on
+    // whether anyone is signed in yet.
     const steps = screen
       .getAllByRole('heading', { level: 2 })
       .map((h) => h.textContent ?? '')
       .filter((text) => /^\d+ · /.test(text));
-    expect(steps[0]).toBe('1 · Your account');
+    expect(steps[0]).toBe('1 · Create your account');
     expect(steps[1]).toBe('2 · Permissions');
+    // And exactly one heading for it. Two ("1 · Your account" then "Your
+    // account", one line apart) read as two sections about the same thing.
+    expect(steps.filter((text) => text.startsWith('1 · '))).toHaveLength(1);
   });
 
   /**
@@ -205,7 +216,16 @@ describe('Setup', () => {
     await waitFor(() => expect(screen.getAllByText('Granted')).toHaveLength(1));
   });
 
-  it('shows a Done button once both permissions are granted, which closes the window', async () => {
+  /**
+   * The end of the wizard hands the customer the dashboard.
+   *
+   * It used to say "Done" and close the window, which left a first-run user
+   * looking at their own desktop with the app they had just set up nowhere in
+   * sight. The close still happens — it is what makes the next open of this
+   * window re-decide `mode`, so a finished wizard returns as Settings — but it
+   * is now the second half of an act whose first half goes somewhere.
+   */
+  it('ends the wizard by opening the dashboard, and closes itself behind it', async () => {
     const closeMock = vi.fn().mockResolvedValue(undefined);
     vi.mocked(getCurrentWindow).mockReturnValue({ close: closeMock } as never);
 
@@ -214,8 +234,9 @@ describe('Setup', () => {
 
     grantAll(eventHandler);
 
-    fireEvent.click(await screen.findByText('Done'));
-    expect(closeMock).toHaveBeenCalled();
+    fireEvent.click(await screen.findByText('Open Lilypad'));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('show_control_window'));
+    await waitFor(() => expect(closeMock).toHaveBeenCalled());
   });
 
   // ── First run as a whole (P1) ───────────────────────────────────────────
@@ -492,11 +513,12 @@ describe('Setup — wizard or settings', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     eventHandler = undefined;
+    // Keyed on the name, for the reason the first suite's double explains.
     vi.mocked(listen).mockImplementation((async (
-      _name: string,
+      name: string,
       handler: (e: { payload: unknown }) => void,
     ) => {
-      eventHandler = handler;
+      if (name === 'lilypad://permission') eventHandler = handler;
       return vi.fn();
     }) as unknown as typeof listen);
     vi.mocked(getCurrentWindow).mockReturnValue({

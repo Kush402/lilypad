@@ -8,6 +8,7 @@ import {
 } from '../lib/tauri';
 import { useAppState } from '../lib/useAppState';
 import { useLiveResource } from '../lib/useLiveResource';
+import { useTauriEvent } from '../lib/useTauriEvent';
 import { STATUS_LABEL } from '../lib/status';
 import { SoftwareUpdate } from './SoftwareUpdate';
 import { IconPanic } from './Icon';
@@ -106,8 +107,13 @@ export function Control() {
   // three minutes before linking, stopping the second it completed. Nothing was
   // learned by any of them: only `AccountPanel` can cause this transition, and
   // it already polls for exactly the window in which one is possible.
+  //
+  // The trigger is the account event rather than a mount-only read: sign-in
+  // can happen in the OTHER window (Settings renders the same form), and a
+  // dashboard that only read this when it opened would keep offering to link
+  // a Mac that is already linked.
   const refreshLink = link.refresh;
-  useEffect(refreshLink, [refreshLink]);
+  useTauriEvent('lilypad://account', refreshLink);
 
   /** Sign-in puts this Mac on the account (ADR-0015), so the card below is
    * stale the moment this fires. Memoised for the reason spelled out in
@@ -239,7 +245,9 @@ export function Control() {
           adopts this machine onto whichever account the scanning PHONE holds,
           which is the last step, and offering it to someone who has not said
           who they are puts it before the first. */}
-      <AccountSignIn onChange={onAccountChange} />
+      {/* `summary`: the dashboard names who is signed in and offers a way out
+          of the account, and sends everything irreversible to Settings. */}
+      <AccountSignIn onChange={onAccountChange} variant="summary" />
       <LinkStep signedIn={account?.signedIn ?? false} onLinked={refreshLink} />
       <Reachability presence={state?.presence ?? null} linked={link.value?.state === 'linked'} />
       <TrustedDevices linked={link.value?.state === 'linked'} />

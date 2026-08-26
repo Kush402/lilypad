@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, type AccountStateDto } from '../lib/tauri';
+import { useTauriEvent } from '../lib/useTauriEvent';
 
 /**
  * Who is signed in on this Mac
@@ -41,9 +42,44 @@ export interface AccountSignInProps {
    * Both buttons stay on screen either way, so neither audience is trapped.
    */
   initialMode?: Mode;
+  /**
+   * How much of the account is manageable from here.
+   *
+   * `'settings'` (default) is the full surface: sign out, and permanently
+   * delete. `'summary'` is what the dashboard gets — who is signed in, a way
+   * to sign out, and a door to Settings for everything else.
+   *
+   * The split exists because the dashboard is a live status surface. It is the
+   * window that is open while a phone is connected, and it carried a
+   * **Delete account** button the whole time: the most destructive control in
+   * the product, permanently on screen, one row under the session that was
+   * running. Irreversible acts belong where you go on purpose, not where you
+   * watch what is happening.
+   *
+   * Signed OUT, both variants render the same full form. A dashboard that
+   * cannot sign anyone in is a dead end, and sending someone to another window
+   * to do the one thing blocking them is the kind of hole this pass exists to
+   * close.
+   */
+  variant?: 'settings' | 'summary';
+  /**
+   * A step number to prefix the card's heading with, in the first-run wizard.
+   *
+   * The wizard used to draw its own `<h2>1 · Your account</h2>` immediately
+   * above this card, which draws its own heading too — so a signed-in customer
+   * read "1 · Your account" and then "Your account", one line apart, as two
+   * separate sections. The number belongs to the same heading as the words.
+   */
+  step?: number;
 }
 
-export function AccountSignIn({ onChange, initialMode = 'signin' }: AccountSignInProps = {}) {
+export function AccountSignIn({
+  onChange,
+  initialMode = 'signin',
+  variant = 'settings',
+  step,
+}: AccountSignInProps = {}) {
+  const numbered = (heading: string) => (step === undefined ? heading : `${step} · ${heading}`);
   const [account, setAccount] = useState<AccountStateDto | null>(null);
   const [mode, setMode] = useState<Mode>(initialMode);
   const [name, setName] = useState('');
@@ -87,10 +123,28 @@ export function AccountSignIn({ onChange, initialMode = 'signin' }: AccountSignI
 
   const apply = useCallback((next: AccountStateDto) => {
     setAccount(next);
+    // A sign-out or a delete that happened in ANOTHER window arrives here as
+    // an event, with this window still showing whichever confirmation the
+    // customer had opened. Collapse them: a "Permanently delete" button left
+    // on screen after the account is already gone is a button that answers
+    // with a server error instead of doing nothing.
+    if (!next.signedIn) {
+      setDeleting(false);
+      setSigningOut(false);
+      setDeleteEmail('');
+      setDeletePassword('');
+    }
     onChangeRef.current?.(next);
   }, []);
 
-  useEffect(() => {
+  /**
+   * Re-read whenever the backend says the account changed — see
+   * `useTauriEvent`. This used to be a mount-only read, which is why the
+   * dashboard could say "Signed in as …" while Settings, opened earlier and
+   * only hidden since, still showed the sign-in form. Both windows read the
+   * same keychain; only one of them had read it recently.
+   */
+  const reload = useCallback(() => {
     api
       .getAccountState()
       .then(apply)
@@ -98,6 +152,7 @@ export function AccountSignIn({ onChange, initialMode = 'signin' }: AccountSignI
         /* not running inside Tauri */
       });
   }, [apply]);
+  useTauriEvent('lilypad://account', reload);
 
   /**
    * Whether the backend can send mail. `true` until told otherwise, so the
@@ -142,19 +197,26 @@ export function AccountSignIn({ onChange, initialMode = 'signin' }: AccountSignI
   if (account?.signedIn) {
     return (
       <section className="control__account card" data-testid="account-signed-in">
-        <h2 className="section-title">Your account</h2>
+        <h2 className="section-title">{numbered('Your account')}</h2>
         <p className="muted">
           Signed in as <strong>{account.email}</strong>.
         </p>
-        {/* Says what signing in DID do, and draws the one line that still
-            matters: on the account is not the same as reachable. Someone who
-            assumes otherwise stops at step 2 and wonders why their phone shows
-            nothing. */}
-        <p className="muted">
-          This computer is on your account. Pairing a phone is what lets it connect, and that is the
-          last step.
-        </p>
+        {/* Whether this computer is ON the account is deliberately NOT claimed
+            here. This card knows there is a signed-in session; it does not know
+            that the enrollment behind it succeeded, and it used to assert it
+            anyway — one line above `AccountPanel`, which asks the backend and
+            says the same thing for real. Two cards, one fact, and the one that
+            could be wrong was the one written first. */}
         <div className="row">
+          {variant === 'summary' && !signingOut ? (
+            <button
+              className="btn"
+              data-testid="account-open-settings"
+              onClick={() => void api.showSetup()}
+            >
+              Account settings
+            </button>
+          ) : null}
           {signingOut ? null : (
             <button
               className="btn"
@@ -168,9 +230,11 @@ export function AccountSignIn({ onChange, initialMode = 'signin' }: AccountSignI
               Sign out
             </button>
           )}
-          {deleting || signingOut ? null : (
+          {/* Settings only — see `variant`. */}
+          {variant === 'settings' && !deleting && !signingOut ? (
             <button
               className="btn btn--danger"
+              data-testid="account-delete-start"
               disabled={busy}
               onClick={() => {
                 setDeleting(true);
@@ -179,7 +243,7 @@ export function AccountSignIn({ onChange, initialMode = 'signin' }: AccountSignI
             >
               Delete account
             </button>
-          )}
+          ) : null}
         </div>
 
         {/*
@@ -316,7 +380,7 @@ export function AccountSignIn({ onChange, initialMode = 'signin' }: AccountSignI
   return (
     <section className="control__account card" data-testid="account-sign-in">
       <h2 className="section-title">
-        {mode === 'signup' ? 'Create your account' : 'Sign in to Lilypad'}
+        {numbered(mode === 'signup' ? 'Create your account' : 'Sign in to Lilypad')}
       </h2>
       {/* This said "Adding this computer to your account is a separate step
           below, and it takes your phone" — true under ADR-0010, and left behind

@@ -1276,7 +1276,24 @@ fn account_client(state: &State<'_, SharedState>) -> account::Account {
 /// remove: signed in on a Mac that is on no account, with no indication why.
 /// The likeliest cause is a machine already owned by a different account, whose
 /// remedy the server spells out.
+/// Tell every window the account changed.
+///
+/// Each window is its own webview holding its own React state, and
+/// `open_window` hides the others rather than closing them — so a window that
+/// read the account once keeps that answer until it is remounted, which may be
+/// never. Without this event, signing in on the dashboard left Settings
+/// showing a sign-in form for the account it was already signed in to. One
+/// product cannot hold two answers to "who is signed in".
+///
+/// `app.emit` reaches every window, including hidden ones, which is the whole
+/// point: the window that is wrong is by definition the one nobody is looking
+/// at yet.
+fn announce_account(app: &AppHandle) {
+    let _ = app.emit("lilypad://account", ());
+}
+
 async fn sign_in_and_enrol(
+    app: &AppHandle,
     state: &State<'_, SharedState>,
     auth: &State<'_, Arc<DesktopAuth>>,
     signed_in: account::SignedIn,
@@ -1334,13 +1351,23 @@ async fn sign_in_and_enrol(
         if let Err(rollback) = account::Account::sign_out() {
             log::warn!(target: "lilypad::account", "could not roll back a failed sign-in: {rollback}");
         }
+        // Announced on the failure path too. The rollback above is itself a
+        // change of account state, and a window that had optimistically drawn
+        // the signed-in card needs to hear about it.
+        announce_account(app);
         return Err(e.to_string());
     }
+    // Ownership moved with the sign-in (ADR-0015), so the tray's pairing item
+    // is stale as well — and it is rebuilt synchronously from `link_state`,
+    // which only `get_link_state` writes. The event makes every open window
+    // re-read it, and that read is what syncs the tray.
+    announce_account(app);
     Ok(signed_in.state)
 }
 
 #[tauri::command]
 pub async fn account_sign_up(
+    app: AppHandle,
     state: State<'_, SharedState>,
     auth: State<'_, Arc<DesktopAuth>>,
     name: String,
@@ -1351,11 +1378,12 @@ pub async fn account_sign_up(
         .sign_up(&name, &email, &password)
         .await
         .map_err(|e| e.to_string())?;
-    sign_in_and_enrol(&state, &auth, signed_in).await
+    sign_in_and_enrol(&app, &state, &auth, signed_in).await
 }
 
 #[tauri::command]
 pub async fn account_sign_in(
+    app: AppHandle,
     state: State<'_, SharedState>,
     auth: State<'_, Arc<DesktopAuth>>,
     email: String,
@@ -1365,7 +1393,7 @@ pub async fn account_sign_in(
         .sign_in(&email, &password)
         .await
         .map_err(|e| e.to_string())?;
-    sign_in_and_enrol(&state, &auth, signed_in).await
+    sign_in_and_enrol(&app, &state, &auth, signed_in).await
 }
 
 /// Whether the backend can send mail, so the dashboard can stop offering a
@@ -1389,6 +1417,7 @@ pub async fn account_request_password_reset(
 
 #[tauri::command]
 pub async fn account_confirm_password_reset(
+    app: AppHandle,
     state: State<'_, SharedState>,
     auth: State<'_, Arc<DesktopAuth>>,
     email: String,
@@ -1399,7 +1428,7 @@ pub async fn account_confirm_password_reset(
         .confirm_password_reset(&email, &code, &password)
         .await
         .map_err(|e| e.to_string())?;
-    sign_in_and_enrol(&state, &auth, signed_in).await
+    sign_in_and_enrol(&app, &state, &auth, signed_in).await
 }
 
 /// Delete the account permanently — every device, every pairing, every session.
@@ -1409,6 +1438,7 @@ pub async fn account_confirm_password_reset(
 /// and passes the user's typed address to the server untouched.
 #[tauri::command]
 pub async fn account_delete(
+    app: AppHandle,
     state: State<'_, SharedState>,
     confirm_email: String,
     password: String,
@@ -1416,7 +1446,9 @@ pub async fn account_delete(
     account_client(&state)
         .delete(&confirm_email, &password)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    announce_account(&app);
+    Ok(())
 }
 
 /// Sign out of this Mac — and take the Mac off the account with it.
@@ -1461,6 +1493,7 @@ pub async fn account_sign_out(
         s.link_state = LinkState::Unlinked;
     }
     crate::sync_tray_menu(&app);
+    announce_account(&app);
     Ok(())
 }
 

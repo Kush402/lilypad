@@ -1,7 +1,6 @@
-import { useEffect } from 'react';
-import { listen } from '@tauri-apps/api/event';
 import { api, type AppStateDto } from './tauri';
 import { useLiveResource } from './useLiveResource';
+import { useTauriEvent } from './useTauriEvent';
 
 /**
  * The single source of truth for `AppStateDto` in every window, refreshed
@@ -23,26 +22,6 @@ import { useLiveResource } from './useLiveResource';
  */
 export function useAppState(): AppStateDto | null {
   const { value, refresh } = useLiveResource(api.getState);
-
-  useEffect(() => {
-    refresh();
-    let alive = true;
-    let unlisten: (() => void) | undefined;
-    listen('lilypad://session', () => refresh())
-      .then((fn) => {
-        // Effect may have cleaned up (fast unmount) before the listener
-        // finished attaching — tear it down immediately instead of leaking.
-        if (alive) unlisten = fn;
-        else fn();
-      })
-      .catch(() => {
-        /* not running inside Tauri (e.g. a plain `vite` preview) */
-      });
-    return () => {
-      alive = false;
-      unlisten?.();
-    };
-  }, [refresh]);
-
+  useTauriEvent('lilypad://session', refresh);
   return value;
 }

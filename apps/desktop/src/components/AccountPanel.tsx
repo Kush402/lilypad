@@ -128,7 +128,8 @@ export function AccountPanel({ onLinked }: AccountPanelProps = {}) {
         <p className="muted">Checking…</p>
       ) : link.state === 'linked' ? (
         <p className="muted" data-testid="link-state-linked">
-          <strong>On your account.</strong> You can see and remove this computer from your phone.
+          <strong>On your account.</strong> Pairing a phone is what lets it connect, and that is the
+          last step. You can see and remove this computer from your phone.
         </p>
       ) : link.state === 'no_identity' ? (
         // A dead end until 2026-08-22, and reachable by accident: this is what

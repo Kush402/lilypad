@@ -2,6 +2,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { AccountSignIn } from './AccountSignIn';
 import { api } from '../lib/tauri';
+import { listen } from '@tauri-apps/api/event';
+
+vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn() }));
 
 vi.mock('../lib/tauri', () => ({
   api: {
@@ -13,6 +16,7 @@ vi.mock('../lib/tauri', () => ({
     accountConfirmPasswordReset: vi.fn(),
     accountSignOut: vi.fn(),
     accountDelete: vi.fn(),
+    showSetup: vi.fn(),
   },
 }));
 
@@ -24,10 +28,21 @@ function type(testId: string, value: string) {
 }
 
 describe('AccountSignIn', () => {
+  /** Whatever this window registered for `lilypad://account`. */
+  let accountEvent: ((event: { payload: unknown }) => void) | undefined;
+
   beforeEach(() => {
+    accountEvent = undefined;
     vi.clearAllMocks();
     vi.mocked(api.getAccountState).mockResolvedValue(SIGNED_OUT);
     vi.mocked(api.accountEmailAvailable).mockResolvedValue(true);
+    vi.mocked(listen).mockImplementation((async (
+      name: string,
+      handler: (e: { payload: unknown }) => void,
+    ) => {
+      if (name === 'lilypad://account') accountEvent = handler;
+      return vi.fn();
+    }) as unknown as typeof listen);
   });
 
   it('signs in with email and password', async () => {
@@ -153,12 +168,19 @@ describe('AccountSignIn', () => {
    * The retired sentence is asserted absent, not merely replaced: it is now
    * false, and a screen carrying both would contradict itself.
    */
-  it('says the computer is on the account, and that pairing is still needed', async () => {
+  /**
+   * This card knows there is a signed-in session. It does NOT know that the
+   * enrollment behind that sign-in succeeded — a Mac already owned by another
+   * account, or offline at the wrong moment, is signed in and unenrolled — and
+   * it used to assert otherwise one line above `AccountPanel`, which asks the
+   * backend and answers the same question for real.
+   */
+  it('claims only what it knows: who is signed in, not what the backend did with it', async () => {
     vi.mocked(api.getAccountState).mockResolvedValue(SIGNED_IN);
     render(<AccountSignIn />);
     const panel = await screen.findByTestId('account-signed-in');
-    expect(panel).toHaveTextContent(/This computer is on your account/i);
-    expect(panel).toHaveTextContent(/Pairing a phone is what lets it connect/i);
+    expect(panel).toHaveTextContent('ada@example.com');
+    expect(panel).not.toHaveTextContent(/this computer is on your account/i);
     expect(panel).not.toHaveTextContent(/does not put this computer on your account/i);
   });
 
@@ -457,5 +479,95 @@ describe('AccountSignIn — the reset link', () => {
     vi.mocked(api.accountEmailAvailable).mockRejectedValue(new Error('offline'));
     render(<AccountSignIn />);
     expect(await screen.findByTestId('account-go-reset')).toBeInTheDocument();
+  });
+});
+
+/**
+ * Two windows, one account.
+ *
+ * Reported from a first run on 2026-08-26: the dashboard said "Signed in as
+ * kushsharma024@gmail.com" while Settings, open at the same time, still showed
+ * the sign-in form. Neither was lying about what it had read — each window is a
+ * separate webview, `open_window` HIDES the others rather than closing them, and
+ * the account was read once per mount. The window that had been open longest was
+ * simply answering a question from before the sign-in.
+ *
+ * The backend now says so out loud (`commands::announce_account`), and every
+ * window re-reads. These are the tests that fail if either half is removed.
+ */
+describe('AccountSignIn — agreeing with the other windows', () => {
+  let accountEvent: ((event: { payload: unknown }) => void) | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    accountEvent = undefined;
+    vi.mocked(api.getAccountState).mockResolvedValue(SIGNED_OUT);
+    vi.mocked(api.accountEmailAvailable).mockResolvedValue(true);
+    vi.mocked(listen).mockImplementation((async (
+      name: string,
+      handler: (e: { payload: unknown }) => void,
+    ) => {
+      if (name === 'lilypad://account') accountEvent = handler;
+      return vi.fn();
+    }) as unknown as typeof listen);
+  });
+
+  it('catches up when the sign-in happened in another window', async () => {
+    render(<AccountSignIn />);
+    await screen.findByTestId('account-sign-in');
+
+    vi.mocked(api.getAccountState).mockResolvedValue(SIGNED_IN);
+    accountEvent?.({ payload: null });
+
+    expect(await screen.findByTestId('account-signed-in')).toHaveTextContent('ada@example.com');
+  });
+
+  it('takes the confirmation off screen when the account goes away elsewhere', async () => {
+    vi.mocked(api.getAccountState).mockResolvedValue(SIGNED_IN);
+    render(<AccountSignIn />);
+    fireEvent.click(await screen.findByTestId('account-delete-start'));
+    await screen.findByTestId('account-delete');
+
+    // Deleted from the other window. A "Permanently delete" button left on
+    // screen now is one that can only answer with a server error.
+    vi.mocked(api.getAccountState).mockResolvedValue(SIGNED_OUT);
+    accountEvent?.({ payload: null });
+
+    await screen.findByTestId('account-sign-in');
+    expect(screen.queryByTestId('account-delete')).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * The dashboard is a live status window — it is what is open while a phone is
+ * connected. Deleting the account is not a thing anyone does from there, and a
+ * permanent, irreversible button one row under a running session is a button
+ * that eventually gets pressed by accident.
+ */
+describe('AccountSignIn — the dashboard variant', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(api.getAccountState).mockResolvedValue(SIGNED_IN);
+    vi.mocked(api.accountEmailAvailable).mockResolvedValue(true);
+    vi.mocked(listen).mockResolvedValue(vi.fn() as never);
+  });
+
+  it('offers no way to delete the account, and a door to where you can', async () => {
+    render(<AccountSignIn variant="summary" />);
+    await screen.findByTestId('account-signed-in');
+
+    expect(screen.queryByTestId('account-delete-start')).not.toBeInTheDocument();
+    // Sign-out stays: it is reversible, and it is the thing people look for.
+    expect(screen.getByTestId('account-sign-out')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('account-open-settings'));
+    expect(api.showSetup).toHaveBeenCalled();
+  });
+
+  it('still signs somebody in, because a dashboard nobody can sign in from is a dead end', async () => {
+    vi.mocked(api.getAccountState).mockResolvedValue(SIGNED_OUT);
+    render(<AccountSignIn variant="summary" />);
+
+    expect(await screen.findByTestId('account-sign-in')).toBeInTheDocument();
   });
 });

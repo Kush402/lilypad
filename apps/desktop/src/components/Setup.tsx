@@ -9,6 +9,7 @@ import { LinkStep } from './LinkStep';
 import { api, type AccountStateDto, type LinkStateDto } from '../lib/tauri';
 import { useLiveResource } from '../lib/useLiveResource';
 import { useAppState } from '../lib/useAppState';
+import { useTauriEvent } from '../lib/useTauriEvent';
 
 type PermissionKind = 'screen_capture' | 'accessibility';
 const KINDS: readonly PermissionKind[] = ['screen_capture', 'accessibility'];
@@ -278,7 +279,10 @@ export function Setup() {
   // stretch between granting the permissions and linking, which on a first run
   // is however long the user takes to pick up their phone, at two rejected
   // round-trips every three seconds.
-  useEffect(refreshLink, [refreshLink]);
+  // On the account event, not on mount: the sign-in that changes this answer
+  // is just as likely to have happened on the dashboard, which renders the
+  // same form.
+  useTauriEvent('lilypad://account', refreshLink);
 
   /**
    * Sign-in is the moment this Mac joins the account, so the ownership card
@@ -338,11 +342,17 @@ export function Setup() {
           what puts this Mac on the account (ADR-0015), so everything below
           genuinely depends on it. Same component as the dashboard's: one
           sign-in form, two places it is reachable. */}
-      <h2 className="section-title">{wizard ? '1 · Your account' : 'Your account'}</h2>
       {/* `signup` only in the wizard. A returning customer opening Settings has
           an account by definition, and opening on a Create-account form would
-          invite them to make a second one. */}
-      <AccountSignIn onChange={onAccountChange} initialMode={wizard ? 'signup' : 'signin'} />
+          invite them to make a second one.
+
+          The step number rides on the card's own heading (`step`) rather than a
+          second `<h2>` above it — see `AccountSignInProps.step`. */}
+      <AccountSignIn
+        onChange={onAccountChange}
+        initialMode={wizard ? 'signup' : 'signin'}
+        step={wizard ? 1 : undefined}
+      />
       <LinkStep signedIn={signedIn} onLinked={refreshLink} />
 
       <h2 className="section-title">{wizard ? '2 · Permissions' : 'Permissions'}</h2>
@@ -512,9 +522,27 @@ export function Setup() {
               phone. The card under step 1 says what to do.
             </p>
           )}
+          {/* Not "Done". Done is a word for a form, and this is the end of
+              setting up a product someone now wants to USE — a button that
+              acknowledges the fact and then leaves them looking at an empty
+              desktop is the last thing they see, and it reads as an app that
+              finished with them.
+
+              It opens the dashboard instead, which is the screen every
+              remaining act lives on (pair a phone, approve a session,
+              disconnect one). `showControl` hides this window on its way past;
+              closing it afterwards is what makes the NEXT open decide `mode`
+              again, so a finished wizard comes back as Settings rather than
+              re-numbering steps the customer has already done. */}
           <div className="row">
-            <button className="btn btn--primary" onClick={() => void getCurrentWindow().close()}>
-              Done
+            <button
+              className="btn btn--primary"
+              data-testid="setup-finish"
+              onClick={() => {
+                void api.showControl().finally(() => void getCurrentWindow().close());
+              }}
+            >
+              Open Lilypad
             </button>
           </div>
         </section>

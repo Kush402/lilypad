@@ -166,7 +166,7 @@ async fn run(app: AppHandle) {
         let token = match app.state::<Arc<DesktopAuth>>().bearer_result().await {
             Ok(token) => {
                 set_presence(&app, crate::state::PresenceState::Connecting);
-                Some(token)
+                token
             }
             // Connecting without a token used to be normal — the backend
             // admitted an unowned computer on the same terms it always had. It
@@ -184,11 +184,28 @@ async fn run(app: AppHandle) {
                     target: "lilypad::presence",
                     "no device token ({reason:?}) — this Mac cannot be reached by a phone until it has one",
                 );
-                None
+                // Back off WITHOUT opening a socket. The comment above has said
+                // this since the day the hub started refusing unattributed
+                // registers; the code did it anyway, because the `None` fell
+                // through into `connect` below. Production paid for it: on
+                // 2026-08-26 one Mac whose device row had been deleted spent
+                // ten minutes opening a connection every fifteen seconds,
+                // sending a register the hub could only refuse, and then
+                // holding the dead socket open until the hub's 10s
+                // no-register timer closed it — 95 refused registers and 98
+                // reaped sockets, none of which could ever have succeeded.
+                //
+                // Worse than the waste: the refused register overwrote the
+                // presence state this arm had just set, so an unlinked Mac
+                // reported "Lilypad's server won't accept this Mac" instead of
+                // "not linked yet" — the wrong one of the two, on every first
+                // run.
+                backoff(&mut attempt).await;
+                continue;
             }
         };
 
-        match connect(&url, token.as_deref()).await {
+        match connect(&url, Some(token.as_str())).await {
             Ok((handle, mut inbound)) => {
                 if handle.send(Envelope::register(&room, &device_id)).is_ok() {
                     // NOT "online" yet, and NOT grounds to reset the backoff —
@@ -259,23 +276,27 @@ async fn run(app: AppHandle) {
                 // the loop keeps trying at the capped cadence. Not quiet in
                 // the UI, because from the phone's side this is indistinguishable
                 // from the Mac being switched off.
-                if token.is_some() {
-                    set_presence(&app, crate::state::PresenceState::Unreachable);
-                }
+                set_presence(&app, crate::state::PresenceState::Unreachable);
                 log::debug!(target: "lilypad::presence", "presence connect failed: {e}");
             }
         }
-        let delay = BACKOFF_MS.get(attempt).copied().unwrap_or(BACKOFF_CAP_MS);
-        attempt = attempt.saturating_add(1);
-        // Jittered, because this loop retries FOREVER at a capped cadence:
-        // every desktop that was connected when the backend restarted would
-        // otherwise re-knock in lockstep, every 15 seconds, indefinitely.
-        // A deploy makes that a routine event. See `session::reconnect::jitter`.
-        tokio::time::sleep(crate::session::reconnect::jitter(Duration::from_millis(
-            delay,
-        )))
-        .await;
+        backoff(&mut attempt).await;
     }
+}
+
+/// Wait out one attempt and advance the schedule.
+///
+/// Jittered, because this loop retries FOREVER at a capped cadence: every
+/// desktop that was connected when the backend restarted would otherwise
+/// re-knock in lockstep, every 15 seconds, indefinitely. A deploy makes that a
+/// routine event. See `session::reconnect::jitter`.
+async fn backoff(attempt: &mut usize) {
+    let delay = BACKOFF_MS.get(*attempt).copied().unwrap_or(BACKOFF_CAP_MS);
+    *attempt = attempt.saturating_add(1);
+    tokio::time::sleep(crate::session::reconnect::jitter(Duration::from_millis(
+        delay,
+    )))
+    .await;
 }
 
 fn handle_inbound(app: &AppHandle, signaling_url: &str, env: Envelope) {

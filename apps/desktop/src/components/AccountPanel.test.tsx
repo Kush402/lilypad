@@ -65,7 +65,11 @@ describe('AccountPanel — what it is willing to claim', () => {
 
     render(<AccountPanel />);
 
-    expect(await screen.findByTestId('link-state-linked')).toHaveTextContent('On your account');
+    const linked = await screen.findByTestId('link-state-linked');
+    expect(linked).toHaveTextContent('On your account');
+    // The sentence `AccountSignIn` used to assert without checking. It lives
+    // here now, under the card that actually asked the backend.
+    expect(linked).toHaveTextContent(/Pairing a phone is what lets it connect/i);
     expect(
       screen.queryByRole('button', { name: 'Add this computer from my phone' }),
     ).not.toBeInTheDocument();
