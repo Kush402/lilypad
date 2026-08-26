@@ -14,6 +14,7 @@ import { AccountDevicesScreen } from './src/screens/AccountDevicesScreen';
 import { ViewerScreen } from './src/screens/ViewerScreen';
 import { initDeviceIdentity } from './src/lib/device';
 import { SessionProvider, useSession } from './src/lib/sessionContext';
+import { ErrorBoundary } from './src/components/ErrorBoundary';
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
@@ -103,11 +104,16 @@ export default function App() {
   return (
     <SafeAreaProvider>
       <StatusBar barStyle="light-content" backgroundColor={theme.bg} />
-      <SessionProvider>
-        <NavigationContainer theme={navTheme}>
-          <Routes />
-        </NavigationContainer>
-      </SessionProvider>
+      {/* Outside the providers on purpose: a throw inside SessionProvider or
+          NavigationContainer is exactly the case that leaves a blank phone,
+          and a boundary underneath them cannot catch it. */}
+      <ErrorBoundary>
+        <SessionProvider>
+          <NavigationContainer theme={navTheme}>
+            <Routes />
+          </NavigationContainer>
+        </SessionProvider>
+      </ErrorBoundary>
     </SafeAreaProvider>
   );
 }

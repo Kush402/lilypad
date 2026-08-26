@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import type { DeviceKind } from '@lilypad/protocol';
 import {
   DeviceRegistry,
+  MAX_DEVICES_PER_ACCOUNT,
   type DeviceIdentityStore,
   type DeviceRow,
   type DevicePlatform,
@@ -62,6 +63,13 @@ function fakeStore(): DeviceIdentityStore & { rows: Map<string, StoredDevice> } 
       if (patch.name !== null) row.name = patch.name;
       if (patch.platform !== null) row.platform = patch.platform;
       return Promise.resolve(true);
+    },
+    countActiveForUser(userId) {
+      let n = 0;
+      for (const row of rows.values()) {
+        if (row.userId === userId && row.revokedAt === null) n += 1;
+      }
+      return Promise.resolve(n);
     },
     touchLastSeen(id) {
       const row = rows.get(id);
@@ -471,5 +479,103 @@ describe('marking a device as seen', () => {
     await registry.markSeen(enrolled.deviceId);
 
     expect(seen).toEqual([enrolled.deviceId]);
+  });
+});
+
+/**
+ * Nothing capped how many devices one account could hold. That was harmless
+ * while everything was free and unmetered, and stops being harmless the moment
+ * remote access is worth $2.99 (ADR-0016): "one subscription, unlimited
+ * devices" is then a business model, and the cheapest way to attack the one we
+ * chose.
+ */
+describe('how many devices one account may hold', () => {
+  const enrolMany = async (registry: DeviceRegistry, from: number, to: number) => {
+    for (let i = from; i < to; i += 1) {
+      const result = await registry.enroll({
+        userId: 'user-a',
+        kind: 'desktop',
+        fingerprint: `fp-${i}`,
+        publicKey: `key-${i}`,
+        name: null,
+        platform: 'macos',
+      });
+      expect(result.ok).toBe(true);
+    }
+  };
+
+  it('refuses the one past the limit, and says which limit', async () => {
+    const store = fakeStore();
+    const registry = new DeviceRegistry(store);
+    await enrolMany(registry, 0, MAX_DEVICES_PER_ACCOUNT);
+
+    const overflow = await registry.enroll({
+      userId: 'user-a',
+      kind: 'desktop',
+      fingerprint: 'fp-one-too-many',
+      publicKey: 'key-one-too-many',
+      name: null,
+      platform: 'macos',
+    });
+
+    expect(overflow).toEqual({ ok: false, reason: 'too_many_devices' });
+  });
+
+  it('never blocks a device the account already has', async () => {
+    // The failure that would matter: a customer at the limit signing their
+    // existing laptop back in and being told they have too many devices. The
+    // cap is checked only on the path that ADDS one.
+    const store = fakeStore();
+    const registry = new DeviceRegistry(store);
+    await enrolMany(registry, 0, MAX_DEVICES_PER_ACCOUNT);
+
+    const again = await registry.enroll({
+      userId: 'user-a',
+      kind: 'desktop',
+      fingerprint: 'fp-0',
+      publicKey: 'key-0',
+      name: null,
+      platform: 'macos',
+    });
+
+    expect(again.ok).toBe(true);
+  });
+
+  it('counts only devices that are still on the account', async () => {
+    // Revoked rows survive removal by design (ADR-0014), so counting them
+    // would mean replacing laptops slowly filled the account up until nothing
+    // could be added and no customer could see why.
+    const store = fakeStore();
+    const registry = new DeviceRegistry(store);
+    await enrolMany(registry, 0, MAX_DEVICES_PER_ACCOUNT);
+    for (const row of store.rows.values()) row.revokedAt = new Date();
+
+    const fresh = await registry.enroll({
+      userId: 'user-a',
+      kind: 'mobile',
+      fingerprint: 'fp-after-a-clear-out',
+      publicKey: 'key-after-a-clear-out',
+      name: null,
+      platform: 'ios',
+    });
+
+    expect(fresh.ok).toBe(true);
+  });
+
+  it('is per account, not global', async () => {
+    const store = fakeStore();
+    const registry = new DeviceRegistry(store);
+    await enrolMany(registry, 0, MAX_DEVICES_PER_ACCOUNT);
+
+    const other = await registry.enroll({
+      userId: 'user-b',
+      kind: 'mobile',
+      fingerprint: 'fp-somebody-else',
+      publicKey: 'key-somebody-else',
+      name: null,
+      platform: 'ios',
+    });
+
+    expect(other.ok).toBe(true);
   });
 });

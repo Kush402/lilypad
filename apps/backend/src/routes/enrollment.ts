@@ -165,7 +165,13 @@ export async function enrollmentRoutes(app: FastifyInstance): Promise<void> {
                 // There is no self-service fix today (see kanban L-153), so the
                 // message names the situation rather than pretending otherwise.
                 'this device’s saved key belongs to a different device record. Contact support@takedia.com — this needs a reset on our side.'
-              : 'this device already belongs to a different Lilypad account. Remove it from that account first, then sign in again here.',
+              : enrolled.reason === 'too_many_devices'
+                ? // A cap no honest customer reaches
+                  // (MAX_DEVICES_PER_ACCOUNT), so the message assumes the
+                  // person is surprised and names the screen that fixes it
+                  // rather than quoting the limit at them.
+                  'this account already has as many devices as Lilypad allows. Remove one you no longer use from “Your devices” on your phone, then sign in again here.'
+                : 'this device already belongs to a different Lilypad account. Remove it from that account first, then sign in again here.',
         });
       }
 
@@ -334,7 +340,9 @@ export async function enrollmentRoutes(app: FastifyInstance): Promise<void> {
           message:
             enrolled.reason === 'public_key_in_use'
               ? 'that key already identifies a different device'
-              : 'that computer is already on another account',
+              : enrolled.reason === 'too_many_devices'
+                ? 'this account already has as many devices as Lilypad allows. Remove one from “Your devices” first.'
+                : 'that computer is already on another account',
         });
       }
 

@@ -51,7 +51,22 @@ export function isPlaceholderName(name: string | null): boolean {
 }
 
 export type EnrollFailure =
-  'public_key_in_use' | 'device_owned_by_another_account' | 'device_revoked';
+  'public_key_in_use' | 'device_owned_by_another_account' | 'device_revoked' | 'too_many_devices';
+
+/**
+ * The most computers and phones one account may hold at once.
+ *
+ * Nothing capped this. That was harmless while everything was free and
+ * unmetered: an account with ten thousand devices costs the same as one with
+ * two. It stops being harmless the moment remote access is worth paying for
+ * (ADR-0016), because "one subscription, unlimited devices" is then a business
+ * model rather than an oversight, and the cheapest way to attack it.
+ *
+ * Set where no honest customer will ever meet it. A person with a work laptop,
+ * a home laptop, a desktop, a phone, a tablet and a spare is at six. Revoked
+ * devices do not count, so replacing a laptop forever never fills it up.
+ */
+export const MAX_DEVICES_PER_ACCOUNT = 20;
 
 export type EnrollResult =
   /** `fingerprint` is the wire id the row ACTUALLY carries, which is not always
@@ -105,6 +120,15 @@ export interface DeviceIdentityStore {
       credentialIssuedAt?: Date | null;
     },
   ): Promise<boolean>;
+  /**
+   * How many un-revoked devices this account holds.
+   *
+   * Only consulted when a device is ADDING itself to an account, so a
+   * re-enrolment of a device the account already has never pays for the query
+   * and can never be refused by the cap. A customer at the limit must still be
+   * able to sign their existing laptop back in.
+   */
+  countActiveForUser(userId: string): Promise<number>;
   /** Stamp "seen just now", and what the device says it is running. An
    * absent `appVersion` leaves the stored one alone rather than clearing it:
    * a client that does not send one knows nothing, and knowing nothing is not
@@ -169,6 +193,10 @@ export class DeviceRegistry {
     // it by both of the columns that could have conflicted. Raising beats
     // looping — the same reasoning as `TrustStore.upsertDevice`.
     throw new Error('device insert conflicted but no row exists');
+  }
+
+  private async overDeviceLimit(userId: string): Promise<boolean> {
+    return (await this.store.countActiveForUser(userId)) >= MAX_DEVICES_PER_ACCOUNT;
   }
 
   /** One resolve-then-write pass. `null` means the write lost a race and the
@@ -258,6 +286,19 @@ export class DeviceRegistry {
       });
       if (!claimed) return { ok: false, reason: 'device_revoked' };
       return { ok: true, deviceId: byFingerprint.id, fingerprint: byFingerprint.fingerprint };
+    }
+    // A device the account does not already have. This is the only path that
+    // grows an account, so it is the only one the cap applies to: `claim` above
+    // covers re-enrolment, an un-revoke, and fingerprint drift, none of which
+    // add anything.
+    //
+    // Check-then-act, deliberately, and the race is bounded and harmless: two
+    // simultaneous enrolments at the limit can both pass and leave an account
+    // one over. Enforcing this in the database would mean a transaction around
+    // every enrolment to protect against an attack whose payoff is a single
+    // extra row.
+    if (await this.overDeviceLimit(input.userId)) {
+      return { ok: false, reason: 'too_many_devices' };
     }
     const id = await this.store.create({
       ...patch,
@@ -371,6 +412,13 @@ export function createDrizzleDeviceIdentityStore(
         )
         .returning({ id: devices.id });
       return claimed.length > 0;
+    },
+    async countActiveForUser(userId) {
+      const rows = await database
+        .select({ id: devices.id })
+        .from(devices)
+        .where(and(eq(devices.userId, userId), isNull(devices.revokedAt)));
+      return rows.length;
     },
     async touchLastSeen(id, appVersion, deviceName) {
       await database
