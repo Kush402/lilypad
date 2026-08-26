@@ -297,3 +297,4 @@ fn scope_change_mid_session_takes_effect_on_the_very_next_batch() {
         "the post-grant event must have reached the injection decision"
     );
 }
+mod common;

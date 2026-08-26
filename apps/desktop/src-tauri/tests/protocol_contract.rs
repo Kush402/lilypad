@@ -163,3 +163,4 @@ fn set_display_payload_matches_the_fixture() {
     let payload: SetDisplayPayload = serde_json::from_value(env.payload).unwrap();
     assert_eq!(payload.display_id, 2);
 }
+mod common;

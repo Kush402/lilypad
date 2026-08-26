@@ -27,6 +27,7 @@ async fn pairing_expires_when_no_device_ever_scans() {
         url,
         "room-1".to_owned(),
         "desktop-01".to_owned(),
+        None,
         control_rx,
         event_tx,
     ));
@@ -52,3 +53,4 @@ async fn pairing_expires_when_no_device_ever_scans() {
 
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
 }
+mod common;

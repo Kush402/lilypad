@@ -326,9 +326,42 @@ const peerStatus = z.object({
   payload: z.object({ online: z.boolean() }),
 });
 
+/**
+ * Server → desktop (presence room): a trusted pair was just recorded. The
+ * desktop caches the hash so its embedded LAN control plane can authorize
+ * `POST /connect/request` without Postgres ([ADR-0006](../../../docs/adr/0006-lan-first-connectivity.md)).
+ * Hash only — the plaintext secret stays on the phone.
+ */
+const trustRecord = z.object({
+  type: z.literal('trust-record'),
+  ...envelope,
+  payload: z.object({
+    mobileDeviceId: z.string().min(8).max(MAX_ID_LEN),
+    connectSecretHash: z.string().length(64).regex(/^[0-9a-f]+$/),
+    autoApprove: z.boolean(),
+    displayName: z.string().max(MAX_NAME_LEN).nullable(),
+  }),
+});
+
+/**
+ * Desktop → mobile: where to reach this laptop's LAN control plane. Cached on
+ * the phone as the primary reconnect path (NETWORKING §3 step 1).
+ */
+const lanEndpoints = z.object({
+  type: z.literal('lan-endpoints'),
+  ...envelope,
+  payload: z.object({
+    apiBaseUrl: z.string().url(),
+    signalingUrl: z.string().min(1),
+    tlsCertSha256: z.string().length(64).regex(/^[0-9a-f]+$/),
+  }),
+});
+
 export const SignalingMessageSchema = z.discriminatedUnion('type', [
   connectRequest,
   pairSecret,
+  trustRecord,
+  lanEndpoints,
   register,
   pairRequest,
   pairApproved,

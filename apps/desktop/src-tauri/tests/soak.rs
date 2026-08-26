@@ -86,3 +86,4 @@ async fn smoke_soak_pipeline_stays_alive_and_rss_growth_is_bounded() {
         );
     }
 }
+mod common;

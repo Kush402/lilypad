@@ -17,7 +17,7 @@ jest.mock('../lib/pairs', () => ({
   // list's order pass this file unnoticed.
   orderPairs: jest.requireActual('../lib/pairs').orderPairs,
 }));
-jest.mock('../lib/api', () => ({ requestConnect: jest.fn(), requestUnpair: jest.fn() }));
+jest.mock('../lib/api', () => ({ requestConnectForPair: jest.fn(), requestUnpair: jest.fn() }));
 jest.mock('../lib/accountDevices', () => ({ listMyPairs: jest.fn() }));
 jest.mock('../lib/sessionContext', () => ({ useSession: jest.fn() }));
 

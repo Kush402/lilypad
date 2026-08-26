@@ -78,6 +78,12 @@ export interface ViewerCallbacks {
    * after a trusted approval. The viewer persists it against the desktop so
    * future no-QR reconnects can present it. */
   onPairSecret?: (secret: string) => void;
+  /** Desktop advertised its LAN control-plane URLs for cached reconnect. */
+  onLanEndpoints?: (endpoints: {
+    apiBaseUrl: string;
+    signalingUrl: string;
+    tlsCertSha256: string;
+  }) => void;
   /** The desktop revoked this phone's trust mid-session (the backend force-
    * ended the room with `session-end` reason `'revoked'` — see
    * `apps/backend/src/signaling/hub.ts`'s `endRoomsForDevicePair`). Fires
@@ -231,12 +237,14 @@ export class ViewerConnection {
     private readonly roomId: string,
     private readonly scopes: SessionScope[],
     private readonly cb: ViewerCallbacks,
+    tlsPin?: string,
   ) {
     this.sig = new MobileSignaling(
       signalingUrl,
       roomId,
       (m) => this.onSignal(m),
       (e) => this.onSignalingLifecycle(e),
+      tlsPin,
     );
   }
 
@@ -427,6 +435,13 @@ export class ViewerConnection {
         break;
       case 'pair-secret':
         this.cb.onPairSecret?.(m.payload.secret);
+        break;
+      case 'lan-endpoints':
+        this.cb.onLanEndpoints?.({
+          apiBaseUrl: m.payload.apiBaseUrl,
+          signalingUrl: m.payload.signalingUrl,
+          tlsCertSha256: m.payload.tlsCertSha256,
+        });
         break;
       case 'pair-denied':
         // Split out from the generic 'ended' bucket: a denial is a decision,

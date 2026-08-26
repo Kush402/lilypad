@@ -220,7 +220,7 @@ export class TrustService {
   async establishTrust(
     desktopFingerprint: string,
     mobileFingerprint: string,
-  ): Promise<{ pairSecret: string }> {
+  ): Promise<{ pairSecret: string; connectSecretHash: string }> {
     const desktopId = await this.store.upsertDevice('desktop', desktopFingerprint);
     const mobileId = await this.store.upsertDevice('mobile', mobileFingerprint);
     return this.establishTrustForDeviceIds(desktopId, mobileId);
@@ -242,7 +242,7 @@ export class TrustService {
   async establishTrustForDeviceIds(
     desktopId: string,
     mobileId: string,
-  ): Promise<{ pairSecret: string }> {
+  ): Promise<{ pairSecret: string; connectSecretHash: string }> {
     // A fresh secret every time trust is (re)established — a re-pair or an
     // un-revoke re-issues, and the phone stores whatever it's handed. Only the
     // hash is persisted; the plaintext is returned for one-time delivery.
@@ -256,7 +256,7 @@ export class TrustService {
     // or, on the signaling path where the write is fire-and-forget, as a
     // logged error and a phone that never received its connect secret.
     await this.store.upsertPair(desktopId, mobileId, hash);
-    return { pairSecret: secret };
+    return { pairSecret: secret, connectSecretHash: hash };
   }
 
   /**

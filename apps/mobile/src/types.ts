@@ -42,5 +42,7 @@ export type RootStackParamList = {
     /** The desktop's wire deviceId — so the Viewer can persist the connect
      * secret the backend delivers against the right saved pair (M5.4). */
     desktopDeviceId?: string;
+    /** SHA-256 pin for LAN signaling when `signalingUrl` is local (M9.5). */
+    lanTlsCertSha256?: string;
   };
 };

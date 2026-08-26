@@ -1,7 +1,7 @@
 ---
 status: Implemented
 owner: @kushsharma024
-last-verified: 2026-08-20
+last-verified: 2026-08-26
 summary: The step-by-step Mac + iPhone test a human runs before launch, with the expected result for every step.
 ---
 
@@ -20,7 +20,7 @@ half-finished run tells you less than none.
 | You need                      | Notes                                                                                                                 |
 | ----------------------------- | --------------------------------------------------------------------------------------------------------------------- |
 | A Mac, macOS 12.3 or newer    | `minimumSystemVersion` in `tauri.conf.json`. Below this the app will not install.                                     |
-| An iPhone                     | See [Installing on the iPhone](#installing-on-the-iphone) — there is no App Store or TestFlight build.                |
+| An iPhone                     | Install from **TestFlight** — see [Installing on the iPhone](#installing-on-the-iphone). Need v0.1.19+ for LAN-direct connectivity. |
 | Two networks                  | Home Wi-Fi and phone cellular, at minimum. A second Wi-Fi network is better still.                                    |
 | An email address you can read | Only for the Resend-dependent steps, which are currently **blocked** — see [Password reset](#password-reset-blocked). |
 
@@ -34,15 +34,23 @@ curl -s https://api.takedia.com/health
 
 ## Installing on the iPhone
 
-**There is no TestFlight build and no App Store listing.** Both need Apple
-Developer credentials the project does not have, so the phone app is built from
-source and installed over USB.
+**TestFlight (recommended for new users).** Builds ship from CI on every
+`mobile-v*` tag (e.g. `mobile-v0.1.19`). To install as a first-time tester:
 
-This was done on 2026-08-21 and the app is **already on the iPhone** — `Lilypad`,
-`com.takedia.lilypad`, built from `main`. What follows is how to do it again,
-because you will have to: the provisioning below comes from a **personal** Apple
-team and Apple expires those after **7 days**, after which the app refuses to
-launch until it is rebuilt.
+1. Email **support@takedia.com** with subject **TestFlight invite** (or use the
+   link on [lilypadhome.takedia.com](https://lilypadhome.takedia.com/#get)).
+2. Accept the invite in Mail, install **TestFlight** from the App Store if needed,
+   then install **Lilypad**.
+3. Confirm **Settings → About** (or the device list footer) shows **v0.1.19** or
+   newer — not v0.1.18, which predates LAN-direct connectivity.
+
+Grant **Local Network** when prompted — required for mDNS discovery and LAN TLS
+pinning on your home Wi‑Fi.
+
+### USB build from source (developer fallback)
+
+Use this only when TestFlight is unavailable. The steps below were written for
+a personal-team USB install and remain valid for local development.
 
 ### The one thing that blocks a plain build
 
@@ -183,11 +191,11 @@ the source:
 
 | #   | Do                                                                  | Expect                                                                                                                                                                                            |
 | --- | ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1.1 | Open <https://lilypadhome.takedia.com>, then **Download for macOS** | The site serves `Lilypad.dmg` from its own `/download/` path — 20 MB, universal (`x86_64 arm64`), v0.1.3, built from `main`. No GitHub account, no sign-in.                                       |
+| 1.1 | Open <https://lilypadhome.takedia.com>, then **Download for macOS** | The site serves `Lilypad.dmg` from `/download/` — universal (`x86_64 arm64`), **v0.1.19** or newer. No GitHub account, no sign-in. |
 | 1.2 | Double-click the DMG                                                | It mounts and shows `Lilypad.app` next to an Applications alias.                                                                                                                                  |
 | 1.3 | Drag Lilypad to Applications                                        | Copies without error.                                                                                                                                                                             |
-| 1.4 | Double-click Lilypad in Applications                                | **The build is ad-hoc signed, not notarized, so macOS refuses it**: _"Lilypad" cannot be opened because the developer cannot be verified._ Correct for this build; right-click → Open to proceed. |
-| 1.5 | Right-click Lilypad → **Open** → **Open**                           | It launches. (Or System Settings → Privacy & Security → **Open Anyway**.)                                                                                                                         |
+| 1.4 | Double-click Lilypad in Applications                                | **v0.1.19+ is notarized** — it should open with no “unidentified developer” warning. If macOS still blocks, check the site version is current.                                                    |
+| 1.5 | (Only if blocked) Right-click → **Open** → **Open**                 | It launches.                                                                                                                                                                                      |
 | 1.6 | Look at the screen                                                  | A small green **bubble** floats near the top-left.                                                                                                                                                |
 | 1.7 | Look at the menu bar                                                | A Lilypad **menu bar icon**, with: Open Dashboard, Pair a phone…, Approve, Deny, Disconnect, Panic disconnect, Settings…, Diagnostics…                                                            |
 | 1.8 | Leave it running for 10 minutes while you use the Mac normally      | No crash, no beachball, no runaway CPU (check Activity Monitor: idle should be low single-digit %).                                                                                               |

@@ -3,6 +3,9 @@ import type { ConnectResponse, PairingRedeemResponse } from '@lilypad/protocol';
 import { deviceLabel, initDeviceIdentity } from './device';
 import { accessToken, DeviceAuthError, unauthorizedError } from './auth';
 import { RedeemError, appError, classifyHttpStatus, classifyFetchError } from './errors';
+import { resolveConnectTarget } from './connectPath';
+import { lanFetch } from './lanTls';
+import type { PairedDesktop } from './pairs';
 
 /** Bounded so a slow/dead network surfaces as a classified, actionable error
  * instead of a spinner that never resolves. See
@@ -107,6 +110,21 @@ export async function redeemToken(
   }
 }
 
+export async function requestConnectForPair(pair: PairedDesktop): Promise<ConnectResponse> {
+  const target = await resolveConnectTarget(pair);
+  const res = await requestConnect(
+    target.apiBaseUrl,
+    pair.desktopDeviceId,
+    pair.connectSecret,
+    target.lanTlsCertSha256,
+  );
+  const lanBase = pair.lanApiBaseUrl?.replace(/\/$/, '');
+  if (lanBase && target.apiBaseUrl === lanBase && pair.lanSignalingUrl) {
+    return { ...res, signalingUrl: pair.lanSignalingUrl };
+  }
+  return res;
+}
+
 /**
  * Ring a trusted desktop without a QR (M5.4, `POST /connect/request`). On
  * success the response mirrors a redeem, so the caller navigates into the
@@ -118,6 +136,7 @@ export async function requestConnect(
   apiBaseUrl: string,
   desktopDeviceId: string,
   pairSecret?: string,
+  lanTlsCertSha256?: string,
 ): Promise<ConnectResponse> {
   const controller = new AbortController();
   let timedOut = false;
@@ -128,9 +147,16 @@ export async function requestConnect(
 
   try {
     const mobileDeviceId = await initDeviceIdentity();
-    const res = await fetch(`${apiBaseUrl.replace(/\/$/, '')}/connect/request`, {
+    const base = apiBaseUrl.replace(/\/$/, '');
+    const authHeaders = lanTlsCertSha256
+      ? await optionalDeviceAuthHeaders(apiBaseUrl)
+      : await deviceAuthHeaders(apiBaseUrl);
+    const fetchFn = lanTlsCertSha256
+      ? (url: string, init?: RequestInit) => lanFetch(url, lanTlsCertSha256, init)
+      : fetch;
+    const res = await fetchFn(`${base}/connect/request`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', ...(await deviceAuthHeaders(apiBaseUrl)) },
+      headers: { 'content-type': 'application/json', ...authHeaders },
       body: JSON.stringify({
         desktopDeviceId,
         mobileDeviceId,

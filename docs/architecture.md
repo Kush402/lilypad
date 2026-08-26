@@ -58,7 +58,10 @@ in [NETWORKING.md](NETWORKING.md).
 
 > **Status note.** LAN-direct _media_ already works today (host ICE candidates
 > win on-LAN). LAN-direct _signaling_ — the embedded server on the laptop that
-> removes the internet dependency entirely — is milestone M9.5 and is not built
+> removes the internet dependency entirely — is milestone M9.5; the LAN control
+> plane (embedded TLS server, mDNS, LAN-first client race) is implemented and
+> release-blocked on real-device offline media validation. See
+> [NETWORKING.md](NETWORKING.md).
 > yet. Until then a session still requires a reachable backend, which in
 > development is a process on the laptop itself.
 

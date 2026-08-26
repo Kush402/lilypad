@@ -316,6 +316,24 @@ impl Envelope {
             serde_json::json!({ "text": text }),
         )
     }
+
+    /// Desktop → mobile: cached LAN control-plane URLs (NETWORKING §3).
+    pub fn lan_endpoints(
+        room_id: &str,
+        api_base_url: &str,
+        signaling_url: &str,
+        tls_cert_sha256: &str,
+    ) -> Self {
+        Self::desktop(
+            "lan-endpoints",
+            room_id,
+            serde_json::json!({
+                "apiBaseUrl": api_base_url,
+                "signalingUrl": signaling_url,
+                "tlsCertSha256": tls_cert_sha256,
+            }),
+        )
+    }
 }
 
 // ── Inbound payloads (server/mobile → desktop) ──────────────────────────────
@@ -454,6 +472,20 @@ pub struct ConnectRequestPayload {
     pub requested_scopes: Vec<SessionScope>,
     #[serde(rename = "autoApprove")]
     pub auto_approve: bool,
+}
+
+/// Server → desktop (presence room): cache a trusted phone for the LAN
+/// control plane ([ADR-0006](../../../../../../docs/adr/0006-lan-first-connectivity.md)).
+#[derive(Deserialize, Debug, Clone)]
+pub struct TrustRecordPayload {
+    #[serde(rename = "mobileDeviceId", deserialize_with = "deserialize_device_id")]
+    pub mobile_device_id: String,
+    #[serde(rename = "connectSecretHash")]
+    pub connect_secret_hash: String,
+    #[serde(rename = "autoApprove")]
+    pub auto_approve: bool,
+    #[serde(rename = "displayName")]
+    pub display_name: Option<String>,
 }
 
 #[cfg(test)]

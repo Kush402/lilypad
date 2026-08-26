@@ -106,6 +106,7 @@ async fn connect_and_stream() -> ConnectedSession {
         url,
         ROOM.to_owned(),
         DEVICE.to_owned(),
+        None,
         control_rx,
         event_tx,
     ));
@@ -436,3 +437,4 @@ async fn set_capture_mode_request_rebuilds_the_pipeline_and_keeps_streaming() {
     let _ = answerer.close().await;
     let _ = tokio::time::timeout(Duration::from_secs(5), handle).await;
 }
+mod common;

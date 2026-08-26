@@ -7,6 +7,7 @@ import {
   type SessionScope,
   type CaptureMode,
 } from '@lilypad/protocol';
+import { createSignalingSocket } from './lanTls';
 
 type Handler = (msg: SignalingMessage) => void;
 
@@ -49,10 +50,11 @@ export class MobileSignaling {
     private readonly roomId: string,
     private readonly onMessage: Handler,
     private readonly onLifecycle: (event: SignalingLifecycleEvent) => void = () => {},
+    private readonly tlsPin?: string,
   ) {}
 
   connect(): Promise<void> {
-    return this.attach(new WebSocket(this.url));
+    return this.attach(createSignalingSocket(this.url, this.tlsPin) as WebSocket);
   }
 
   /** Open one socket and wire it up; resolves/rejects on that socket's own
@@ -137,7 +139,7 @@ export class MobileSignaling {
       await sleep(jitteredBackoffMs(attempt));
       if (token !== this.reconnectToken || this.closing) return;
       try {
-        await this.attach(new WebSocket(this.url));
+        await this.attach(createSignalingSocket(this.url, this.tlsPin) as WebSocket);
       } catch {
         continue; // this attempt failed — try the next backoff step
       }

@@ -39,6 +39,11 @@ export interface PairedDesktop {
   name: string | null;
   /** Where to reach the backend for this desktop (from the QR payload). */
   apiBaseUrl: string;
+  /** Cached LAN control plane from the last session (`lan-endpoints`). */
+  lanApiBaseUrl?: string;
+  lanSignalingUrl?: string;
+  /** SHA-256 (hex) of the laptop's LAN TLS cert — pinned on first use. */
+  lanTlsCertSha256?: string;
   /** Per-pair connect secret (M5.4 security), delivered by the backend over
    * signaling after a trusted approval. Presented on every no-QR reconnect.
    * Absent for a pair made before secrets existed (still works via the
@@ -119,6 +124,22 @@ export async function upsertPair(
 /** Store the connect secret the backend delivered for a desktop pair. Creates
  * a minimal pair entry if somehow missing (defensive — the pair is normally
  * saved at redeem time just before the secret arrives). */
+export async function setPairLanEndpoints(
+  desktopDeviceId: string,
+  endpoints: { apiBaseUrl: string; signalingUrl: string; tlsCertSha256: string },
+): Promise<void> {
+  const pairs = await loadPairs();
+  const idx = pairs.findIndex((p) => p.desktopDeviceId === desktopDeviceId);
+  if (idx < 0) return;
+  pairs[idx] = {
+    ...pairs[idx],
+    lanApiBaseUrl: endpoints.apiBaseUrl,
+    lanSignalingUrl: endpoints.signalingUrl,
+    lanTlsCertSha256: endpoints.tlsCertSha256,
+  };
+  await persist(pairs);
+}
+
 export async function setPairSecret(desktopDeviceId: string, connectSecret: string): Promise<void> {
   const pairs = await loadPairs();
   const pair = pairs.find((p) => p.desktopDeviceId === desktopDeviceId);

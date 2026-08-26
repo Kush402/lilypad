@@ -98,3 +98,4 @@ async fn a_transient_encode_failure_that_self_heals_does_not_end_the_session() {
     pipeline.stop();
     assert!(pipeline.stop_requested());
 }
+mod common;

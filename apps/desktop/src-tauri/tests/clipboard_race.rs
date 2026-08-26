@@ -81,3 +81,4 @@ fn concurrent_clipboard_read_and_write_does_not_crash() {
     }
     // Reaching here without the process dying is the assertion.
 }
+mod common;

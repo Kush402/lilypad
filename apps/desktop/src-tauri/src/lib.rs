@@ -11,6 +11,7 @@ mod agent;
 mod autostart;
 mod commands;
 mod health;
+pub mod lan;
 mod logfile;
 mod presence;
 mod single_instance;
@@ -342,6 +343,7 @@ fn panic_line(where_: Option<String>, payload: &(dyn std::any::Any + Send)) -> S
 }
 
 pub fn run() {
+    lan::ensure_crypto_provider();
     // `log::` macros are no-ops until a logger is installed — without this,
     // input-injection and session errors vanish instead of reaching stderr.
     // Defaults to `info` for our own crate; override with RUST_LOG as usual.
@@ -436,7 +438,7 @@ pub fn run() {
                 })),
             )));
 
-            app.manage(Mutex::new(AppState::new(device_id, backend)));
+            app.manage(Mutex::new(AppState::new(device_id.clone(), backend)));
 
             build_tray(app)?;
 
@@ -456,6 +458,17 @@ pub fn run() {
             // `autostart.rs` for the security posture.
             if let Ok(dir) = app.path().app_config_dir() {
                 autostart::ensure_first_run_enabled(&dir);
+                match lan::start(app.handle(), &dir, &device_id) {
+                    Ok((cache, endpoints)) => {
+                        app.manage(cache);
+                        if let Some(ep) = endpoints {
+                            app.manage(ep);
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!(target: "lilypad::lan", "LAN bootstrap failed: {e:#}");
+                    }
+                }
             }
 
             // First-run (or any-run, if a grant was later revoked) guidance:

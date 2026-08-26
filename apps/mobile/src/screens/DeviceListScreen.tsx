@@ -12,7 +12,7 @@ import {
   reconcilePairs,
   type PairedDesktop,
 } from '../lib/pairs';
-import { requestConnect, requestUnpair } from '../lib/api';
+import { requestConnectForPair, requestUnpair } from '../lib/api';
 import { toAppError } from '../lib/errors';
 import { useSession } from '../lib/sessionContext';
 import { listMyPairs } from '../lib/accountDevices';
@@ -115,7 +115,7 @@ export function DeviceListScreen({ navigation }: Props) {
     async (pair: PairedDesktop) => {
       setConnecting(pair.desktopDeviceId);
       try {
-        const res = await requestConnect(pair.apiBaseUrl, pair.desktopDeviceId, pair.connectSecret);
+        const res = await requestConnectForPair(pair);
         void touchPair(pair.desktopDeviceId).catch(() => {});
         navigation.navigate('Viewer', {
           roomId: res.roomId,
@@ -123,6 +123,7 @@ export function DeviceListScreen({ navigation }: Props) {
           scopes: res.scopes,
           desktopDeviceName: res.desktopDeviceName ?? pair.name,
           desktopDeviceId: pair.desktopDeviceId,
+          lanTlsCertSha256: pair.lanTlsCertSha256,
         });
       } catch (e) {
         const err = toAppError(e);

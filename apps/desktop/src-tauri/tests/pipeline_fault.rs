@@ -44,3 +44,4 @@ async fn unexpected_capture_death_closes_channel_with_stop_flag_unset() {
         "stop flag must be false on an unexpected death (this is the crash signal)"
     );
 }
+mod common;

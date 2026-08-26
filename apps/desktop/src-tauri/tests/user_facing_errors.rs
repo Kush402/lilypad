@@ -81,3 +81,4 @@ fn no_error_a_customer_reads_carries_a_status_code_or_a_caught_value() {
         offenders.join("\n")
     );
 }
+mod common;

@@ -314,7 +314,7 @@ model settled as **account → devices**, a device on no account may do nothing:
 linking ceremony itself is ungated, so a new computer can still mint the code a
 phone approves. See [ADR-0010](adr/0010-explicit-device-linking.md).
 
-## M9.5 — LAN-direct connectivity (no internet required) 🔜
+## M9.5 — LAN-direct connectivity (no internet required) 🚧
 
 **Deliberately before the cloud deployment milestone**, so the cloud is added
 _beside_ a working local path rather than in front of it. See
@@ -327,24 +327,22 @@ _beside_ a working local path rather than in front of it. See
 public internet — a regression against a hard product requirement. Building the
 local path first prevents that.
 
-- **Embedded signaling server on the desktop** serving the existing
-  `@lilypad/protocol` contract at `https://<laptop>:PORT/ws/signal`. A LAN room
-  is exactly two known peers, so no room registry, capacity policy, or Redis —
-  it reuses `MessageRouter`'s decision semantics.
-- **Local channel security:** TLS with a self-signed certificate bound to the
-  device's Ed25519 identity ([ADR-0002](adr/0002-device-identity.md)), pinned by
-  the phone at pairing. No CA, no name resolution, no internet.
-- **Discovery:** cached last-known address first (one TCP connect, works where
-  multicast is blocked), then mDNS `_lilypad._tcp.local` via each platform's
-  native API — `NWBrowser`/`NetService`, `NsdManager`, `dns-sd`. Needs only the
-  iOS Local Network permission, **not** the multicast entitlement.
-- **Connection race** in the client: LAN paths are attempted before any cloud
-  call, with a ~1.5s budget before falling through.
-- **Local presence** — "is my laptop here?" answered by discovery, not the cloud.
-- Drop the hardcoded Google STUN; serve STUN from our own coturn.
-- **DoD (release-blocking):** an automated scenario with **the cloud entirely
-  unreachable** and both devices on one LAN proves discovery, connection, video,
-  input, and clipboard all work, and asserts **zero cloud requests** occur.
+- ✅ **Embedded signaling server on the desktop** serving the existing
+  `@lilypad/protocol` contract at `https://<laptop>:8787/ws/signal` (macOS default;
+  `LILYPAD_LAN_CONTROL=0` disables). LAN hub reuses pairing/session-start/ICE
+  relay semantics for two peers.
+- ✅ **Local channel security:** TLS with a self-signed certificate (device-id DNS
+  SAN + LAN IP SAN), SHA-256 pinned by the phone via native modules.
+- ✅ **Discovery:** cached last-known address first, then mDNS `_lilypad._tcp`
+  (desktop `mdns-sd`, iOS `NetServiceBrowser`, Android `NsdManager`).
+- ✅ **Connection race** in the mobile client: LAN paths within `LAN_PROBE_BUDGET_MS`
+  before any cloud call.
+- ✅ **Local reconnect auth:** trust cache + `trust-record` / `connect_secret_hash`.
+- 🔜 Drop the hardcoded Google STUN; serve STUN from our own coturn.
+- **DoD (release-blocking):** automated `lan_control_e2e` proves control-plane
+  connect without cloud. **Remaining:** real-device scenario with cloud unreachable
+  proving video, input, and clipboard with zero cloud requests; then
+  `ENFORCE_REMOTE_ENTITLEMENT=true` in production.
 
 ## M10 — Desktop security hardening 🔜
 

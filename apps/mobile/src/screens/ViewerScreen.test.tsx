@@ -64,7 +64,7 @@ jest.mock('../lib/pairs', () => ({
   loadPairs: jest.fn().mockResolvedValue([]),
 }));
 
-jest.mock('../lib/api', () => ({ requestConnect: jest.fn() }));
+jest.mock('../lib/api', () => ({ requestConnectForPair: jest.fn() }));
 
 const { __instances } = jest.requireMock('../lib/webrtc') as { __instances: any[] };
 function lastConn() {
@@ -569,14 +569,16 @@ describe('ViewerScreen', () => {
 
 describe('reconnecting after the laptop drops', () => {
   const { loadPairs } = jest.requireMock('../lib/pairs') as { loadPairs: jest.Mock };
-  const { requestConnect } = jest.requireMock('../lib/api') as { requestConnect: jest.Mock };
+  const { requestConnectForPair } = jest.requireMock('../lib/api') as {
+    requestConnectForPair: jest.Mock;
+  };
 
   // The module mocks outlive each test; without this the first test's
-  // `requestConnect` call is still recorded when the second asserts it never
+  // `requestConnectForPair` call is still recorded when the second asserts it never
   // happened — a green that would have meant nothing.
   beforeEach(() => {
     loadPairs.mockReset().mockResolvedValue([]);
-    requestConnect.mockReset();
+    requestConnectForPair.mockReset();
   });
 
   /**
@@ -595,7 +597,7 @@ describe('reconnecting after the laptop drops', () => {
         connectSecret: 'secret',
       },
     ]);
-    requestConnect.mockResolvedValue({
+    requestConnectForPair.mockResolvedValue({
       roomId: 'room-2',
       signalingUrl: 'wss://api.example/ws',
       scopes: ['view', 'control'],
@@ -607,7 +609,13 @@ describe('reconnecting after the laptop drops', () => {
     fireEvent.press(await screen.findByText('Reconnect'));
 
     await waitFor(() =>
-      expect(requestConnect).toHaveBeenCalledWith('https://api.example', 'desktop-1', 'secret'),
+      expect(requestConnectForPair).toHaveBeenCalledWith(
+        expect.objectContaining({
+          desktopDeviceId: 'desktop-1',
+          apiBaseUrl: 'https://api.example',
+          connectSecret: 'secret',
+        }),
+      ),
     );
     // `replace`: leaving the dead room in the stack means Back returns to a
     // session that can only fail.
@@ -630,7 +638,7 @@ describe('reconnecting after the laptop drops', () => {
     fireEvent.press(await screen.findByText('Reconnect'));
 
     await waitFor(() => expect(loadPairs).toHaveBeenCalled());
-    expect(requestConnect).not.toHaveBeenCalled();
+    expect(requestConnectForPair).not.toHaveBeenCalled();
     expect(navigation.replace).not.toHaveBeenCalled();
   });
 });

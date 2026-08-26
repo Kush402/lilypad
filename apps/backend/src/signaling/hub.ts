@@ -375,6 +375,17 @@ export class SignalingHub {
     this.send(room, 'mobile', { type: 'pair-secret', payload: { secret } });
   }
 
+  /** Deliver a `trust-record` to a desktop's presence seat so its embedded
+   * LAN control plane can authorize no-QR reconnects offline. Hash only. */
+  deliverTrustRecord(
+    desktopDeviceId: string,
+    payload: Extract<SignalingMessage, { type: 'trust-record' }>['payload'],
+  ): void {
+    const room = this.registry.get(presenceRoomId(desktopDeviceId));
+    if (!room || !room.hasSeat('desktop')) return;
+    this.send(room, 'desktop', { type: 'trust-record', payload });
+  }
+
   /** Deliver a `connect-request` to a desktop's presence seat (M5.4 no-QR
    * reconnect). Returns false when the desktop is offline — the caller
    * turns that into an honest "desktop is offline" for the phone. */

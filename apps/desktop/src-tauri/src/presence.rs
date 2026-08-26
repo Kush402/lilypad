@@ -20,7 +20,10 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::auth::{DesktopAuth, NoToken};
-use crate::signaling::{connect, messages::ConnectRequestPayload, Envelope};
+use crate::lan::{TrustCache, TrustedMobile};
+use crate::signaling::{
+    connect, messages::ConnectRequestPayload, messages::TrustRecordPayload, Envelope,
+};
 use crate::state::SharedState;
 
 /// Mirrors `@lilypad/protocol`'s `APP_HEARTBEAT_INTERVAL_MS` (4s), like the
@@ -309,7 +312,26 @@ fn handle_inbound(app: &AppHandle, signaling_url: &str, env: Envelope) {
                     return;
                 }
             };
-            on_connect_request(app, signaling_url, payload);
+            dispatch_connect_request(app, signaling_url, payload);
+        }
+        "trust-record" => {
+            let payload: TrustRecordPayload = match serde_json::from_value(env.payload) {
+                Ok(p) => p,
+                Err(e) => {
+                    log::warn!(target: "lilypad::presence", "bad trust-record payload: {e}");
+                    return;
+                }
+            };
+            if let Some(cache) = app.try_state::<std::sync::Arc<TrustCache>>() {
+                if let Err(e) = cache.upsert(TrustedMobile {
+                    mobile_device_id: payload.mobile_device_id,
+                    connect_secret_hash: payload.connect_secret_hash,
+                    auto_approve: payload.auto_approve,
+                    display_name: payload.display_name,
+                }) {
+                    log::warn!(target: "lilypad::lan", "trust-record cache write failed: {e}");
+                }
+            }
         }
         // Why this device was refused its own presence room is the single most
         // useful line in a "my laptop is offline in the app" report, and it was
@@ -355,6 +377,15 @@ fn handle_inbound(app: &AppHandle, signaling_url: &str, env: Envelope) {
 /// phone hanging on "Waiting for approval…" forever (observed live); a
 /// takeover is visible (session indicator, audit log) and the superseded
 /// runner ends cleanly through its normal Disconnect path.
+/// Shared by cloud presence and the embedded LAN control plane.
+pub(crate) fn dispatch_connect_request(
+    app: &AppHandle,
+    signaling_url: &str,
+    payload: ConnectRequestPayload,
+) {
+    on_connect_request(app, signaling_url, payload);
+}
+
 fn on_connect_request(app: &AppHandle, signaling_url: &str, payload: ConnectRequestPayload) {
     let (old_tx, device_id, offered_scopes) = {
         let state = app.state::<SharedState>();

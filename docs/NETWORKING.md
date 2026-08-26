@@ -1,15 +1,18 @@
 ---
-status: Planned
+status: In Progress
 owner: @kushsharma024
-last-verified: 2026-08-12
+last-verified: 2026-08-26
 summary: Connectivity architecture — LAN-direct first, internet P2P second, TURN last.
 ---
 
 # Lilypad — Networking Architecture
 
-> **Status: Planned.** This is the target design. §1 records what the code does
-> **today** (verified), §2 onward is the design being built. See
-> [ADR-0006](adr/0006-lan-first-connectivity.md) and
+> **Status: In progress (M9.5).** §1 records what the code does **today**
+> (verified 2026-08-26). §2 onward is the target design; the LAN control plane
+> (embedded TLS server, trust cache, mDNS, LAN-first client race) is implemented
+> on macOS desktop + iOS/Android mobile. Full offline media DoD (video/input/
+> clipboard with zero cloud requests) is release-blocked on real-device validation.
+> See [ADR-0006](adr/0006-lan-first-connectivity.md) and
 > [ADR-0007](adr/0007-cloud-is-control-plane-only.md).
 
 Two hard requirements govern everything here:
@@ -20,17 +23,17 @@ Two hard requirements govern everything here:
 
 ---
 
-## 1. What the code does today (verified 2026-08-12)
+## 1. What the code does today (verified 2026-08-26)
 
 | Property                   | Reality                                                                                                                                                                                                                                                                 |
 | -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| LAN discovery              | **None.** No mDNS, Bonjour, `NSNetService`, `NsdManager`, or UDP broadcast anywhere. No `NSLocalNetworkUsageDescription` / `NSBonjourServices`. The phone learns the laptop's address **only** from the QR payload, or from `apiBaseUrl` stored on a saved pair.        |
+| LAN discovery              | **Partial.** Desktop registers `_lilypad._tcp` via `mdns-sd` (TXT `deviceId`). Mobile browses via native `NetServiceBrowser` (iOS) / `NsdManager` (Android). Cached last-known LAN URL from `lan-endpoints` is probed first (`LAN_PROBE_BUDGET_MS`). QR/`apiBaseUrl` still provision cloud; LAN URLs are seeded after the first cloud session. |
 | Media path on LAN          | **Already direct.** `iceTransportPolicy` defaults to `'all'`, candidates trickle as gathered, and nothing requires a srflx or relay candidate — host candidates win on-LAN. The data plane requirement is already met.                                                  |
-| Control plane              | **Hard dependency.** A session cannot start without `/pairing/create` + `/pairing/redeem` (or `/connect/request`) **and** the `/ws/signal` socket, which brokers register → pair-request → approve → `session-start` (carrying ICE servers) → offer/answer/ICE relay.   |
-| Internet needed on LAN?    | **No — but only by accident.** `DEFAULT_BACKEND_URL` is `http://localhost:8080` and `config.ts` advertises the laptop's own LAN IP in the QR, so the "cloud" is currently a process running _on the laptop_. That is a development artifact, not a designed capability. |
+| Control plane              | **Dual path.** Cloud: unchanged (`/pairing/*`, `/connect/request`, `/ws/signal`). **LAN:** embedded TLS server on the desktop (`https://<lan-ip>:8787`, default) serves `/health`, `/connect/request`, and `/ws/signal` with a 2-peer hub. Trust cache authorizes reconnect via `connect_secret_hash` from `trust-record`. Mobile races LAN before cloud when `lanTlsCertSha256` is cached. |
+| Internet needed on LAN?    | **No (control path).** Automated test `lan_control_e2e` proves `/connect/request` + signaling URL minting with zero cloud. End-to-end offline video/input on real hardware is not yet CI-gated. Release builds still default to `https://api.takedia.com` for cloud rendezvous. |
 | Post-establishment         | **Already correct.** A dropped signaling socket does not end an established session: media flows peer-to-peer and the seat is held for a grace window.                                                                                                                  |
-| Presence / no-QR reconnect | **Cloud-only.** `presence.rs` holds a standing WebSocket to `backend_base_url`; `/connect/request` is an HTTP round-trip. Neither has a LAN path.                                                                                                                       |
-| STUN                       | Google's public STUN is hardcoded (`stun.l.google.com`). With no internet it simply yields no srflx candidates — host candidates still work — but it adds gathering latency, and when the internet _is_ up it discloses every user's IP to a third party.               |
+| Presence / no-QR reconnect | **LAN path added.** `/connect/request` on the embedded server + trust cache mirrors cloud auth. Cloud presence WS remains for remote mode.                                                                                                                              |
+| STUN                       | Google's public STUN is still hardcoded (`stun.l.google.com`). With no internet it simply yields no srflx candidates — host candidates still work — but it adds gathering latency, and when the internet _is_ up it discloses every user's IP to a third party.               |
 
 ### The consequence that reshaped the plan
 

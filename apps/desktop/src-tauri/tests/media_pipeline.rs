@@ -222,3 +222,4 @@ async fn pipeline_stops_cleanly_and_closes_channel() {
     }
     assert!(closed, "channel should close after pipeline stop");
 }
+mod common;

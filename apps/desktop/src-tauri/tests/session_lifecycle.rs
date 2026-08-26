@@ -31,6 +31,7 @@ async fn registers_on_connect() {
         url,
         ROOM.to_owned(),
         DEVICE.to_owned(),
+        None,
         control_rx,
         event_tx,
     ));
@@ -60,6 +61,7 @@ async fn relays_pair_request_and_denies_on_control_deny() {
         url,
         ROOM.to_owned(),
         DEVICE.to_owned(),
+        None,
         control_rx,
         event_tx,
     ));
@@ -121,6 +123,7 @@ async fn approve_sends_pair_approved_with_granted_scopes() {
         url,
         ROOM.to_owned(),
         DEVICE.to_owned(),
+        None,
         control_rx,
         event_tx,
     ));
@@ -168,6 +171,7 @@ async fn disconnect_before_any_peer_ends_the_session_cleanly() {
         url,
         ROOM.to_owned(),
         DEVICE.to_owned(),
+        None,
         control_rx,
         event_tx,
     ));
@@ -206,6 +210,7 @@ async fn dropping_the_control_sender_disconnects_like_an_explicit_disconnect() {
         url,
         ROOM.to_owned(),
         DEVICE.to_owned(),
+        None,
         control_rx,
         event_tx,
     ));
@@ -238,6 +243,7 @@ async fn signaling_closed_before_peer_connected_ends_the_session() {
         url,
         ROOM.to_owned(),
         DEVICE.to_owned(),
+        None,
         control_rx,
         event_tx,
     ));
@@ -260,3 +266,4 @@ async fn signaling_closed_before_peer_connected_ends_the_session() {
 
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
 }
+mod common;

@@ -130,8 +130,15 @@ export function createSignalingHubBundle(): SignalingHubBundle {
       // fail the approval itself (the user can re-trust on the next pairing).
       void trust
         .establishTrust(info.desktopDeviceId, info.mobileDeviceId)
-        .then(({ pairSecret }) => {
+        .then(async ({ pairSecret, connectSecretHash }) => {
           hub.deliverPairSecret(info.roomId, pairSecret);
+          const pair = await trust.findPair(info.desktopDeviceId, info.mobileDeviceId);
+          hub.deliverTrustRecord(info.desktopDeviceId, {
+            mobileDeviceId: info.mobileDeviceId,
+            connectSecretHash,
+            autoApprove: pair?.autoApprove ?? true,
+            displayName: pair?.displayName ?? null,
+          });
           return auditLog.devicePaired({
             metadata: {
               desktopDeviceId: info.desktopDeviceId,

@@ -43,8 +43,8 @@ import {
 } from '../lib/viewport';
 import { PressRepeater } from '../lib/pressRepeat';
 import { agentFeedReducer, INITIAL_AGENT_FEED } from '../lib/agentFeed';
-import { forgetPair, loadPairs, setPairSecret } from '../lib/pairs';
-import { requestConnect } from '../lib/api';
+import { forgetPair, loadPairs, setPairLanEndpoints, setPairSecret } from '../lib/pairs';
+import { requestConnectForPair } from '../lib/api';
 import { AgentPanel } from './AgentPanel';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Viewer'>;
@@ -114,7 +114,8 @@ const MODE_LABEL: Record<CaptureMode, string> = {
 };
 
 export function ViewerScreen({ route, navigation }: Props) {
-  const { roomId, signalingUrl, scopes, desktopDeviceName, desktopDeviceId } = route.params;
+  const { roomId, signalingUrl, scopes, desktopDeviceName, desktopDeviceId, lanTlsCertSha256 } =
+    route.params;
   // A live remote-control session is exactly the "video player" case iOS's
   // idle timer exempts: the user is watching/controlling without touching
   // the screen. Without this, Auto-Lock (30s under Low Power Mode) suspends
@@ -253,6 +254,9 @@ export function ViewerScreen({ route, navigation }: Props) {
         // desktop this is (always true for QR pairs via the redeem response).
         if (desktopDeviceId) void setPairSecret(desktopDeviceId, secret).catch(() => {});
       },
+      onLanEndpoints: (endpoints) => {
+        if (desktopDeviceId) void setPairLanEndpoints(desktopDeviceId, endpoints).catch(() => {});
+      },
       onRevoked: () => {
         // The desktop revoked this phone's trust — the stale local pairing
         // can never reconnect (the backend pair row is gone), so drop it
@@ -277,7 +281,7 @@ export function ViewerScreen({ route, navigation }: Props) {
           { text: 'OK', onPress: () => navigation.popToTop() },
         ]);
       },
-    });
+    }, lanTlsCertSha256);
     connRef.current = conn;
     conn.start().catch((e) => setError(toAppError(e)));
     return () => {
@@ -288,7 +292,7 @@ export function ViewerScreen({ route, navigation }: Props) {
       for (const repeater of toolbarRepeatersRef.current.values()) repeater.stop();
       conn.close();
     };
-  }, [signalingUrl, roomId, scopes, reconnectAttempt, syncGeometry, desktopDeviceId]);
+  }, [signalingUrl, roomId, scopes, reconnectAttempt, syncGeometry, desktopDeviceId, lanTlsCertSha256]);
 
   // Lazily create (once per action) and start/stop the toolbar's held-repeat
   // timer. See docs/audit/m3/input-touch.md Finding 14.
@@ -510,7 +514,7 @@ export function ViewerScreen({ route, navigation }: Props) {
         return;
       }
       try {
-        const res = await requestConnect(pair.apiBaseUrl, pair.desktopDeviceId, pair.connectSecret);
+        const res = await requestConnectForPair(pair);
         // `replace`, not `navigate`: the old room is gone, and leaving a
         // screen pointed at it in the stack means Back returns to a session
         // that can only fail.

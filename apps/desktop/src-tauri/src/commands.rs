@@ -14,6 +14,7 @@ use tokio::sync::mpsc::unbounded_channel;
 
 use crate::account;
 use crate::auth::{with_bearer, AuthError, DesktopAuth, LinkState};
+use crate::lan;
 use crate::session::{run_session, Control, SessionEvent};
 use crate::state::{AppState, AppStateDto, PendingRequest, SessionStatus, SharedState};
 
@@ -321,6 +322,9 @@ pub(crate) fn spawn_session_runner(
     });
 
     // Drive the session.
+    let lan_ad = app
+        .try_state::<Arc<lan::LanEndpoints>>()
+        .map(|ep| ep.as_ref().clone());
     let handle = tauri::async_runtime::spawn(async move {
         // Wait for the PREVIOUS session to fully tear down (its media.stop()
         // joins the capture thread) before this one starts, so screen capture
@@ -330,7 +334,16 @@ pub(crate) fn spawn_session_runner(
         if let Some(old) = old_task {
             let _ = tokio::time::timeout(SESSION_TEARDOWN_WAIT, old).await;
         }
-        if let Err(e) = run_session(signaling_url, room_id, device_id, control_rx, event_tx).await {
+        if let Err(e) = run_session(
+            signaling_url,
+            room_id,
+            device_id,
+            lan_ad,
+            control_rx,
+            event_tx,
+        )
+        .await
+        {
             log::error!(target: "lilypad::session", "session runner error: {e}");
         }
     });

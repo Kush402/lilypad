@@ -301,6 +301,8 @@ struct SessionRunner {
     /// mid-session reaches the phone's switcher without a reconnect.
     displays: Vec<crate::media::Display>,
     peer: Option<Arc<WebRtcPeer>>,
+    /// When the LAN control server is running, advertise its URLs to the phone.
+    lan_ad: Option<crate::lan::LanEndpoints>,
     peer_connected: bool,
     /// Set once, the first time `ConnectionState("connected")` is observed,
     /// and never cleared — unlike `peer_connected`, which is reassigned on
@@ -355,7 +357,11 @@ struct SessionRunner {
 }
 
 impl SessionRunner {
-    fn new(room_id: String, events: UnboundedSender<SessionEvent>) -> Self {
+    fn new(
+        room_id: String,
+        events: UnboundedSender<SessionEvent>,
+        lan_ad: Option<crate::lan::LanEndpoints>,
+    ) -> Self {
         Self {
             room_id,
             fsm: SessionFsm::new(),
@@ -364,6 +370,7 @@ impl SessionRunner {
             clipboard: ClipboardWatcher::new(),
             displays: Vec::new(),
             peer: None,
+            lan_ad,
             peer_connected: false,
             ever_connected: false,
             last_peer_traffic: None,
@@ -523,6 +530,14 @@ impl SessionRunner {
                 let new_peer = Arc::new(WebRtcPeer::new(ice_servers, peer_ev_tx.clone()).await?);
                 let sdp = new_peer.create_offer().await?;
                 sig.send(Envelope::offer(&self.room_id, &sdp))?;
+                if let Some(ep) = &self.lan_ad {
+                    let _ = sig.send(Envelope::lan_endpoints(
+                        &self.room_id,
+                        &ep.api_base_url,
+                        &ep.signaling_url,
+                        &ep.tls_cert_sha256,
+                    ));
+                }
                 self.pending_offer = Some(PendingOffer {
                     sdp,
                     sent_at: Instant::now(),
@@ -1096,6 +1111,7 @@ pub async fn run_session(
     signaling_url: String,
     room_id: String,
     device_id: String,
+    lan_ad: Option<crate::lan::LanEndpoints>,
     mut control_rx: UnboundedReceiver<Control>,
     events: UnboundedSender<SessionEvent>,
 ) -> Result<()> {
@@ -1111,7 +1127,7 @@ pub async fn run_session(
     // dropped on cellular-through-tunnel paths before the first beat.
     let mut heartbeat = tokio::time::interval(Duration::from_millis(4_000));
     let mut clipboard_poll = tokio::time::interval(CLIPBOARD_POLL_INTERVAL);
-    let mut runner = SessionRunner::new(room_id.clone(), events);
+    let mut runner = SessionRunner::new(room_id.clone(), events, lan_ad);
 
     // Abandoned-pairing guard: if no device redeems the QR and requests
     // pairing within this window, end the runner instead of leaking the

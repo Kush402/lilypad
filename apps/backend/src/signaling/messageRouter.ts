@@ -183,6 +183,21 @@ export class MessageRouter {
         }
         return [{ kind: 'relay', to: 'mobile', msg }];
 
+      case 'lan-endpoints':
+        // Desktop → mobile: cached LAN control-plane URLs for reconnect
+        // (NETWORKING.md §3 step 1). Same authorization as frame-size.
+        if (from !== 'desktop') {
+          return [
+            {
+              kind: 'reject',
+              to: from,
+              code: 'forbidden',
+              message: 'only the desktop may send this',
+            },
+          ];
+        }
+        return [{ kind: 'relay', to: 'mobile', msg }];
+
       case 'set-capture-mode':
       case 'set-display':
         // Mobile → desktop only: only the viewer has the mode/display UI, and

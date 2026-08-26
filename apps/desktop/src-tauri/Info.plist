@@ -23,14 +23,18 @@
   attached, on the one prompt whose answer decides whether the product's core
   claim ("nothing leaves your home") is true for that user.
 
-  NSBonjourServices is deliberately absent: Lilypad does not register or browse
-  for Bonjour services. The phone dials an address the desktop advertised
-  through the signaling channel, which is unicast, and TN3179 asks for that key
-  only for "registering or browsing for specific Bonjour services".
+  NSBonjourServices lists the `_lilypad._tcp` service type Lilypad uses on the
+  LAN. The desktop **advertises** it via mDNS; the phone **browses** for it when
+  the cached LAN address fails (NETWORKING.md §3 step 2). iOS requires this key
+  when browsing; macOS includes it for the same Local Network permission bundle.
 -->
 <plist version="1.0">
   <dict>
     <key>NSLocalNetworkUsageDescription</key>
     <string>Lilypad connects your iPhone to this Mac directly over your own Wi-Fi, so your screen never leaves your home network.</string>
+    <key>NSBonjourServices</key>
+    <array>
+      <string>_lilypad._tcp</string>
+    </array>
   </dict>
 </plist>
