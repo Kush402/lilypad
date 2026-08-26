@@ -27,6 +27,11 @@ import {
   createMailSender,
 } from '../auth/magicLink.js';
 import { AuditLogService, createDrizzleAuditLogStore } from '../services/auditLog.js';
+import {
+  AccountDeviceService,
+  createDrizzleAccountDeviceStore,
+} from '../services/accountDevices.js';
+import type { SignalingHub } from '../signaling/hub.js';
 import { log } from '../logging.js';
 
 /**
@@ -50,10 +55,12 @@ import { log } from '../logging.js';
  * public-key work, writes Redis state, or sends mail on an unauthenticated
  * caller's say-so — the same reasoning as `/pairing/create`.
  */
-export async function authRoutes(app: FastifyInstance): Promise<void> {
+export async function authRoutes(app: FastifyInstance, deps: { hub: SignalingHub }): Promise<void> {
+  const { hub } = deps;
   const refreshTokens = new RefreshTokenService(createDrizzleRefreshTokenStore());
   const accounts = new AccountService(createDrizzleAccountStore());
   const auditLog = new AuditLogService(createDrizzleAuditLogStore());
+  const accountDevices = new AccountDeviceService(createDrizzleAccountDeviceStore());
   const mailer = createMailSender();
 
   /** Mint the access+refresh pair a successful sign-in returns. */
@@ -380,11 +387,36 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       // product offers, and keeps renewing itself for another 30 days.
       // Revoked before the new session is issued, so this one survives.
       await refreshTokens.revokeUser(userId);
+
+      // And every DEVICE, which is the half that was missing.
+      //
+      // A device key is a credential in its own right (ADR-0002): once
+      // enrolled, a machine renews its own token by signing a challenge and
+      // never presents the password or a refresh token again. Somebody who
+      // signed in with a stolen password enrolled their machine in the act of
+      // signing in (ADR-0015), so revoking sessions alone left them with a
+      // working device token, a place on the account, and the ability to list,
+      // rename and revoke the victim's own Macs — after the victim had done
+      // the one thing the product tells a compromised user to do.
+      //
+      // The cost is that the owner's own machines are signed out too and have
+      // to sign in again, which is what "reset my password" means everywhere
+      // else and what both clients already know how to recover from.
+      const revoked = await accountDevices.revokeAllForUser(userId);
+      for (const device of revoked) {
+        // Same reason as `DELETE /devices/:deviceId`: an access token lives ten
+        // minutes, so a revoke that only wrote a column would leave a session
+        // running for ten more.
+        hub.endRoomsForDevice(device.fingerprint, 'device_removed');
+      }
       void auditLog
         .sessionsRevoked({
           userId,
           ip: req.ip,
-          metadata: { event: 'password_reset_revoked_sessions' },
+          metadata: {
+            event: 'password_reset_revoked_sessions',
+            devicesRevoked: revoked.length,
+          },
         })
         .catch((err) => log.audit.error({ err }, 'failed to write password-reset audit log'));
       return reply.code(200).send(await issueSession(userId, req.ip));

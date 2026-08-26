@@ -28,21 +28,11 @@ function type(testId: string, value: string) {
 }
 
 describe('AccountSignIn', () => {
-  /** Whatever this window registered for `lilypad://account`. */
-  let accountEvent: ((event: { payload: unknown }) => void) | undefined;
-
   beforeEach(() => {
-    accountEvent = undefined;
     vi.clearAllMocks();
     vi.mocked(api.getAccountState).mockResolvedValue(SIGNED_OUT);
     vi.mocked(api.accountEmailAvailable).mockResolvedValue(true);
-    vi.mocked(listen).mockImplementation((async (
-      name: string,
-      handler: (e: { payload: unknown }) => void,
-    ) => {
-      if (name === 'lilypad://account') accountEvent = handler;
-      return vi.fn();
-    }) as unknown as typeof listen);
+    vi.mocked(listen).mockResolvedValue(vi.fn() as never);
   });
 
   it('signs in with email and password', async () => {

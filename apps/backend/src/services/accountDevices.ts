@@ -34,6 +34,11 @@ export interface AccountDeviceStore {
   /** Withdraw ownership. Sets `revoked_at`; the row survives as audit trail,
    * exactly as pair revocation does. */
   revoke(deviceId: string, at: Date): Promise<void>;
+  /** Withdraw ownership from every unrevoked device on an account at once,
+   * returning the wire fingerprints of the rows this call actually changed.
+   * Rows already revoked are left alone and not returned — their access ended
+   * when they were revoked, not now. */
+  revokeAllForUser(userId: string, at: Date): Promise<{ fingerprint: string }[]>;
   /** The wire fingerprint of a device, for finding its live rooms — the hub is
    * keyed by fingerprint, not by these uuids. */
   fingerprintOf(deviceId: string): Promise<string | null>;
@@ -152,6 +157,33 @@ export class AccountDeviceService {
     await this.store.revoke(deviceId, now);
     return { fingerprint };
   }
+
+  /**
+   * Take every machine off the account — what a password reset means.
+   *
+   * A device key is a credential in its own right (ADR-0002): once enrolled, a
+   * device renews its own token by signing a challenge, and never presents the
+   * account's password or refresh token again. So revoking refresh tokens ends
+   * the account SESSIONS and leaves the strongest credential on the account
+   * untouched.
+   *
+   * That made the product's own remediation incomplete. Somebody who signed in
+   * with a stolen password enrolled their machine in the act of signing in
+   * (ADR-0015); after the victim reset the password, that machine still held a
+   * working device token, still appeared on the account, and could still list,
+   * rename and REVOKE the victim's own Macs. The one thing the product tells a
+   * compromised user to do did not remove the attacker.
+   *
+   * Returns what it actually revoked, so the caller can end those devices' live
+   * rooms — for the reason `revoke` above gives: a ten-minute access token
+   * outlives the column write.
+   */
+  async revokeAllForUser(
+    userId: string,
+    now: Date = new Date(),
+  ): Promise<{ fingerprint: string }[]> {
+    return this.store.revokeAllForUser(userId, now);
+  }
 }
 
 /** Adapts the real Drizzle client. */
@@ -187,6 +219,19 @@ export function createDrizzleAccountDeviceStore(
         .update(devices)
         .set({ revokedAt: at })
         .where(and(eq(devices.id, deviceId), isNull(devices.revokedAt)));
+    },
+    async revokeAllForUser(userId, at) {
+      // `returning` is what makes this one statement rather than a read then a
+      // write: the set of rows it changed is exactly the set it reports, so a
+      // device enrolled between the two halves cannot be missed or
+      // double-counted. Guarded on `isNull` for the same reason `revoke` is —
+      // a row already revoked keeps the timestamp that says when its access
+      // really ended.
+      return database
+        .update(devices)
+        .set({ revokedAt: at })
+        .where(and(eq(devices.userId, userId), isNull(devices.revokedAt)))
+        .returning({ fingerprint: devices.fingerprint });
     },
     async fingerprintOf(deviceId) {
       const rows = await database

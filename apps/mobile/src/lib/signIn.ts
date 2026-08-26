@@ -4,7 +4,7 @@ import appleAuth from '@invertase/react-native-apple-authentication';
 import { AuthMethodsSchema, type AuthMethods } from '@lilypad/protocol';
 import type { AuthSession, DeviceSession, OAuthProviderName } from '@lilypad/protocol';
 import { GOOGLE_WEB_CLIENT_ID, GOOGLE_IOS_CLIENT_ID, isGoogleConfigured } from '../config/oauth';
-import { enrollDevice } from './auth';
+import { DeviceAuthError, enrollDevice } from './auth';
 import { saveSession } from './session';
 import { UserFacingError } from './errors';
 
@@ -305,7 +305,46 @@ export async function completeSignIn(
   session: AuthSession,
   profile: { email?: string; name?: string } = {},
 ): Promise<DeviceSession> {
-  const enrolled = await enrollDevice(apiBaseUrl, session.accessToken);
+  const enrolled = await enrolWithOneRetry(apiBaseUrl, session.accessToken);
   await saveSession({ userId: session.userId, apiBaseUrl, ...profile });
   return enrolled;
+}
+
+/**
+ * How long to wait before the one retry below. Just over a second, because a
+ * second is the whole resolution of the ambiguity being waited out.
+ */
+const REVOKED_RETRY_DELAY_MS = 1_200;
+
+/**
+ * Enrol, and wait out one second if the server says this phone was revoked.
+ *
+ * `DeviceRegistry.claim` admits a revoked row only for a credential minted
+ * strictly AFTER the revocation, and it compares against the access token's
+ * `iat` — which JWT records in whole SECONDS, rounded down. So a session minted
+ * in the same second as a revocation is indistinguishable, from the server's
+ * side, from one minted just before it, and the server correctly refuses both.
+ *
+ * That is not an edge case, it is the ordinary path for two acts:
+ *
+ * - **Signing out and straight back in**, which is the most obvious thing
+ *   somebody does after signing out by mistake.
+ * - **Resetting a password**, which now revokes every device on the account
+ *   before it issues the session that is supposed to re-enrol this one. Without
+ *   this wait that reset could never complete on a phone — it would fail every
+ *   single time rather than occasionally.
+ *
+ * Waiting the second out resolves the ambiguity on this side. The alternative
+ * is widening the server's window, which is the half that must not move. The
+ * desktop has done exactly this since ADR-0015 (`commands::sign_in_and_enrol`);
+ * the phone runs the same path and did not.
+ */
+async function enrolWithOneRetry(apiBaseUrl: string, accessToken: string): Promise<DeviceSession> {
+  try {
+    return await enrollDevice(apiBaseUrl, accessToken);
+  } catch (err) {
+    if (!(err instanceof DeviceAuthError) || err.code !== 'device_revoked') throw err;
+    await new Promise<void>((resolve) => setTimeout(() => resolve(), REVOKED_RETRY_DELAY_MS));
+    return enrollDevice(apiBaseUrl, accessToken);
+  }
 }

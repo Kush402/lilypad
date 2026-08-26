@@ -96,7 +96,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   const hubBundle = createSignalingHubBundle();
 
   await app.register(healthRoutes);
-  await app.register(authRoutes);
+  await app.register(authRoutes, { hub: hubBundle.hub });
   await app.register(enrollmentRoutes);
   await app.register(pairingRoutes);
   await app.register(signalingRoutes, hubBundle);

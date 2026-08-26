@@ -94,6 +94,20 @@ public internet. This documents the assets, threats, and mitigations.
       resolves its actor from a signed token rather than the request body;
       verified against production by driving the whole linking ceremony over
       the API and then failing to break it nine different ways.
+- [x] **A password reset removes the attacker, not just their session.**
+      Resetting the password revokes the account's refresh tokens **and every
+      device on the account**, and ends those devices' live rooms
+      ([`routes/auth.ts`](../apps/backend/src/routes/auth.ts),
+      [`services/accountDevices.ts`](../apps/backend/src/services/accountDevices.ts)).
+      Sessions alone were not enough: a device key is a credential in its own
+      right (ADR-0002) and never presents the password again, so somebody who
+      signed in with a stolen password — which enrols their machine, ADR-0015 —
+      kept a working device token, a place on the account, and the ability to
+      list, rename and revoke the victim's own Macs, after the victim had done
+      the one thing the product tells a compromised user to do. The cost is
+      that the owner's own machines are signed out too, which is what "reset my
+      password" means everywhere else and what both clients recover from by
+      signing in again.
 - [ ] Optional: require the desktop to re-confirm for `control` scope escalation.
 - [x] **Data retention policy for audit logs; PII minimization** — the policy is
       **2 days**, and it is enforced rather than documented:

@@ -11,6 +11,10 @@ import Fastify, { type FastifyInstance } from 'fastify';
  * 2. **Proving an inbox that a squatter had registered revokes the squatter's
  *    sessions.** `accounts.test.ts` proves the password is dropped; only the
  *    route can drop the sessions that password had already opened.
+ * 3. **A password reset also takes every DEVICE off the account.** A device key
+ *    is a credential in its own right (ADR-0002) and does not go through the
+ *    password again, so revoking sessions alone left an attacker who had signed
+ *    in with the stolen password holding a working device token.
  */
 
 const revokeUser = vi.fn(async () => {});
@@ -20,6 +24,8 @@ const resolveEmail =
   vi.fn<(email: string) => Promise<{ userId: string; claimedFromUnproven: boolean }>>();
 const redeemPasswordReset = vi.fn<(token: string) => Promise<string | null>>();
 const redeemMagicLink = vi.fn<(token: string) => Promise<string | null>>();
+const revokeAllForUser = vi.fn<(userId: string) => Promise<{ fingerprint: string }[]>>();
+const endRoomsForDevice = vi.fn(() => 0);
 
 vi.mock('../auth/refreshTokens.js', () => ({
   RefreshTokenService: class {
@@ -50,6 +56,12 @@ vi.mock('../auth/tokens.js', () => ({
   signAccessToken: async () => 'access-new',
   ACCESS_TOKEN_TTL_SECONDS: 600,
 }));
+vi.mock('../services/accountDevices.js', () => ({
+  AccountDeviceService: class {
+    revokeAllForUser = revokeAllForUser;
+  },
+  createDrizzleAccountDeviceStore: () => ({}),
+}));
 vi.mock('../services/auditLog.js', () => ({
   AuditLogService: class {
     login = vi.fn(async () => {});
@@ -65,8 +77,11 @@ let app: FastifyInstance;
 
 beforeEach(async () => {
   vi.clearAllMocks();
+  revokeAllForUser.mockResolvedValue([]);
   app = Fastify();
-  await app.register(authRoutes);
+  await app.register(authRoutes, {
+    hub: { endRoomsForDevice } as unknown as Parameters<typeof authRoutes>[1]['hub'],
+  });
   await app.ready();
 });
 
@@ -88,6 +103,40 @@ describe('POST /auth/password/reset/confirm', () => {
     expect(revokeUser.mock.invocationCallOrder[0]).toBeLessThan(issue.mock.invocationCallOrder[0]);
   });
 
+  /**
+   * The half that was missing until 2026-08-26.
+   *
+   * Somebody who signs in with a stolen password enrols their machine in the
+   * act of signing in (ADR-0015), and from then on that machine renews its own
+   * token by signing a challenge — it never presents the password or a refresh
+   * token again. So a reset that revoked only sessions left the attacker on the
+   * account, able to list, rename and revoke the victim's own Macs, after the
+   * victim had done the one thing they are told to do.
+   */
+  it('takes every device off the account, and ends the rooms they were in', async () => {
+    redeemPasswordReset.mockResolvedValue('ada@example.com');
+    setPasswordForEmail.mockResolvedValue('user-ada');
+    revokeAllForUser.mockResolvedValue([{ fingerprint: 'fp-mac' }, { fingerprint: 'fp-phone' }]);
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/auth/password/reset/confirm',
+      payload: { token: 'a'.repeat(32), password: 'a brand new passphrase' },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(revokeAllForUser).toHaveBeenCalledWith('user-ada');
+    // A ten-minute access token outlives the column write, so the live rooms
+    // have to be ended by name — the same rule `DELETE /devices/:id` follows.
+    expect(endRoomsForDevice).toHaveBeenCalledWith('fp-mac', 'device_removed');
+    expect(endRoomsForDevice).toHaveBeenCalledWith('fp-phone', 'device_removed');
+    // And the session handed back is minted after all of it, or the reset
+    // would sign out the person performing it.
+    expect(revokeAllForUser.mock.invocationCallOrder[0]).toBeLessThan(
+      issue.mock.invocationCallOrder[0],
+    );
+  });
+
   it('revokes nothing when the token does not redeem', async () => {
     redeemPasswordReset.mockResolvedValue(null);
     const res = await app.inject({
@@ -97,6 +146,7 @@ describe('POST /auth/password/reset/confirm', () => {
     });
     expect(res.statusCode).toBe(401);
     expect(revokeUser).not.toHaveBeenCalled();
+    expect(revokeAllForUser).not.toHaveBeenCalled();
   });
 });
 
