@@ -327,6 +327,24 @@ A `TrustedPairListing` is
 > outage. That trade deserves its own pass, not a rider here. Mitigation
 > meanwhile: revoking again ends the now-live session, as does Disconnect.
 
+## Billing ✅ (StoreKit)
+
+Apple subscription verification and tier state
+([ADR-0016](adr/0016-storekit-and-the-price.md)). The phone posts Apple's
+signed transaction; the server alone decides `users.tier`. Clients never assert
+a tier of their own. Handlers:
+[`routes/billing.ts`](../apps/backend/src/routes/billing.ts).
+
+| Route                              | Purpose                                                                                                                                                                                                 |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /billing/status`              | Current tier for the caller's account → `{ tier, productId, currentPeriodEndsAt }`. 🔒 account or device token.                                                                                       |
+| `POST /billing/apple/transactions` | Submit a StoreKit 2 purchase or restore — body `{ signedTransaction }` → `{ tier, productId, currentPeriodEndsAt }`. One Apple subscription cannot link to two Lilypad accounts (`409 already_linked`). |
+| `POST /billing/apple/notifications` | App Store Server Notifications V2 — body `{ signedPayload }`. No Lilypad auth; authenticity is the JWS. Always `200 { ok: true }` once the payload parses, so Apple does not retry a dropped event.   |
+
+When `APPLE_IAP_BUNDLE_ID` is unset, the transaction route answers
+`503 billing_unconfigured`; the notification route answers `503` so Apple retries
+later rather than dropping the event.
+
 ## `GET /ws/signal` ✅
 
 WebSocket signaling — **fully implemented**: room-routed relay, session state
