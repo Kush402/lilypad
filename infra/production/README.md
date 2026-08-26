@@ -74,11 +74,11 @@ by `deploy.yml`.
 
 ## Files that live only on the host
 
-| Path                                     | What                          | Backed up?                                       |
-| ---------------------------------------- | ----------------------------- | ------------------------------------------------ |
-| `/opt/lilypad/.env.production`           | every production secret       | **No** — recreate from `.env.production.example` |
-| `/opt/lilypad/tunnel-credentials.json`   | Cloudflare tunnel credentials | **No** — reissue from the Cloudflare dashboard   |
-| `/opt/lilypad/cloudflared/config.yml`    | tunnel ingress                | Vendored here                                    |
-| `/opt/lilypad/cloudflared-local.yml`     | compose override              | Vendored here                                    |
-| `/opt/lilypad/infra/production/backups/` | nightly `pg_dump`             | On the same disk as the database it protects     |
-| `/usr/local/bin/lilypad-status`          | watchdog probe                | `infra/monitoring/lilypad-status`                |
+| Path                                     | What                            | Backed up?                                              |
+| ---------------------------------------- | ------------------------------- | ------------------------------------------------------- |
+| `/opt/lilypad/.env.production`           | every production secret         | **No** — recreate from `.env.production.example`        |
+| `/opt/lilypad/tunnel-credentials.json`   | Cloudflare tunnel credentials   | **No** — reissue from the Cloudflare dashboard          |
+| `/opt/lilypad/cloudflared/config.yml`    | tunnel ingress                  | Vendored here                                           |
+| `/opt/lilypad/cloudflared-local.yml`     | compose override                | Vendored here                                           |
+| `/opt/lilypad/infra/production/backups/` | nightly `pg_dump` (`backup.sh`) | Verified, 7-day local retention, copied to the relay VM |
+| `/usr/local/bin/lilypad-status`          | watchdog probe                  | `infra/monitoring/lilypad-status`                       |
