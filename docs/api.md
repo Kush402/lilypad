@@ -335,11 +335,11 @@ signed transaction; the server alone decides `users.tier`. Clients never assert
 a tier of their own. Handlers:
 [`routes/billing.ts`](../apps/backend/src/routes/billing.ts).
 
-| Route                              | Purpose                                                                                                                                                                                                 |
-| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GET /billing/status`              | Current tier for the caller's account → `{ tier, productId, currentPeriodEndsAt }`. 🔒 account or device token.                                                                                       |
-| `POST /billing/apple/transactions` | Submit a StoreKit 2 purchase or restore — body `{ signedTransaction }` → `{ tier, productId, currentPeriodEndsAt }`. One Apple subscription cannot link to two Lilypad accounts (`409 already_linked`). |
-| `POST /billing/apple/notifications` | App Store Server Notifications V2 — body `{ signedPayload }`. No Lilypad auth; authenticity is the JWS. Always `200 { ok: true }` once the payload parses, so Apple does not retry a dropped event.   |
+| Route                               | Purpose                                                                                                                                                                                                 |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /billing/status`               | Current tier for the caller's account → `{ tier, productId, currentPeriodEndsAt }`. 🔒 account or device token.                                                                                         |
+| `POST /billing/apple/transactions`  | Submit a StoreKit 2 purchase or restore — body `{ signedTransaction }` → `{ tier, productId, currentPeriodEndsAt }`. One Apple subscription cannot link to two Lilypad accounts (`409 already_linked`). |
+| `POST /billing/apple/notifications` | App Store Server Notifications V2 — body `{ signedPayload }`. No Lilypad auth; authenticity is the JWS. Always `200 { ok: true }` once the payload parses, so Apple does not retry a dropped event.     |
 
 When `APPLE_IAP_BUNDLE_ID` is unset, the transaction route answers
 `503 billing_unconfigured`; the notification route answers `503` so Apple retries
