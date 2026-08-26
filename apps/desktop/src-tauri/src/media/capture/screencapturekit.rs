@@ -37,6 +37,23 @@ use crate::permission::PermissionStatus;
 /// local check, and this plugin's health is polled by the UI periodically.
 const PERMISSION_CACHE_TTL: Duration = Duration::from_millis(500);
 
+/// How long to wait for ScreenCaptureKit to answer "what displays are there".
+///
+/// **`SCShareableContent::get()` does not fail when Screen Recording is
+/// missing — it never returns.** It waits on a completion handler that is never
+/// called, so `display_resolution`'s documented fallback ("`None` … e.g. Screen
+/// Recording not yet granted") was unreachable in precisely the case it names,
+/// and the call hung instead. Reproduced on a Mac with the grant cleared: three
+/// `media_controller` tests blocked forever inside this call, one holding their
+/// shared lock and two queued behind it. The same call runs on the product path
+/// when a session starts — on a Mac whose owner is, at that moment, being told
+/// by the Setup window that their permission needs repairing.
+///
+/// Generous: a local system call that normally answers in milliseconds. The
+/// cost of being wrong is one session opening at the mode's default resolution
+/// instead of the display's, which is what the fallback was always for.
+const RESOLUTION_QUERY_TIMEOUT: Duration = Duration::from_secs(3);
+
 /// How long `next_frame()` waits for a new frame before reporting a stall.
 /// Generous relative to any real frame interval (even 5 fps = 200ms) so it
 /// only fires on a genuine stream stall, not ordinary jitter.
@@ -53,20 +70,53 @@ const FRAME_WAIT_TIMEOUT: Duration = Duration::from_secs(2);
 /// ceiling to trade that cost for readability. `None` if ScreenCaptureKit
 /// can't enumerate a display right now (e.g. Screen Recording not yet
 /// granted) — the caller falls back to its own mode-specific default in that
-/// case. Refresh-rate matching is deliberately out of scope here (`SCDisplay`
+/// case, and see `RESOLUTION_QUERY_TIMEOUT` for how that case is actually
+/// detected, which is not how this comment used to assume. Refresh-rate matching is deliberately out of scope here (`SCDisplay`
 /// doesn't expose one; capture stays at its configured fps) — this fixes the
 /// resolution/aspect-ratio mismatch, the finding's primary complaint, not
 /// frame-rate matching. See `docs/audit/m3/streaming-media.md` Finding 1 and
 /// `docs/audit/m3/prior-art.md` Finding 2.
 pub fn display_resolution(display_id: Option<u32>, max_long_edge: u32) -> Option<(u32, u32)> {
-    let content = SCShareableContent::get().ok()?;
-    let displays = content.displays();
-    let display = pick_display(&displays, display_id)?;
-    let (w, h) = (display.width(), display.height());
-    if w == 0 || h == 0 {
-        return None; // degenerate report — keep the caller's existing default
+    answer_within(RESOLUTION_QUERY_TIMEOUT, move || {
+        let content = SCShareableContent::get().ok()?;
+        let displays = content.displays();
+        let display = pick_display(&displays, display_id)?;
+        let (w, h) = (display.width(), display.height());
+        // A degenerate report — keep the caller's existing default.
+        (w != 0 && h != 0).then(|| downscale_to_fit(w, h, max_long_edge))
+    })
+}
+
+/// Run `work` on its own thread and give up on it after `timeout`.
+///
+/// Separate from its one caller so the giving-up half can be tested at all: the
+/// condition it exists for is a system call that hangs, which no test can ask
+/// for on demand. This way the decision is reachable with a closure that simply
+/// sleeps.
+///
+/// ponytail: the thread is detached, because there is no way to cancel the call
+/// underneath it. At most one is stranded per attempt, on a Mac that cannot
+/// capture anything anyway; cache the verdict if that ever turns out to be more
+/// than a handful.
+fn answer_within<T: Send + 'static>(
+    timeout: Duration,
+    work: impl FnOnce() -> Option<T> + Send + 'static,
+) -> Option<T> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(work());
+    });
+    match rx.recv_timeout(timeout) {
+        Ok(answer) => answer,
+        Err(_) => {
+            log::warn!(
+                target: "lilypad::capture",
+                "ScreenCaptureKit did not answer within {timeout:?} — using the mode's \
+                 default resolution. Screen Recording is most likely not granted to this build.",
+            );
+            None
+        }
     }
-    Some(downscale_to_fit(w, h, max_long_edge))
 }
 
 /// The requested display, or the first one when nothing was requested or the
@@ -471,6 +521,47 @@ impl CaptureBackend for ScreenCaptureKitSource {
 
 #[cfg(test)]
 mod tests {
+    /// The bug this guards is a system call that never returns, which no test
+    /// can ask for on demand — so the giving-up decision is tested directly,
+    /// with a closure that simply does not finish in time.
+    ///
+    /// It matters because the fallback was documented and unreachable:
+    /// `SCShareableContent::get()` does not fail when Screen Recording is
+    /// missing, it blocks forever. Verified by sampling a stuck test process,
+    /// parked in `Condvar::wait` inside that call for over seven minutes.
+    #[test]
+    fn a_display_query_that_never_answers_falls_back_instead_of_hanging() {
+        let started = std::time::Instant::now();
+        let answer = super::answer_within(Duration::from_millis(50), || {
+            std::thread::sleep(Duration::from_secs(30));
+            Some((3840_u32, 2160_u32))
+        });
+        assert_eq!(
+            answer, None,
+            "a query that did not answer must not be waited for"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "gave up after {:?} — the timeout is not doing anything",
+            started.elapsed()
+        );
+    }
+
+    /// And the ordinary case still returns what it measured, or the caller
+    /// would silently lose real-resolution capture on every Mac.
+    #[test]
+    fn a_display_query_that_answers_is_used() {
+        assert_eq!(
+            super::answer_within(Duration::from_secs(5), || Some((1920_u32, 1200_u32))),
+            Some((1920, 1200))
+        );
+        // A query that answers "no display" is an answer, not a timeout.
+        assert_eq!(
+            super::answer_within(Duration::from_secs(5), || Option::<(u32, u32)>::None),
+            None
+        );
+    }
+
     use super::*;
 
     #[test]

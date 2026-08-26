@@ -415,6 +415,55 @@ describe('ViewerConnection', () => {
       expect(revokedOrder).toBeLessThan(endedOrder);
     });
 
+    /**
+     * A laptop leaving the account is a different fact from a pairing ending,
+     * and the phone acts differently on each: `revoked` makes it drop its
+     * local pair row — taking the per-pair connect secret, which is never
+     * re-issued, with it — while `device_removed` must leave it alone. The
+     * pair rows survive a device removal, and re-enrolling the same key
+     * restores reach with no second QR, so a phone that forgot the secret
+     * would have made a reversible thing permanent.
+     *
+     * This became load-bearing when signing out of a Mac started routing
+     * through `DELETE /devices/:deviceId` (ADR-0015): the product now promises,
+     * on the sign-out confirmation and on the website, that pairings survive.
+     */
+    it('fires onDeviceRemoved — not onRevoked — when the LAPTOP left the account', async () => {
+      const cb = { ...makeCallbacks(), onRevoked: jest.fn(), onDeviceRemoved: jest.fn() };
+      const conn = new ViewerConnection('wss://x', 'room1', ['view'], cb);
+      await conn.start();
+      const sig = lastSignaling();
+
+      sig.onMessage({
+        type: 'session-end',
+        roomId: 'room1',
+        from: 'desktop',
+        ts: 0,
+        payload: { reason: 'device_removed' },
+      });
+
+      expect(cb.onDeviceRemoved).toHaveBeenCalledTimes(1);
+      expect(cb.onRevoked).not.toHaveBeenCalled();
+      expect(cb.onState).toHaveBeenCalledWith('ended');
+    });
+
+    it('does not fire onDeviceRemoved for a pairing that was revoked', async () => {
+      const cb = { ...makeCallbacks(), onRevoked: jest.fn(), onDeviceRemoved: jest.fn() };
+      const conn = new ViewerConnection('wss://x', 'room1', ['view'], cb);
+      await conn.start();
+
+      lastSignaling().onMessage({
+        type: 'session-end',
+        roomId: 'room1',
+        from: 'desktop',
+        ts: 0,
+        payload: { reason: 'revoked' },
+      });
+
+      expect(cb.onRevoked).toHaveBeenCalledTimes(1);
+      expect(cb.onDeviceRemoved).not.toHaveBeenCalled();
+    });
+
     it('does NOT fire onRevoked for a different session-end reason', async () => {
       const cb = { ...makeCallbacks(), onRevoked: jest.fn() };
       const conn = new ViewerConnection('wss://x', 'room1', ['view'], cb);

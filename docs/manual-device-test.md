@@ -189,7 +189,7 @@ the source:
 | 1.4 | Double-click Lilypad in Applications                                | **The build is ad-hoc signed, not notarized, so macOS refuses it**: _"Lilypad" cannot be opened because the developer cannot be verified._ Correct for this build; right-click → Open to proceed. |
 | 1.5 | Right-click Lilypad → **Open** → **Open**                           | It launches. (Or System Settings → Privacy & Security → **Open Anyway**.)                                                                                                                         |
 | 1.6 | Look at the screen                                                  | A small green **bubble** floats near the top-left.                                                                                                                                                |
-| 1.7 | Look at the menu bar                                                | A Lilypad **tray icon**, with: Open Dashboard, Show QR / Pair, Approve, Deny, Disconnect, ⛔ Panic disconnect, Diagnostics…                                                                       |
+| 1.7 | Look at the menu bar                                                | A Lilypad **menu bar icon**, with: Open Dashboard, Pair a phone…, Approve, Deny, Disconnect, ⛔ Panic disconnect, Settings…, Diagnostics…                                                         |
 | 1.8 | Leave it running for 10 minutes while you use the Mac normally      | No crash, no beachball, no runaway CPU (check Activity Monitor: idle should be low single-digit %).                                                                                               |
 | 1.9 | Tray → **Diagnostics…**                                             | A window opens showing Health, Last connection, and `backend: https://api.takedia.com`. **If the backend is anything else, stop and report it.**                                                  |
 
@@ -249,14 +249,14 @@ and the absence of a prompt is not a failure.
 
 ## 3. Pairing
 
-| #   | Do                                                      | Expect                                                                            |
-| --- | ------------------------------------------------------- | --------------------------------------------------------------------------------- |
-| 3.1 | On the Mac, click the bubble (or tray → Show QR / Pair) | A QR code appears with a countdown. It expires in **60 seconds**.                 |
-| 3.2 | On the iPhone, open Lilypad → **Scan**                  | The camera opens. Point it at the QR.                                             |
-| 3.3 | Watch the Mac                                           | An **Approve / Deny** card appears naming the phone.                              |
-| 3.4 | Click **Approve**                                       | The phone shows the Mac's screen within a couple of seconds.                      |
-| 3.5 | Let a QR expire without scanning it                     | It shows **Expired** and scanning it afterwards does nothing. Generate a new one. |
-| 3.6 | Scan the same QR twice                                  | The second attempt fails. Codes are single-use.                                   |
+| #   | Do                                                         | Expect                                                                            |
+| --- | ---------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| 3.1 | On the Mac, click the bubble (or menu bar → Pair a phone…) | A QR code appears with a countdown. It expires in **60 seconds**.                 |
+| 3.2 | On the iPhone, open Lilypad → **Scan**                     | The camera opens. Point it at the QR.                                             |
+| 3.3 | Watch the Mac                                              | An **Approve / Deny** card appears naming the phone.                              |
+| 3.4 | Click **Approve**                                          | The phone shows the Mac's screen within a couple of seconds.                      |
+| 3.5 | Let a QR expire without scanning it                        | It shows **Expired** and scanning it afterwards does nothing. Generate a new one. |
+| 3.6 | Scan the same QR twice                                     | The second attempt fails. Codes are single-use.                                   |
 
 ### Putting the Mac on an account
 

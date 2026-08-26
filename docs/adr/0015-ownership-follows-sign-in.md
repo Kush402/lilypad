@@ -77,6 +77,23 @@ both sides are owned by different accounts (`403 different_account`). Previously
 unreachable from this ceremony — a Mac had no owner until a phone gave it one —
 and reachable now that both machines join their own accounts independently.
 
+**Signing out is the inverse act, and performs it.** If signing in is what puts
+a device on the account, signing out is what takes it off — on the same screen,
+by the same person, without a second device. On the desktop it ends any live
+session locally, then releases the device (`DELETE /devices/{id}`, presented
+with the device's own token, which also ends its presence seat and revokes the
+account's refresh tokens), then forgets the local account record. It is
+reversible: `trusted_devices` rows and their per-pair secrets survive, and
+re-enrolling the same key clears `revoked_at`, so signing back in restores every
+pairing without a second QR.
+
+This was added after the fact, and its absence was a hole rather than a design.
+Sign-out deleted the stored account record and nothing else — the device key
+kept authenticating, every paired phone could still ring the machine, and a
+session already streaming the screen kept streaming it. The code called that
+deliberate on ADR-0010's reasoning (removing a computer from an account is a
+phone's job), which this ADR had already replaced.
+
 The vocabulary collapses accordingly: a Mac is **on your account** (automatic,
 at sign-in) and **paired** with phones (deliberate, once, per phone). The word
 "linked" is retired from every customer-facing surface.
@@ -106,6 +123,21 @@ one that was revoked. `AccountPanel` offers it only in those states.
 **Setup drops from four steps to three**: your account → permissions → pair your
 phone. The phone is picked up once.
 
+**A device leaving the account is not a pairing ending, and the two must not
+share a wire signal.** Both force-end live rooms, and the phone acts on them
+differently: a pair revocation makes it drop its local row and the per-pair
+connect secret, which is never re-issued, while a device removal must leave both
+alone — the pair survives on the server and comes back when someone signs in on
+the machine again. `DELETE /devices/{id}` therefore ends rooms with reason
+`device_removed`; only `DELETE /devices/pairs/{id}` uses `revoked`.
+
+**A phone ringing a device that is no longer on the account is told so**
+(`403 desktop_not_on_account`), after authorization rather than before it: past
+`authorizeConnect` the caller has proved it is the phone it names and presented
+that laptop's per-pair secret, so the anonymous 404 protects nothing it did not
+already know. The code names the fact and not either cause — a Mac signing
+itself out and an owner removing it produce identical rows.
+
 ## Verification
 
 - `apps/backend/src/routes/enrollmentGuard.test.ts` — desktop and mobile enrol
@@ -114,3 +146,11 @@ phone. The phone is picked up once.
   refused; same-account is not.
 - `apps/desktop/src-tauri/src/commands.rs` — sign-in enrols, and reports the
   failure rather than silently leaving the Mac ownerless.
+- `apps/desktop/src-tauri/src/auth.rs` (`release_*`) — sign-out deletes this
+  device's own row with this device's own token, treats an absent device as
+  done, drops the cached token, and reports a refusal in words.
+- `apps/backend/src/routes/connectNotOnAccount.test.ts` — a proven phone is told
+  the laptop is not on the account; an unproven one still gets the anonymous
+  404; an owned-but-sleeping laptop still reports offline.
+- `apps/mobile/src/lib/webrtc.test.ts` — `device_removed` keeps the pairing,
+  `revoked` drops it.

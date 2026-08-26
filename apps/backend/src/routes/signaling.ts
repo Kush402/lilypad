@@ -142,19 +142,6 @@ export async function signalingRoutes(
         });
       if (!actAsDevice(optionalActorOf(req), mobile).allow) return notTrusted();
 
-      // A laptop removed from its account is not reachable, whatever its pairs
-      // still say. Device revocation withdraws OWNERSHIP; the `trusted_devices`
-      // rows survive as audit trail, so `authorizeConnect` passes one and the
-      // ring falls through to the presence check and answers 503
-      // `desktop_offline`. Measured against production. It grants no access —
-      // a revoked device cannot hold a device token, so it can never occupy a
-      // presence room — but it tells the owner their Mac is offline when what
-      // actually happened is that it was removed, which is the one thing they
-      // would want to know. Same 404 as an unknown pair, for the same
-      // enumeration reason as above.
-      const desktop = await deviceOwnershipByFingerprint('desktop', desktopDeviceId);
-      if (desktop?.state === 'revoked') return notTrusted();
-
       // Authorize: trusted, not revoked, and the per-pair connect secret must
       // match (unless this is a legacy pre-secret pair). Fails closed.
       const authz = await trust.authorizeConnect(desktopDeviceId, mobileDeviceId, pairSecret);
@@ -177,6 +164,43 @@ export async function signalingRoutes(
         });
       }
       const pair = authz.pair;
+
+      // A laptop removed from its account is not reachable, whatever its pairs
+      // still say. Device revocation withdraws OWNERSHIP; the `trusted_devices`
+      // rows survive as audit trail, so `authorizeConnect` passes one and the
+      // ring would otherwise fall through to the presence check and answer 503
+      // `desktop_offline`. Measured against production. It grants no access —
+      // a revoked device cannot hold a device token, so it can never occupy a
+      // presence room — but "offline" is the wrong sentence for a Mac that is
+      // sitting there switched on.
+      //
+      // **Checked AFTER authorization, which is what lets it say so.** It used
+      // to run before, and answer the same anonymous 404 as an unknown pair, so
+      // that a caller guessing device ids could not learn which ones exist.
+      // Past `authorizeConnect` there is nothing left to learn: this caller has
+      // proved it is the phone it names AND presented the per-pair secret for
+      // this exact laptop, which is only issued to a phone that completed the
+      // pairing ceremony with it.
+      //
+      // The code names the FACT rather than either cause: a Mac signs itself
+      // out (`account_sign_out`, ADR-0015) or an owner removes it from "Your
+      // devices" on their phone, and the row that results is identical. Naming
+      // one of the two would be wrong half the time.
+      //
+      // The distinction became worth drawing when signing out of a Mac started
+      // releasing it. "Pair again with a QR" is
+      // now advice that leads in a circle: `/pairing/create` refuses a computer
+      // no account owns, so the phone would send its owner to redo a ceremony
+      // that cannot succeed until the thing it is not mentioning gets done.
+      const desktop = await deviceOwnershipByFingerprint('desktop', desktopDeviceId);
+      if (desktop?.state === 'revoked') {
+        return reply.code(403).send({
+          error: 'desktop_not_on_account',
+          message:
+            'that computer is not on your account — sign in to Lilypad on it to bring it back',
+        });
+      }
+
       if (!hub.isDesktopPresent(desktopDeviceId)) {
         return reply
           .code(503)

@@ -293,6 +293,21 @@ describe('the questions section', () => {
   it('is reachable from the nav', () => {
     expect(html).toMatch(/<a href="#faq">/);
   });
+
+  /**
+   * Sign-out on the Mac now releases the computer from the account: the device
+   * is revoked, its live rooms end, and paired phones stop being able to ring
+   * it (`account_sign_out` in `apps/desktop/src-tauri/src/commands.rs`). Both
+   * halves of that are on the page because both are true and neither is
+   * guessable — and the reversible half is what stops the first half reading
+   * as "start over".
+   */
+  it('says what signing out of the Mac does, and that it is reversible', () => {
+    expect(prose).toMatch(/that Mac leaves your account/i);
+    expect(prose).toMatch(/paired phones stop being able to reach it/i);
+    expect(prose).toMatch(/sign in again on that Mac and everything comes back/i);
+    expect(prose).toMatch(/not need to scan a code a second time/i);
+  });
 });
 
 /**

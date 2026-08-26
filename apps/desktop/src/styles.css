@@ -572,6 +572,13 @@ body {
   background: var(--pending);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--pending) 15%, transparent);
 }
+/* Off, not wrong. An amber dot is a call to action, and Ask AI wore one on
+ * every Mac that had simply never set it up — an optional feature reported as
+ * a fault, on the panel a new customer reads first. No halo either: the ring is
+ * what draws the eye, and nothing here is asking for it. */
+.status-dot--off {
+  background: var(--line);
+}
 .system-toggle {
   margin-top: 10px;
   padding-top: 10px;

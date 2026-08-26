@@ -170,3 +170,33 @@ describe('a laptop on someone else’s account', () => {
     expect(classifyHttpStatus(403, '{"error":"forbidden"}').code).not.toBe('different_account');
   });
 });
+
+/**
+ * A laptop that is no longer on the account — because it signed itself out, or
+ * because its owner removed it from "Your devices". The backend cannot tell
+ * those apart and both have the same remedy, so the code is named for the fact.
+ *
+ * Signing out of a Mac releases it from the account (ADR-0015), and the pair
+ * survives — so this phone still lists it, still holds the connect secret, and
+ * still gets a refusal when it rings. The refusal had two previous shapes and
+ * both misdirected: `desktop_offline` sends the owner to check a power cable
+ * for a machine sitting switched on in front of them, and `not_trusted` sends
+ * them to a pairing screen that refuses a computer no account owns.
+ */
+describe('a laptop that is not on the account', () => {
+  it('is named, is not retryable, and says the pairing survived', () => {
+    const err = appError('desktop_not_on_account');
+    expect(err.retryable).toBe(false);
+    expect(err.message).toMatch(/not on your Lilypad account/i);
+    expect(err.message).toMatch(/sign in to lilypad on it/i);
+    // The half that stops it reading as "start over".
+    expect(err.message).toMatch(/pairing is still there/i);
+  });
+
+  it('is not confused with a pairing somebody ended', () => {
+    expect(appError('desktop_not_on_account').message).not.toBe(appError('trust_revoked').message);
+    expect(appError('desktop_not_on_account').message).not.toBe(
+      appError('desktop_offline').message,
+    );
+  });
+});

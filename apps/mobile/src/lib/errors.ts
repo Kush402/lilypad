@@ -22,6 +22,7 @@ export type AppErrorCode =
   | 'not_trusted'
   | 'trust_revoked'
   | 'desktop_offline'
+  | 'desktop_not_on_account'
   | 'different_account'
   | 'unknown';
 
@@ -51,6 +52,19 @@ const COPY: Record<AppErrorCode, string> = {
   not_trusted: 'This phone isn’t paired with that laptop yet. Scan its code once to pair.',
   trust_revoked: 'That pairing was ended on the laptop. Scan its code to pair again.',
   desktop_offline: 'The laptop is offline. Make sure Lilypad is running on it.',
+  // Distinct from `desktop_offline`, which is what this used to be reported as
+  // — and from `not_trusted`, which is what it used to be reported as before
+  // that. Signing out of a Mac now releases it from the account (ADR-0015), so
+  // a laptop that is switched on, online, and still paired can nonetheless
+  // refuse to be rung; removing it from "Your devices" does the same. "It's
+  // offline" sends its owner to check a power cable; "scan its code again"
+  // sends them to a pairing screen that refuses a computer no account owns.
+  // Neither names the one thing that fixes it, and it is not guessable.
+  //
+  // Named for the FACT, not for either cause, because the backend cannot tell
+  // them apart and both have the same remedy.
+  desktop_not_on_account:
+    'That laptop is not on your Lilypad account right now. Sign in to Lilypad on it to bring it back — your pairing is still there.',
   // A pair joins two devices on ONE account (ADR-0015). Reachable by scanning a
   // colleague's Mac, and the remedy is not guessable from a 403.
   different_account:
@@ -72,6 +86,10 @@ const RETRYABLE: Record<AppErrorCode, boolean> = {
   not_trusted: false,
   trust_revoked: false,
   desktop_offline: true,
+  // Nothing about tapping again changes whether someone signed in on the
+  // laptop, and the button that offers it would be the app disagreeing with
+  // the sentence directly above it.
+  desktop_not_on_account: false,
   // Retrying with the same two devices can only fail the same way.
   different_account: false,
   unknown: true,

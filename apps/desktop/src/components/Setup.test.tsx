@@ -462,3 +462,152 @@ describe('Setup', () => {
     expect(screen.queryByText('Restart Lilypad')).not.toBeInTheDocument();
   });
 });
+
+/**
+ * The same window, twice — see `Setup.tsx`'s `mode`.
+ *
+ * Finishing setup used to leave the wizard as the only route back to the two
+ * things it configures that are NOT one-time: the Ask AI provider and the
+ * account on this Mac. So a customer who wanted to change an API key three
+ * weeks later opened a window headed "Set up Lilypad · Three steps", read three
+ * numbered steps they had already done, and found the field they came for at
+ * the bottom under "Optional", behind a permission gate it has nothing to do
+ * with.
+ */
+describe('Setup — wizard or settings', () => {
+  let eventHandler: ((event: { payload: unknown }) => void) | undefined;
+
+  /** Signed in, both permissions granted: a Mac that finished setup. */
+  function mockComplete() {
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === 'get_permission_status')
+        return status({ screen_capture: true, accessibility: true });
+      if (cmd === 'get_link_state') return { state: 'linked' };
+      if (cmd === 'get_account_state')
+        return { signedIn: true, email: 'ada@example.com', userId: 'user-1' };
+      return undefined;
+    });
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    eventHandler = undefined;
+    vi.mocked(listen).mockImplementation((async (
+      _name: string,
+      handler: (e: { payload: unknown }) => void,
+    ) => {
+      eventHandler = handler;
+      return vi.fn();
+    }) as unknown as typeof listen);
+    vi.mocked(getCurrentWindow).mockReturnValue({
+      close: vi.fn(),
+      setTitle: vi.fn(),
+    } as unknown as ReturnType<typeof getCurrentWindow>);
+  });
+
+  it('opens as Settings on a Mac that already finished setup', async () => {
+    mockComplete();
+    render(<Setup />);
+
+    await screen.findByTestId('setup-settings');
+    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Lilypad Settings');
+    // Not a step, not numbered, and nothing to be "done" with.
+    const numbered = screen
+      .getAllByRole('heading', { level: 2 })
+      .map((h) => h.textContent ?? '')
+      .filter((text) => /^\d+ · /.test(text));
+    expect(numbered).toEqual([]);
+    expect(screen.queryByTestId('setup-done')).toBeNull();
+  });
+
+  it('renames the window, so macOS stops calling it Setup', async () => {
+    const setTitle = vi.fn();
+    vi.mocked(getCurrentWindow).mockReturnValue({
+      close: vi.fn(),
+      setTitle,
+    } as unknown as ReturnType<typeof getCurrentWindow>);
+    mockComplete();
+    render(<Setup />);
+
+    await screen.findByTestId('setup-settings');
+    await waitFor(() => expect(setTitle).toHaveBeenCalledWith('Lilypad — Settings'));
+  });
+
+  /** The whole point of the change: the one field people come back for. */
+  it('offers Ask AI without a permission gate', async () => {
+    mockComplete();
+    render(<Setup />);
+
+    await screen.findByTestId('setup-settings');
+    expect(screen.getByTestId('ask-optional')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Ask AI' })).toBeInTheDocument();
+
+    // A permission revoked in System Settings while this window is open must
+    // not take the API key field away with it — Ask does not use Screen
+    // Recording, and losing the field is how it became unreachable before.
+    await waitFor(() => expect(listen).toHaveBeenCalled());
+    eventHandler?.({ payload: status({ accessibility: true }) });
+    await waitFor(() => expect(screen.getByTestId('ask-optional')).toBeInTheDocument());
+  });
+
+  /**
+   * Signing out inside Settings leaves the window in Settings — the mode is
+   * decided once — so every locked-state sentence has to work without step
+   * numbers. "Finish step 1 first" names a step that is not on the screen.
+   */
+  it('does not point at numbered steps in a window that has none', async () => {
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === 'get_permission_status')
+        return status({ screen_capture: true, accessibility: true });
+      if (cmd === 'get_link_state') return { state: 'unlinked' };
+      // Signed out, but the permissions say this Mac finished setup long ago.
+      if (cmd === 'get_account_state') return { signedIn: false, email: null, userId: null };
+      return undefined;
+    });
+    render(<Setup />);
+
+    // Signed out with both permissions granted is a Settings window, not a
+    // wizard: the permissions half of setup is still done.
+    await screen.findByTestId('setup-wizard');
+    expect(screen.getByTestId('permissions-step-locked')).toHaveTextContent(/finish step 1/i);
+  });
+
+  it('says "sign in above" instead of "step 1" once it is the Settings window', async () => {
+    mockComplete();
+    const { rerender } = render(<Setup />);
+    await screen.findByTestId('setup-settings');
+    rerender(<Setup />);
+
+    // Nothing in a Settings window may cite a step number, because there are
+    // none on screen to follow.
+    const numbered = screen
+      .getAllByRole('heading', { level: 2 })
+      .map((h) => h.textContent ?? '')
+      .filter((text) => /^\d+ · /.test(text));
+    expect(numbered).toEqual([]);
+    expect(screen.queryByText(/step 1/i)).toBeNull();
+  });
+
+  it('stays a wizard for a first run, and does not rename itself mid-flow', async () => {
+    // Signed in, nothing granted yet: still setting up.
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === 'get_permission_status') return status();
+      if (cmd === 'get_link_state') return { state: 'linked' };
+      if (cmd === 'get_account_state')
+        return { signedIn: true, email: 'ada@example.com', userId: 'user-1' };
+      return undefined;
+    });
+    render(<Setup />);
+    await screen.findByTestId('setup-wizard');
+
+    // Granting the last permission finishes the wizard. It must FINISH it —
+    // not silently become a different window with different headings while the
+    // user is still reading it.
+    await waitFor(() => expect(listen).toHaveBeenCalled());
+    eventHandler?.({ payload: status({ screen_capture: true, accessibility: true }) });
+
+    await screen.findByTestId('setup-done');
+    expect(screen.getByTestId('setup-wizard')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Set up Lilypad');
+  });
+});

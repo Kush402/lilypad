@@ -16,7 +16,9 @@ the Mac.
 Three steps, and only the last one needs your phone in your hand.
 
 1. **Launch Lilypad.** A small green bubble appears floating on your screen,
-   and the **Setup** window opens.
+   and the **Setup** window opens. (The bubble can be turned off later —
+   dashboard → **This Mac** → _Show the floating bubble_. The menu bar icon
+   opens everything either way.)
 
 2. **Make an account** (step 1 in the window). Signing in here is what puts
    this computer on your account — that is how you can see it, rename it, and
@@ -32,6 +34,11 @@ Three steps, and only the last one needs your phone in your hand.
    **Restart Lilypad** when offered.
 
 4. **Pair your phone** (step 3) — below.
+
+Once all of that is done, the same window reopens as **Lilypad Settings**: no
+steps, no numbers, and everything still editable — your account, the two
+permissions, your paired phones, and the **Ask AI** provider. Reach it from the
+menu bar icon → **Settings…**, or from **Settings** in the dashboard.
 
 ## Pairing your phone
 
@@ -59,13 +66,23 @@ Three different things, and the app keeps them apart on purpose.
 | **Device**  | A computer or phone you signed in on      | **Your devices**, on the phone       |
 | **Pairing** | Permission for one phone to reach one Mac | **Your laptops** / **Paired phones** |
 
-- **Signing out** on a phone ends that phone's pairings — on the laptops too —
+- **Signing out on a phone** ends that phone's pairings — on the laptops too —
   but leaves the phone on your account.
-- **Removing a device** from _Your devices_ is stronger: it loses access
-  immediately, including a session running at that moment. Sign in on it again
-  to restore it.
+- **Signing out on a Mac** takes that Mac _off_ your account. A session running
+  at that moment ends, and your paired phones stop being able to reach it.
+  Signing back in on that Mac restores everything, pairings included — you will
+  not need to scan a code again. It is the right thing to do before handing a
+  Mac to somebody else.
+- **Removing a device** from _Your devices_ does the same thing from the other
+  end: it loses access immediately, including a session running at that moment,
+  and signing in on it again restores it.
 - **Unpairing** — from _Your laptops_ on the phone, or _Paired phones_ on the Mac —
   ends just that one pairing, from either side.
+
+A phone that rings a Mac which is not on the account any more is told exactly
+that, and told the remedy: sign in to Lilypad on that Mac. It is not told the
+Mac is offline (it may be sitting switched on in front of you) and not told to
+pair again (pairing refuses a computer no account owns).
 
 ## Controlling the Mac
 
@@ -107,14 +124,23 @@ rather than ending the session.
 
 - Phone: tap **Disconnect** (twice — the first tap arms it, so a stray touch
   can't kill your session).
-- Mac: tray menu → **Disconnect**, or **Panic disconnect** to instantly kill
-  the session and capture.
+- Mac: menu bar icon → **Disconnect**, or **Panic disconnect** to instantly
+  kill the session and capture. The same two buttons are on the dashboard while
+  a session is live, and opening another Lilypad window never hides it —
+  Lilypad shows one window at a time, except when that window is the one
+  holding your Approve/Deny or your Disconnect.
 
 ## FAQ
 
 **Does someone need to be at the Mac to start a session?**
-Yes — every session requires clicking Approve on the Mac. That's by design
-and cannot be disabled.
+The FIRST time a phone connects, yes: pairing always ends with Approve on the
+Mac. After that the pairing is what lets that phone reconnect on its own, which
+is the point of pairing — and you can turn that off per phone, or unpair it,
+under **Paired phones** on the Mac.
+
+(This answer used to read "every session requires clicking Approve on the Mac …
+and cannot be disabled". That was true before pairings existed and has been
+wrong since; the setting it denied is a checkbox on the Mac's own dashboard.)
 
 **Does it work away from home?**
 The architecture is internet-first (WebRTC + TURN relay), and the same app

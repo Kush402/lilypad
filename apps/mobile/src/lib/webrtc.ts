@@ -86,6 +86,18 @@ export interface ViewerCallbacks {
    * generic disconnect the ordinary `ended` state implies. Optional — a
    * viewer that doesn't care just falls back to the generic ended state. */
   onRevoked?: () => void;
+  /**
+   * The LAPTOP left the account mid-session — it signed itself out, or its
+   * owner removed it from "Your devices" (`session-end` reason
+   * `'device_removed'`, from `DELETE /devices/:deviceId`).
+   *
+   * Deliberately NOT `onRevoked`, which drops the local pairing. The pair rows
+   * and their per-pair secrets survive a device removal, and the secret is
+   * never re-issued — so a phone that forgot it would have to re-scan a QR to
+   * recover from something that undoes itself the moment somebody signs in on
+   * that Mac again. Same end of session, different aftermath.
+   */
+  onDeviceRemoved?: () => void;
 }
 
 /**
@@ -436,6 +448,10 @@ export class ViewerConnection {
         // it's handled separately rather than folded into this case.
         if (m.payload.reason === 'revoked') {
           this.cb.onRevoked?.();
+        } else if (m.payload.reason === 'device_removed') {
+          // The laptop left the account. The pairing did not — see
+          // `onDeviceRemoved`.
+          this.cb.onDeviceRemoved?.();
         }
         recordState('ended');
         this.cb.onState('ended');

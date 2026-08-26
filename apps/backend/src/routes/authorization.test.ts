@@ -292,7 +292,14 @@ describe('P2 account-device route authorization', () => {
   // device token and so can never occupy a presence room. What was wrong is
   // what it told the owner: that their Mac was offline, when it had been
   // removed.
-  it('refuses to ring a desktop that was removed from the account', async () => {
+  //
+  // This case is the ANONYMOUS half, which is all this file tests: the caller
+  // proves nothing, so it is denied at the gate and told nothing, exactly like
+  // a caller naming a pair that does not exist. A phone that HAS proved it
+  // holds this pair now gets the honest sentence instead — see
+  // `connectNotOnAccount.test.ts`, which is where the reorder that allows it is
+  // pinned.
+  it('tells an unproven caller nothing about a desktop removed from the account', async () => {
     vi.mocked(deviceOwnershipByFingerprint).mockImplementation(async (kind) =>
       kind === 'mobile'
         ? { deviceId: 'dev-phone', userId: null, state: 'unlinked' }

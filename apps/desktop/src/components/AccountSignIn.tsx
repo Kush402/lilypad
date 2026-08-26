@@ -58,6 +58,10 @@ export function AccountSignIn({ onChange, initialMode = 'signin' }: AccountSignI
   // default: an irreversible button that is always on screen is a button that
   // eventually gets pressed by accident.
   const [deleting, setDeleting] = useState(false);
+  // Sign-out is confirmed, for the reason the confirmation says out loud: it
+  // takes this Mac off the account and ends a session in progress. It used to
+  // be a one-click no-op, so it never needed one.
+  const [signingOut, setSigningOut] = useState(false);
   const [deleteEmail, setDeleteEmail] = useState('');
   const [deletePassword, setDeletePassword] = useState('');
 
@@ -151,19 +155,20 @@ export function AccountSignIn({ onChange, initialMode = 'signin' }: AccountSignI
           last step.
         </p>
         <div className="row">
-          <button
-            className="btn"
-            disabled={busy}
-            onClick={() =>
-              void run(async () => {
-                await api.accountSignOut();
-                apply({ signedIn: false, email: null, userId: null });
-              })
-            }
-          >
-            Sign out
-          </button>
-          {deleting ? null : (
+          {signingOut ? null : (
+            <button
+              className="btn"
+              data-testid="account-sign-out"
+              disabled={busy}
+              onClick={() => {
+                setSigningOut(true);
+                setError('');
+              }}
+            >
+              Sign out
+            </button>
+          )}
+          {deleting || signingOut ? null : (
             <button
               className="btn btn--danger"
               disabled={busy}
@@ -176,6 +181,62 @@ export function AccountSignIn({ onChange, initialMode = 'signin' }: AccountSignI
             </button>
           )}
         </div>
+
+        {/*
+          Says what sign-out DOES, because what it does changed and because a
+          customer cannot be expected to infer it.
+
+          Signing in is what puts a Mac on an account
+          ([ADR-0015](../../../../docs/adr/0015-ownership-follows-sign-in.md)),
+          so signing out is what takes it off — the device is released, its
+          presence seat ends, and any session running right now ends with it.
+          Before this, sign-out deleted the saved email address and nothing
+          else: the phone kept connecting and the screen kept streaming, which
+          is the opposite of what the button appears to promise.
+
+          The last line is the one that makes this a door rather than a
+          demolition, and it is true: the pairings and their secrets survive, so
+          signing back in on this Mac restores them with no second QR.
+        */}
+        {signingOut ? (
+          <div className="account__signout" data-testid="account-sign-out-confirm">
+            <p>
+              <strong>Sign out of this Mac?</strong>
+            </p>
+            <p className="muted">
+              This Mac leaves your account. Your paired phones stop being able to connect to it, and
+              a session running right now ends. Signing back in here restores everything, including
+              the pairings — you will not need to scan a QR again.
+            </p>
+            <div className="row">
+              <button
+                className="btn btn--danger"
+                data-testid="account-sign-out-confirm-button"
+                disabled={busy}
+                onClick={() =>
+                  void run(async () => {
+                    await api.accountSignOut();
+                    setSigningOut(false);
+                    apply({ signedIn: false, email: null, userId: null });
+                  })
+                }
+              >
+                {busy ? 'Signing out…' : 'Sign out'}
+              </button>
+              <button
+                className="btn"
+                data-testid="account-sign-out-cancel"
+                disabled={busy}
+                onClick={() => {
+                  setSigningOut(false);
+                  setError('');
+                }}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        ) : null}
 
         {deleting ? (
           <div className="account__delete" data-testid="account-delete">
@@ -257,9 +318,13 @@ export function AccountSignIn({ onChange, initialMode = 'signin' }: AccountSignI
       <h2 className="section-title">
         {mode === 'signup' ? 'Create your account' : 'Sign in to Lilypad'}
       </h2>
+      {/* This said "Adding this computer to your account is a separate step
+          below, and it takes your phone" — true under ADR-0010, and left behind
+          by ADR-0015, which made signing in the thing that adds the computer.
+          It contradicted the signed-in card three lines up in the same file. */}
       <p className="muted">
-        Signing in tells Lilypad who you are. Adding this computer to your account is a separate
-        step below, and it takes your phone.
+        Signing in is what puts this computer on your account. Pairing a phone to it is a separate
+        step, and it is the only one that needs your phone.
       </p>
 
       {mode === 'signup' ? (

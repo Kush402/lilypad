@@ -112,6 +112,61 @@ export function Setup() {
   });
   const [needsRestart, setNeedsRestart] = useState(false);
   const [account, setAccount] = useState<AccountStateDto | null>(null);
+  /**
+   * Whether this window is the first-run WIZARD or the SETTINGS window.
+   *
+   * **Both, and it has to be — but never both at once.** Setup was written as a
+   * wizard and stayed one forever: a customer who had finished it and came back
+   * to change their Ask AI key was met with "Set up Lilypad · Three steps",
+   * numbered steps they had already done, and a "Done" button, for a window
+   * they had opened to edit one field. The one-time part of setup genuinely is
+   * one-time; the configurable part is not, and the same window has to be able
+   * to say which it is being.
+   *
+   * **Decided once, from its own read, then never revisited.** Not derived from
+   * the live state below, for two reasons. It would start as `wizard` on every
+   * mount — the defaults describe a Mac with no account and no permissions,
+   * which is the one answer a returning customer must never be given, even for
+   * a frame. And it would flip to `settings` under a first-run user at the
+   * exact moment they granted the last permission, renaming the window and
+   * renumbering the steps mid-flow.
+   *
+   * `null` renders nothing: two local IPC calls, not a network round trip.
+   */
+  const [mode, setMode] = useState<'wizard' | 'settings' | null>(null);
+  useEffect(() => {
+    let alive = true;
+    void Promise.all([
+      invoke<PermissionStatusDto>('get_permission_status').catch(() => null),
+      // `invoke` rather than `api.getAccountState`, matching the permission
+      // read beside it: one Tauri seam for this window, not two.
+      invoke<AccountStateDto>('get_account_state').catch(() => null),
+    ]).then(([permissions, account]) => {
+      if (!alive) return;
+      const done =
+        permissions?.screen_capture === true &&
+        permissions?.accessibility === true &&
+        account?.signedIn === true;
+      setMode(done ? 'settings' : 'wizard');
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
+  // The title bar is the one part of this window Rust names, and it names it
+  // once, at creation. A window that has become Settings must not keep saying
+  // Setup in the place macOS puts it in the Window menu and in Mission Control.
+  useEffect(() => {
+    if (mode === null) return;
+    try {
+      void getCurrentWindow().setTitle(
+        mode === 'wizard' ? 'Lilypad — Setup' : 'Lilypad — Settings',
+      );
+    } catch {
+      /* not running inside Tauri */
+    }
+  }, [mode]);
+
   const [restarting, setRestarting] = useState(false);
   // Read here as well as inside AccountPanel: the final card has to say which
   // of two true things is true, and it cannot ask the panel.
@@ -255,20 +310,30 @@ export function Setup() {
     await invoke('restart_app');
   };
 
+  if (mode === null) return null;
+  const wizard = mode === 'wizard';
+
   return (
-    <div className="page setup">
-      <h1>Set up Lilypad</h1>
-      <p className="muted">Three steps. Only the last one needs your phone.</p>
+    <div className="page setup" data-testid={wizard ? 'setup-wizard' : 'setup-settings'}>
+      <h1>{wizard ? 'Set up Lilypad' : 'Lilypad Settings'}</h1>
+      <p className="muted">
+        {wizard
+          ? 'Three steps. Only the last one needs your phone.'
+          : 'Everything about this Mac. Nothing here is a step — change what you like and close the window.'}
+      </p>
 
       {/* Step 1 is now load-bearing rather than merely first: signing in is
           what puts this Mac on the account (ADR-0015), so everything below
           genuinely depends on it. Same component as the dashboard's: one
           sign-in form, two places it is reachable. */}
-      <h2 className="section-title">1 · Your account</h2>
-      <AccountSignIn onChange={onAccountChange} initialMode="signup" />
+      <h2 className="section-title">{wizard ? '1 · Your account' : 'Your account'}</h2>
+      {/* `signup` only in the wizard. A returning customer opening Settings has
+          an account by definition, and opening on a Create-account form would
+          invite them to make a second one. */}
+      <AccountSignIn onChange={onAccountChange} initialMode={wizard ? 'signup' : 'signin'} />
       <LinkStep signedIn={signedIn} onLinked={refreshLink} />
 
-      <h2 className="section-title">2 · Permissions</h2>
+      <h2 className="section-title">{wizard ? '2 · Permissions' : 'Permissions'}</h2>
       {!signedIn ? (
         /* Asking for Screen Recording before the user has an account inverts
            the product: macOS permissions are the most alarming thing Lilypad
@@ -276,8 +341,8 @@ export function Setup() {
            been given no reason to say yes. Locked rather than hidden, so the
            flow still reads as four steps rather than appearing to end here. */
         <p className="muted" data-testid="permissions-step-locked">
-          Finish step 1 first. Lilypad asks for Screen Recording and Accessibility only once this
-          Mac is on an account.
+          {wizard ? 'Finish step 1 first.' : 'Sign in above first.'} Lilypad asks for Screen
+          Recording and Accessibility only once this Mac is on an account.
         </p>
       ) : (
         <>
@@ -358,10 +423,13 @@ export function Setup() {
       )}
 
       {/* Step 3 only once the Mac can actually do anything — offering to pair a
-          computer that cannot capture or type is a step out of order. */}
+          computer that cannot capture or type is a step out of order. Same rule
+          in Settings, where it means something slightly different: a permission
+          revoked since setup makes pairing pointless in exactly the same way,
+          and the section above is already saying so. */}
       {allGranted ? (
         <>
-          <h2 className="section-title">3 · Pair your phone</h2>
+          <h2 className="section-title">{wizard ? '3 · Pair your phone' : 'Paired phones'}</h2>
           {linked ? (
             <>
               <p className="muted">
@@ -382,14 +450,15 @@ export function Setup() {
                devices" and nobody can revoke it. `/pairing/create` refuses it
                outright, so saying so beats a button that answers 404. */
             <p className="muted" data-testid="pair-step-locked">
-              This Mac isn’t on your account yet, so it can’t pair a phone. Step 1 is what puts it
-              there — the card under it says what went wrong.
+              This Mac isn’t on your account yet, so it can’t pair a phone.{' '}
+              {wizard ? 'Step 1' : 'Signing in above'} is what puts it there — the card under it
+              says what went wrong.
             </p>
           )}
         </>
       ) : null}
 
-      {allGranted ? (
+      {wizard && allGranted ? (
         <section className="control__active" data-testid="setup-done">
           {/* Three states, not two. "Not on an account" and "we could not ask"
               are different facts, and `LinkStateDto` separates them on purpose:
@@ -424,13 +493,32 @@ export function Setup() {
           that opens by asking a stranger to paste an AI provider's API key,
           before they have an account or a working Mac, reads as a product that
           does not know what it is for. It appears once this Mac can actually do
-          something, and never blocks anything. */}
-      {allGranted ? (
+          something, and never blocks anything.
+
+          **In Settings it is never gated.** It is the single most likely reason
+          anyone opens this window a second time — an API key is a thing that
+          expires, gets rotated, and gets typed wrong — and gating it behind a
+          macOS permission it has nothing to do with is how it became
+          unreachable in the first place. */}
+      {wizard && !allGranted ? null : (
         <div data-testid="ask-optional">
-          <h2 className="section-title">Optional · Ask</h2>
+          <h2 className="section-title">{wizard ? 'Optional · Ask' : 'Ask AI'}</h2>
           <AgentProviderCard />
         </div>
-      ) : null}
+      )}
+
+      {/* No "Done" in Settings — there is nothing to be done with. A window you
+          opened to change one field closes because you are finished with it,
+          which is what the traffic light already means. This is the same act
+          spelled out, for the same reason the wizard's Done button exists: the
+          window is 720px tall and the close button is at the top of it. */}
+      {wizard ? null : (
+        <div className="row">
+          <button className="btn" onClick={() => void getCurrentWindow().close()}>
+            Close
+          </button>
+        </div>
+      )}
     </div>
   );
 }

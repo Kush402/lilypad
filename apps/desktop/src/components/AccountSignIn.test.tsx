@@ -191,16 +191,89 @@ describe('AccountSignIn', () => {
     expect(api.getAccountState).toHaveBeenCalledTimes(1);
   });
 
-  it('signs out without revoking anything', async () => {
-    vi.mocked(api.getAccountState).mockResolvedValue(SIGNED_IN);
-    vi.mocked(api.accountSignOut).mockResolvedValue(undefined);
-    render(<AccountSignIn />);
-    await screen.findByTestId('account-signed-in');
+  /**
+   * This suite used to assert the opposite, under the name "signs out without
+   * revoking anything", and it was right about the code and wrong about the
+   * product. Sign-out deleted the saved email address and nothing else: the
+   * device key kept authenticating, the presence seat stayed occupied, every
+   * paired phone could still ring this Mac, and a session already running kept
+   * streaming the screen of the person who had just pressed the button.
+   *
+   * ADR-0015 makes signing in what puts a Mac on an account, so signing out is
+   * what takes it off. What is pinned here is that the button now costs a
+   * confirmation, and that the confirmation says the two things a customer
+   * cannot infer: what stops working, and that signing back in restores it.
+   */
+  describe('signing out', () => {
+    beforeEach(() => {
+      vi.mocked(api.getAccountState).mockResolvedValue(SIGNED_IN);
+      vi.mocked(api.accountSignOut).mockResolvedValue(undefined);
+    });
 
-    fireEvent.click(screen.getByText('Sign out'));
+    it('is not one click away — it ends sessions and releases this Mac', async () => {
+      render(<AccountSignIn />);
+      await screen.findByTestId('account-signed-in');
 
-    await waitFor(() => expect(api.accountSignOut).toHaveBeenCalled());
-    expect(await screen.findByTestId('account-sign-in')).toBeInTheDocument();
+      fireEvent.click(screen.getByTestId('account-sign-out'));
+
+      expect(api.accountSignOut).not.toHaveBeenCalled();
+      expect(screen.getByTestId('account-sign-out-confirm')).toBeInTheDocument();
+    });
+
+    it('says what stops working, and that signing back in restores it', async () => {
+      render(<AccountSignIn />);
+      await screen.findByTestId('account-signed-in');
+      fireEvent.click(screen.getByTestId('account-sign-out'));
+
+      const confirm = screen.getByTestId('account-sign-out-confirm');
+      expect(confirm).toHaveTextContent(/leaves your account/i);
+      expect(confirm).toHaveTextContent(/paired phones stop being able to connect/i);
+      expect(confirm).toHaveTextContent(/a session running right now ends/i);
+      // The half that keeps this a reversible act rather than a scary one.
+      expect(confirm).toHaveTextContent(/signing back in here restores everything/i);
+      expect(confirm).toHaveTextContent(/not need to scan a QR again/i);
+    });
+
+    it('signs out on the second click, and returns to the signed-out screen', async () => {
+      render(<AccountSignIn />);
+      await screen.findByTestId('account-signed-in');
+      fireEvent.click(screen.getByTestId('account-sign-out'));
+      fireEvent.click(screen.getByTestId('account-sign-out-confirm-button'));
+
+      await waitFor(() => expect(api.accountSignOut).toHaveBeenCalled());
+      expect(await screen.findByTestId('account-sign-in')).toBeInTheDocument();
+    });
+
+    it('cancelling leaves the account alone', async () => {
+      render(<AccountSignIn />);
+      await screen.findByTestId('account-signed-in');
+      fireEvent.click(screen.getByTestId('account-sign-out'));
+      fireEvent.click(screen.getByTestId('account-sign-out-cancel'));
+
+      expect(api.accountSignOut).not.toHaveBeenCalled();
+      expect(screen.queryByTestId('account-sign-out-confirm')).toBeNull();
+      expect(screen.getByTestId('account-signed-in')).toBeInTheDocument();
+    });
+
+    /**
+     * A sign-out that could not reach the backend has NOT released this Mac,
+     * and the Rust side refuses to clear the local session in that case for
+     * exactly that reason. The screen must agree: staying signed in is the
+     * honest outcome, and the error is what says why.
+     */
+    it('stays signed in, and says why, when the release fails', async () => {
+      vi.mocked(api.accountSignOut).mockRejectedValue(
+        new Error('Couldn’t reach Lilypad. Check your internet connection and try again.'),
+      );
+      render(<AccountSignIn />);
+      await screen.findByTestId('account-signed-in');
+      fireEvent.click(screen.getByTestId('account-sign-out'));
+      fireEvent.click(screen.getByTestId('account-sign-out-confirm-button'));
+
+      await screen.findByText(/Couldn’t reach Lilypad/);
+      expect(screen.getByTestId('account-signed-in')).toBeInTheDocument();
+      expect(screen.queryByTestId('account-sign-in')).toBeNull();
+    });
   });
 
   describe('deleting the account', () => {

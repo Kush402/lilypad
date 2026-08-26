@@ -254,3 +254,27 @@ describe('device token on the pairing surface', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
+
+/**
+ * `/connect/request` refuses for four different reasons, and only one of them
+ * used to have its own sentence. What is pinned here is the newest, because it
+ * is the one the product's own behaviour created: signing out of a Mac releases
+ * it (ADR-0015), so a laptop that is switched on, online, and still paired can
+ * refuse to be rung.
+ */
+describe('ringing a laptop that signed itself out', () => {
+  it('is told apart from a laptop that is off, and from a pairing that ended', async () => {
+    const cases: Array<[number, string, string]> = [
+      [403, 'desktop_not_on_account', 'desktop_not_on_account'],
+      [403, 'revoked', 'trust_revoked'],
+      [503, 'desktop_offline', 'desktop_offline'],
+      [404, 'not_trusted', 'not_trusted'],
+    ];
+    for (const [status, serverCode, expected] of cases) {
+      globalThis.fetch = jest.fn().mockResolvedValue(jsonResponse({ error: serverCode }, status));
+      await expect(requestConnect('http://api', 'desktop-1')).rejects.toMatchObject({
+        code: expected,
+      });
+    }
+  });
+});

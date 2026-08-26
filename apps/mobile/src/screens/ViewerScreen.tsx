@@ -268,6 +268,15 @@ export function ViewerScreen({ route, navigation }: Props) {
           { text: 'OK', onPress: () => navigation.popToTop() },
         ]);
       },
+      onDeviceRemoved: () => {
+        // Note what is NOT here: `forgetPair`. The laptop left the account, the
+        // pairing did not, and the connect secret this phone holds is the only
+        // copy in existence — dropping it would turn a reversible thing into a
+        // re-scan. The laptop reappears the moment somebody signs in on it.
+        Alert.alert('That laptop left your account', appError('desktop_not_on_account').message, [
+          { text: 'OK', onPress: () => navigation.popToTop() },
+        ]);
+      },
     });
     connRef.current = conn;
     conn.start().catch((e) => setError(toAppError(e)));

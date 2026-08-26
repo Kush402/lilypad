@@ -15,6 +15,8 @@ vi.mock('../lib/tauri', () => ({
     setPairAutoApprove: vi.fn(),
     revokePair: vi.fn(),
     getLoginItemEnabled: vi.fn().mockResolvedValue(true),
+    getBubbleVisible: vi.fn().mockResolvedValue(true),
+    setBubbleVisible: vi.fn().mockResolvedValue(undefined),
     setLoginItemEnabled: vi.fn(),
     getPermissionStatus: vi.fn().mockResolvedValue({ screen_capture: true, accessibility: true }),
     getAgentConfig: vi.fn().mockResolvedValue({
@@ -39,7 +41,7 @@ vi.mock('./AccountPanel', () => ({ AccountPanel: () => <div data-testid="account
  * Pairing comes after linking, on every surface.
  *
  * Reported from the running app: the pairing QR was reachable from the tray's
- * "Show QR / Pair", from this dashboard's "+", and from the setup wizard, on a
+ * "Pair a phone…", from this dashboard's "+", and from the setup wizard, on a
  * computer nobody had signed into or linked. That is not a small ordering nit —
  * a pair made in that state belongs to no account. It appears in nobody's "Your
  * devices" and can be revoked from nowhere, which

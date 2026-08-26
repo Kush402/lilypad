@@ -109,7 +109,9 @@ describe('DELETE /devices/:deviceId', () => {
     const app = await buildApp();
     await revoke(app, { userId: OWNER, deviceId: 'dev-phone' });
 
-    expect(hub.endRoomsForDevice).toHaveBeenCalledWith('laptop-fingerprint', 'revoked');
+    // `device_removed`, not `revoked` — the phone reads the two differently
+    // and only one of them means "throw the pairing away". See the handler.
+    expect(hub.endRoomsForDevice).toHaveBeenCalledWith('laptop-fingerprint', 'device_removed');
     await app.close();
   });
 

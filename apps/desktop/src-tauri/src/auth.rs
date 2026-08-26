@@ -242,9 +242,14 @@ impl DeviceAuth {
     /// creates a second device row: the machine would be owned, and every
     /// authorization check would still see the unowned one.
     ///
-    /// Failure is deliberately not fatal to the sign-in — see the caller. The
-    /// account session on this Mac is real either way, and the enrollment-code
-    /// QR remains a second route to the same ownership.
+    /// Failure IS fatal to the sign-in, and the caller rolls the local session
+    /// back so the screen and the keychain agree. Under
+    /// [ADR-0015](../../../../docs/adr/0015-ownership-follows-sign-in.md) this
+    /// call is not a bonus step after signing in — it is the half of signing in
+    /// that puts the Mac on the account, and a sign-in that skipped it leaves a
+    /// customer looking at their own email address above a computer that
+    /// belongs to nobody. The enrollment-code QR is still there as a recovery
+    /// route, which is a different thing from a silent fallback.
     pub async fn enroll(
         &self,
         account_token: &str,
@@ -279,6 +284,12 @@ impl DeviceAuth {
                 target: "lilypad::auth",
                 "enrollment refused (HTTP {status}): {body}",
             );
+            // Typed, not stringified, because this is the one refusal the
+            // caller can do something about rather than only report. See
+            // `commands::sign_in_and_enrol`.
+            if status == reqwest::StatusCode::FORBIDDEN && body.contains("device_revoked") {
+                return Err(AuthError::Revoked.into());
+            }
             bail!("{}", enroll_failure(status.as_u16(), &body));
         }
         let session: DeviceSession = response
@@ -292,6 +303,74 @@ impl DeviceAuth {
         self.cache(&session);
         self.adopt(&session);
         Ok(session)
+    }
+
+    /// Take this computer back OFF the account it is on.
+    ///
+    /// The inverse of `enroll`, and the reason sign-out is not a local act.
+    /// Under [ADR-0015](../../../../docs/adr/0015-ownership-follows-sign-in.md)
+    /// signing in is what puts this Mac on the account, so signing out has to
+    /// be what takes it off — otherwise "sign out" means "hide the email
+    /// address", which is what it meant until now: the device key stayed valid,
+    /// the presence seat stayed occupied, every pair stayed connectable, and a
+    /// session already running kept running.
+    ///
+    /// `DELETE /devices/{id}` presented with this device's OWN token does all
+    /// three things at once, server-side: it revokes the row, it ends every
+    /// live room the device holds (its session AND its presence seat), and it
+    /// revokes the account's refresh tokens.
+    ///
+    /// **Reversible on purpose.** `trusted_devices` rows and their per-pair
+    /// secrets survive, and signing in again re-enrols this same keypair —
+    /// `DeviceRegistry::claim` clears `revoked_at` — so the phones that were
+    /// paired reconnect without another QR. Sign-out is a door, not a demolition.
+    pub async fn release(&self) -> Result<()> {
+        let token = match self.access_token().await {
+            Ok(token) => token,
+            // Already off the account. Both of these ARE the outcome this
+            // function exists to produce, so neither is a failure to report.
+            Err(e)
+                if matches!(
+                    e.downcast_ref::<AuthError>(),
+                    Some(AuthError::NotEnrolled) | Some(AuthError::Revoked)
+                ) =>
+            {
+                return Ok(())
+            }
+            Err(e) => return Err(e),
+        };
+        // Populated by the `access_token` above, which caches whatever it
+        // minted. The uuid is `devices.id`, not the wire fingerprint — the
+        // route is keyed on the row.
+        let Some((_, device_id)) = self.cached_identity() else {
+            bail!("Lilypad couldn’t confirm which computer this is. Try again in a moment.");
+        };
+        let response = self
+            .http
+            .delete(self.url(&format!("/devices/{device_id}")))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .context("Couldn’t reach Lilypad. Check your internet connection and try again.")?;
+
+        let status = response.status();
+        // 404 is the goal already holding: the account does not have this
+        // device, which is exactly where sign-out is trying to leave it.
+        if !status.is_success() && status != reqwest::StatusCode::NOT_FOUND {
+            let body = response.text().await.unwrap_or_default();
+            log::warn!(
+                target: "lilypad::auth",
+                "device release refused (HTTP {status}): {body}",
+            );
+            bail!(
+                "Lilypad couldn’t remove this computer from your account. Try again in a moment."
+            );
+        }
+        // The cached token outlives the revocation by up to its TTL and every
+        // route would refuse it anyway; dropping it is what makes the presence
+        // loop re-authenticate and discover the truth on its next attempt.
+        self.invalidate();
+        Ok(())
     }
 
     /// Ask for an enrollment code to show as a QR.
@@ -679,6 +758,17 @@ impl DesktopAuth {
             .await
     }
 
+    /// Take this Mac off the account. See `DeviceAuth::release`.
+    ///
+    /// No durable identity means it was never enrolled, so there is nothing to
+    /// give back and nothing to report — the caller's goal already holds.
+    pub async fn release(&self) -> Result<()> {
+        match self.device_auth() {
+            Some(auth) => auth.release().await,
+            None => Ok(()),
+        }
+    }
+
     /// A bearer token for a backend call, or `None` when this computer is not
     /// linked to an account yet.
     ///
@@ -973,6 +1063,144 @@ mod tests {
             challenges.load(Ordering::SeqCst),
             1,
             "8 concurrent callers must burn ONE challenge, not one each"
+        );
+    }
+
+    /// A stub that records every request line it is sent and answers
+    /// `DELETE /devices/*` with whatever status the test asked for.
+    async fn stub_backend_release(
+        delete_status: &'static str,
+        seen: Arc<std::sync::Mutex<Vec<String>>>,
+    ) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    return;
+                };
+                let seen = seen.clone();
+                tokio::spawn(async move {
+                    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                    let mut buf = vec![0u8; 4096];
+                    let n = socket.read(&mut buf).await.unwrap_or(0);
+                    let req = String::from_utf8_lossy(&buf[..n]).to_string();
+                    if let Ok(mut guard) = seen.lock() {
+                        guard.push(req.clone());
+                    }
+                    let (status, body) = if req.starts_with("DELETE ") {
+                        (delete_status, r#"{"ok":true}"#.to_owned())
+                    } else if req.contains("/devices/challenge") {
+                        ("200 OK", r#"{"challenge":"nonce-abcdefgh"}"#.to_owned())
+                    } else {
+                        (
+                            "200 OK",
+                            r#"{"accessToken":"tok","expiresInSeconds":600,"deviceId":"d-1","userId":"u-1"}"#.to_owned(),
+                        )
+                    };
+                    let res = format!(
+                        "HTTP/1.1 {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        status,
+                        body.len(),
+                        body
+                    );
+                    let _ = socket.write_all(res.as_bytes()).await;
+                    let _ = socket.shutdown().await;
+                });
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    fn auth_for(base: String) -> DeviceAuth {
+        DeviceAuth::new(DeviceIdentity::generate_ephemeral().unwrap(), base)
+    }
+
+    /// Sign-out has to reach the SERVER, or it is not a sign-out.
+    ///
+    /// The old `account_sign_out` deleted a keychain entry and stopped. This
+    /// asserts the request that makes the difference: the device's own row,
+    /// deleted with the device's own token — which is what ends its live rooms,
+    /// vacates its presence seat, and stops every paired phone from ringing it.
+    #[tokio::test]
+    async fn release_deletes_this_devices_own_row() {
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let base = stub_backend_release("200 OK", seen.clone()).await;
+        let auth = auth_for(base);
+
+        auth.release().await.expect("release should succeed");
+
+        let requests = seen.lock().unwrap().clone();
+        let delete = requests
+            .iter()
+            .find(|r| r.starts_with("DELETE "))
+            .expect("release must send a DELETE");
+        // `d-1` is `devices.id` from the token exchange — the row, not the wire
+        // fingerprint. Enrolment resolves by (kind, fingerprint); this route
+        // does not, and deleting the wrong identifier would answer 404 and look
+        // like it had worked.
+        assert!(
+            delete.starts_with("DELETE /devices/d-1 "),
+            "released the wrong identifier: {delete:?}"
+        );
+        assert!(
+            delete.contains("authorization: Bearer tok"),
+            "release must present this device's own token: {delete:?}"
+        );
+    }
+
+    /// A cached token outlives the revocation by up to its TTL. Keeping it
+    /// would leave the presence loop reconnecting with a credential every route
+    /// now refuses, and reporting the refusal as an unexplained failure rather
+    /// than as what it is.
+    #[tokio::test]
+    async fn release_drops_the_cached_token() {
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let base = stub_backend_release("200 OK", seen.clone()).await;
+        let auth = auth_for(base);
+
+        auth.access_token().await.unwrap();
+        auth.release().await.unwrap();
+
+        assert!(
+            auth.cached_token().is_none(),
+            "the token that authenticated the release must not survive it"
+        );
+    }
+
+    /// 404 means the account does not have this device — which is exactly where
+    /// sign-out is trying to leave it. Reporting it as a failure would strand a
+    /// customer signed in to a Mac that is already off their account.
+    #[tokio::test]
+    async fn release_treats_an_absent_device_as_done() {
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let base = stub_backend_release("404 Not Found", seen).await;
+        assert!(auth_for(base).release().await.is_ok());
+    }
+
+    /// The other direction, and the one that matters more: a release the server
+    /// REFUSED must fail loudly, because `account_sign_out` is what turns that
+    /// error into "you are still signed in". A Mac that says signed out while
+    /// still answering to every paired phone is the state this whole path
+    /// exists to prevent.
+    #[tokio::test]
+    async fn release_reports_a_refusal_in_words() {
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let base = stub_backend_release("500 Internal Server Error", seen).await;
+        let err = auth_for(base)
+            .release()
+            .await
+            .expect_err("a refused release must not report success");
+        let message = err.to_string();
+        for leak in ["HTTP", "500", "{", "null"] {
+            assert!(
+                !message.contains(leak),
+                "{leak:?} leaked into a customer message: {message:?}"
+            );
+        }
+        assert!(
+            message.ends_with('.'),
+            "not a finished sentence: {message:?}"
         );
     }
 

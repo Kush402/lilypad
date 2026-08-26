@@ -4,6 +4,7 @@
 //! renders bubble / qr-overlay / control / diagnostics based on its window
 //! label.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, MutexGuard};
 use std::time::Duration;
 
@@ -12,7 +13,7 @@ use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder
 use tokio::sync::mpsc::unbounded_channel;
 
 use crate::account;
-use crate::auth::{with_bearer, DesktopAuth, LinkState};
+use crate::auth::{with_bearer, AuthError, DesktopAuth, LinkState};
 use crate::session::{run_session, Control, SessionEvent};
 use crate::state::{AppState, AppStateDto, PendingRequest, SessionStatus, SharedState};
 
@@ -589,7 +590,10 @@ pub fn restart_app(app: AppHandle) {
     app.exit(0);
 }
 
-/// Open the first-run Setup window and, if it wasn't already open, start a
+/// Whether a setup-permission poll is already running. See `show_setup`.
+static SETUP_POLL: AtomicBool = AtomicBool::new(false);
+
+/// Open the Setup/Settings window and, if one isn't already running, start a
 /// background poll broadcasting fresh permission status over
 /// `lilypad://permission` every ~700ms (matching the passive-check cache
 /// TTL) — an actual Tauri event stream, not another frontend poll loop
@@ -604,16 +608,37 @@ pub fn restart_app(app: AppHandle) {
 /// of being right is one cached TCC round-trip per 700ms for as long as a
 /// window the user is actively looking at stays open.
 pub fn show_setup(app: &AppHandle) -> Result<(), String> {
-    let already_open = app.get_webview_window("setup").is_some();
+    // A claim, not a guess. The poll used to start whenever the window was not
+    // already open, which was the same question while "closed" was the only way
+    // for it to leave the screen. One-window-at-a-time HIDES instead
+    // (`hide_other_primaries`), so a setup window can exist unseen for the rest
+    // of the run — and re-showing it must start a poll again, without a second
+    // poll surviving alongside the first. Whoever wins the flag owns the loop
+    // and clears it on the way out.
+    let claimed = SETUP_POLL
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_ok();
     open_window(app, "setup", "Lilypad — Setup", SETUP_WINDOW)?;
-    if !already_open {
+    if claimed {
         let app = app.clone();
         tauri::async_runtime::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_millis(700));
             loop {
                 interval.tick().await;
-                if app.get_webview_window("setup").is_none() {
+                // GONE ends the loop; merely HIDDEN only pauses it. The two
+                // used to be the same exit, which lost a poll for good on a
+                // window reopened inside one tick of being closed: the loop was
+                // on its way out, so the reopen's `compare_exchange` found the
+                // flag still taken and started nothing. Sleeping instead means
+                // the window can come and go — hidden by one-window-at-a-time,
+                // shown again from the tray — and the same loop serves whatever
+                // is currently under the label.
+                let Some(window) = app.get_webview_window("setup") else {
+                    SETUP_POLL.store(false, Ordering::SeqCst);
                     break;
+                };
+                if !window.is_visible().unwrap_or(false) {
+                    continue; // no TCC round trip for a window nobody can see
                 }
                 let _ = app.emit("lilypad://permission", permission_snapshot());
             }
@@ -744,6 +769,7 @@ struct WindowSpec {
 }
 
 fn open_window(app: &AppHandle, label: &str, title: &str, spec: WindowSpec) -> Result<(), String> {
+    hide_other_primaries(app, label);
     if let Some(win) = app.get_webview_window(label) {
         let _ = win.show();
         let _ = win.set_focus();
@@ -807,6 +833,94 @@ fn handle_window_close(app: &AppHandle, label: &str) {
 fn close_window(app: &AppHandle, label: &str) {
     if let Some(win) = app.get_webview_window(label) {
         let _ = win.close();
+    }
+}
+
+/// The three full-page surfaces. Exactly one of them is ever on screen.
+///
+/// Not an aesthetic rule. Each of these is "everything about this Mac" told a
+/// different way, and two of them open at once is two answers to the same
+/// question — a dashboard saying "Screen Recording: Needed" behind a Settings
+/// window where it has just been granted. They also all carry the account card,
+/// so signing out in one leaves the other two showing a signed-in account until
+/// something happens to refresh them.
+///
+/// `bubble` and `qr-overlay` are deliberately NOT in this set. The bubble is
+/// the always-on widget the whole design hangs off, and the QR overlay is a
+/// companion to whatever opened it — being photographed by a phone while the
+/// dashboard explains what to do with it is the flow working, not two windows
+/// competing.
+const PRIMARY_WINDOWS: [&str; 3] = ["control", "setup", "diagnostics"];
+
+/// HIDE, never close.
+///
+/// `close()` fires `CloseRequested`, and `handle_window_close` reads that as a
+/// decision: closing `control` during `AwaitingApproval` auto-DENIES the phone
+/// asking to connect. Switching windows must not deny a session, cancel a
+/// pairing, or answer any question on the user's behalf — so the window stays
+/// alive with its state intact and simply stops being on screen.
+fn hide_other_primaries(app: &AppHandle, keep: &str) {
+    if !PRIMARY_WINDOWS.contains(&keep) {
+        return;
+    }
+    let session = lock_state(&app.state::<SharedState>()).session;
+    for label in windows_to_hide(keep, session) {
+        if let Some(win) = app.get_webview_window(label) {
+            let _ = win.hide();
+        }
+    }
+}
+
+/// Which of the primary windows step aside for `keep`.
+///
+/// Split out from the window handling because it is the whole decision and the
+/// rest is plumbing — this is the part that can be wrong, and the part a test
+/// can reach.
+///
+/// **The dashboard is exempt while it is busy.** `awaiting_approval` puts a
+/// live Approve/Deny in it — a request that expires, from a phone with someone
+/// waiting on the other end — and `connecting`/`active` put Disconnect and
+/// Panic in it. Hiding any of those because somebody opened Settings would take
+/// the decision, or the stop button, off the screen without touching the state
+/// behind it. A window that vanishes is a kind of answer, and nothing in this
+/// app may answer on the user's behalf.
+fn windows_to_hide(keep: &str, session: SessionStatus) -> Vec<&'static str> {
+    let control_is_busy = !matches!(session, SessionStatus::Idle | SessionStatus::Pairing);
+    PRIMARY_WINDOWS
+        .into_iter()
+        .filter(|label| *label != keep)
+        .filter(|label| !(*label == "control" && control_is_busy))
+        .collect()
+}
+
+// ── The floating bubble ──────────────────────────────────────────────────────
+
+/// Whether the floating bubble is on screen. See `prefs::Prefs::show_bubble`.
+#[tauri::command]
+pub fn get_bubble_visible() -> bool {
+    crate::prefs::load().show_bubble
+}
+
+/// Show or hide the floating bubble, and remember which.
+///
+/// Both halves matter. Hiding without persisting means it comes back at the
+/// next launch, which reads as the setting not working; persisting without
+/// hiding means it only takes effect after a relaunch, which reads as the app
+/// being slow to obey. Neither is a preference anyone would trust.
+#[tauri::command]
+pub fn set_bubble_visible(app: AppHandle, visible: bool) -> Result<(), String> {
+    apply_bubble_visibility(&app, visible);
+    crate::prefs::save(&crate::prefs::Prefs {
+        show_bubble: visible,
+    })
+    .map_err(|e| e.to_string())
+}
+
+/// Put the bubble where the preference says it should be. Called at launch and
+/// on every change, so the two can never disagree.
+pub fn apply_bubble_visibility(app: &AppHandle, visible: bool) {
+    if let Some(win) = app.get_webview_window("bubble") {
+        let _ = if visible { win.show() } else { win.hide() };
     }
 }
 
@@ -1139,14 +1253,57 @@ async fn sign_in_and_enrol(
     // `device_id`, not any other identifier: the backend resolves ownership by
     // (kind, fingerprint), and enrolling under anything else would own a second
     // row while every authorization check kept reading the unowned one.
-    auth.enroll(
-        &signed_in.access_token,
-        &device_id,
-        &crate::identity::device_name(),
-        current_platform(),
-    )
-    .await
-    .map_err(|e| e.to_string())?;
+    let name = crate::identity::device_name();
+    let enrol = || {
+        auth.enroll(
+            &signed_in.access_token,
+            &device_id,
+            &name,
+            current_platform(),
+        )
+    };
+
+    let result = match enrol().await {
+        Ok(session) => Ok(session),
+        // ONE retry, for exactly one refusal, and the delay is the fix rather
+        // than a hope.
+        //
+        // `DeviceRegistry.claim` admits a revoked row only for a credential
+        // minted strictly AFTER the revocation, and it compares against the
+        // access token's `iat` — which JWT records in whole SECONDS. Sign out
+        // and straight back in, and the fresh token's `iat` rounds down to
+        // before the revocation that happened a few hundred milliseconds
+        // earlier. The server genuinely cannot tell that credential from the
+        // stale one the guard exists to refuse, so it correctly refuses both.
+        //
+        // Now that sign-out revokes this Mac (`account_sign_out`), that second
+        // is on the ordinary path: "sign out, then sign back in" is the most
+        // obvious thing a person does after signing out by mistake. Waiting the
+        // second out resolves the ambiguity instead of widening the server's
+        // window, which is the half that must not move.
+        Err(e) if matches!(e.downcast_ref::<AuthError>(), Some(AuthError::Revoked)) => {
+            log::info!(
+                target: "lilypad::auth",
+                "enrollment refused as revoked — retrying past the credential's issuing second",
+            );
+            tokio::time::sleep(Duration::from_millis(1_200)).await;
+            enrol().await
+        }
+        Err(e) => Err(e),
+    };
+
+    if let Err(e) = result {
+        // Roll the local session back. `Account::sign_in` has already written
+        // the credential to the keychain by this point, so returning an error
+        // without this leaves the app claiming to be signed out on a Mac whose
+        // keychain says otherwise — and the next read of `get_account_state`
+        // flips it back, with no explanation and nothing on screen to act on.
+        // Signing in is one act; it either happened or it did not.
+        if let Err(rollback) = account::Account::sign_out() {
+            log::warn!(target: "lilypad::account", "could not roll back a failed sign-in: {rollback}");
+        }
+        return Err(e.to_string());
+    }
     Ok(signed_in.state)
 }
 
@@ -1230,17 +1387,96 @@ pub async fn account_delete(
         .map_err(|e| e.to_string())
 }
 
-/// Forget the account session on this machine. Leaves the device key and every
-/// pairing alone — removing this computer from the account is done from a
-/// phone, and is a different act.
+/// Sign out of this Mac — and take the Mac off the account with it.
+///
+/// **This used to be a local act, and that was a real hole rather than a
+/// design.** It deleted the stored account record and nothing else: the device
+/// key kept authenticating, the presence seat stayed occupied, every paired
+/// phone could still ring this machine, and a session already running kept
+/// streaming the screen of someone who had just pressed "Sign out". The old
+/// comment here called that deliberate, on the grounds that removing a computer
+/// from an account was a phone's job. [ADR-0015](../../../../docs/adr/0015-ownership-follows-sign-in.md)
+/// ended that split: signing IN is what puts this Mac on the account, so
+/// signing out is what takes it off, on the same screen, by the same person.
+///
+/// Three things, in this order, and the order is the point:
+///
+/// 1. **End any live session, locally and first.** It needs no network and
+///    cannot fail, so the one guarantee that must not depend on the wifi is
+///    made before anything that can.
+/// 2. **Release the device** (`DeviceAuth::release`) — which also ends the
+///    presence seat and revokes the account's refresh tokens, server-side.
+/// 3. **Forget the account** locally.
+///
+/// Step 3 does NOT run if step 2 failed, and that is deliberate. A Mac that
+/// showed "signed out" while still answering to every paired phone is the exact
+/// state this whole command exists to prevent, and it is worse than a sign-out
+/// that says it could not finish. The error names the connection, because that
+/// is what it always is.
 #[tauri::command]
-pub fn account_sign_out() -> Result<(), String> {
-    account::Account::sign_out().map_err(|e| e.to_string())
+pub async fn account_sign_out(
+    app: AppHandle,
+    state: State<'_, SharedState>,
+    auth: State<'_, Arc<DesktopAuth>>,
+) -> Result<(), String> {
+    send_control_or_reset(&state, Control::Disconnect);
+    log::info!(target: "lilypad::audit", "sign_out — releasing this computer from its account");
+    auth.release().await.map_err(|e| e.to_string())?;
+    account::Account::sign_out().map_err(|e| e.to_string())?;
+    // The tray's pairing item is gated on link state, which just became false.
+    {
+        let mut s = lock_state(&state);
+        s.link_state = LinkState::Unlinked;
+    }
+    crate::sync_tray_menu(&app);
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// One window at a time — and the one exception that keeps it safe.
+    #[test]
+    fn opening_a_window_steps_the_others_aside() {
+        assert_eq!(
+            windows_to_hide("setup", SessionStatus::Idle),
+            vec!["control", "diagnostics"]
+        );
+        assert_eq!(
+            windows_to_hide("control", SessionStatus::Idle),
+            vec!["setup", "diagnostics"]
+        );
+    }
+
+    /// The dashboard holds the Approve/Deny for a phone that is waiting, and
+    /// the Disconnect/Panic for a session that is live. Opening Settings must
+    /// not take either off the screen.
+    #[test]
+    fn a_busy_dashboard_is_never_hidden() {
+        for session in [
+            SessionStatus::AwaitingApproval,
+            SessionStatus::Connecting,
+            SessionStatus::Active,
+        ] {
+            assert_eq!(
+                windows_to_hide("setup", session),
+                vec!["diagnostics"],
+                "{session:?} hid the dashboard out from under a live decision"
+            );
+        }
+    }
+
+    /// A companion, not a competitor: the pairing QR is photographed by a phone
+    /// while the window that explains it stays put.
+    #[test]
+    fn the_pairing_qr_hides_nothing() {
+        assert!(windows_to_hide("qr-overlay", SessionStatus::Pairing).contains(&"control"));
+        // …and `hide_other_primaries` never reaches this function for it — the
+        // label is not a primary window, which is the guard that matters.
+        assert!(!PRIMARY_WINDOWS.contains(&"qr-overlay"));
+        assert!(!PRIMARY_WINDOWS.contains(&"bubble"));
+    }
 
     /// What the pairing window puts in front of someone adding their phone.
     ///

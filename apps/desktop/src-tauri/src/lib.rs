@@ -24,6 +24,7 @@ pub mod input;
 pub mod media;
 pub mod permission;
 pub mod power;
+pub mod prefs;
 pub mod rtc;
 pub mod session;
 pub mod signaling;
@@ -161,7 +162,7 @@ impl TrayHandles {
         let connecting = status == SessionStatus::Connecting;
         // …and only when this computer is on an account. Pairing an unowned
         // machine writes a trust relationship nobody can see or revoke
-        // (ADR-0010), so "Show QR / Pair" is not an action that exists yet —
+        // (ADR-0010), so "Pair a phone…" is not an action that exists yet —
         // the same reasoning that already disables Approve while idle. The
         // dashboard is where the missing step lives, and clicking through the
         // bubble or the "+" leads there.
@@ -223,11 +224,21 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     // Starts DISABLED and is enabled by the first `sync_tray_menu` once the
     // link state is known. A fresh install is unlinked, and offering to pair it
     // before anyone has signed in is the ordering this whole change fixes.
-    let show_qr = MenuItem::with_id(app, "show_qr", "Show QR / Pair", false, None::<&str>)?;
+    // "Pair a phone…", not "Show QR / Pair". The QR is how the step happens, not
+    // what the step is, and L-152 retired naming mechanisms at the customer —
+    // the dashboard's button, the Setup step and the device list all say "pair"
+    // and "paired phones". This was the last menu item still saying otherwise.
+    let show_qr = MenuItem::with_id(app, "show_qr", "Pair a phone…", false, None::<&str>)?;
     let approve = MenuItem::with_id(app, "approve", "Approve", false, None::<&str>)?;
     let deny = MenuItem::with_id(app, "deny", "Deny", false, None::<&str>)?;
     let disconnect = MenuItem::with_id(app, "disconnect", "Disconnect", false, None::<&str>)?;
     let panic = MenuItem::with_id(app, "panic", "⛔  Panic disconnect", false, None::<&str>)?;
+    // Ask AI, the two OS permissions and this Mac's account all live behind
+    // this one item. Without it the ONLY route back to them was the dashboard's
+    // own button, which meant a customer who had finished the first-run wizard
+    // had to know that "Setup" was also where settings live — and the wizard is
+    // the one window they had just been told they were done with.
+    let settings = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
     let diagnostics = MenuItem::with_id(app, "diagnostics", "Diagnostics…", true, None::<&str>)?;
     let sep1 = PredefinedMenuItem::separator(app)?;
     let sep2 = PredefinedMenuItem::separator(app)?;
@@ -246,6 +257,7 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
             &disconnect,
             &panic,
             &sep2,
+            &settings,
             &diagnostics,
             &sep3,
             &quit,
@@ -290,6 +302,9 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
             }
             "panic" => {
                 let _ = commands::panic_disconnect(app.clone(), app.state());
+            }
+            "settings" => {
+                let _ = commands::show_setup(app);
             }
             "diagnostics" => {
                 let _ = commands::show_diagnostics(app);
@@ -383,6 +398,11 @@ pub fn run() {
             // harmless when the backend is down or pre-M5.4.
             presence::spawn(app.handle().clone());
 
+            // The bubble is created by `tauri.conf.json`, so it is already on
+            // screen by the time this runs — hiding it here is a flicker at
+            // worst, and only for someone who asked for it to be gone.
+            commands::apply_bubble_visibility(app.handle(), prefs::load().show_bubble);
+
             // Launch at login (once, on first run) so a trusted phone can
             // reach this Mac whenever it's on and logged in — the "ever
             // ready" behavior. Best-effort; never blocks startup. See
@@ -453,6 +473,8 @@ pub fn run() {
             commands::start_enrollment,
             commands::get_login_item_enabled,
             commands::set_login_item_enabled,
+            commands::get_bubble_visible,
+            commands::set_bubble_visible,
             commands::show_setup_window,
             commands::show_control_window,
             commands::log_file_path,
@@ -475,7 +497,7 @@ mod pairing_order_tests {
     use super::*;
     use crate::auth::LinkState;
 
-    /// Reported from the running app: "Show QR / Pair" sat enabled in the tray,
+    /// Reported from the running app: the pairing item sat enabled in the tray,
     /// and the dashboard's "+" alongside it, on a computer nobody had signed
     /// into or linked. The dashboard mirrors this exact rule
     /// (`PairOrdering.test.tsx`); this is the tray's half.

@@ -194,6 +194,11 @@ export async function requestUnpair(apiBaseUrl: string, desktopDeviceId: string)
  * machine codes are authoritative where present; status is the fallback. */
 function classifyConnectStatus(status: number, body: string) {
   if (status === 404 && body.includes('not_trusted')) return appError('not_trusted');
+  // Before the `revoked` line: a laptop released by its own sign-out is a
+  // different fact from a pairing somebody ended, and it has a different
+  // remedy. Both are 403s from the same route.
+  if (status === 403 && body.includes('desktop_not_on_account'))
+    return appError('desktop_not_on_account');
   if (status === 403 && body.includes('revoked')) return appError('trust_revoked');
   if (status === 503 && body.includes('desktop_offline')) return appError('desktop_offline');
   return classifyHttpStatus(status, body);

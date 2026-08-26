@@ -606,12 +606,14 @@ function SystemPanel({ backendUrl }: { backendUrl: string | null }) {
   const perms = useLiveResource(api.getPermissionStatus);
   const agent = useLiveResource(api.getAgentConfig);
   const login = useLiveResource(api.getLoginItemEnabled);
+  const bubble = useLiveResource(api.getBubbleVisible);
 
   const refreshAll = useCallback(() => {
     perms.refresh();
     agent.refresh();
     login.refresh();
-  }, [perms, agent, login]);
+    bubble.refresh();
+  }, [perms, agent, login, bubble]);
 
   useEffect(() => {
     refreshAll();
@@ -649,29 +651,41 @@ function SystemPanel({ backendUrl }: { backendUrl: string | null }) {
     <section className="control__system card">
       <div className="section-title-row">
         <h2 className="section-title">This Mac</h2>
+        {/* "Settings", not "Open Setup". The window it opens is the settings
+            window once setup is finished (`Setup.tsx`'s `mode`), and a
+            returning customer looking for their Ask AI key does not go looking
+            for a button called Setup. */}
         <button className="btn btn--small" onClick={() => void api.showSetup()}>
-          Open Setup
+          Settings
         </button>
       </div>
 
+      {/* "Lilypad server", not "Backend". The host is worth showing — it is the
+          first thing support asks, and it is how someone running their own
+          server confirms they are on it — but the word above it was ours, not
+          the customer's. */}
       <StatusRow
-        label="Backend"
-        ok={backendUrl != null}
+        label="Lilypad server"
+        tone={backendUrl != null ? 'ok' : 'warn'}
         value={backendUrl ? hostOf(backendUrl) : 'unknown'}
       />
       <StatusRow
         label="Screen Recording"
-        ok={perms.value?.screen_capture ?? false}
+        tone={perms.value?.screen_capture ? 'ok' : 'warn'}
         value={perms.value?.screen_capture ? 'Granted' : 'Needed'}
       />
       <StatusRow
         label="Accessibility"
-        ok={perms.value?.accessibility ?? false}
+        tone={perms.value?.accessibility ? 'ok' : 'warn'}
         value={perms.value?.accessibility ? 'Granted' : 'Needed'}
       />
+      {/* `off`, not `warn`. Ask is optional and always was, and an amber dot is
+          the same signal this panel uses for a missing macOS permission — so a
+          new customer who never wanted an AI assistant was shown a fault on the
+          first panel they read, about a feature they had chosen not to use. */}
       <StatusRow
         label="Ask AI"
-        ok={(agent.value?.source ?? 'none') !== 'none'}
+        tone={(agent.value?.source ?? 'none') !== 'none' ? 'ok' : 'off'}
         value={agentSummary()}
       />
 
@@ -685,14 +699,48 @@ function SystemPanel({ backendUrl }: { backendUrl: string | null }) {
           Launch at login <span className="muted">— stay ready for your paired phones</span>
         </span>
       </label>
+
+      {/* The bubble is a 108-pixel always-on-top window sitting over whatever
+          the person is actually doing, and until this existed the only way to
+          be rid of it was to quit Lilypad — which also stopped every paired
+          phone from reaching the Mac. The menu bar icon is the entry point that
+          never hides, which is what makes turning this off safe rather than a
+          way to lose the app. */}
+      <label className="row trust-row system-toggle">
+        <input
+          type="checkbox"
+          data-testid="bubble-visible"
+          checked={bubble.value ?? true}
+          onChange={(e) => {
+            const next = e.target.checked;
+            void api
+              .setBubbleVisible(next)
+              .catch(() => {})
+              .finally(() => bubble.refresh());
+          }}
+        />
+        <span>
+          Show the floating bubble{' '}
+          <span className="muted">— the menu bar icon still opens everything</span>
+        </span>
+      </label>
     </section>
   );
 }
 
-function StatusRow({ label, ok, value }: { label: string; ok: boolean; value: string }) {
+/** `off` is a third state on purpose — see the Ask AI row. */
+function StatusRow({
+  label,
+  tone,
+  value,
+}: {
+  label: string;
+  tone: 'ok' | 'warn' | 'off';
+  value: string;
+}) {
   return (
     <div className="status-row">
-      <span className={`status-dot status-dot--${ok ? 'ok' : 'warn'}`} aria-hidden />
+      <span className={`status-dot status-dot--${tone}`} aria-hidden />
       <span className="status-row__label">{label}</span>
       <span className="status-row__value muted">{value}</span>
     </div>

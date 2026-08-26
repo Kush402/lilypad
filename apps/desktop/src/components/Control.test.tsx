@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, waitFor, act } from '@testing-library/react';
+import { render, screen, waitFor, act, fireEvent } from '@testing-library/react';
 import { Control } from './Control';
 import { useAppState } from '../lib/useAppState';
 import { api } from '../lib/tauri';
@@ -28,6 +28,8 @@ vi.mock('../lib/tauri', () => ({
     setPairAutoApprove: vi.fn(),
     revokePair: vi.fn().mockResolvedValue(undefined),
     getLoginItemEnabled: vi.fn().mockResolvedValue(true),
+    getBubbleVisible: vi.fn().mockResolvedValue(true),
+    setBubbleVisible: vi.fn().mockResolvedValue(undefined),
     setLoginItemEnabled: vi.fn(),
     getPermissionStatus: vi.fn().mockResolvedValue({ screen_capture: true, accessibility: true }),
     getAgentConfig: vi.fn().mockResolvedValue({
@@ -603,5 +605,76 @@ describe('Control announces what changes on its own', () => {
     // A request to control this Mac expires, so it cannot queue behind
     // whatever is currently being read out.
     expect(screen.getByRole('alert')).toHaveTextContent(/iPhone/);
+  });
+});
+
+/**
+ * The floating bubble is a 108-pixel always-on-top window over whatever the
+ * person is actually doing. Until this toggle existed the only way to be rid of
+ * it was to quit Lilypad, which also stopped every paired phone from reaching
+ * the Mac — so "I don't want this on my screen" and "I want to stay reachable"
+ * were mutually exclusive, and nothing said so.
+ */
+/**
+ * The "This Mac" panel is the first thing a new customer reads on the
+ * dashboard, and it used to open with an amber dot against **Ask AI** on every
+ * Mac that had simply never configured it — the same signal it uses for a
+ * missing macOS permission. An optional feature reported as a fault.
+ */
+describe('what the system panel calls a problem', () => {
+  function dotFor(label: string): Element {
+    const row = screen.getByText(label).closest('.status-row');
+    const dot = row?.querySelector('.status-dot');
+    if (!dot) throw new Error(`no status dot beside ${label}`);
+    return dot;
+  }
+
+  it('does not warn about an Ask AI nobody set up', async () => {
+    vi.mocked(api.getAgentConfig).mockResolvedValue({
+      providerKind: null,
+      model: null,
+      baseUrl: null,
+      vision: false,
+      hasKey: false,
+      source: 'none',
+    });
+    render(<Control />);
+
+    await screen.findByText('Ask AI');
+    await waitFor(() => expect(dotFor('Ask AI')).toHaveClass('status-dot--off'));
+    expect(dotFor('Ask AI')).not.toHaveClass('status-dot--warn');
+  });
+
+  it('still warns about a macOS permission that is actually missing', async () => {
+    vi.mocked(api.getPermissionStatus).mockResolvedValue({
+      screen_capture: false,
+      accessibility: true,
+    });
+    render(<Control />);
+
+    await screen.findByText('Screen Recording');
+    await waitFor(() => expect(dotFor('Screen Recording')).toHaveClass('status-dot--warn'));
+    expect(dotFor('Accessibility')).toHaveClass('status-dot--ok');
+  });
+});
+
+describe('the floating bubble', () => {
+  it('can be turned off, and the change is asked for immediately', async () => {
+    vi.mocked(api.getBubbleVisible).mockResolvedValue(true);
+    render(<Control />);
+
+    const toggle = await screen.findByTestId('bubble-visible');
+    expect(toggle).toBeChecked();
+
+    fireEvent.click(toggle);
+    await waitFor(() => expect(api.setBubbleVisible).toHaveBeenCalledWith(false));
+  });
+
+  it('says where the app still lives once it is hidden', async () => {
+    render(<Control />);
+    const label = (await screen.findByTestId('bubble-visible')).closest('label');
+    // A switch that removes the only visible sign of a running app has to name
+    // the one that is left, or turning it off reads as losing Lilypad.
+    expect(label).toHaveTextContent(/menu bar icon still opens everything/i);
   });
 });

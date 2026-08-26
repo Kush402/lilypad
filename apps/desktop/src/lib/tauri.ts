@@ -73,14 +73,19 @@ export const api = {
   startEnrollment: () => invoke<EnrollmentQrDto>('start_enrollment'),
   getLoginItemEnabled: () => invoke<boolean>('get_login_item_enabled'),
   setLoginItemEnabled: (enabled: boolean) => invoke<void>('set_login_item_enabled', { enabled }),
+  /** The floating bubble. Hideable since it is an always-on-top window over
+   * someone's work, and the tray is the entry point that never hides. */
+  getBubbleVisible: () => invoke<boolean>('get_bubble_visible'),
+  setBubbleVisible: (visible: boolean) => invoke<void>('set_bubble_visible', { visible }),
   // Dashboard system panel — read-only status + an editor affordance.
   getPermissionStatus: () => invoke<PermissionStatusDto>('get_permission_status'),
   getAgentConfig: () => invoke<AgentConfigDto>('get_agent_config'),
   showSetup: () => invoke<void>('show_setup_window'),
   showControl: () => invoke<void>('show_control_window'),
-  // Account sign-in (ADR-0012). Identity only: signing in here does NOT link
-  // this computer — that still costs a phone approving an enrollment code, and
-  // the backend refuses `kind: "desktop"` at `/devices/enroll` to enforce it.
+  // Account sign-in (ADR-0012). Signing in here also PUTS THIS MAC ON THE
+  // ACCOUNT (ADR-0015) — this comment used to say the opposite, and named the
+  // `/devices/enroll` refusal that enforced it, a guard that no longer exists.
+  // `accountSignOut` is the inverse act and takes the Mac back off again.
   getAccountState: () => invoke<AccountStateDto>('get_account_state'),
   accountSignUp: (name: string, email: string, password: string) =>
     invoke<AccountStateDto>('account_sign_up', { name, email, password }),

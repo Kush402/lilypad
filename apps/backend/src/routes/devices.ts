@@ -145,7 +145,21 @@ export async function deviceRoutes(
       const userId = deviceActorOf(req).userId;
       const revoked = await accountDevices.revoke(params.data.deviceId);
       if (revoked) {
-        const ended = hub.endRoomsForDevice(revoked.fingerprint, 'revoked');
+        // `device_removed`, NOT `revoked`. The two are different facts and the
+        // phone acts on them differently: `revoked` means THIS PAIRING is over,
+        // and the phone drops its local row and the connect secret with it —
+        // correct for `DELETE /devices/pairs/:pairId`, and wrong here. Removing
+        // a DEVICE leaves every `trusted_devices` row standing, and re-enrolling
+        // the same key restores reach without another QR (`claim` clears
+        // `revoked_at`). A phone that had thrown the secret away could not take
+        // that path: the secret is never re-issued, so it would have to re-pair
+        // to recover from something that was reversible.
+        //
+        // That went from a theoretical waste to a broken promise when signing
+        // out of a Mac started routing through this very handler
+        // (`account_sign_out`, ADR-0015) — the product now tells people, on the
+        // sign-out confirmation and on the website, that their pairings survive.
+        const ended = hub.endRoomsForDevice(revoked.fingerprint, 'device_removed');
         if (ended > 0) {
           log.signaling.info(
             { deviceId: params.data.deviceId, ended },

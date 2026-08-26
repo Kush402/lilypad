@@ -59,7 +59,7 @@ would optimize the one case (same Wi-Fi) that is merely a dev convenience.
   functionality directly. See [plugin-interface.md](./plugin-interface.md)
   for the full history of why the earlier `PluginHost` design was removed.
 - **Bubble:** frameless, transparent, always-on-top, skip-taskbar window.
-- **Tray:** Show QR, Approve, Deny, Disconnect, Panic, Quit.
+- **Menu bar:** Open Dashboard, Pair a phone…, Approve, Deny, Disconnect, Panic, Settings…, Diagnostics…, Quit.
 
 ## Backend structure
 
