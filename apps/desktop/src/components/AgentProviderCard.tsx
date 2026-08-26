@@ -73,6 +73,17 @@ export function AgentProviderCard() {
         Powers the phone&apos;s Ask feature. Your API key is stored in the macOS keychain, never in
         a file.
       </p>
+      {/* What the card used to say was true and incomplete: it explained where
+          the KEY is kept and never mentioned where the SCREEN goes. Ask is the
+          only part of Lilypad that sends anything to a third party, and the
+          person setting it up is the one who should be told, on the screen
+          where they decide. The phone asks for consent separately
+          (`lib/aiConsent`, Guideline 5.1.2(i)); this is the other half. */}
+      <p className="muted">
+        When someone uses Ask, what is on this Mac&apos;s screen, including window titles and any
+        visible text, is sent to the provider below to work out what to do. Nothing else in Lilypad
+        sends anything anywhere: an ordinary session streams only between this Mac and your phone.
+      </p>
 
       {config?.source === 'env' ? (
         <p className="muted">

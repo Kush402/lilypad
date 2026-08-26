@@ -1,8 +1,9 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Keyboard, View, Text, TextInput, Pressable, ScrollView, StyleSheet } from 'react-native';
 import { theme } from '../theme';
 import { heldStep, type AgentFeedState, type AgentStepView } from '../lib/agentFeed';
 import { CheckGlyph, CrossGlyph, IdleGlyph, PauseGlyph, RunningGlyph } from '../components/Glyph';
+import { grantAiConsent, hasAiConsent, revokeAiConsent } from '../lib/aiConsent';
 
 /**
  * The "Ask" panel — command entry + the AI agent's live step feed, with an
@@ -59,9 +60,38 @@ function StateGlyph({ view, color }: { view: AgentStepView; color: string }) {
   }
 }
 
-export function AgentPanel({ feed, onSend, onStop, onDecide }: AgentPanelProps): React.JSX.Element {
+export function AgentPanel({
+  feed,
+  onSend,
+  onStop,
+  onDecide,
+}: AgentPanelProps): React.JSX.Element | null {
   const [text, setText] = useState('');
   const held = heldStep(feed);
+
+  /* `null` is "we have not asked the keychain yet", which is neither yes nor
+   * no. Rendering nothing for that beat is the same thing the desktop's Setup
+   * window does while it decides which mode it is in, and it avoids showing a
+   * consent card to somebody who agreed weeks ago. */
+  const [consented, setConsented] = useState<boolean | null>(null);
+  useEffect(() => {
+    let alive = true;
+    void hasAiConsent()
+      .then((v) => {
+        if (alive) setConsented(v);
+      })
+      /* Fail CLOSED. `hasAiConsent` swallows its own keychain errors today, so
+       * this is unreachable through it — but the alternative to catching here
+       * is a panel that renders nothing forever, and the alternative to
+       * failing closed is sending a screen to a third party because a phone
+       * was locked. */
+      .catch(() => {
+        if (alive) setConsented(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   const submit = () => {
     const t = text.trim();
@@ -73,6 +103,49 @@ export function AgentPanel({ feed, onSend, onStop, onDecide }: AgentPanelProps):
     // TextInput on iOS leaves the keyboard up with no way to dismiss it.
     Keyboard.dismiss();
   };
+
+  if (consented === null) return null;
+
+  /* Guideline 5.1.2(i): explicit permission BEFORE data reaches a third-party
+   * model, not a line in a policy afterwards. Declining leaves every other
+   * part of Lilypad working — the session, the screen, the trackpad — which
+   * is what makes this a choice rather than a toll gate. */
+  if (!consented) {
+    return (
+      <View style={styles.panel} testID="agent-consent">
+        <Text style={styles.consentTitle}>Ask sends your screen to an AI model</Text>
+        <Text style={styles.consentBody}>
+          To answer, Lilypad sends what is on your Mac&apos;s screen, including window titles and
+          any text that is visible, to the AI provider set up on that Mac (Anthropic or OpenAI). It
+          leaves your Mac and your phone. Lilypad never sees it.
+        </Text>
+        <Text style={styles.consentBody}>
+          Nothing else in Lilypad does this. A normal session streams only between this phone and
+          your Mac.
+        </Text>
+        <View style={styles.holdBtns}>
+          <Pressable
+            testID="agent-consent-decline"
+            style={[styles.btn, styles.declineBtn]}
+            onPress={() => void revokeAiConsent().then(() => setConsented(false))}
+            accessibilityRole="button"
+            accessibilityLabel="Not now. Do not send my screen to an AI model"
+          >
+            <Text style={styles.declineText}>Not now</Text>
+          </Pressable>
+          <Pressable
+            testID="agent-consent-allow"
+            style={[styles.btn, styles.approveBtn]}
+            onPress={() => void grantAiConsent().then(() => setConsented(true))}
+            accessibilityRole="button"
+            accessibilityLabel="Allow Lilypad to send my screen to an AI model"
+          >
+            <Text style={styles.btnText}>Allow</Text>
+          </Pressable>
+        </View>
+      </View>
+    );
+  }
 
   return (
     <View style={styles.panel} testID="agent-panel">
@@ -201,6 +274,19 @@ export function AgentPanel({ feed, onSend, onStop, onDecide }: AgentPanelProps):
           </Text>
         ) : null}
       </ScrollView>
+
+      {/* Consent that cannot be taken back is not consent, and a customer who
+          changes their mind should not have to delete the app to act on it.
+          Here rather than in a settings screen because this is the only place
+          the feature exists, so it is the only place someone looks for it. */}
+      <Pressable
+        testID="agent-consent-withdraw"
+        onPress={() => void revokeAiConsent().then(() => setConsented(false))}
+        accessibilityRole="button"
+        accessibilityLabel="Stop sending my screen to an AI model"
+      >
+        <Text style={styles.withdraw}>Ask sends your screen to an AI provider. Turn off</Text>
+      </Pressable>
     </View>
   );
 }
@@ -253,6 +339,11 @@ const styles = StyleSheet.create({
   holdSummary: { color: theme.ink, fontSize: 14 },
   holdWhy: { color: theme.muted, fontSize: 13, marginTop: 6 },
   holdBtns: { flexDirection: 'row', gap: 8 },
+  consentTitle: { color: theme.ink, fontWeight: '700', fontSize: 15 },
+  consentBody: { color: theme.muted, fontSize: 13, lineHeight: 18 },
+  declineBtn: { backgroundColor: theme.bg, borderWidth: 1, borderColor: theme.line, flex: 1 },
+  declineText: { color: theme.ink, fontWeight: '700', fontSize: 14 },
+  withdraw: { color: theme.muted, fontSize: 11, textDecorationLine: 'underline' },
   feed: { maxHeight: 130 },
   feedContent: { gap: 6, paddingVertical: 2 },
   empty: { color: theme.muted, fontSize: 13, fontStyle: 'italic' },
