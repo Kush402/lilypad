@@ -14,6 +14,7 @@ import { pairingRoutes } from './routes/pairing.js';
 import { signalingRoutes } from './routes/signaling.js';
 import { deviceRoutes } from './routes/devices.js';
 import { accountRoutes } from './routes/account.js';
+import { billingRoutes } from './routes/billing.js';
 import { createSignalingHubBundle } from './signaling/hubBundle.js';
 
 export async function buildServer(): Promise<FastifyInstance> {
@@ -102,6 +103,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   await app.register(signalingRoutes, hubBundle);
   await app.register(deviceRoutes, { hub: hubBundle.hub });
   await app.register(accountRoutes, { hub: hubBundle.hub });
+  await app.register(billingRoutes);
 
   return app;
 }

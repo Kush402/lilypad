@@ -40,6 +40,31 @@ jest.mock('../lib/auth', () => {
   return { DeviceAuthError };
 });
 
+jest.mock('../lib/billing', () => ({
+  BillingError: class BillingError extends Error {},
+  fetchBillingStatus: jest.fn(async () => ({
+    tier: 'free',
+    productId: null,
+    currentPeriodEndsAt: null,
+  })),
+  purchasePro: jest.fn(),
+  restorePro: jest.fn(),
+}));
+
+jest.mock('../lib/storekit', () => ({
+  PRO_MONTHLY_PRODUCT_ID: 'com.takedia.lilypad.pro.monthly',
+  getProduct: jest.fn(async () => ({
+    productId: 'com.takedia.lilypad.pro.monthly',
+    displayName: 'Lilypad Pro',
+    description: 'Reach your Mac from any network.',
+    displayPrice: '$2.99',
+    price: 2.99,
+    currencyCode: 'USD',
+    hasIntroOffer: true,
+    introOfferLabel: '1 month free',
+  })),
+}));
+
 const { DeviceAuthError } = jest.requireMock('../lib/auth') as {
   DeviceAuthError: new () => Error;
 };

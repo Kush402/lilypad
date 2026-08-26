@@ -1,7 +1,7 @@
 {
   "name": "@lilypad/backend",
   "version": "0.1.0",
-  "description": "Lilypad backend \u2014 Fastify REST + WebSocket signaling, Redis pairing, Postgres",
+  "description": "Lilypad backend — Fastify REST + WebSocket signaling, Redis pairing, Postgres",
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
@@ -20,6 +20,7 @@
     "stats": "tsx src/stats.ts"
   },
   "dependencies": {
+    "@apple/app-store-server-library": "3.1.0",
     "@fastify/cors": "^10.0.2",
     "@fastify/rate-limit": "^10.2.2",
     "@fastify/websocket": "^11.0.2",

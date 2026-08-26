@@ -57,6 +57,23 @@ export const users = pgTable('users', {
    */
   emailVerifiedAt: timestamp('email_verified_at', { withTimezone: true }),
   tier: tierEnum('tier').notNull().default('free'),
+  /**
+   * Apple's original transaction id for the Pro subscription that currently
+   * entitles this account ([ADR-0016](../../../../docs/adr/0016-storekit-and-the-price.md)).
+   *
+   * UNIQUE so one Apple subscription cannot be attached to two Lilypad
+   * accounts — restoring on a second account would otherwise grant Pro twice
+   * for one payment. NULL means the account has never had an Apple sub linked,
+   * or it was cleared when the subscription ended and no longer needs the
+   * lock (see `services/appleBilling.ts`).
+   */
+  appleOriginalTransactionId: text('apple_original_transaction_id').unique(),
+  /** StoreKit product id currently entitling this account, or NULL. */
+  subscriptionProductId: text('subscription_product_id'),
+  /** When the current paid (or intro) period ends, per Apple. NULL = free /
+   * unknown. Used for status display; the ASSN path is what actually drops
+   * `tier` when Apple says the subscription is over. */
+  subscriptionExpiresAt: timestamp('subscription_expires_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 

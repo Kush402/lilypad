@@ -16,6 +16,8 @@
 		7699B88040F8A987B510C191 /* libPods-LilypadMobile-LilypadMobileTests.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 19F6CBCC0A4E27FBF8BF4A61 /* libPods-LilypadMobile-LilypadMobileTests.a */; };
 		81AB9BB82411601600AC10FF /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 81AB9BB72411601600AC10FF /* LaunchScreen.storyboard */; };
 		A1B2C3D40000000000000001 /* Noop.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D40000000000000002 /* Noop.swift */; };
+		A1B2C3D40000000000000010 /* LilypadStoreKit.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D40000000000000011 /* LilypadStoreKit.swift */; };
+		A1B2C3D40000000000000012 /* LilypadStoreKit.m in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D40000000000000013 /* LilypadStoreKit.m */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -47,6 +49,8 @@
 		81AB9BB72411601600AC10FF /* LaunchScreen.storyboard */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = file.storyboard; name = LaunchScreen.storyboard; path = LilypadMobile/LaunchScreen.storyboard; sourceTree = "<group>"; };
 		89C6BE57DB24E9ADA2F236DE /* Pods-LilypadMobile-LilypadMobileTests.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-LilypadMobile-LilypadMobileTests.release.xcconfig"; path = "Target Support Files/Pods-LilypadMobile-LilypadMobileTests/Pods-LilypadMobile-LilypadMobileTests.release.xcconfig"; sourceTree = "<group>"; };
 		A1B2C3D40000000000000002 /* Noop.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = Noop.swift; path = LilypadMobile/Noop.swift; sourceTree = "<group>"; };
+		A1B2C3D40000000000000011 /* LilypadStoreKit.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = LilypadStoreKit.swift; path = LilypadMobile/LilypadStoreKit.swift; sourceTree = "<group>"; };
+		A1B2C3D40000000000000013 /* LilypadStoreKit.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; name = LilypadStoreKit.m; path = LilypadMobile/LilypadStoreKit.m; sourceTree = "<group>"; };
 		ED297162215061F000B7C4FE /* JavaScriptCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = JavaScriptCore.framework; path = System/Library/Frameworks/JavaScriptCore.framework; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
 
@@ -93,6 +97,8 @@
 				13B07FAF1A68108700A75B9A /* AppDelegate.h */,
 				13B07FB01A68108700A75B9A /* AppDelegate.mm */,
 				A1B2C3D40000000000000002 /* Noop.swift */,
+				A1B2C3D40000000000000011 /* LilypadStoreKit.swift */,
+				A1B2C3D40000000000000013 /* LilypadStoreKit.m */,
 				13B07FB51A68108700A75B9A /* Images.xcassets */,
 				13B07FB61A68108700A75B9A /* Info.plist */,
 				81AB9BB72411601600AC10FF /* LaunchScreen.storyboard */,
@@ -402,6 +408,8 @@
 				13B07FBC1A68108700A75B9A /* AppDelegate.mm in Sources */,
 				13B07FC11A68108700A75B9A /* main.m in Sources */,
 				A1B2C3D40000000000000001 /* Noop.swift in Sources */,
+				A1B2C3D40000000000000010 /* LilypadStoreKit.swift in Sources */,
+				A1B2C3D40000000000000012 /* LilypadStoreKit.m in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

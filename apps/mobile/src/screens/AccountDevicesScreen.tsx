@@ -23,6 +23,14 @@ import {
   revokeAccountDevice,
 } from '../lib/accountDevices';
 import { DeviceAuthError } from '../lib/auth';
+import {
+  BillingError,
+  fetchBillingStatus,
+  purchasePro,
+  restorePro,
+  type BillingStatus,
+} from '../lib/billing';
+import { getProduct, type StoreKitProduct } from '../lib/storekit';
 import { LaptopGlyph, PhoneGlyph } from '../components/Glyph';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'AccountDevices'>;
@@ -73,6 +81,10 @@ export function AccountDevicesScreen({ route, navigation }: Props): React.JSX.El
   const [deleting, setDeleting] = useState(false);
   const [confirmEmail, setConfirmEmail] = useState('');
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  /** StoreKit product + account entitlement — both needed for the A6 disclosure. */
+  const [billing, setBilling] = useState<BillingStatus | null>(null);
+  const [product, setProduct] = useState<StoreKitProduct | null>(null);
+  const [billingError, setBillingError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -89,9 +101,56 @@ export function AccountDevicesScreen({ route, navigation }: Props): React.JSX.El
     }
   }, [apiBaseUrl, navigation]);
 
+  const refreshBilling = useCallback(async () => {
+    try {
+      const [status, storeProduct] = await Promise.all([
+        fetchBillingStatus(apiBaseUrl),
+        getProduct().catch(() => null),
+      ]);
+      setBilling(status);
+      setProduct(storeProduct);
+      setBillingError(null);
+    } catch (err) {
+      if (err instanceof DeviceAuthError) return;
+      // Billing is optional on this screen — a failure must not blank devices.
+      setBillingError(err instanceof Error ? err.message : 'Could not load subscription.');
+    }
+  }, [apiBaseUrl]);
+
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  useEffect(() => {
+    void refreshBilling();
+  }, [refreshBilling]);
+
+  const runPurchase = useCallback(async () => {
+    setBusy('billing');
+    setBillingError(null);
+    try {
+      const status = await purchasePro(apiBaseUrl);
+      setBilling(status);
+    } catch (err) {
+      if (err instanceof BillingError && err.message === 'Purchase cancelled.') return;
+      setBillingError(err instanceof Error ? err.message : 'Could not complete the purchase.');
+    } finally {
+      setBusy(null);
+    }
+  }, [apiBaseUrl]);
+
+  const runRestore = useCallback(async () => {
+    setBusy('billing');
+    setBillingError(null);
+    try {
+      const status = await restorePro(apiBaseUrl);
+      setBilling(status);
+    } catch (err) {
+      setBillingError(err instanceof Error ? err.message : 'Could not restore purchases.');
+    } finally {
+      setBusy(null);
+    }
+  }, [apiBaseUrl]);
 
   const confirmDeleteAccount = useCallback(async () => {
     setBusy('account');
@@ -199,6 +258,65 @@ export function AccountDevicesScreen({ route, navigation }: Props): React.JSX.El
         sign in on it. Pairing it with a phone is a separate step, on Your laptops. Removing a
         device here signs it out everywhere.
       </Text>
+
+      {/* Guideline 3.1.2: title, length, price, and what it unlocks, before buy. */}
+      <View style={styles.billingCard} testID="billing-pro">
+        <Text style={styles.billingTitle}>Lilypad Pro</Text>
+        <Text style={styles.billingBody}>
+          Reach your Mac from another network. On the same Wi-Fi, Lilypad stays free forever.
+        </Text>
+        {billing?.tier === 'pro' || billing?.tier === 'team' ? (
+          <Text testID="billing-active" style={styles.billingActive}>
+            {billing.tier === 'team'
+              ? 'Team plan active.'
+              : product
+                ? `Pro active · ${product.displayPrice} per month`
+                : 'Pro active.'}
+            {billing.currentPeriodEndsAt
+              ? ` Renews or ends ${new Date(billing.currentPeriodEndsAt).toLocaleDateString()}.`
+              : ''}
+          </Text>
+        ) : (
+          <>
+            <Text style={styles.billingTerms}>
+              {product
+                ? `${product.displayName} · ${product.displayPrice} per month` +
+                  (product.hasIntroOffer && product.introOfferLabel
+                    ? ` · ${product.introOfferLabel}, then ${product.displayPrice}/month`
+                    : '') +
+                  '. Auto-renews until you cancel in Apple ID settings. Cancel at least 24 hours before the period ends.'
+                : 'Auto-renewing subscription. Price loads from the App Store.'}
+            </Text>
+            <View style={styles.cardActions}>
+              <Pressable
+                testID="billing-subscribe"
+                disabled={busy !== null}
+                accessibilityRole="button"
+                accessibilityLabel="Subscribe to Lilypad Pro"
+                onPress={() => void runPurchase()}
+              >
+                <Text style={[styles.action, busy === 'billing' && styles.actionDisabled]}>
+                  {busy === 'billing' ? 'Working…' : 'Subscribe'}
+                </Text>
+              </Pressable>
+              <Pressable
+                testID="billing-restore"
+                disabled={busy !== null}
+                accessibilityRole="button"
+                accessibilityLabel="Restore purchases"
+                onPress={() => void runRestore()}
+              >
+                <Text style={styles.action}>Restore</Text>
+              </Pressable>
+            </View>
+          </>
+        )}
+        {billingError !== null ? (
+          <Text testID="billing-error" style={styles.error}>
+            {billingError}
+          </Text>
+        ) : null}
+      </View>
 
       <FlatList
         data={devices}
@@ -374,6 +492,17 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: theme.bg },
   center: { alignItems: 'center', justifyContent: 'center', gap: 14 },
   subtitle: { color: theme.muted, fontSize: 13, marginBottom: 14 },
+  billingCard: {
+    backgroundColor: theme.panel,
+    borderRadius: 14,
+    padding: 16,
+    gap: 8,
+    marginBottom: 16,
+  },
+  billingTitle: { color: theme.ink, fontSize: 16, fontWeight: '600' },
+  billingBody: { color: theme.muted, fontSize: 13, lineHeight: 18 },
+  billingTerms: { color: theme.ink, fontSize: 13, lineHeight: 18 },
+  billingActive: { color: theme.accent, fontSize: 13, fontWeight: '600' },
   list: { gap: 12, paddingBottom: 16 },
   empty: { color: theme.muted, textAlign: 'center', marginTop: 40 },
   card: { backgroundColor: theme.panel, borderRadius: 14, padding: 16, gap: 10 },

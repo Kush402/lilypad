@@ -106,6 +106,20 @@ const EnvSchema = z.object({
     .default('false')
     .transform((v) => v === 'true'),
 
+  // ── App Store billing (ADR-0016) ───────────────────────────────────────────
+  // Verifying StoreKit JWS and App Store Server Notifications. Absent → the
+  // billing routes answer 503 rather than pretending to accept a purchase
+  // they cannot check. Bundle id must match the iOS app that signs the JWS.
+  // APPLE_APP_APPLE_ID is required for Production environment checks (the
+  // App Store Connect app record id, e.g. 6804827369 for Lilypad RC).
+  APPLE_IAP_BUNDLE_ID: z.string().default('com.takedia.lilypad'),
+  APPLE_APP_APPLE_ID: z.coerce.number().int().positive().optional(),
+  // Which environment SignedDataVerifier expects. Production verifies
+  // production receipts; Sandbox verifies TestFlight / StoreKit Testing.
+  // A single process can only target one — run two verifiers if you need
+  // both (see services/appleBilling.ts).
+  APPLE_IAP_ENVIRONMENT: z.enum(['Sandbox', 'Production']).default('Sandbox'),
+
   // Comma-separated allowlist of origins permitted to make cross-origin
   // browser requests in production (e.g. a deployed `apps/admin` SPA).
   // Empty means "no cross-origin browser client is allowed yet" — a

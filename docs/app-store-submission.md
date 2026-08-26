@@ -13,9 +13,12 @@ behind the export-compliance answer, and the store copy. They live here because
 each one is a decision with a defence, and a decision whose defence is not
 written down gets re-litigated by whoever submits next.
 
-Covers items **A4**, **A8** and **A9** of the launch audit. Not covered here:
-the demo-access problem (**A1**), which is a product change rather than a
-document, and the purchase path (**A2**).
+Covers items **A4**, **A8** and **A9** of the launch audit. **A2** (purchase
+path) is now wired in code against product
+`com.takedia.lilypad.pro.monthly` — see [ADR-0016](adr/0016-storekit-and-the-price.md)
+and `POST /billing/apple/transactions`. The remaining App Store Connect metadata
+for that subscription (review screenshot, Ready to Submit) is still a portal
+step, not a code one.
 
 ---
 

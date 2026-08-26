@@ -13,3 +13,4 @@ export * from './devices.js';
 export * from './signaling.js';
 export * from './input.js';
 export * from './agent.js';
+export * from './billing.js';
