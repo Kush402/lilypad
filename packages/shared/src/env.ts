@@ -83,6 +83,29 @@ const EnvSchema = z.object({
     .default('false')
     .transform((v) => v === 'true'),
 
+  // Whether `/connect/request` refuses an account without a remote-access
+  // subscription (ADR-0016).
+  //
+  // **This cannot be turned on yet, and the reason is architectural rather
+  // than commercial.** `/connect/request` is on the path of EVERY session,
+  // including one between a phone and a laptop on the same Wi-Fi
+  // (NETWORKING.md §1: the control plane is a hard dependency today, and the
+  // LAN control path is target architecture, not built). Enforcing here would
+  // therefore charge for LAN, which ADR-0013 forbids in its first
+  // non-negotiable and which the website now promises in as many words.
+  //
+  // It exists switched off because the alternative is discovering the shape of
+  // the check on the day the purchase path ships. Turn it on when a LAN
+  // session no longer reaches the cloud at all, and not before.
+  //
+  // Same `z.enum` treatment as FORCE_RELAY, for the same reason: coerced
+  // booleans read the STRING "false" as true, and this one refusing sessions
+  // by accident is the worst outage the product can have.
+  ENFORCE_REMOTE_ENTITLEMENT: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true'),
+
   // Comma-separated allowlist of origins permitted to make cross-origin
   // browser requests in production (e.g. a deployed `apps/admin` SPA).
   // Empty means "no cross-origin browser client is allowed yet" — a

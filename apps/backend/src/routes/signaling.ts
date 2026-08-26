@@ -19,6 +19,7 @@ import { optionalAuth, optionalActorOf } from '../auth/requireAuth.js';
 import { rejectRevokedActor } from '../auth/liveDevice.js';
 import { actAsDevice } from '../auth/authorize.js';
 import { deviceOwnershipByFingerprint } from '../auth/ownership.js';
+import { remoteAccessFor } from '../services/entitlement.js';
 import { bearerToken, verifyAccessToken, type Actor } from '../auth/tokens.js';
 import type { SignalingHubBundle } from '../signaling/hubBundle.js';
 import { advertisedUrls } from '../services/advertisedUrls.js';
@@ -193,6 +194,58 @@ export async function signalingRoutes(
       // no account owns, so the phone would send its owner to redo a ceremony
       // that cannot succeed until the thing it is not mentioning gets done.
       const desktop = await deviceOwnershipByFingerprint('desktop', desktopDeviceId);
+
+      // Remote access is the paid feature (ADR-0013, priced by ADR-0016), and
+      // this is the one place a session is established, so this is where the
+      // entitlement belongs.
+      //
+      // **In shadow mode, and it has to be.** `/connect/request` is on the path
+      // of EVERY session including a phone and a laptop on the same Wi-Fi:
+      // NETWORKING.md §1 makes the control plane a hard dependency today, and
+      // the LAN control path that would change that is target architecture,
+      // not built. Refusing here would charge for LAN, which ADR-0013 forbids
+      // in its first non-negotiable and which the website now promises in
+      // words.
+      //
+      // So it runs, records what it WOULD have done, and allows the session.
+      // That is worth more than not running: on the day the LAN path lands,
+      // the question "how many real sessions is this about to refuse?" already
+      // has an answer, rather than being discovered by the people it refuses.
+      if (desktop?.userId != null) {
+        // Wrapped, and the wrapping is the point rather than defensiveness.
+        //
+        // A check that is not enforcing must not be able to fail the request it
+        // is only observing — otherwise shadow mode is strictly worse than no
+        // mode, and this exact call taking down session establishment is how
+        // you find that out. Caught here rather than inside
+        // `remoteAccessFor`, which should answer honestly or raise; deciding
+        // that a database failure is survivable belongs to the caller who knows
+        // what it is about to do with the answer.
+        //
+        // Fails OPEN even when enforcing. Nobody should be locked out of their
+        // own computer because a query timed out, and the money at stake is one
+        // session. It is logged at error level so that the leak is visible
+        // rather than silent.
+        try {
+          const access = await remoteAccessFor(desktop.userId);
+          if (access !== 'entitled') {
+            log.signaling.info(
+              { userId: desktop.userId, access, enforcing: config.env.ENFORCE_REMOTE_ENTITLEMENT },
+              'connect would need a subscription',
+            );
+            if (config.env.ENFORCE_REMOTE_ENTITLEMENT) {
+              return reply.code(402).send({
+                error: 'subscription_required',
+                message:
+                  'reaching this computer from another network needs Lilypad Pro. On the same Wi-Fi it stays free.',
+              });
+            }
+          }
+        } catch (err) {
+          log.signaling.error({ err }, 'entitlement check failed — allowing the session');
+        }
+      }
+
       if (desktop?.state === 'revoked') {
         return reply.code(403).send({
           error: 'desktop_not_on_account',
