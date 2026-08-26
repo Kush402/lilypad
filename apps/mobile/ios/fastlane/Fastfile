@@ -140,16 +140,58 @@ platform :ios do
     # found" no matter how many times it is retried.
     #
     # A certificate and profile created through the API and handed in as
-    # secrets sidestep that entirely, and are deterministic besides: an
-    # ephemeral runner cannot reuse a certificate whose private key it does not
-    # have, so cloud-less automatic signing would mint a fresh one every run
-    # until the account hit its limit.
+    # secrets sidestep that entirely.
     #
-    # The ARCHIVE still signs automatically — Xcode resolves a development
-    # identity from the same API key, which works — and only the EXPORT is
-    # manual. That is the combination verified end to end on 2026-08-24.
+    # They have to cover the ARCHIVE as well, and for six runs they did not.
+    # The archive signed automatically, and automatic signing on a machine
+    # that holds no private key cannot reuse a certificate — it asks the
+    # portal for a new one. `-allowProvisioningUpdates` grants that request
+    # every time, so every run left a fresh Apple Development certificate
+    # behind on a team this project shares with other people. The comment
+    # that used to sit here predicted exactly that ("would mint a fresh one
+    # every run until the account hit its limit") and shipped anyway; on
+    # 2026-08-25, run six was told
+    #
+    #     Choose a certificate to revoke. Your account has reached the
+    #     maximum number of certificates.
+    #
+    # ...23 seconds in, and reported it as "No profiles for
+    # 'com.takedia.lilypad' were found", which names the wrong thing.
+    #
+    # So the archive is manual too now, and no branch of this lane asks the
+    # portal for anything. The project ships with no CODE_SIGN_STYLE at all
+    # (Xcode reads that as Automatic) and a project-level
+    # `CODE_SIGN_IDENTITY[sdk=iphoneos*] = "iPhone Developer"`, which is why
+    # it reached for a DEVELOPMENT certificate to archive a Release. Both are
+    # overridden on the app target only, in the Release configuration only:
+    # `xcargs` would have applied them to every Pods target as well, none of
+    # which has a provisioning profile.
     if env("IOS_PROVISIONING_PROFILE_NAME")
-      # --- explicit manual export ----------------------------------------
+      # --- explicit manual signing, archive and export --------------------
+      identity = env("IOS_SIGNING_IDENTITY") ||
+                 UI.user_error!("IOS_SIGNING_IDENTITY is not set")
+      profile = env("IOS_PROVISIONING_PROFILE_NAME")
+
+      signing = {
+        path: "LilypadMobile.xcodeproj",
+        use_automatic_signing: false,
+        # The scheme's own target. Named rather than left to default, because
+        # the default is every target — including LilypadMobileTests, which
+        # is not archived and has no profile of its own.
+        targets: [scheme],
+        # Debug stays automatic so a developer can still run on a device.
+        build_configurations: ["Release"],
+        team_id: team_id,
+        code_sign_identity: identity,
+        profile_name: profile
+      }
+      update_code_signing_settings(signing)
+      # A target-level setting already outranks the project-level one, whatever
+      # its condition. Writing the conditional form as well costs one action
+      # and removes the question, which is worth more than it costs on a
+      # pipeline where finding out takes twenty minutes.
+      update_code_signing_settings(signing.merge(sdk: "iphoneos*"))
+
       build_app(
         workspace: workspace,
         scheme: scheme,
@@ -158,25 +200,16 @@ platform :ios do
         output_directory: build_dir,
         output_name: output_ipa,
         clean: true,
-        # `xcargs` ONLY. This fastlane already forwards `xcargs` into the
-        # `-exportArchive` invocation, so also passing `export_xcargs` puts
-        # the auth flags on that command line twice and xcodebuild refuses
-        # outright:
-        #
-        #     xcodebuild: error: option '-authenticationKeyPath' may only be
-        #     provided once
-        #
-        # ...after a twenty-minute archive that had just SUCCEEDED. The
-        # comment above describes a version of gym that did not forward them;
-        # that stopped being true and nothing here noticed, because this lane
-        # had never run.
-        xcargs: auth_args(key_path),
+        # No `xcargs`, and therefore no `-allowProvisioningUpdates`: the
+        # identity is in the keychain and the profile is on disk, so neither
+        # xcodebuild invocation has any reason to talk to the portal. This is
+        # also the guarantee — not the intention, the guarantee — that a run
+        # of this lane cannot consume a certificate slot.
         export_options: {
           signingStyle: "manual",
           teamID: team_id,
-          signingCertificate: env("IOS_SIGNING_IDENTITY") ||
-                              UI.user_error!("IOS_SIGNING_IDENTITY is not set"),
-          provisioningProfiles: { app_id => env("IOS_PROVISIONING_PROFILE_NAME") }
+          signingCertificate: identity,
+          provisioningProfiles: { app_id => profile }
         }
       )
     elsif env("MATCH_GIT_URL")
@@ -204,10 +237,18 @@ platform :ios do
         }
       )
     else
-      # --- Xcode-managed automatic signing (default) ---------------------
-      # -allowProvisioningUpdates lets Xcode create the App Store profile and a
-      # managed cloud signing certificate, so nothing has to be pre-installed
-      # and no certificate slot is burned on an ephemeral runner.
+      # --- Xcode-managed automatic signing (last resort) -----------------
+      # -allowProvisioningUpdates lets Xcode create the App Store profile and,
+      # where the account's key may issue one, a managed cloud signing
+      # certificate — so nothing has to be pre-installed.
+      #
+      # This branch is what L-159 was: where cloud signing is refused (as it is
+      # for this account's key), Xcode falls back to minting an ordinary
+      # certificate, and a runner that keeps no private key mints another one
+      # next run. Six of them filled the team's allowance. It is kept because
+      # an account whose key CAN cloud-sign needs nothing pre-installed, and it
+      # is reached only when IOS_DIST_CERT_P12 is unset. Set that secret and
+      # the branch above runs instead, which asks the portal for nothing.
       #
       # On its own it does NOT work in CI. `xcodebuild -help`:
       #

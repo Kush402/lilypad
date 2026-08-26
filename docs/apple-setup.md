@@ -287,17 +287,45 @@ storing them as further secrets. Omit all three and the lane falls back to
 automatic signing, which is correct for an account whose key _may_ create cloud
 certificates.
 
-The **archive** still signs automatically — Xcode resolves a development
-identity from the same API key — and only the **export** is manual. That is the
-combination verified end to end: `ARCHIVE SUCCEEDED`, a 24 MB IPA signed by
-`iPhone Distribution: … (AR2Q4Y465L)`, and `altool --validate-app` reaching
-Apple and stopping only at
+That combination was verified end to end on 2026-08-24: `ARCHIVE SUCCEEDED`, a
+24 MB IPA signed by `iPhone Distribution: … (AR2Q4Y465L)`, and
+`altool --validate-app` reaching Apple and stopping only at
 
 ```
 Cannot determine the Apple ID from Bundle ID 'com.takedia.lilypad'
 ```
 
-— which is the missing app record from §3, and nothing else.
+which is the missing app record from §3, and nothing else.
+
+### Why the archive is manual too (L-159)
+
+For six runs only the **export** was manual; the **archive** signed
+automatically, on the reasoning that Xcode would resolve a development identity
+from the same API key. It did — by asking the portal for a **new certificate**
+each time, because a runner that keeps no private key has nothing to reuse and
+`-allowProvisioningUpdates` grants the request. Six runs, six certificates, and
+on 2026-08-25:
+
+```
+Choose a certificate to revoke. Your account has reached the maximum number
+of certificates.
+```
+
+23 seconds in, reported as `No profiles for 'com.takedia.lilypad' were found`,
+which names the wrong thing. The team is a collaborator's, so those slots were
+not only ours to spend.
+
+The archive is manual now as well. `Fastfile` sets `CODE_SIGN_STYLE=Manual`
+plus the identity and profile on the **app target's Release configuration
+only** — via `update_code_signing_settings`, not `xcargs`, which would have
+applied them to every Pods target too — and passes no
+`-allowProvisioningUpdates` anywhere. Neither xcodebuild invocation has any
+reason to reach the portal, which is what makes it impossible rather than
+merely unlikely for a run to spend a certificate slot.
+
+Nothing was revoked to unblock this: the existing certificates stay valid for
+whoever holds their private keys, and the ceiling stops mattering once no run
+asks for another.
 
 ## Adding the secrets
 
