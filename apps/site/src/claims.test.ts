@@ -98,9 +98,30 @@ describe('pricing claims', () => {
     expect(prices).toEqual([]);
   });
 
-  it('says plainly that the prices are not set and the paid tiers do not exist', () => {
-    expect(html).toMatch(/prices are not set/i);
+  it('says plainly that the paid tiers do not exist and nothing here is an offer', () => {
     expect(html).toMatch(/do not exist yet/i);
+    expect(html).toMatch(/cannot be bought/i);
+    expect(html).toMatch(/nothing on this page is an offer/i);
+  });
+
+  /**
+   * The page used to list "Relayed sessions when a network blocks a direct one"
+   * under Free, and said paid plans would only ever be about larger allowances
+   * and managed AI. That was the strategy ADR-0013 amended, and it promised
+   * away the thing Pro exists to sell.
+   *
+   * Changing it cost nothing because exactly one account existed at the time,
+   * and it belonged to the owner. That will not be true again, so the promise
+   * that replaces it is pinned here: nobody loses remote access on the day the
+   * paywall arrives, only on the day they could have paid to keep it.
+   */
+  it('does not sell remote access as free, and says when the change takes effect', () => {
+    expect(html).toMatch(/from anywhere/i);
+    expect(html).toMatch(
+      /stays free for everyone who has it until the day Pro can actually be bought/i,
+    );
+    // The old promise must not come back by accident.
+    expect(html).not.toMatch(/Relayed sessions when a network blocks a direct one/i);
   });
 
   it('marks which plan a visitor can actually have today', () => {
@@ -595,22 +616,41 @@ describe('what a shared link looks like', () => {
  * the same geometry as the app icon the visitor is about to install.
  */
 describe('house style in customer copy', () => {
-  /** The page minus its comments: what a visitor can actually read. */
-  const copy = html.replace(/<!--[\s\S]*?-->/g, '');
+  /**
+   * All three pages, not just the homepage.
+   *
+   * This guard read `index.html` alone for its whole life, so the house-style
+   * pass that cleaned the homepage never touched the legal pages beside it:
+   * nineteen em dashes and four lotus emoji sat in `privacy.html` and
+   * `terms.html` afterwards, on the two pages a cautious customer is most
+   * likely to actually read. A guard that covers one of three files is a guard
+   * that reports success while the thing it protects is broken elsewhere.
+   */
+  const pages = [
+    ['index.html', html],
+    ['privacy.html', privacy],
+    ['terms.html', terms],
+  ] as const;
 
-  it('joins its sentences with punctuation, not em dashes', () => {
-    const offenders = copy
+  /** A page minus its comments: what a visitor can actually read. */
+  const readable = (page: string) => page.replace(/<!--[\s\S]*?-->/g, '');
+
+  it.each(pages)('%s joins its sentences with punctuation, not em dashes', (_name, page) => {
+    const offenders = readable(page)
       .split('\n')
       .map((line, i) => [i + 1, line] as const)
       .filter(([, line]) => line.includes('\u2014'));
     expect(offenders.map(([n, l]) => `${n}: ${l.trim()}`)).toEqual([]);
   });
 
-  it('draws its mark instead of borrowing an emoji font', () => {
+  it.each(pages)('%s draws its mark instead of borrowing an emoji font', (_name, page) => {
+    const copy = readable(page);
     expect(copy).not.toMatch(/\u{1FAB7}/u);
     // Nothing in the pictographic ranges, so this does not quietly come back
-    // as a different glyph next time.
+    // as a different glyph next time. Arrows and modifier keys are deliberately
+    // outside these ranges: they render in the text font and are what macOS
+    // itself prints on a key cap.
     expect(copy).not.toMatch(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u);
-    expect(html).toMatch(/class="brand-mark"/);
+    expect(page).toMatch(/class="brand-mark"/);
   });
 });

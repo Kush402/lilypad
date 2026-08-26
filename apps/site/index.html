@@ -41,7 +41,12 @@
   <body>
     <a class="skip" href="#top">Skip to content</a>
     <header class="nav">
-      <a class="nav__brand" href="#top"><svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 12 L20.25 7.71 A9.3 9.3 0 1 1 18.16 5.04 Z" /></svg> Lilypad</a>
+      <a class="nav__brand" href="#top"
+        ><svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="M12 12 L20.25 7.71 A9.3 9.3 0 1 1 18.16 5.04 Z" />
+        </svg>
+        Lilypad</a
+      >
       <nav class="nav__links" aria-label="Sections">
         <a href="#how">How it works</a>
         <a href="#security">Security</a>
@@ -99,8 +104,8 @@
               <p>
                 When a network blocks a direct connection, traffic is relayed, staying end-to-end
                 encrypted in transit (DTLS-SRTP) the whole way. The relay is live, and carries
-                traffic over UDP, TCP, and TLS on port 443, so it still works on networks that
-                allow nothing but HTTPS.
+                traffic over UDP, TCP, and TLS on port 443, so it still works on networks that allow
+                nothing but HTTPS.
               </p>
             </li>
           </ol>
@@ -119,8 +124,8 @@
               <h3>A password is not a screen</h3>
               <p>
                 Signing in puts a computer on your account, so you can see it and remove it. It does
-                not let anything reach it. A phone sees a screen only after pairing, which means scanning the
-                code that computer shows. A stolen password is not a stolen laptop.
+                not let anything reach it. A phone sees a screen only after pairing, which means
+                scanning the code that computer shows. A stolen password is not a stolen laptop.
               </p>
             </article>
             <article>
@@ -159,8 +164,8 @@
             <li>It asks your phone before it does anything consequential.</li>
             <li>You can take over at any moment.</li>
             <li>
-              Bring your own API key from Anthropic, or any OpenAI-compatible endpoint. Your key stays
-              in your Mac's keychain.
+              Bring your own API key from Anthropic, or any OpenAI-compatible endpoint. Your key
+              stays in your Mac's keychain.
             </li>
           </ul>
         </div>
@@ -215,10 +220,15 @@
         <div class="band__inner">
           <h2>Plans</h2>
           <p class="lede">
-            <strong>Using Lilypad on your own network is always free.</strong> It costs us nothing
-            to run, so there is nothing to charge for. That stays true whatever else changes.
-            Everything the app does today is free; paid plans are planned around the only two things
-            that cost real money: relayed minutes, and AI we pay for on your behalf.
+            <strong>Using Lilypad on your own network is always free.</strong> Not a trial, not a
+            starter tier. When your phone and your Mac are on the same Wi-Fi the connection goes
+            straight between them, nothing passes through our servers, and there is nothing for us
+            to meter. That stays true whatever else changes.
+          </p>
+          <p class="lede">
+            Reaching your Mac from somewhere else is the paid part, because that is the part that
+            needs us: our servers introduce the two machines, and relay the video when a network
+            refuses to let them talk directly.
           </p>
 
           <div class="plans">
@@ -226,12 +236,10 @@
               <h3>Free</h3>
               <p class="plan__status plan__status--current">Available now</p>
               <ul>
-                <li>Unlimited sessions on your own network</li>
-                <li>Unlimited direct peer-to-peer sessions</li>
-                <li>Relayed sessions when a network blocks a direct one</li>
-                <li>Remote control, input and clipboard</li>
-                <li>Multiple devices</li>
-                <li>Ask with your own API key</li>
+                <li>Unlimited sessions on your own network, forever</li>
+                <li>The full screen, trackpad, keyboard and clipboard</li>
+                <li>As many Macs and phones as you like</li>
+                <li>Ask, with your own API key</li>
               </ul>
             </article>
             <article class="plan plan--planned">
@@ -239,10 +247,9 @@
               <p class="plan__status">Planned</p>
               <ul>
                 <li>Everything in Free</li>
-                <li>A larger relay allowance</li>
-                <li>Managed AI, with no key of your own to supply</li>
-                <li>Premium models</li>
-                <li>Extended history</li>
+                <li>Reach your Mac from anywhere: cellular, a cafe, another country</li>
+                <li>Direct when the networks allow it, relayed when they do not</li>
+                <li>One month included before anything is charged</li>
                 <li>Priority support</li>
               </ul>
             </article>
@@ -251,15 +258,18 @@
               <p class="plan__status">Planned</p>
               <ul>
                 <li>Everything in Pro</li>
-                <li>Team and business features</li>
+                <li>Several people, billed together</li>
+                <li>Talk to us about what you need</li>
               </ul>
             </article>
           </div>
 
           <p class="footnote">
-            <strong>Pro and Team do not exist yet, and prices are not set.</strong> Nothing on this
-            page is an offer. When paid plans arrive the prices and allowances will be published
-            here first, and using your own network to reach your own computer will remain free.
+            <strong>Pro and Team do not exist yet</strong> and cannot be bought. Nothing on this
+            page is an offer. When Pro arrives it will be a subscription through the App Store, its
+            price will be shown before anything is charged, and the month included comes first.
+            Using your own network to reach your own computer will remain free, and remote access
+            stays free for everyone who has it until the day Pro can actually be bought.
           </p>
         </div>
       </section>
@@ -371,15 +381,15 @@
             <dt>Do I need an account?</dt>
             <dd>
               Yes. An account is what owns your devices, and it is the only place you can see them,
-              rename them, or take one away. Email and a password, with no phone number and no third party
-              required.
+              rename them, or take one away. Email and a password, with no phone number and no third
+              party required.
             </dd>
 
             <dt>What if I lose my phone?</dt>
             <dd>
               Remove it from <strong>Your devices</strong> on any other device on your account. It
-              loses access immediately, including a session running at that moment. It does not
-              wait for anything to expire.
+              loses access immediately, including a session running at that moment. It does not wait
+              for anything to expire.
             </dd>
 
             <dt>What happens if I sign out on the Mac?</dt>
@@ -393,15 +403,15 @@
             <dt>Can someone start a session without me knowing?</dt>
             <dd>
               A first pairing always needs Approve on the Mac. After that a paired phone can
-              reconnect on its own, which is the point of pairing. You can turn that off per
-              phone, or unpair it, from the Mac.
+              reconnect on its own, which is the point of pairing. You can turn that off per phone,
+              or unpair it, from the Mac.
             </dd>
 
             <dt>Is it really free?</dt>
             <dd>
-              Using Lilypad on your own network is free and stays free, because it costs us nothing to run.
-              Paid plans are planned only around the two things that cost real money: relayed
-              minutes and AI we pay for. Nothing on this page is an offer.
+              Using Lilypad on your own network is free and stays free, because it costs us nothing
+              to run. Paid plans are planned only around the two things that cost real money:
+              relayed minutes and AI we pay for. Nothing on this page is an offer.
             </dd>
 
             <dt>Something is wrong. What do you need from me?</dt>
@@ -419,7 +429,12 @@
     </main>
 
     <footer class="foot">
-      <p class="foot__brand"><svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 12 L20.25 7.71 A9.3 9.3 0 1 1 18.16 5.04 Z" /></svg> Lilypad</p>
+      <p class="foot__brand">
+        <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="M12 12 L20.25 7.71 A9.3 9.3 0 1 1 18.16 5.04 Z" />
+        </svg>
+        Lilypad
+      </p>
       <p class="foot__legal">
         <a href="/privacy.html">Privacy</a> · <a href="/terms.html">Terms</a> ·
         <!--email_off--><a href="mailto:support@takedia.com">support@takedia.com</a><!--email_on-->

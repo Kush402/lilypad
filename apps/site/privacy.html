@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Privacy — Lilypad</title>
+    <title>How Lilypad handles your data</title>
     <meta
       name="description"
       content="What Lilypad stores, what it cannot see, and how long it keeps things."
@@ -19,7 +19,7 @@
          scripts/icons.py. -->
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="Lilypad" />
-    <meta property="og:title" content="Privacy — Lilypad" />
+    <meta property="og:title" content="How Lilypad handles your data" />
     <meta
       property="og:description"
       content="What Lilypad stores, for how long, and what it never sees."
@@ -41,7 +41,12 @@
   <body>
     <a class="skip" href="#top">Skip to content</a>
     <header class="nav">
-      <a class="nav__brand" href="/"><span aria-hidden="true">🪷</span> Lilypad</a>
+      <a class="nav__brand" href="/"
+        ><svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="M12 12 L20.25 7.71 A9.3 9.3 0 1 1 18.16 5.04 Z" />
+        </svg>
+        Lilypad</a
+      >
       <nav class="nav__links" aria-label="Sections">
         <a href="/">Home</a>
         <a href="/terms.html">Terms</a>
@@ -61,7 +66,7 @@
       <p>
         <strong>Your screen and your input never reach Lilypad's server.</strong> A session is a
         direct encrypted connection between your phone and your Mac (WebRTC, DTLS-SRTP). When the
-        two cannot reach each other directly — some mobile networks make that impossible — the media
+        two cannot reach each other directly (some mobile networks make that impossible) the media
         is forwarded by a relay, which passes through encrypted packets it has no key for. Nothing
         in that path is recorded.
       </p>
@@ -74,22 +79,22 @@
       <h2>What is stored, and why</h2>
       <ul>
         <li>
-          <strong>Your account</strong> — email address, the name you chose, and a hash of your
+          <strong>Your account.</strong> Email address, the name you chose, and a hash of your
           password (never the password). If you sign in with Apple or Google, the identifier that
           provider gives us instead.
         </li>
         <li>
-          <strong>Your devices</strong> — for each computer and phone: a name, its platform, the app
+          <strong>Your devices.</strong> For each computer and phone: a name, its platform, the app
           version it last reported, the public half of a keypair it generated, when it was added,
           and when it last signed in. The private half never leaves the device.
         </li>
         <li>
-          <strong>Which devices are paired</strong> — so a phone can reach a laptop without scanning
+          <strong>Which devices are paired</strong>, so a phone can reach a laptop without scanning
           a code every time, plus when that pair last connected.
         </li>
         <li>
-          <strong>A short security log</strong> — sign-ins, failed sign-ins, device changes, with
-          the IP address they came from. This is what makes "was that me?" answerable.
+          <strong>A short security log.</strong> Sign-ins, failed sign-ins, device changes, with the
+          IP address they came from. This is what makes "was that me?" answerable.
         </li>
       </ul>
 
@@ -109,10 +114,10 @@
 
       <h2>Who else is involved</h2>
       <ul>
-        <li><strong>Oracle Cloud</strong> — runs the server.</li>
-        <li><strong>Cloudflare</strong> — carries traffic to it, and serves this website.</li>
+        <li><strong>Oracle Cloud</strong> runs the server.</li>
+        <li><strong>Cloudflare</strong> carries traffic to it, and serves this website.</li>
         <li>
-          <strong>Apple and Google</strong> — only if you choose to sign in with them, and only to
+          <strong>Apple and Google</strong>, only if you choose to sign in with them, and only to
           verify that sign-in.
         </li>
         <li>
@@ -146,7 +151,7 @@
       <p>
         Everything here is in the app rather than behind a support request. "Your devices" on your
         phone lists every device on your account, renames them, and removes them. The same screen
-        deletes your account outright — it asks you to type your email address first, because it
+        deletes your account outright. It asks you to type your email address first, because it
         cannot be undone.
       </p>
 
@@ -166,7 +171,12 @@
     </main>
 
     <footer class="foot">
-      <p>🪷 Lilypad</p>
+      <p>
+        <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="M12 12 L20.25 7.71 A9.3 9.3 0 1 1 18.16 5.04 Z" />
+        </svg>
+        Lilypad
+      </p>
       <p class="foot__legal">
         <a href="/">Home</a> · <a href="/terms.html">Terms</a> ·
         <!--email_off--><a href="mailto:support@takedia.com">support@takedia.com</a><!--email_on-->

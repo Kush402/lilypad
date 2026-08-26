@@ -51,6 +51,8 @@ Four things this decision explicitly keeps:
    direct costs us nothing, and the client must still prefer it.
 4. **Prices stay `$XXXX`** until the owner sets them. Tiers remain `free`,
    `pro`, `team` (`users.tier`); this ADR decides _what_ is paid, not _how much_.
+   Answered on 2026-08-26 by [ADR-0016](0016-storekit-and-the-price.md): $2.99 a
+   month, one month included, through StoreKit.
 
 ## The honest tension
 

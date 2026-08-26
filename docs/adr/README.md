@@ -48,3 +48,4 @@ the old one `Superseded by ADR-NNNN`.
 | [0013](0013-connectivity-is-the-paid-boundary.md) | Connectivity is the paid boundary                          | Accepted                                                |
 | [0014](0014-device-identifiers-and-lifecycles.md) | Two device identifiers, four lifecycles                    | Accepted                                                |
 | [0015](0015-ownership-follows-sign-in.md)         | Ownership follows sign-in; pairing is a separate relation  | Accepted                                                |
+| [0016](0016-storekit-and-the-price.md)            | What Pro costs, and who takes the money                    | Accepted                                                |
