@@ -1,8 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import {
-  AppleNotificationV2Schema,
-  AppleTransactionSubmitSchema,
-} from '@lilypad/protocol';
+import { AppleNotificationV2Schema, AppleTransactionSubmitSchema } from '@lilypad/protocol';
 import { requireAuth, actorOf } from '../auth/requireAuth.js';
 import { rejectRevokedActor } from '../auth/liveDevice.js';
 import {
@@ -52,8 +49,7 @@ export async function billingRoutes(app: FastifyInstance): Promise<void> {
         if (result.error === 'already_linked') {
           return reply.code(409).send({
             error: 'already_linked',
-            message:
-              'that Apple subscription is already linked to a different Lilypad account',
+            message: 'that Apple subscription is already linked to a different Lilypad account',
           });
         }
         if (result.error === 'wrong_product') {

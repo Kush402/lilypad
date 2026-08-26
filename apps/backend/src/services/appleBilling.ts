@@ -76,7 +76,10 @@ function verifiers(): { primary: SignedDataVerifier; sandbox: SignedDataVerifier
 
 export type ApplyResult =
   | { ok: true; status: BillingStatus }
-  | { ok: false; error: 'invalid_transaction' | 'wrong_product' | 'already_linked' | 'not_configured' };
+  | {
+      ok: false;
+      error: 'invalid_transaction' | 'wrong_product' | 'already_linked' | 'not_configured';
+    };
 
 function toStatus(row: {
   tier: 'free' | 'pro' | 'team';
@@ -86,9 +89,7 @@ function toStatus(row: {
   return {
     tier: row.tier,
     productId: row.subscriptionProductId,
-    currentPeriodEndsAt: row.subscriptionExpiresAt
-      ? row.subscriptionExpiresAt.toISOString()
-      : null,
+    currentPeriodEndsAt: row.subscriptionExpiresAt ? row.subscriptionExpiresAt.toISOString() : null,
   };
 }
 
@@ -156,9 +157,7 @@ export async function applySignedTransaction(
   const [conflict] = await database
     .select({ id: users.id })
     .from(users)
-    .where(
-      and(eq(users.appleOriginalTransactionId, originalId), ne(users.id, userId)),
-    )
+    .where(and(eq(users.appleOriginalTransactionId, originalId), ne(users.id, userId)))
     .limit(1);
   if (conflict) return { ok: false, error: 'already_linked' };
 
@@ -319,10 +318,7 @@ export async function applyNotificationPayload(
         subscriptionExpiresAt: expiresAtFromTx(tx),
       })
       .where(eq(users.id, account.id));
-    log.server.info(
-      { userId: account.id, type },
-      'subscription ended — account returned to free',
-    );
+    log.server.info({ userId: account.id, type }, 'subscription ended — account returned to free');
     return { handled: true };
   }
 

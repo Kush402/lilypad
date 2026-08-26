@@ -6,12 +6,7 @@ import {
   BillingError,
 } from '../billing';
 import { accessToken, DeviceAuthError } from '../auth';
-import {
-  getProduct,
-  purchaseProduct,
-  restorePurchases,
-  PRO_MONTHLY_PRODUCT_ID,
-} from '../storekit';
+import { getProduct, purchaseProduct, restorePurchases, PRO_MONTHLY_PRODUCT_ID } from '../storekit';
 
 jest.mock('../auth', () => {
   class FakeDeviceAuthError extends Error {
@@ -22,7 +17,11 @@ jest.mock('../auth', () => {
       this.name = 'DeviceAuthError';
     }
   }
-  return { accessToken: jest.fn(), DeviceAuthError: FakeDeviceAuthError, unauthorizedError: jest.fn() };
+  return {
+    accessToken: jest.fn(),
+    DeviceAuthError: FakeDeviceAuthError,
+    unauthorizedError: jest.fn(),
+  };
 });
 
 jest.mock('../storekit', () => ({
@@ -138,9 +137,9 @@ describe('purchasePro', () => {
 
     expect(getProductMock).toHaveBeenCalledWith(PRO_MONTHLY_PRODUCT_ID);
     expect(purchaseProductMock).toHaveBeenCalledWith(PRO_MONTHLY_PRODUCT_ID);
-    expect(JSON.parse((fetchMock.mock.calls[0] as [string, RequestInit])[1].body as string)).toEqual(
-      { signedTransaction: PURCHASE.signedTransactionInfo },
-    );
+    expect(
+      JSON.parse((fetchMock.mock.calls[0] as [string, RequestInit])[1].body as string),
+    ).toEqual({ signedTransaction: PURCHASE.signedTransactionInfo });
   });
 });
 
@@ -157,9 +156,9 @@ describe('restorePro', () => {
     await expect(restorePro('https://api.takedia.com')).resolves.toEqual(STATUS);
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(JSON.parse((fetchMock.mock.calls[1] as [string, RequestInit])[1].body as string)).toEqual(
-      { signedTransaction: second.signedTransactionInfo },
-    );
+    expect(
+      JSON.parse((fetchMock.mock.calls[1] as [string, RequestInit])[1].body as string),
+    ).toEqual({ signedTransaction: second.signedTransactionInfo });
   });
 
   it('throws when this Apple ID has nothing to restore', async () => {

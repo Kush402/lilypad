@@ -1,11 +1,6 @@
 import { accessToken, DeviceAuthError, unauthorizedError } from './auth';
 import { UserFacingError } from './errors';
-import {
-  getProduct,
-  purchaseProduct,
-  restorePurchases,
-  PRO_MONTHLY_PRODUCT_ID,
-} from './storekit';
+import { getProduct, purchaseProduct, restorePurchases, PRO_MONTHLY_PRODUCT_ID } from './storekit';
 
 /**
  * Account billing against the control plane
