@@ -69,6 +69,7 @@ COPY --from=build --chown=node:node /repo/packages/protocol/package.json ./packa
 COPY --from=build --chown=node:node /repo/packages/shared/dist ./packages/shared/dist
 COPY --from=build --chown=node:node /repo/packages/shared/package.json ./packages/shared/
 COPY --from=build --chown=node:node /repo/apps/backend/dist ./apps/backend/dist
+COPY --from=build --chown=node:node /repo/apps/backend/certs ./apps/backend/certs
 COPY --from=build --chown=node:node /repo/apps/backend/drizzle ./apps/backend/drizzle
 COPY --from=build --chown=node:node /repo/apps/backend/node_modules ./apps/backend/node_modules
 COPY --from=build --chown=node:node /repo/apps/backend/package.json ./apps/backend/
