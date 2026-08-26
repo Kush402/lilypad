@@ -180,6 +180,7 @@ what-to-update-when table.
 | Reuse / build-vs-buy  | [REUSE-INVENTORY.md](REUSE-INVENTORY.md)                             |
 | Infrastructure / ops  | [operations.md](operations.md), [RUNBOOK.md](RUNBOOK.md)             |
 | Consumer product      | [user-guide.md](user-guide.md)                                       |
+| Mac app's screens     | [desktop-screens.md](desktop-screens.md)                             |
 | Roadmap               | [milestones.md](milestones.md)                                       |
 | Status / index        | this file                                                            |
 
