@@ -585,6 +585,64 @@ check(
   `enroll ${reEnroll.status} ${reEnroll.json.error ?? ''}, token ${restored.status}`,
 );
 
+// ── Signing out ON the laptop ────────────────────────────────────────────────
+//
+// The path desktop sign-out actually takes, and the one nothing here covered:
+// the laptop deletes its OWN row with its OWN device token. Everything above
+// revoked the laptop from the phone, which reaches the same handler by a
+// different authorization route — `manageDevice` has to admit a device
+// managing itself, and "has to" was reasoning, not evidence.
+//
+// This is what makes the product's promise true: sign out, and a paired phone
+// stops being able to reach the machine, then sign back in and it can again
+// without a second QR.
+const selfRelease = await req(
+  'DELETE',
+  `/devices/${laptopId}`,
+  undefined,
+  restored.json.accessToken,
+);
+check(
+  'a laptop can take itself off the account — this is what Sign out does',
+  selfRelease.status === 200,
+  `HTTP ${selfRelease.status} ${selfRelease.json?.error ?? ''}`,
+);
+
+const afterSelfRelease = await post('/devices/token', await proof(laptop));
+check(
+  'and its key stops authenticating immediately',
+  afterSelfRelease.status === 403 && afterSelfRelease.json.error === 'device_revoked',
+  `HTTP ${afterSelfRelease.status} ${afterSelfRelease.json.error ?? ''}`,
+);
+
+// The reversible half. A fresh sign-in is what the confirmation on screen
+// promises will bring the machine back, and the pair rows are untouched — so
+// this must succeed without anybody scanning anything.
+const backIn = await post('/auth/password', { email, password });
+const reEnrollAfterSignOut = await post(
+  '/devices/enroll',
+  {
+    ...(await proof(laptop)),
+    kind: 'desktop',
+    fingerprint: `desktop-${tag}`,
+    platform: 'macos',
+  },
+  backIn.json.accessToken,
+);
+const pairsAfter = await req(
+  'GET',
+  `/devices/pairs?desktopDeviceId=desktop-${tag}`,
+  undefined,
+  reEnrollAfterSignOut.json.accessToken,
+);
+check(
+  'signing back in restores it, pairings included — no second QR',
+  reEnrollAfterSignOut.status === 200 &&
+    pairsAfter.status === 200 &&
+    (pairsAfter.json.pairs ?? []).some((p) => !p.revoked),
+  `enroll ${reEnrollAfterSignOut.status}, pairs ${pairsAfter.status} live=${(pairsAfter.json?.pairs ?? []).filter((p) => !p.revoked).length}`,
+);
+
 // The other half, and the case with no second factor at all. A laptop is
 // restored by a phone approving its code; a PHONE enrolls on an account token
 // alone. So revoke the phone — using the laptop just restored above — and try
@@ -595,11 +653,14 @@ check(
 // which is the whole point. Enrolling clears `revoked_at`, so without the
 // check this turns a ten-minute token lag into a permanently undone revoke.
 const phoneId = (list.json.devices ?? []).find((d) => d.kind === 'mobile')?.id;
+// `reEnrollAfterSignOut`, not `restored`: the sign-out above revoked the token
+// `restored` carries, so reusing it would answer 403 and be read as a failure
+// of the phone-revoke rather than of the ordering.
 const revokePhone = await req(
   'DELETE',
   `/devices/${phoneId}`,
   undefined,
-  restored.json.accessToken,
+  reEnrollAfterSignOut.json.accessToken,
 );
 check(
   'the restored laptop revokes the phone',
@@ -653,7 +714,16 @@ check(
 // The token is still syntactically valid — it was minted minutes ago and is
 // signed, not stored. What must have changed is that the account behind it is
 // gone, and every route that reads the database now says so.
-const afterDelete = await req('GET', '/devices', undefined, restored.json.accessToken);
+//
+// It must be a token that was LIVE right up to the deletion, or this proves
+// nothing: `restored`'s token was revoked by the self-release above, so it
+// would answer 401 for the wrong reason and pass whatever deletion did.
+const afterDelete = await req(
+  'GET',
+  '/devices',
+  undefined,
+  reEnrollAfterSignOut.json.accessToken,
+);
 check(
   'a device token for a deleted account stops working immediately',
   afterDelete.status === 401,
