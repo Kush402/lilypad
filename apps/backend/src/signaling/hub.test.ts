@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import type { SignalingMessage, DeviceKind, IceServer } from '@lilypad/protocol';
 import { RoomStore, type RoomKvStore } from '../session/roomStore.js';
-import { SignalingHub, type Peer } from './hub.js';
+import { SignalingHub, type Peer, type SignalingHubDeps } from './hub.js';
 
 /** In-memory fake Redis for the resurrection tests below — shared across two
  * `SignalingHub` instances to simulate two different backend processes
@@ -51,10 +51,11 @@ const ICE: IceServer[] = [
   { urls: 'turn:localhost:3478', username: 'u', credential: 'c' },
 ];
 
-function makeHub() {
+function makeHub(extra: Partial<SignalingHubDeps> = {}) {
   return new SignalingHub({
     buildIceServers: () => ICE,
     now: () => 0,
+    ...extra,
   });
 }
 
@@ -160,6 +161,13 @@ describe('SignalingHub — presence rooms (M5.4)', () => {
     );
     const err = mobile.find('error');
     expect(err?.payload.code).toBe('unexpected_type');
+  });
+
+  it('fires onDesktopPresence when the desktop joins its presence room', () => {
+    const seen: string[] = [];
+    const hub = makeHub({ onDesktopPresence: (id) => seen.push(id) });
+    hub.handleMessage(new FakePeer(), presenceReg);
+    expect(seen).toEqual(['desktop-01']);
   });
 });
 

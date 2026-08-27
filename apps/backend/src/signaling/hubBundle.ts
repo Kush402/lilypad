@@ -149,6 +149,24 @@ export function createSignalingHubBundle(): SignalingHubBundle {
         })
         .catch((err) => log.signaling.error({ err }, 'failed to record device trust'));
     },
+    onDesktopPresence: (desktopDeviceId) => {
+      void trust
+        .listTrustRecordsForDesktop(desktopDeviceId)
+        .then((records) => {
+          for (const record of records) {
+            hub.deliverTrustRecord(desktopDeviceId, record);
+          }
+          if (records.length > 0) {
+            log.signaling.info(
+              { desktopDeviceId, count: records.length },
+              'synced LAN trust records to desktop presence',
+            );
+          }
+        })
+        .catch((err) =>
+          log.signaling.warn({ err, desktopDeviceId }, 'LAN trust-record sync failed'),
+        );
+    },
     onPairDenied: (info) => {
       void auditLog
         .pairDenied({

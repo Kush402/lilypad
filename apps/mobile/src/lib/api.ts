@@ -110,19 +110,33 @@ export async function redeemToken(
   }
 }
 
+/** Derive the LAN signaling URL from the API base the probe selected. */
+export function lanSignalingUrlFromApiBase(apiBaseUrl: string): string {
+  return `${apiBaseUrl.replace(/\/$/, '').replace(/^https:/, 'wss:')}/ws/signal`;
+}
+
 export async function requestConnectForPair(pair: PairedDesktop): Promise<ConnectResponse> {
+  const cloud = pair.apiBaseUrl.replace(/\/$/, '');
   const target = await resolveConnectTarget(pair);
-  const res = await requestConnect(
-    target.apiBaseUrl,
-    pair.desktopDeviceId,
-    pair.connectSecret,
-    target.lanTlsCertSha256,
-  );
-  const lanBase = pair.lanApiBaseUrl?.replace(/\/$/, '');
-  if (lanBase && target.apiBaseUrl === lanBase && pair.lanSignalingUrl) {
-    return { ...res, signalingUrl: pair.lanSignalingUrl };
+
+  const tryConnect = (t: typeof target) =>
+    requestConnect(t.apiBaseUrl, pair.desktopDeviceId, pair.connectSecret, t.lanTlsCertSha256);
+
+  try {
+    const res = await tryConnect(target);
+    if (target.lanTlsCertSha256 && target.apiBaseUrl !== cloud) {
+      return { ...res, signalingUrl: lanSignalingUrlFromApiBase(target.apiBaseUrl) };
+    }
+    return res;
+  } catch (err) {
+    // LAN `/health` can succeed while offline auth is not ready yet (trust
+    // cache empty after an app update). Fall through to cloud — same product
+    // rule as the probe budget in NETWORKING.md §3.
+    if (target.apiBaseUrl !== cloud) {
+      return tryConnect({ apiBaseUrl: cloud });
+    }
+    throw err;
   }
-  return res;
 }
 
 /**

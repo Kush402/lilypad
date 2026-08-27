@@ -109,7 +109,14 @@ async fn connect_request(
     let trusted = state
         .trust_cache
         .authorize_connect(&body.mobile_device_id, body.pair_secret.as_deref())
-        .ok_or(StatusCode::NOT_FOUND)?;
+        .ok_or_else(|| {
+            log::warn!(
+                target: "lilypad::lan",
+                "LAN connect/request rejected for mobile {} (trust cache miss or bad secret)",
+                body.mobile_device_id
+            );
+            StatusCode::NOT_FOUND
+        })?;
 
     let room_id = Uuid::new_v4().to_string();
     let scopes = vec![SessionScope::View, SessionScope::Control];

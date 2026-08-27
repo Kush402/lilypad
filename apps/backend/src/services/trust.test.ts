@@ -6,6 +6,7 @@ import {
   type PairListing,
   type TrustStore,
   type TrustedPair,
+  type DesktopTrustRecord,
 } from './trust.js';
 import type { DeviceKind } from '@lilypad/protocol';
 
@@ -85,6 +86,18 @@ class FakeTrustStore implements TrustStore {
         revoked: p.revoked,
         lastConnectedAt: p.lastConnectedAt ? p.lastConnectedAt.toISOString() : null,
         createdAt: new Date(0).toISOString(),
+      }));
+  }
+
+  async listTrustRecordsForDesktop(desktopId: string): Promise<DesktopTrustRecord[]> {
+    const byId = new Map([...this.devices.values()].map((d) => [d.id, d]));
+    return [...this.pairs.values()]
+      .filter((p) => p.desktopDeviceId === desktopId && !p.revoked && p.connectSecretHash)
+      .map((p) => ({
+        mobileDeviceId: byId.get(p.mobileDeviceId)?.fingerprint ?? '?',
+        connectSecretHash: p.connectSecretHash!,
+        autoApprove: p.autoApprove,
+        displayName: p.displayName,
       }));
   }
 
@@ -248,6 +261,15 @@ describe('TrustService', () => {
     const first = (await trust.findPair('desktop-01', 'mobile-01'))!;
     await trust.revoke(first.pairId);
     expect((await trust.findPair('desktop-01', 'mobile-02'))!.revoked).toBe(false);
+  });
+
+  it('listTrustRecordsForDesktop returns active pairs with hashes', async () => {
+    const trust = new TrustService(new FakeTrustStore());
+    await trust.establishTrust('desktop-01', 'mobile-01');
+    const records = await trust.listTrustRecordsForDesktop('desktop-01');
+    expect(records).toHaveLength(1);
+    expect(records[0].mobileDeviceId).toBe('mobile-01');
+    expect(records[0].connectSecretHash).toHaveLength(64);
   });
 
   it('establishTrust issues a fresh connect secret and stores only its hash', async () => {

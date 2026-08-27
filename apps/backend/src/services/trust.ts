@@ -90,6 +90,14 @@ export interface MobilePairListing {
   createdAt: string;
 }
 
+/** Payload for a `trust-record` frame — one row per trusted phone. */
+export interface DesktopTrustRecord {
+  mobileDeviceId: string;
+  connectSecretHash: string;
+  autoApprove: boolean;
+  displayName: string | null;
+}
+
 /** Minimal DB surface — satisfied by the real Drizzle adapter below and by
  * an in-memory fake in tests (the `AuditLogStore`/`KvStore` pattern). */
 export interface TrustStore {
@@ -103,6 +111,8 @@ export interface TrustStore {
   upsertPair(desktopId: string, mobileId: string, connectSecretHash: string): Promise<TrustedPair>;
   /** Every pair for one desktop, joined with each mobile device row. */
   listPairsForDesktop(desktopId: string): Promise<PairListing[]>;
+  /** Active trusted pairs with connect-secret hashes — for LAN trust-cache sync. */
+  listTrustRecordsForDesktop(desktopId: string): Promise<DesktopTrustRecord[]>;
   /** Every pair for one PHONE, joined with each desktop device row. Backed by
    * `trusted_devices_mobile_idx`. */
   listPairsForMobile(mobileId: string): Promise<MobilePairListing[]>;
@@ -296,6 +306,13 @@ export class TrustService {
     return this.store.listPairsForDesktop(desktop.id);
   }
 
+  /** Every active trusted phone this desktop may authorize offline on the LAN. */
+  async listTrustRecordsForDesktop(desktopFingerprint: string): Promise<DesktopTrustRecord[]> {
+    const desktop = await this.store.getDeviceByFingerprint('desktop', desktopFingerprint);
+    if (!desktop) return [];
+    return this.store.listTrustRecordsForDesktop(desktop.id);
+  }
+
   /**
    * Every pair this PHONE holds, by its `devices.id` uuid — the authoritative
    * answer to "which laptops can I still ring".
@@ -449,6 +466,28 @@ export function createDrizzleTrustStore(database: typeof defaultDb = defaultDb):
         .innerJoin(devices, eq(trustedDevices.mobileDeviceId, devices.id))
         .where(eq(trustedDevices.desktopDeviceId, desktopId));
       return rows.map(toPairListing);
+    },
+    async listTrustRecordsForDesktop(desktopId) {
+      const rows = await database
+        .select({
+          mobileFingerprint: devices.fingerprint,
+          connectSecretHash: trustedDevices.connectSecretHash,
+          autoApprove: trustedDevices.autoApprove,
+          displayName: trustedDevices.displayName,
+          deviceName: devices.name,
+          revokedAt: trustedDevices.revokedAt,
+        })
+        .from(trustedDevices)
+        .innerJoin(devices, eq(trustedDevices.mobileDeviceId, devices.id))
+        .where(eq(trustedDevices.desktopDeviceId, desktopId));
+      return rows
+        .filter((r) => r.revokedAt === null && r.connectSecretHash)
+        .map((r) => ({
+          mobileDeviceId: r.mobileFingerprint,
+          connectSecretHash: r.connectSecretHash!,
+          autoApprove: r.autoApprove,
+          displayName: r.displayName ?? r.deviceName,
+        }));
     },
     async listPairsForMobile(mobileId) {
       const rows = await database

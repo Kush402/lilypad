@@ -60,6 +60,8 @@ export interface SignalingHubDeps {
     desktopDeviceId: string;
     mobileDeviceId: string;
   }) => void;
+  /** Fired when a desktop (re)joins its presence room — sync LAN trust cache. */
+  onDesktopPresence?: (desktopDeviceId: string) => void;
   /** Fired when the desktop explicitly denies a pending pair request. The
    * room ends right here, before a session ever gets minted, so
    * `onSessionEnd` (only fired when `room.sessionId` is set — see
@@ -479,6 +481,13 @@ export class SignalingHub {
     }
     this.ctx.set(peer, { roomId: msg.roomId, role, deviceId: msg.payload.deviceId });
     log.signaling.info({ roomId: msg.roomId, role }, 'peer registered');
+
+    if (role === 'desktop') {
+      const presenceOwner = presenceRoomDeviceId(msg.roomId);
+      if (presenceOwner !== null && presenceOwner === msg.payload.deviceId) {
+        this.deps.onDesktopPresence?.(msg.payload.deviceId);
+      }
+    }
 
     // A mobile (re)claiming its seat AFTER approval but BEFORE the session
     // established missed its `session-start` — its socket flapped across the
