@@ -107,6 +107,7 @@ async fn connect_and_stream() -> ConnectedSession {
         ROOM.to_owned(),
         DEVICE.to_owned(),
         None,
+        None,
         control_rx,
         event_tx,
     ));

@@ -55,7 +55,7 @@ async fn main() {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(12);
-    let fut = run_session(signaling, room, device, None, control_rx, event_tx);
+    let fut = run_session(signaling, room, device, None, None, control_rx, event_tx);
     let _ = tokio::time::timeout(Duration::from_secs(run_secs), fut).await;
     eprintln!("[desktop] headless session ended");
 }

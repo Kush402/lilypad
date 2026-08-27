@@ -1112,10 +1112,12 @@ pub async fn run_session(
     room_id: String,
     device_id: String,
     lan_ad: Option<crate::lan::LanEndpoints>,
+    lan_loopback: Option<std::sync::Arc<crate::lan::LanHub>>,
     mut control_rx: UnboundedReceiver<Control>,
     events: UnboundedSender<SessionEvent>,
 ) -> Result<()> {
-    let mut sig = SignalingClient::connect(signaling_url, room_id.clone(), device_id).await?;
+    let mut sig =
+        SignalingClient::connect(signaling_url, room_id.clone(), device_id, lan_loopback).await?;
     let _ = events.send(SessionEvent::Registered);
     log::info!(target: "lilypad::session", "registered as desktop in room {room_id}");
 

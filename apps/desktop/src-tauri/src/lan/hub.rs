@@ -29,7 +29,12 @@ impl Role {
     }
 }
 
-type SendFn = Arc<dyn Fn(&str) + Send + Sync>;
+pub type SendFn = Arc<dyn Fn(&str) + Send + Sync>;
+
+/// Cap on frames held for a seat that has not attached yet. A handful of
+/// signaling frames is all the join race can produce; anything beyond that is
+/// a peer that is never coming, and the queue must not grow without bound.
+const MAX_PENDING_FRAMES: usize = 32;
 
 struct Seat {
     device_id: String,
@@ -42,6 +47,17 @@ struct Room {
     session_id: Option<String>,
     scopes: Vec<String>,
     established: bool,
+    /// Frames addressed to a seat that had not attached yet, replayed the
+    /// moment it does.
+    ///
+    /// The two peers race: the phone has the room id the instant
+    /// `/connect/request` returns, while the desktop still has to tear down any
+    /// previous session before taking its seat. Dropping the frames that land
+    /// in that window silently loses the phone's `pair-request` — and since
+    /// nothing re-sends it, the phone waits on "Waiting for approval…" until
+    /// the user gives up.
+    pending_desktop: Vec<String>,
+    pending_mobile: Vec<String>,
 }
 
 pub struct LanHub {
@@ -69,20 +85,53 @@ impl LanHub {
         device_id: String,
         send: SendFn,
     ) -> Result<(), String> {
-        let mut rooms = self.rooms.lock().unwrap_or_else(|p| p.into_inner());
-        let room = rooms.entry(room_id.to_owned()).or_insert_with(|| Room {
-            desktop: None,
-            mobile: None,
-            session_id: None,
-            scopes: vec!["view".into()],
-            established: false,
-        });
-        let seat = Seat { device_id, send };
-        match role {
-            Role::Desktop => room.desktop = Some(seat),
-            Role::Mobile => room.mobile = Some(seat),
+        let replay: Vec<String>;
+        {
+            let mut rooms = self.rooms.lock().unwrap_or_else(|p| p.into_inner());
+            let room = rooms.entry(room_id.to_owned()).or_insert_with(|| Room {
+                desktop: None,
+                mobile: None,
+                session_id: None,
+                scopes: vec!["view".into()],
+                established: false,
+                pending_desktop: Vec::new(),
+                pending_mobile: Vec::new(),
+            });
+            let seat = Seat { device_id, send };
+            match role {
+                Role::Desktop => {
+                    room.desktop = Some(seat);
+                    replay = std::mem::take(&mut room.pending_desktop);
+                }
+                Role::Mobile => {
+                    room.mobile = Some(seat);
+                    replay = std::mem::take(&mut room.pending_mobile);
+                }
+            }
+        }
+        // Outside the lock: `send` reaches a socket writer or the loopback
+        // channel, neither of which may be entered while the room map is held.
+        for frame in &replay {
+            self.send_raw(role, room_id, frame);
+        }
+        if !replay.is_empty() {
+            log::debug!(
+                target: "lilypad::lan",
+                "replayed {} buffered frame(s) to the {} seat of room {room_id}",
+                replay.len(),
+                role.as_str()
+            );
         }
         Ok(())
+    }
+
+    /// Whether `role` currently holds a seat in `room_id`.
+    pub fn has_seat(&self, room_id: &str, role: Role) -> bool {
+        let rooms = self.rooms.lock().unwrap_or_else(|p| p.into_inner());
+        rooms.get(room_id).is_some_and(|room| match role {
+            Role::Desktop => room.desktop.is_some(),
+            Role::Mobile => room.mobile.is_some(),
+        })
     }
 
     pub fn detach(&self, room_id: &str, role: Role) {
@@ -221,6 +270,11 @@ impl LanHub {
 
     fn approve(&self, room_id: &str, granted_scopes: Vec<String>) {
         let session_id = Uuid::new_v4().to_string();
+        // `peer_missing` is decided under the lock but reported after it is
+        // released: `reject` re-enters `relay_to`, which takes this same
+        // non-reentrant mutex, so rejecting in place deadlocked the whole LAN
+        // hub — every room on this desktop, for the rest of the process.
+        let mut peer_missing = false;
         {
             let mut rooms = self.rooms.lock().unwrap_or_else(|p| p.into_inner());
             let Some(room) = rooms.get_mut(room_id) else {
@@ -230,16 +284,20 @@ impl LanHub {
                 return;
             }
             if room.desktop.is_none() || room.mobile.is_none() {
-                self.reject(
-                    Role::Desktop,
-                    room_id,
-                    "peer_missing",
-                    "both peers must be present to approve",
-                );
-                return;
+                peer_missing = true;
+            } else {
+                room.session_id = Some(session_id.clone());
+                room.scopes = granted_scopes.clone();
             }
-            room.session_id = Some(session_id.clone());
-            room.scopes = granted_scopes.clone();
+        }
+        if peer_missing {
+            self.reject(
+                Role::Desktop,
+                room_id,
+                "peer_missing",
+                "both peers must be present to approve",
+            );
+            return;
         }
 
         let start = json!({
@@ -258,16 +316,54 @@ impl LanHub {
     }
 
     fn relay_to(&self, to: Role, room_id: &str, msg: &Value) {
-        let rooms = self.rooms.lock().unwrap_or_else(|p| p.into_inner());
-        let Some(room) = rooms.get(room_id) else {
-            return;
+        let raw = msg.to_string();
+        let seat_send = {
+            let mut rooms = self.rooms.lock().unwrap_or_else(|p| p.into_inner());
+            let Some(room) = rooms.get_mut(room_id) else {
+                return;
+            };
+            let seat = match to {
+                Role::Desktop => room.desktop.as_ref(),
+                Role::Mobile => room.mobile.as_ref(),
+            };
+            match seat {
+                Some(seat) => Some(seat.send.clone()),
+                None => {
+                    let pending = match to {
+                        Role::Desktop => &mut room.pending_desktop,
+                        Role::Mobile => &mut room.pending_mobile,
+                    };
+                    if pending.len() < MAX_PENDING_FRAMES {
+                        pending.push(raw.clone());
+                    } else {
+                        log::warn!(
+                            target: "lilypad::lan",
+                            "dropping frame for the unseated {} of room {room_id} — buffer full",
+                            to.as_str()
+                        );
+                    }
+                    None
+                }
+            }
         };
-        let seat = match to {
-            Role::Desktop => room.desktop.as_ref(),
-            Role::Mobile => room.mobile.as_ref(),
+        if let Some(send) = seat_send {
+            send(&raw);
+        }
+    }
+
+    /// Send an already-serialized frame to a seated peer.
+    fn send_raw(&self, to: Role, room_id: &str, raw: &str) {
+        let seat_send = {
+            let rooms = self.rooms.lock().unwrap_or_else(|p| p.into_inner());
+            let room = rooms.get(room_id);
+            room.and_then(|room| match to {
+                Role::Desktop => room.desktop.as_ref(),
+                Role::Mobile => room.mobile.as_ref(),
+            })
+            .map(|seat| seat.send.clone())
         };
-        if let Some(seat) = seat {
-            (seat.send)(msg.to_string().as_str());
+        if let Some(send) = seat_send {
+            send(raw);
         }
     }
 
@@ -372,6 +468,70 @@ mod tests {
             .filter_map(|s| serde_json::from_str(s).ok())
             .collect();
         assert!(desktop_frames.iter().any(|v| v["type"] == "session-start"));
+    }
+
+    /// Approving with only one seat filled must report `peer_missing` — and
+    /// must RETURN. `reject` re-enters `relay_to`, which takes the same
+    /// non-reentrant mutex `approve` was holding, so this used to deadlock the
+    /// hub: not just this room, every room on the desktop, for the life of the
+    /// process. Reachable from the ordinary case of a phone that closed its
+    /// socket while the user was looking at the approve prompt.
+    #[test]
+    fn approving_without_a_peer_reports_it_instead_of_deadlocking() {
+        let hub = LanHub::new();
+        let (d_send, d_out) = capture_send();
+        register(&hub, "room-1", Role::Desktop, "desktop-12345678", d_send);
+
+        hub.handle(
+            Role::Desktop,
+            r#"{"type":"pair-approved","roomId":"room-1","from":"desktop","ts":0,"payload":{"grantedScopes":["view"],"trust":false}}"#,
+        );
+
+        let frames: Vec<Value> = d_out
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|s| serde_json::from_str(s).ok())
+            .collect();
+        assert!(
+            frames
+                .iter()
+                .any(|v| v["type"] == "error" && v["payload"]["code"] == "peer_missing"),
+            "expected a peer_missing error, got {frames:?}"
+        );
+        assert!(
+            !frames.iter().any(|v| v["type"] == "session-start"),
+            "a session must not start with one seat empty"
+        );
+    }
+
+    /// A frame for a seat that has not attached yet is held, not dropped: the
+    /// phone gets the room id the instant `/connect/request` returns and can
+    /// ring before the desktop has finished taking its seat.
+    #[test]
+    fn frames_for_an_unseated_peer_are_replayed_on_attach() {
+        let hub = LanHub::new();
+        let (m_send, _) = capture_send();
+        register(&hub, "room-1", Role::Mobile, "mobile-12345678", m_send);
+
+        hub.handle(
+            Role::Mobile,
+            r#"{"type":"pair-request","roomId":"room-1","from":"mobile","ts":0,"payload":{"deviceId":"mobile-12345678","deviceName":"phone","requestedScopes":["view"]}}"#,
+        );
+
+        let (d_send, d_out) = capture_send();
+        register(&hub, "room-1", Role::Desktop, "desktop-12345678", d_send);
+
+        let frames: Vec<Value> = d_out
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|s| serde_json::from_str(s).ok())
+            .collect();
+        assert!(
+            frames.iter().any(|v| v["type"] == "pair-request"),
+            "the buffered ring must reach the desktop, got {frames:?}"
+        );
     }
 
     #[test]

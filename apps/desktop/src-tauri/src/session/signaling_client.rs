@@ -9,10 +9,13 @@
 //! it depends on whether a WebRTC peer is already up — this type only knows
 //! about the signaling socket.
 
+use std::sync::Arc;
+
 use anyhow::Result;
 use tokio::sync::mpsc::{self, UnboundedReceiver};
 
 use super::reconnect::ReconnectPolicy;
+use crate::lan::LanHub;
 use crate::signaling::{self, Envelope, SignalingHandle};
 
 type ReconnectResult = Result<(SignalingHandle, UnboundedReceiver<Envelope>)>;
@@ -50,15 +53,29 @@ pub struct SignalingClient {
     url: String,
     room_id: String,
     device_id: String,
+    /// Set when this room lives on this desktop's OWN embedded LAN hub, which
+    /// is reached in-process rather than over a socket — see `lan::loopback`.
+    loopback: Option<Arc<LanHub>>,
 }
 
 impl SignalingClient {
     /// Connect and register as the desktop seat.
-    pub async fn connect(url: String, room_id: String, device_id: String) -> Result<Self> {
-        // No token: a session room is authorized by the room record the
-        // backend minted for this exact pairing, not by a device claim. See
-        // `signaling::connect`.
-        let (sig, inbound) = signaling::connect(&url, None).await?;
+    pub async fn connect(
+        url: String,
+        room_id: String,
+        device_id: String,
+        loopback: Option<Arc<LanHub>>,
+    ) -> Result<Self> {
+        let (sig, inbound) = match &loopback {
+            Some(hub) => crate::lan::loopback_connect(hub.clone(), &room_id, &device_id),
+            // No token: a session room is authorized by the room record the
+            // backend minted for this exact pairing, not by a device claim.
+            // See `signaling::connect`.
+            None => signaling::connect(&url, None).await?,
+        };
+        // Sent on both transports: the LAN hub already seated us in
+        // `loopback_connect` and treats this as the no-op the cloud hub does,
+        // so the two paths stay one code path.
         sig.send(Envelope::register(&room_id, &device_id))?;
         let (recon_tx, recon_rx) = mpsc::channel::<ReconnectResult>(1);
         Ok(Self {
@@ -70,6 +87,7 @@ impl SignalingClient {
             url,
             room_id,
             device_id,
+            loopback,
         })
     }
 
@@ -97,9 +115,18 @@ impl SignalingClient {
             self.device_id.clone(),
         );
         let tx = self.recon_tx.clone();
+        let loopback = self.loopback.clone();
         tokio::spawn(async move {
-            let policy = ReconnectPolicy::new();
-            let r = policy.reconnect(&url, &room, &dev).await;
+            let r = match loopback {
+                // Re-seating on an in-process hub cannot fail and needs no
+                // backoff — there is no network to wait for.
+                Some(hub) => {
+                    let (sig, inbound) = crate::lan::loopback_connect(hub, &room, &dev);
+                    sig.send(Envelope::register(&room, &dev))
+                        .map(|()| (sig, inbound))
+                }
+                None => ReconnectPolicy::new().reconnect(&url, &room, &dev).await,
+            };
             let _ = tx.send(r).await;
         });
     }

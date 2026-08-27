@@ -1,12 +1,14 @@
 mod cert;
 mod endpoints;
 mod hub;
+pub mod loopback;
 mod mdns;
 pub mod server;
 
 pub use cert::{generate as generate_tls, load_or_generate as load_or_generate_tls};
 pub use endpoints::{build as build_lan_endpoints, detect_lan_ipv4, LanEndpoints};
-pub use hub::LanHub;
+pub use hub::{LanHub, Role as LanRole};
+pub use loopback::connect as loopback_connect;
 pub use server::{ConnectNotifier, LanServerState, TauriConnectNotifier};
 pub use trust_cache::{hash_secret, TrustCache, TrustedMobile};
 
@@ -16,7 +18,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::Result;
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 
 /// TCP port for the embedded LAN control server (`packages/protocol/src/lan.ts`).
 pub fn lan_control_port() -> u16 {
@@ -74,6 +76,10 @@ pub fn start(
     let port = lan_control_port();
     let endpoints = build_lan_endpoints(lan_ip, port, &tls.cert_sha256_hex);
     let hub = Arc::new(LanHub::new());
+    // The session runner needs this exact hub to take the desktop seat of a
+    // room the LAN server minted — in-process, because it cannot open a TLS
+    // socket to its own self-signed certificate. See `lan::loopback`.
+    app.manage(hub.clone());
     let notifier: Arc<dyn ConnectNotifier> = Arc::new(TauriConnectNotifier { app: app.clone() });
     let state = Arc::new(LanServerState {
         trust_cache: cache.clone(),

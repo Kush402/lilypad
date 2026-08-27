@@ -97,6 +97,10 @@ hyper = { version = "1", features = ["client", "http1"] }
 hyper-util = { version = "0.1", features = ["client", "client-legacy", "http1", "tokio"] }
 hyper-rustls = { version = "0.27", default-features = false, features = ["ring", "tls12", "http1"] }
 http-body-util = "0.1"
+# The LAN e2e drives a real pinned-TLS WebSocket as the PHONE does, against the
+# embedded server's own self-signed certificate. Listed here as well as in
+# `[dependencies]` because integration tests link only against dev-dependencies.
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 rustls-pemfile = "2"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 # RSS sampling for the soak-test harness (tests/soak.rs) — `getrusage` is

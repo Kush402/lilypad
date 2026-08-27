@@ -21,6 +21,14 @@ pub struct SignalingHandle {
 }
 
 impl SignalingHandle {
+    /// Wrap an already-owned outbound channel. Exists for the LAN loopback
+    /// transport (`lan::loopback`), which carries envelopes to the embedded hub
+    /// in-process instead of over a socket — see that module for why a socket
+    /// is the wrong transport for a desktop talking to its own LAN server.
+    pub fn from_sender(out: UnboundedSender<Envelope>) -> Self {
+        Self { out }
+    }
+
     pub fn send(&self, env: Envelope) -> Result<()> {
         self.out
             .send(env)

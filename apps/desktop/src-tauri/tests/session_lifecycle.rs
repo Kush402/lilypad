@@ -32,6 +32,7 @@ async fn registers_on_connect() {
         ROOM.to_owned(),
         DEVICE.to_owned(),
         None,
+        None,
         control_rx,
         event_tx,
     ));
@@ -61,6 +62,7 @@ async fn relays_pair_request_and_denies_on_control_deny() {
         url,
         ROOM.to_owned(),
         DEVICE.to_owned(),
+        None,
         None,
         control_rx,
         event_tx,
@@ -124,6 +126,7 @@ async fn approve_sends_pair_approved_with_granted_scopes() {
         ROOM.to_owned(),
         DEVICE.to_owned(),
         None,
+        None,
         control_rx,
         event_tx,
     ));
@@ -172,6 +175,7 @@ async fn disconnect_before_any_peer_ends_the_session_cleanly() {
         ROOM.to_owned(),
         DEVICE.to_owned(),
         None,
+        None,
         control_rx,
         event_tx,
     ));
@@ -211,6 +215,7 @@ async fn dropping_the_control_sender_disconnects_like_an_explicit_disconnect() {
         ROOM.to_owned(),
         DEVICE.to_owned(),
         None,
+        None,
         control_rx,
         event_tx,
     ));
@@ -243,6 +248,7 @@ async fn signaling_closed_before_peer_connected_ends_the_session() {
         url,
         ROOM.to_owned(),
         DEVICE.to_owned(),
+        None,
         None,
         control_rx,
         event_tx,

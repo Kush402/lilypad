@@ -28,6 +28,7 @@ async fn pairing_expires_when_no_device_ever_scans() {
         "room-1".to_owned(),
         "desktop-01".to_owned(),
         None,
+        None,
         control_rx,
         event_tx,
     ));

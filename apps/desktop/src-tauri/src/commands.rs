@@ -325,6 +325,19 @@ pub(crate) fn spawn_session_runner(
     let lan_ad = app
         .try_state::<Arc<lan::LanEndpoints>>()
         .map(|ep| ep.as_ref().clone());
+    // A room minted by THIS desktop's embedded LAN server is joined in-process.
+    // Opening a socket to it would mean verifying our own self-signed
+    // certificate against webpki roots, which fails — see `lan::loopback`.
+    let lan_loopback = app
+        .try_state::<Arc<lan::LanHub>>()
+        .filter(|_| lan::loopback::is_own_lan_room(lan_ad.as_ref(), &signaling_url))
+        .map(|hub| hub.inner().clone());
+    if lan_loopback.is_some() {
+        log::info!(
+            target: "lilypad::lan",
+            "joining room {room_id} on the embedded LAN hub in-process"
+        );
+    }
     let handle = tauri::async_runtime::spawn(async move {
         // Wait for the PREVIOUS session to fully tear down (its media.stop()
         // joins the capture thread) before this one starts, so screen capture
@@ -339,6 +352,7 @@ pub(crate) fn spawn_session_runner(
             room_id,
             device_id,
             lan_ad,
+            lan_loopback,
             control_rx,
             event_tx,
         )
