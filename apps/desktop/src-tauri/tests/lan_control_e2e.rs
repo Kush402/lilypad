@@ -148,10 +148,7 @@ async fn post_connect(fx: &LanFixture) -> (StatusCode, String) {
 
 /// One full ring: `/connect/request` → desktop seat → phone pair-request →
 /// approve → `session-start`. Returns the room id.
-async fn complete_one_ring(
-    fx: &mut LanFixture,
-    expected_hit_count: usize,
-) -> String {
+async fn complete_one_ring(fx: &mut LanFixture, expected_hit_count: usize) -> String {
     let (status, text) = post_connect(fx).await;
     assert_eq!(status, StatusCode::OK);
     let json: serde_json::Value = serde_json::from_str(&text).unwrap();
@@ -162,11 +159,8 @@ async fn complete_one_ring(
         .to_owned();
     assert_eq!(fx.notifier.hits.lock().unwrap().len(), expected_hit_count);
 
-    let (desktop_sig, mut desktop_inbound) = fx
-        .seat_rx
-        .recv()
-        .await
-        .expect("desktop took its seat");
+    let (desktop_sig, mut desktop_inbound) =
+        fx.seat_rx.recv().await.expect("desktop took its seat");
 
     let mut phone = phone_socket(fx.port, &fx.server_cert).await;
     send_frame(

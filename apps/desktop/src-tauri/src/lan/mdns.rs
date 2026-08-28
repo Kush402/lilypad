@@ -69,7 +69,9 @@ impl MdnsAdvertiser {
         )
         .context("build mDNS service info")?;
         let fullname = info.get_fullname().to_owned();
-        self.daemon.register(info).context("register mDNS service")?;
+        self.daemon
+            .register(info)
+            .context("register mDNS service")?;
         self.registered = Some(fullname);
         log::info!(
             target: "lilypad::lan",

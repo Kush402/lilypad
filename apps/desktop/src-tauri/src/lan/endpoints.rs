@@ -77,7 +77,11 @@ impl LanAdvertisement {
             .inner
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if !guard.published.iter().any(|u| *u == endpoints.signaling_url) {
+        if !guard
+            .published
+            .iter()
+            .any(|u| *u == endpoints.signaling_url)
+        {
             guard.published.push(endpoints.signaling_url.clone());
         }
         guard.current = Some(endpoints);

@@ -338,9 +338,7 @@ pub(crate) fn spawn_session_runner(
     // certificate against webpki roots, which fails — see `lan::loopback`.
     let lan_loopback = app
         .try_state::<Arc<lan::LanHub>>()
-        .filter(|_| {
-            lan::loopback::is_own_lan_room(advertisement.as_deref(), &signaling_url)
-        })
+        .filter(|_| lan::loopback::is_own_lan_room(advertisement.as_deref(), &signaling_url))
         .map(|hub| hub.inner().clone());
     if lan_loopback.is_some() {
         log::info!(

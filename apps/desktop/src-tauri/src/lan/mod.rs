@@ -6,7 +6,9 @@ mod mdns;
 pub mod server;
 
 pub use cert::{generate as generate_tls, load_or_generate as load_or_generate_tls};
-pub use endpoints::{build as build_lan_endpoints, detect_lan_ipv4, LanAdvertisement, LanEndpoints};
+pub use endpoints::{
+    build as build_lan_endpoints, detect_lan_ipv4, LanAdvertisement, LanEndpoints,
+};
 pub use hub::{LanHub, Role as LanRole, SeatToken, SendFn};
 pub use loopback::connect as loopback_connect;
 pub use mdns::MdnsAdvertiser;
@@ -154,7 +156,17 @@ fn spawn_supervisor(
                 Some(lan_ip) => {
                     warned_no_ip = false;
                     if !serving {
-                        match boot(&app, &config_dir, &cache, &hub, &advertisement, &device_id, &current_id, lan_ip, port) {
+                        match boot(
+                            &app,
+                            &config_dir,
+                            &cache,
+                            &hub,
+                            &advertisement,
+                            &device_id,
+                            &current_id,
+                            lan_ip,
+                            port,
+                        ) {
                             Ok(sha) => {
                                 cert_sha256 = sha;
                                 serving = true;
