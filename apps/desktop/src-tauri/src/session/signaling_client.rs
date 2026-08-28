@@ -134,31 +134,43 @@ impl SignalingClient {
     /// Await the next event: an inbound message, the transport closing, or
     /// (only while a reconnect is in flight) that reconnect's outcome.
     pub async fn next_event(&mut self) -> SignalingClientEvent {
-        tokio::select! {
-            msg = recv_next(&mut self.inbound) => {
-                match msg {
-                    Some(env) => SignalingClientEvent::Message(env),
-                    None => {
-                        self.inbound = None;
-                        SignalingClientEvent::Closed
+        loop {
+            tokio::select! {
+                msg = recv_next(&mut self.inbound) => {
+                    match msg {
+                        Some(env) => return SignalingClientEvent::Message(env),
+                        None => {
+                            self.inbound = None;
+                            // Loopback reconnect attaches a new seat before the
+                            // old handle is dropped. That overwrite drops the
+                            // old SendFn and closes this channel — which is
+                            // expected, not a session end. Keep waiting for
+                            // recon_rx; surfacing Closed here races the seat
+                            // fix and is what flaked
+                            // `a_loopback_reconnect_keeps_the_seat_it_just_took`.
+                            if self.reconnecting {
+                                continue;
+                            }
+                            return SignalingClientEvent::Closed;
+                        }
                     }
                 }
-            }
-            recon = self.recon_rx.recv(), if self.reconnecting => {
-                self.reconnecting = false;
-                match recon {
-                    Some(Ok((new_sig, new_inbound))) => {
-                        self.sig = new_sig;
-                        self.inbound = Some(new_inbound);
-                        SignalingClientEvent::Reconnected
-                    }
-                    Some(Err(e)) => SignalingClientEvent::Lost(e),
-                    // `recon_tx` is held by `self` for the client's whole
-                    // lifetime — a spawned reconnect task's clone is the only
-                    // other holder, so this channel never closes out from
-                    // under an in-flight reconnect. Pend rather than treat a
-                    // channel-API technicality as a real session-ending event.
-                    None => std::future::pending().await,
+                recon = self.recon_rx.recv(), if self.reconnecting => {
+                    self.reconnecting = false;
+                    return match recon {
+                        Some(Ok((new_sig, new_inbound))) => {
+                            self.sig = new_sig;
+                            self.inbound = Some(new_inbound);
+                            SignalingClientEvent::Reconnected
+                        }
+                        Some(Err(e)) => SignalingClientEvent::Lost(e),
+                        // `recon_tx` is held by `self` for the client's whole
+                        // lifetime — a spawned reconnect task's clone is the only
+                        // other holder, so this channel never closes out from
+                        // under an in-flight reconnect. Pend rather than treat a
+                        // channel-API technicality as a real session-ending event.
+                        None => std::future::pending().await,
+                    };
                 }
             }
         }
