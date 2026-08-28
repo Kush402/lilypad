@@ -10,8 +10,10 @@ import okhttp3.*
 import java.security.MessageDigest
 import java.security.cert.CertificateException
 import java.security.cert.X509Certificate
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import javax.net.ssl.SSLContext
 import javax.net.ssl.X509TrustManager
 
@@ -22,9 +24,16 @@ class LilypadLanModule(private val reactContext: ReactApplicationContext) :
   ReactContextBaseJavaModule(reactContext) {
 
   private val nsd = reactContext.getSystemService(NsdManager::class.java)
-  private val clients = mutableMapOf<Int, OkHttpClient>()
-  private val websockets = mutableMapOf<Int, WebSocket>()
-  private var nextSocketId = 1
+  // Concurrent, not plain maps: `@ReactMethod` calls are serialized on the
+  // NativeModules thread, but OkHttp's callbacks are not — they arrive on its
+  // dispatcher's pool, so a listener firing while a bridge call mutates a
+  // `mutableMapOf` was an unsynchronised read of a HashMap mid-resize. iOS
+  // takes an `NSLock` around the equivalent state; this side took nothing.
+  private val clients = ConcurrentHashMap<Int, OkHttpClient>()
+  private val websockets = ConcurrentHashMap<Int, WebSocket>()
+  /** Sockets allocated by `createWebSocket` and not yet started. */
+  private val pending = ConcurrentHashMap<Int, Request>()
+  private val nextSocketId = AtomicInteger(1)
 
   override fun getName(): String = "LilypadLanTls"
 
@@ -49,6 +58,7 @@ class LilypadLanModule(private val reactContext: ReactApplicationContext) :
         object : Callback {
           override fun onFailure(call: Call, e: java.io.IOException) {
             promise.reject("fetch_failed", e.message, e)
+            shutdown(client)
           }
 
           override fun onResponse(call: Call, response: Response) {
@@ -59,6 +69,7 @@ class LilypadLanModule(private val reactContext: ReactApplicationContext) :
                 putString("body", text)
               },
             )
+            shutdown(client)
           }
         },
       )
@@ -67,38 +78,62 @@ class LilypadLanModule(private val reactContext: ReactApplicationContext) :
     }
   }
 
+  /**
+   * Allocate a pinned socket and hand JS its id, WITHOUT connecting.
+   *
+   * `newWebSocket` connects immediately, so allocation and connection used to
+   * be one call — and JS can only subscribe to a socket's events after it
+   * learns the id from this promise. An event emitted before that has no
+   * listener to reach and is dropped, silently, on the JS side of the bridge:
+   * on a fast LAN the open event could beat the round-trip and vanish, leaving
+   * a connected socket looking to JS like one that never opened. Holding the
+   * request here until `startWebSocket` closes that window for good.
+   */
   @ReactMethod
-  fun connectWebSocket(url: String, expectedSha256: String, promise: Promise) {
+  fun createWebSocket(url: String, expectedSha256: String, promise: Promise) {
     try {
-      val id = nextSocketId++
-      val client = pinnedClient(expectedSha256)
-      clients[id] = client
-      val ws =
-        client.newWebSocket(
-          Request.Builder().url(url).build(),
-          object : WebSocketListener() {
-            override fun onOpen(webSocket: WebSocket, response: Response) {
-              emit("LanTlsWebSocketOpen", id)
-            }
-
-            override fun onMessage(webSocket: WebSocket, text: String) {
-              emit("LanTlsWebSocketMessage", id, text)
-            }
-
-            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-              emit("LanTlsWebSocketClose", id)
-            }
-
-            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-              emit("LanTlsWebSocketClose", id)
-            }
-          },
-        )
-      websockets[id] = ws
+      val id = nextSocketId.getAndIncrement()
+      clients[id] = pinnedClient(expectedSha256)
+      pending[id] = Request.Builder().url(url).build()
       promise.resolve(id)
     } catch (e: Exception) {
       promise.reject("ws_failed", e.message, e)
     }
+  }
+
+  /** Connect a socket JS has finished subscribing to. */
+  @ReactMethod
+  fun startWebSocket(socketId: Int) {
+    val client = clients[socketId] ?: return
+    val request = pending.remove(socketId) ?: return
+    websockets[socketId] =
+      client.newWebSocket(
+        request,
+        object : WebSocketListener() {
+          override fun onOpen(webSocket: WebSocket, response: Response) {
+            emit("LanTlsWebSocketOpen", socketId)
+          }
+
+          override fun onMessage(webSocket: WebSocket, text: String) {
+            emit("LanTlsWebSocketMessage", socketId, text)
+          }
+
+          override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+            // Peer/server close never goes through `closeWebSocket` — release
+            // the OkHttp client here or every flap leaks a dispatcher+pool.
+            releaseSocket(socketId)
+            emit("LanTlsWebSocketClose", socketId)
+          }
+
+          // Covers the pin mismatch and every other pre-open failure. iOS was
+          // silent here until `didCompleteWithError` was implemented, which is
+          // why one platform hung where the other reported.
+          override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+            releaseSocket(socketId)
+            emit("LanTlsWebSocketClose", socketId)
+          }
+        },
+      )
   }
 
   @ReactMethod
@@ -109,7 +144,30 @@ class LilypadLanModule(private val reactContext: ReactApplicationContext) :
   @ReactMethod
   fun closeWebSocket(socketId: Int) {
     websockets.remove(socketId)?.close(1000, "closed")
-    clients.remove(socketId)
+    releaseSocket(socketId)
+  }
+
+  /** Drop maps + shut down the OkHttp client. Idempotent under ConcurrentHashMap. */
+  private fun releaseSocket(socketId: Int) {
+    pending.remove(socketId)
+    websockets.remove(socketId)
+    shutdown(clients.remove(socketId))
+  }
+
+  /**
+   * Release an OkHttpClient's threads.
+   *
+   * Dropping the reference is not enough: a client owns a dispatcher backed by
+   * a cached thread pool and a connection pool with a keep-alive thread, and
+   * neither is reclaimed just because nothing points at the client any more.
+   * One is built per socket and per pinned fetch — and a pinned fetch is what
+   * every LAN probe on every ring does — so "drop it and move on" leaked
+   * threads for the life of the process.
+   */
+  private fun shutdown(client: OkHttpClient?) {
+    if (client == null) return
+    client.dispatcher.executorService.shutdown()
+    client.connectionPool.evictAll()
   }
 
   @ReactMethod

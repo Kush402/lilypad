@@ -164,3 +164,76 @@ impl SignalingClient {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lan::{LanHub, LanRole, SendFn};
+    use std::sync::Mutex;
+    use std::time::Duration;
+
+    /// The desktop half of L-182, through the real reconnect path.
+    ///
+    /// A LAN session's transport is this desktop's own hub, so a drop is not a
+    /// network event — `begin_reconnect` re-seats immediately and `next_event`
+    /// installs the new handle, DROPPING the old one. That drop used to release
+    /// the seat by role, i.e. the seat the reconnect had just taken: the room
+    /// emptied, was deleted, the new inbound channel closed, `Closed` fired
+    /// again, and this loop reconnected into the same trap for as long as the
+    /// session lasted. Reached on the ordinary second ring, where a
+    /// supersession closes the previous room out from under a live runner.
+    #[tokio::test]
+    async fn a_loopback_reconnect_keeps_the_seat_it_just_took() {
+        let hub = Arc::new(LanHub::new());
+        let room = "room-reconnect-1";
+        let phone = Arc::new(Mutex::new(Vec::<String>::new()));
+        let sink = phone.clone();
+        let send: SendFn = Arc::new(move |s: &str| sink.lock().unwrap().push(s.to_owned()));
+        hub.attach(room, LanRole::Mobile, "mobile-12345678".into(), send)
+            .unwrap();
+
+        let mut client = SignalingClient::connect(
+            "wss://127.0.0.1:8787/ws/signal".to_owned(),
+            room.to_owned(),
+            "desktop-12345678".to_owned(),
+            Some(hub.clone()),
+        )
+        .await
+        .expect("the in-process transport cannot fail to connect");
+
+        client.begin_reconnect();
+        match client.next_event().await {
+            SignalingClientEvent::Reconnected => {}
+            SignalingClientEvent::Closed => panic!("the transport closed instead of reconnecting"),
+            SignalingClientEvent::Lost(e) => panic!("reconnect reported lost: {e}"),
+            SignalingClientEvent::Message(env) => {
+                panic!("unexpected frame before the reconnect: {}", env.msg_type)
+            }
+        }
+
+        // The superseded handle's release runs on its own task; the seat must
+        // still be there once it has run.
+        hub.handle(
+            LanRole::Mobile,
+            r#"{"type":"pair-request","roomId":"room-reconnect-1","from":"mobile","ts":0,"payload":{"deviceId":"mobile-12345678","deviceName":"phone","requestedScopes":["view"]}}"#,
+        );
+        match tokio::time::timeout(Duration::from_secs(5), client.next_event())
+            .await
+            .expect("the reconnected transport must deliver the phone's ring")
+        {
+            SignalingClientEvent::Message(env) => assert_eq!(env.msg_type, "pair-request"),
+            SignalingClientEvent::Closed => {
+                panic!("the reconnected seat was released by the handle it replaced")
+            }
+            other => panic!(
+                "unexpected event: {}",
+                match other {
+                    SignalingClientEvent::Lost(e) => format!("lost ({e})"),
+                    SignalingClientEvent::Reconnected => "a second reconnect".to_owned(),
+                    _ => "unreachable".to_owned(),
+                }
+            ),
+        }
+        assert!(hub.has_seat(room, LanRole::Desktop));
+    }
+}

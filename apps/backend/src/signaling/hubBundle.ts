@@ -153,15 +153,13 @@ export function createSignalingHubBundle(): SignalingHubBundle {
       void trust
         .listTrustRecordsForDesktop(desktopDeviceId)
         .then((records) => {
-          for (const record of records) {
-            hub.deliverTrustRecord(desktopDeviceId, record);
-          }
-          if (records.length > 0) {
-            log.signaling.info(
-              { desktopDeviceId, count: records.length },
-              'synced LAN trust records to desktop presence',
-            );
-          }
+          // One frame, full list — including empty. Per-record upserts could
+          // never delete a revoked phone; replace_all on the desktop can.
+          hub.deliverTrustSync(desktopDeviceId, records);
+          log.signaling.info(
+            { desktopDeviceId, count: records.length },
+            'synced LAN trust records to desktop presence',
+          );
         })
         .catch((err) =>
           log.signaling.warn({ err, desktopDeviceId }, 'LAN trust-record sync failed'),

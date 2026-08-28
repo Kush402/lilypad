@@ -15,6 +15,9 @@ export type AppErrorCode =
   | 'rate_limited'
   | 'server_error'
   | 'signaling_lost'
+  | 'signaling_timeout'
+  | 'lan_pin_misapplied'
+  | 'lan_pinning_unavailable'
   | 'session_gone'
   | 'peer_denied'
   | 'ice_failed'
@@ -46,6 +49,22 @@ const COPY: Record<AppErrorCode, string> = {
   // drops while media is still flowing, nothing is shown at all — the badge
   // reads "Reconnecting…" and the retry happens quietly.
   signaling_lost: 'Lost the connection to the laptop. Connect again when you’re ready.',
+  // The spinner that used to be forever. A socket that neither opens nor
+  // fails is indistinguishable, from the screen, from one that is simply
+  // slow — so it said "Connecting…" and never stopped. Anything true is
+  // better than that, and "try again" is genuinely the right move: the
+  // v0.1.21 cause was per-attempt, and a fresh ring re-runs the LAN probe.
+  signaling_timeout: 'Couldn’t reach the laptop in time. Check that it’s awake, then try again.',
+  // Ours, not theirs — this one is a bug in this app, and it is deliberately
+  // NOT dressed up as a network problem. Telling someone to check their Wi-Fi
+  // about a mismatched certificate pin sends them to fix something that is
+  // already fine.
+  lan_pin_misapplied:
+    'Lilypad hit an internal connection error. Try again, or scan the laptop’s QR code.',
+  // A pin was required and this build cannot enforce it. Falling through to an
+  // unpinned socket would quietly drop the control — refuse instead.
+  lan_pinning_unavailable:
+    'Lilypad can’t verify this laptop’s identity on this build. Update the app, or scan the laptop’s QR code.',
   session_gone: 'That session ended. Reconnecting to the laptop…',
   peer_denied: 'The laptop denied this request. Approve it there, then try again.',
   ice_failed: 'Could not reach the laptop. Check that both devices are online, then try again.',
@@ -80,6 +99,13 @@ const RETRYABLE: Record<AppErrorCode, boolean> = {
   rate_limited: true,
   server_error: true,
   signaling_lost: true,
+  signaling_timeout: true,
+  // The pin and the URL are recomputed from scratch on the next ring, and the
+  // mismatch that produced this one was a per-attempt accident of which target
+  // won the probe — so trying again really can land differently.
+  lan_pin_misapplied: true,
+  // Retrying the same build cannot invent a native pin module.
+  lan_pinning_unavailable: false,
   session_gone: true,
   peer_denied: false,
   ice_failed: true,
@@ -116,17 +142,33 @@ export function appError(code: AppErrorCode, message?: string): AppError {
   return { code, message: message ?? COPY[code], retryable: RETRYABLE[code] };
 }
 
-/** Thrown by `redeemToken` so callers can branch UI on `.code`/`.retryable`
- * instead of pattern-matching a message string. */
-export class RedeemError extends UserFacingError implements AppError {
+/**
+ * A thrown error that carries its own classification, so `toAppError` can hand
+ * the screen the real code rather than flattening it to `unknown`.
+ *
+ * Split out of `RedeemError` (which is now one of these) because failures that
+ * are nothing to do with redeeming a QR code need the same guarantee: the
+ * signaling open-timeout has a specific remedy and a Retry button hangs off
+ * `.retryable`, and neither survives being reported as "something went wrong".
+ */
+export class ClassifiedError extends UserFacingError implements AppError {
   readonly code: AppErrorCode;
   readonly retryable: boolean;
 
   constructor(err: AppError) {
     super(err.message);
-    this.name = 'RedeemError';
+    this.name = 'ClassifiedError';
     this.code = err.code;
     this.retryable = err.retryable;
+  }
+}
+
+/** Thrown by `redeemToken` so callers can branch UI on `.code`/`.retryable`
+ * instead of pattern-matching a message string. */
+export class RedeemError extends ClassifiedError {
+  constructor(err: AppError) {
+    super(err);
+    this.name = 'RedeemError';
   }
 }
 
@@ -189,9 +231,10 @@ export function classifyFetchError(timedOut: boolean): AppError {
 }
 
 /** Normalize anything caught into an `AppError` for display, preserving a
- * `RedeemError`'s real classification instead of flattening it to 'unknown'. */
+ * `ClassifiedError`'s real classification instead of flattening it to
+ * 'unknown'. */
 export function toAppError(err: unknown): AppError {
-  if (err instanceof RedeemError)
+  if (err instanceof ClassifiedError)
     return { code: err.code, message: err.message, retryable: err.retryable };
   // Only text we wrote. A `TypeError` from a null peer connection, or a
   // `String(err)` that renders "[object Object]", is not an explanation — it

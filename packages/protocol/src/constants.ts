@@ -114,6 +114,29 @@ export function jitteredBackoffMs(attempt: number, random: () => number = Math.r
 }
 
 /**
+ * How long a signaling socket may sit in CONNECTING before the client gives up
+ * on it.
+ *
+ * A socket that never opens must not be able to wait forever, and one of them
+ * could: on v0.1.21 a phone opened a socket to the cloud signaling endpoint
+ * while pinned to the laptop's self-signed LAN certificate, so the TLS
+ * handshake could never complete. iOS fired no event at all for a connection
+ * that failed before opening, nothing else bounded the wait, and the app sat on
+ * "Connecting…" indefinitely with no error — six times in one session. An
+ * unbounded wait is the bug; the exact number is not, which is why this is
+ * generous rather than tight.
+ *
+ * It does NOT belong to the budget below. That budget is about a client
+ * finishing its retries before the backend reaps the seat it is reclaiming, and
+ * it assumes what is true of every ordinary failure — a refused TCP connection,
+ * a rejected handshake, a dead host — namely that the attempt fails in
+ * milliseconds, not on this deadline. This is the backstop for the pathological
+ * case where the socket neither opens nor fails, and reaching it four times in
+ * a row means the room is long gone regardless of what any grace window says.
+ */
+export const SIGNALING_OPEN_TIMEOUT_MS = 10_000 as const;
+
+/**
  * Cross-tier timing budget (`docs/audit/m3/reconnect-lifecycle.md` Finding 6)
  * — these four constants were previously tuned independently per tier and
  * raced each other (the desktop's reconnect budget could exceed the

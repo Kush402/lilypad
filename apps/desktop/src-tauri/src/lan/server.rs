@@ -20,8 +20,8 @@ use uuid::Uuid;
 use crate::presence;
 use crate::signaling::messages::{ConnectRequestPayload, SessionScope};
 
-use super::endpoints::LanEndpoints;
-use super::hub::{LanHub, Role};
+use super::endpoints::LanAdvertisement;
+use super::hub::{LanHub, Role, SeatToken};
 use super::trust_cache::TrustCache;
 
 pub trait ConnectNotifier: Send + Sync {
@@ -43,10 +43,30 @@ impl ConnectNotifier for TauriConnectNotifier {
     }
 }
 
+/// How the LAN plane learns this Mac's wire id: a live read, never a copy.
+///
+/// `device_id` was captured when the server started, and it is the ONLY gate on
+/// a LAN ring — but `lib::adopt_device_id` can change this computer's id later,
+/// when the first token exchange discovers the backend knows it by another
+/// name. `presence.rs` was explicitly taught to re-read the id on every attempt
+/// for exactly this reason (see the comment in its reconnect loop); the LAN
+/// plane never was, so a drifted install answered every ring with a 404 and the
+/// LAN was unreachable for the life of the install. mDNS could not rescue it
+/// either, because the advertisement carried the same stale id the phone
+/// filters on. Kanban L-180.
+pub type DeviceIdSource = Arc<dyn Fn() -> String + Send + Sync>;
+
+/// A device id that cannot change — for tests, and for callers that genuinely
+/// have a fixed one.
+pub fn fixed_device_id(device_id: &str) -> DeviceIdSource {
+    let id = device_id.to_owned();
+    Arc::new(move || id.clone())
+}
+
 pub struct LanServerState {
     pub trust_cache: Arc<TrustCache>,
-    pub device_id: String,
-    pub endpoints: LanEndpoints,
+    pub device_id: DeviceIdSource,
+    pub advertisement: Arc<LanAdvertisement>,
     pub hub: Arc<LanHub>,
     pub notifier: Arc<dyn ConnectNotifier>,
     pub port: u16,
@@ -84,9 +104,13 @@ pub async fn run(state: Arc<LanServerState>, cert_pem: Vec<u8>, key_pem: Vec<u8>
 
     log::info!(
         target: "lilypad::lan",
-        "LAN control server listening on https://{}:{}",
-        state.endpoints.lan_ip,
-        state.port
+        "LAN control server listening on 0.0.0.0:{} (advertising {})",
+        state.port,
+        state
+            .advertisement
+            .snapshot()
+            .map(|ep| ep.api_base_url)
+            .unwrap_or_else(|| "no LAN address yet".to_owned())
     );
 
     axum_server::bind_rustls(addr, tls)
@@ -99,24 +123,102 @@ async fn health() -> impl IntoResponse {
     Json(json!({ "status": "ok", "lan": true }))
 }
 
+/// Why a LAN `/connect/request` was refused, on the wire.
+///
+/// All three refusals used to be a bare `StatusCode::NOT_FOUND` with **no body
+/// at all**, and the phone's classifier looks for `not_trusted` in the BODY
+/// (`classifyConnectStatus`, `apps/mobile/src/lib/api.ts`). Finding an empty
+/// string, it fell through to the status-only path, where 404 means
+/// `token_expired` — so a phone whose LAN authorization had drifted told the
+/// user "This QR code has expired" about a laptop sitting in their own paired
+/// list, with no QR anywhere in the story. Kanban L-185.
+///
+/// Statuses and codes are the cloud route's
+/// (`apps/backend/src/routes/signaling.ts`) so one taxonomy covers both control
+/// planes and the phone needs no per-plane special case.
+enum ConnectRefusal {
+    /// This is not the Mac the phone asked for. With the device id now read per
+    /// request (L-180) this no longer means "our own id drifted"; what is left
+    /// is a cached LAN address that DHCP has since handed to another machine.
+    WrongDesktop,
+    /// No trust record for that phone, or its connect secret does not match.
+    ///
+    /// Deliberately one code for both, exactly as the cloud route masks
+    /// `bad_secret` — and the masking is kept here after weighing that this
+    /// endpoint is not internet-exposed. It is still reachable by anything on
+    /// the same network (a café, a guest SSID, a compromised smart plug), the
+    /// two facts have the identical remedy — pair again with a QR — so telling
+    /// them apart buys the legitimate user nothing, and an attacker who can
+    /// distinguish them gains an oracle for which phones a Mac knows. Which of
+    /// the two it actually was is logged locally, where the person diagnosing
+    /// is already looking and where it crosses no network.
+    NotTrusted,
+}
+
+impl IntoResponse for ConnectRefusal {
+    fn into_response(self) -> axum::response::Response {
+        let (code, message) = match self {
+            ConnectRefusal::WrongDesktop => (
+                "wrong_desktop",
+                "this is not the computer that was asked for",
+            ),
+            ConnectRefusal::NotTrusted => (
+                "not_trusted",
+                "no trust relationship — pair with a QR first",
+            ),
+        };
+        (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": code, "message": message })),
+        )
+            .into_response()
+    }
+}
+
 async fn connect_request(
     State(state): State<Arc<LanServerState>>,
     Json(body): Json<ConnectRequestBody>,
-) -> Result<Json<ConnectResponseBody>, StatusCode> {
-    if body.desktop_device_id != state.device_id {
-        return Err(StatusCode::NOT_FOUND);
+) -> Result<Json<ConnectResponseBody>, ConnectRefusal> {
+    let device_id = (state.device_id)();
+    if body.desktop_device_id != device_id {
+        log::warn!(
+            target: "lilypad::lan",
+            "LAN connect/request addressed to {} — this computer is {device_id}",
+            body.desktop_device_id
+        );
+        return Err(ConnectRefusal::WrongDesktop);
     }
     let trusted = state
         .trust_cache
         .authorize_connect(&body.mobile_device_id, body.pair_secret.as_deref())
         .ok_or_else(|| {
+            // The distinction the wire deliberately withholds — see
+            // `ConnectRefusal::NotTrusted`.
+            let known = state.trust_cache.get(&body.mobile_device_id).is_some();
             log::warn!(
                 target: "lilypad::lan",
-                "LAN connect/request rejected for mobile {} (trust cache miss or bad secret)",
-                body.mobile_device_id
+                "LAN connect/request rejected for mobile {} ({})",
+                body.mobile_device_id,
+                if known { "connect secret does not match the cached hash" } else { "no trust-record for this phone" }
             );
-            StatusCode::NOT_FOUND
+            ConnectRefusal::NotTrusted
         })?;
+
+    // The address this Mac answers on can change mid-process (L-181), so the
+    // URL the phone is handed is read now, once, and the SAME value is given to
+    // the session runner — a room must never be minted on one URL and joined
+    // on another.
+    let Some(endpoints) = state.advertisement.snapshot() else {
+        // Unreachable in practice: nothing can have reached this handler unless
+        // the server was started, and it is only started once an address has
+        // been published. Refused rather than unwrapped, because a panic here
+        // would take the whole LAN control plane down with it.
+        log::error!(
+            target: "lilypad::lan",
+            "LAN connect/request arrived before any address was advertised"
+        );
+        return Err(ConnectRefusal::WrongDesktop);
+    };
 
     let room_id = Uuid::new_v4().to_string();
     let scopes = vec![SessionScope::View, SessionScope::Control];
@@ -127,12 +229,11 @@ async fn connect_request(
         requested_scopes: scopes.clone(),
         auto_approve: trusted.auto_approve,
     };
-    let signaling_url = state.endpoints.signaling_url.clone();
-    state.notifier.notify(&signaling_url, payload);
+    state.notifier.notify(&endpoints.signaling_url, payload);
 
     Ok(Json(ConnectResponseBody {
         room_id,
-        signaling_url: state.endpoints.signaling_url.clone(),
+        signaling_url: endpoints.signaling_url,
         scopes: vec!["view".into(), "control".into()],
         desktop_device_name: trusted.display_name,
     }))
@@ -157,7 +258,11 @@ async fn handle_ws(socket: WebSocket, state: Arc<LanServerState>) {
         }
     });
 
-    let mut registered: Option<(String, Role)> = None;
+    // The seat token is carried alongside the room and role so this socket's
+    // teardown can only vacate the seat it is still holding. A phone whose
+    // socket flaps re-registers over a NEW one, and this one then reaches the
+    // bottom of the function — see `hub::SeatToken`.
+    let mut registered: Option<(String, Role, SeatToken)> = None;
     while let Some(Ok(msg)) = stream.next().await {
         let Message::Text(txt) = msg else {
             continue;
@@ -190,21 +295,21 @@ async fn handle_ws(socket: WebSocket, state: Arc<LanServerState>) {
                                 let _ = tx.send(s.to_owned());
                             })
                         };
-                        if state.hub.attach(&room_id, role, device_id, send).is_ok() {
-                            registered = Some((room_id, role));
+                        if let Ok(token) = state.hub.attach(&room_id, role, device_id, send) {
+                            registered = Some((room_id, role, token));
                         }
                     }
                 }
             }
             continue;
         }
-        if let Some((_, role)) = registered {
+        if let Some((_, role, _)) = registered {
             state.hub.handle(role, &txt);
         }
     }
 
-    if let Some((room_id, role)) = registered {
-        state.hub.detach(&room_id, role);
+    if let Some((room_id, role, token)) = registered {
+        state.hub.detach(&room_id, role, token);
     }
     writer.abort();
 }

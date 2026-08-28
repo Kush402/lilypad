@@ -11,10 +11,12 @@ RCT_EXTERN_METHOD(fetch:(NSString *)urlString
                   resolver:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)
 
-RCT_EXTERN_METHOD(connectWebSocket:(NSString *)urlString
+RCT_EXTERN_METHOD(createWebSocket:(NSString *)urlString
                   expectedSha256:(NSString *)expectedSha256
                   resolver:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)
+
+RCT_EXTERN_METHOD(startWebSocket:(nonnull NSNumber *)socketId)
 
 RCT_EXTERN_METHOD(sendWebSocket:(nonnull NSNumber *)socketId
                   text:(NSString *)text)

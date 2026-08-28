@@ -2,6 +2,7 @@
 //! semantics without Redis, room auth, or multi-tenancy.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde_json::{json, Value};
@@ -36,9 +37,38 @@ pub type SendFn = Arc<dyn Fn(&str) + Send + Sync>;
 /// a peer that is never coming, and the queue must not grow without bound.
 const MAX_PENDING_FRAMES: usize = 32;
 
+/// Proof that a particular TRANSPORT — not merely a particular role — holds a
+/// seat, handed out by `attach` and required by `detach`.
+///
+/// `attach` overwrites a seat unconditionally, which is correct: a peer that
+/// re-registers is reclaiming its own place. What was wrong is that `detach`
+/// then cleared the seat by role alone, so the teardown of the transport a peer
+/// had just REPLACED deleted the replacement. Two ways in, both on the ring
+/// path, both shipped in v0.1.21 (kanban L-182):
+///
+/// * a phone whose signaling socket flaps re-registers over the new socket, and
+///   then the dying one reaches the end of `handle_ws` and evicts the fresh
+///   mobile seat;
+/// * worse, on this desktop's own side: `SignalingClient::begin_reconnect`
+///   re-seats through `lan::loopback`, and the moment `next_event` installs the
+///   new handle the OLD one is dropped — its `out_rx` closes and its spawned
+///   task detaches the seat the reconnect had just taken. Both seats then being
+///   empty, the room is deleted, the new inbound channel closes, `Closed` fires
+///   again, and the desktop spins there instead of holding a session.
+///
+/// The cloud hub answers the same question with a reregister grace keyed on
+/// `deviceId` (`apps/backend/src/signaling/hub.ts`), because there it has to
+/// hold a seat open across a real network round trip. Nothing here crosses a
+/// network, so there is nothing to wait for and a monotonic epoch is enough:
+/// whoever holds the current one owns the seat, and every other `detach` is a
+/// no-op.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SeatToken(u64);
+
 struct Seat {
     device_id: String,
     send: SendFn,
+    epoch: u64,
 }
 
 struct Room {
@@ -62,12 +92,18 @@ struct Room {
 
 pub struct LanHub {
     rooms: Mutex<HashMap<String, Room>>,
+    /// Source of `SeatToken`s. Hub-wide rather than per-seat so a token can
+    /// never be mistaken for a later one after a room has been deleted and
+    /// recreated under the same id — which is exactly what a supersession
+    /// between two rings does.
+    next_epoch: AtomicU64,
 }
 
 impl Default for LanHub {
     fn default() -> Self {
         Self {
             rooms: Mutex::new(HashMap::new()),
+            next_epoch: AtomicU64::new(1),
         }
     }
 }
@@ -77,14 +113,16 @@ impl LanHub {
         Self::default()
     }
 
-    /// Attach a WebSocket peer after `register`.
+    /// Attach a peer after `register`, returning the token that transport must
+    /// present to vacate the seat again. See `SeatToken`.
     pub fn attach(
         &self,
         room_id: &str,
         role: Role,
         device_id: String,
         send: SendFn,
-    ) -> Result<(), String> {
+    ) -> Result<SeatToken, String> {
+        let epoch = self.next_epoch.fetch_add(1, Ordering::Relaxed);
         let replay: Vec<String>;
         {
             let mut rooms = self.rooms.lock().unwrap_or_else(|p| p.into_inner());
@@ -97,7 +135,11 @@ impl LanHub {
                 pending_desktop: Vec::new(),
                 pending_mobile: Vec::new(),
             });
-            let seat = Seat { device_id, send };
+            let seat = Seat {
+                device_id,
+                send,
+                epoch,
+            };
             match role {
                 Role::Desktop => {
                     room.desktop = Some(seat);
@@ -122,7 +164,7 @@ impl LanHub {
                 role.as_str()
             );
         }
-        Ok(())
+        Ok(SeatToken(epoch))
     }
 
     /// Whether `role` currently holds a seat in `room_id`.
@@ -134,16 +176,36 @@ impl LanHub {
         })
     }
 
-    pub fn detach(&self, room_id: &str, role: Role) {
+    /// Vacate the seat `token` was issued for.
+    ///
+    /// A no-op when the seat has since been re-taken by another transport: the
+    /// departing one is finishing a teardown that the peer has already moved
+    /// on from, and clearing the seat there is the L-182 eviction. See
+    /// `SeatToken`.
+    pub fn detach(&self, room_id: &str, role: Role, token: SeatToken) {
         let mut rooms = self.rooms.lock().unwrap_or_else(|p| p.into_inner());
-        if let Some(room) = rooms.get_mut(room_id) {
-            match role {
-                Role::Desktop => room.desktop = None,
-                Role::Mobile => room.mobile = None,
+        let Some(room) = rooms.get_mut(room_id) else {
+            return;
+        };
+        let seat = match role {
+            Role::Desktop => &mut room.desktop,
+            Role::Mobile => &mut room.mobile,
+        };
+        match seat {
+            Some(current) if current.epoch != token.0 => {
+                log::debug!(
+                    target: "lilypad::lan",
+                    "ignoring a stale detach of the {} seat of room {room_id} — \
+                     {} re-took it since",
+                    role.as_str(),
+                    current.device_id
+                );
+                return;
             }
-            if room.desktop.is_none() && room.mobile.is_none() {
-                rooms.remove(room_id);
-            }
+            _ => *seat = None,
+        }
+        if room.desktop.is_none() && room.mobile.is_none() {
+            rooms.remove(room_id);
         }
     }
 
@@ -437,8 +499,8 @@ mod tests {
         (send, buf)
     }
 
-    fn register(hub: &LanHub, room: &str, role: Role, device: &str, send: SendFn) {
-        hub.attach(room, role, device.into(), send).unwrap();
+    fn register(hub: &LanHub, room: &str, role: Role, device: &str, send: SendFn) -> SeatToken {
+        hub.attach(room, role, device.into(), send).unwrap()
     }
 
     #[test]
@@ -531,6 +593,88 @@ mod tests {
         assert!(
             frames.iter().any(|v| v["type"] == "pair-request"),
             "the buffered ring must reach the desktop, got {frames:?}"
+        );
+    }
+
+    /// L-182, trigger 1: a phone whose signaling socket flaps.
+    ///
+    /// The phone re-registers over a fresh socket, and only then does the dying
+    /// one reach the end of `handle_ws` and release "the mobile seat". Released
+    /// by role, that teardown deleted the seat the phone had just taken: the
+    /// desktop's `session-start` was relayed to nobody and the ring died with
+    /// the phone still showing "Waiting for approval…".
+    #[test]
+    fn a_flapping_phone_is_not_evicted_by_the_socket_it_replaced() {
+        let hub = LanHub::new();
+        let (d_send, _) = capture_send();
+        register(&hub, "room-1", Role::Desktop, "desktop-12345678", d_send);
+
+        let (old_send, _) = capture_send();
+        let old = register(&hub, "room-1", Role::Mobile, "mobile-12345678", old_send);
+        let (new_send, new_out) = capture_send();
+        register(&hub, "room-1", Role::Mobile, "mobile-12345678", new_send);
+
+        hub.detach("room-1", Role::Mobile, old);
+
+        assert!(
+            hub.has_seat("room-1", Role::Mobile),
+            "the re-registered phone must keep the seat its own dead socket vacated"
+        );
+        hub.handle(
+            Role::Desktop,
+            r#"{"type":"pair-approved","roomId":"room-1","from":"desktop","ts":0,"payload":{"grantedScopes":["view"],"trust":false}}"#,
+        );
+        let frames: Vec<Value> = new_out
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|s| serde_json::from_str(s).ok())
+            .collect();
+        assert!(
+            frames.iter().any(|v| v["type"] == "session-start"),
+            "the phone's live socket must receive the approval, got {frames:?}"
+        );
+    }
+
+    /// L-182, trigger 2, reduced to the hub: re-taking a seat and then
+    /// releasing the previous claim must not empty — and so delete — the room.
+    ///
+    /// This is the shape `lan::loopback` produces when the desktop reconnects:
+    /// a second `attach` for the same room and role, then the first claim's
+    /// release. Deleting the room here closed the desktop's brand-new inbound
+    /// channel, which its session runner reads as another transport drop, and
+    /// it reconnected into the same trap forever.
+    #[test]
+    fn re_taking_a_seat_survives_the_previous_claims_release() {
+        let hub = LanHub::new();
+        let (first, _) = capture_send();
+        let first_token = register(&hub, "room-1", Role::Desktop, "desktop-12345678", first);
+        let (second, _) = capture_send();
+        register(&hub, "room-1", Role::Desktop, "desktop-12345678", second);
+
+        hub.detach("room-1", Role::Desktop, first_token);
+
+        assert!(
+            hub.has_seat("room-1", Role::Desktop),
+            "the reconnected desktop must still hold its seat"
+        );
+    }
+
+    /// The other half of the guarantee: the transport that DOES still own the
+    /// seat releases it, and an empty room is still cleaned up. Without this
+    /// the epoch check would be a memory leak dressed as a fix.
+    #[test]
+    fn the_current_holder_can_still_vacate_and_empty_the_room() {
+        let hub = LanHub::new();
+        let (send, _) = capture_send();
+        let token = register(&hub, "room-1", Role::Desktop, "desktop-12345678", send);
+
+        hub.detach("room-1", Role::Desktop, token);
+
+        assert!(!hub.has_seat("room-1", Role::Desktop));
+        assert!(
+            hub.rooms.lock().unwrap().is_empty(),
+            "a room with no peers left must be dropped"
         );
     }
 

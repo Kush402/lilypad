@@ -123,7 +123,12 @@ export function DeviceListScreen({ navigation }: Props) {
           scopes: res.scopes,
           desktopDeviceName: res.desktopDeviceName ?? pair.name,
           desktopDeviceId: pair.desktopDeviceId,
-          lanTlsCertSha256: pair.lanTlsCertSha256,
+          // `res.signalingTlsPin`, never `pair.lanTlsCertSha256`. The pair's
+          // pin is for the laptop's LAN endpoint; `res.signalingUrl` is only
+          // that endpoint when the LAN probe won, and passing the pin anyway
+          // is what pinned a cloud socket to a self-signed LAN certificate and
+          // hung every ring on v0.1.21.
+          signalingTlsPin: res.signalingTlsPin,
         });
       } catch (e) {
         const err = toAppError(e);

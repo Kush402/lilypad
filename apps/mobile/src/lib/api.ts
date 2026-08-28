@@ -115,7 +115,34 @@ export function lanSignalingUrlFromApiBase(apiBaseUrl: string): string {
   return `${apiBaseUrl.replace(/\/$/, '').replace(/^https:/, 'wss:')}/ws/signal`;
 }
 
-export async function requestConnectForPair(pair: PairedDesktop): Promise<ConnectResponse> {
+/**
+ * A room to join, and — inseparably — the TLS pin that applies to the
+ * `signalingUrl` in it.
+ *
+ * `signalingTlsPin` is set ONLY when the LAN target actually won. It is
+ * `undefined` for a cloud room, and that is not an oversight to be helpfully
+ * filled in from the saved pair: `api.takedia.com` is a publicly-trusted
+ * endpoint that must be validated normally, and pinning it to a laptop's
+ * self-signed LAN certificate can only fail.
+ *
+ * That is the v0.1.21 ring bug, exactly. The URL and the pin used to be
+ * sourced independently — this function rewrote `signalingUrl` for a LAN win
+ * while every caller reached for `pair.lanTlsCertSha256` unconditionally — so
+ * a phone that fell back to cloud (Mac and phone on different campus subnets)
+ * opened a cloud socket carrying the Mac's pin. The handshake could never
+ * complete, no HTTP upgrade was ever emitted, and the app hung on
+ * "Connecting…" forever. Six attempts, no error, no WebSocket in the logs.
+ *
+ * Returning them as one value is the fix: there is no longer a pin sitting
+ * anywhere for a caller to pair up with the wrong URL.
+ */
+export type ConnectForPairResult = ConnectResponse & {
+  /** SHA-256 of the DER cert that `signalingUrl` must present, or `undefined`
+   * when `signalingUrl` is a normal publicly-trusted endpoint. */
+  signalingTlsPin?: string;
+};
+
+export async function requestConnectForPair(pair: PairedDesktop): Promise<ConnectForPairResult> {
   const cloud = pair.apiBaseUrl.replace(/\/$/, '');
   const target = await resolveConnectTarget(pair);
 
@@ -125,13 +152,20 @@ export async function requestConnectForPair(pair: PairedDesktop): Promise<Connec
   try {
     const res = await tryConnect(target);
     if (target.lanTlsCertSha256 && target.apiBaseUrl !== cloud) {
-      return { ...res, signalingUrl: lanSignalingUrlFromApiBase(target.apiBaseUrl) };
+      // The one branch where a pin belongs, and it travels with the URL it was
+      // issued for rather than beside it.
+      return {
+        ...res,
+        signalingUrl: lanSignalingUrlFromApiBase(target.apiBaseUrl),
+        signalingTlsPin: target.lanTlsCertSha256,
+      };
     }
     return res;
   } catch (err) {
     // LAN `/health` can succeed while offline auth is not ready yet (trust
     // cache empty after an app update). Fall through to cloud — same product
-    // rule as the probe budget in NETWORKING.md §3.
+    // rule as the probe budget in NETWORKING.md §3. Note what the cloud result
+    // carries: no pin. The LAN attempt losing is precisely why.
     if (target.apiBaseUrl !== cloud) {
       return tryConnect({ apiBaseUrl: cloud });
     }

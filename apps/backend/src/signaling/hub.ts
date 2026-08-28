@@ -388,6 +388,16 @@ export class SignalingHub {
     this.send(room, 'desktop', { type: 'trust-record', payload });
   }
 
+  /** Deliver the authoritative LAN trust-cache list. Omissions revoke. */
+  deliverTrustSync(
+    desktopDeviceId: string,
+    records: Extract<SignalingMessage, { type: 'trust-sync' }>['payload']['records'],
+  ): void {
+    const room = this.registry.get(presenceRoomId(desktopDeviceId));
+    if (!room || !room.hasSeat('desktop')) return;
+    this.send(room, 'desktop', { type: 'trust-sync', payload: { records } });
+  }
+
   /** Deliver a `connect-request` to a desktop's presence seat (M5.4 no-QR
    * reconnect). Returns false when the desktop is offline — the caller
    * turns that into an honest "desktop is offline" for the phone. */

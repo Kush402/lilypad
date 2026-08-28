@@ -331,6 +331,9 @@ const peerStatus = z.object({
  * desktop caches the hash so its embedded LAN control plane can authorize
  * `POST /connect/request` without Postgres ([ADR-0006](../../../docs/adr/0006-lan-first-connectivity.md)).
  * Hash only — the plaintext secret stays on the phone.
+ *
+ * Incremental: one new or updated pair. Full authoritative replacement of the
+ * LAN trust cache is `trust-sync` (omissions are revocations).
  */
 const trustRecord = z.object({
   type: z.literal('trust-record'),
@@ -343,6 +346,30 @@ const trustRecord = z.object({
       .regex(/^[0-9a-f]+$/),
     autoApprove: z.boolean(),
     displayName: z.string().max(MAX_NAME_LEN).nullable(),
+  }),
+});
+
+/**
+ * Server → desktop (presence room): the complete set of trusted phones for the
+ * LAN trust cache. Replaces the cache wholesale — a phone omitted here is no
+ * longer authorized to ring over the LAN, matching cloud revocation. Sent on
+ * every presence rejoin and after a revoke/unpair while the desktop is seated.
+ */
+const trustSync = z.object({
+  type: z.literal('trust-sync'),
+  ...envelope,
+  payload: z.object({
+    records: z.array(
+      z.object({
+        mobileDeviceId: z.string().min(8).max(MAX_ID_LEN),
+        connectSecretHash: z
+          .string()
+          .length(64)
+          .regex(/^[0-9a-f]+$/),
+        autoApprove: z.boolean(),
+        displayName: z.string().max(MAX_NAME_LEN).nullable(),
+      }),
+    ),
   }),
 });
 
@@ -367,6 +394,7 @@ export const SignalingMessageSchema = z.discriminatedUnion('type', [
   connectRequest,
   pairSecret,
   trustRecord,
+  trustSync,
   lanEndpoints,
   register,
   pairRequest,

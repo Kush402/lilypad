@@ -42,7 +42,18 @@ export type RootStackParamList = {
     /** The desktop's wire deviceId — so the Viewer can persist the connect
      * secret the backend delivers against the right saved pair (M5.4). */
     desktopDeviceId?: string;
-    /** SHA-256 pin for LAN signaling when `signalingUrl` is local (M9.5). */
-    lanTlsCertSha256?: string;
+    /**
+     * SHA-256 pin the `signalingUrl` above must present (M9.5) — set only when
+     * that URL is the laptop's LAN endpoint, absent for a cloud room.
+     *
+     * Named for the URL it belongs to rather than for the pair it came from.
+     * It used to be `lanTlsCertSha256`, filled in from `pair.lanTlsCertSha256`
+     * whatever the accompanying URL turned out to be, which is how a cloud
+     * socket came to be pinned to a laptop's self-signed certificate and hung
+     * on "Connecting…" forever (see `ConnectForPairResult` in `lib/api.ts`).
+     * The only correct source is `requestConnectForPair`'s `signalingTlsPin`,
+     * which is `undefined` unless the LAN target actually won.
+     */
+    signalingTlsPin?: string;
   };
 };

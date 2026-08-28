@@ -114,7 +114,7 @@ const MODE_LABEL: Record<CaptureMode, string> = {
 };
 
 export function ViewerScreen({ route, navigation }: Props) {
-  const { roomId, signalingUrl, scopes, desktopDeviceName, desktopDeviceId, lanTlsCertSha256 } =
+  const { roomId, signalingUrl, scopes, desktopDeviceName, desktopDeviceId, signalingTlsPin } =
     route.params;
   // A live remote-control session is exactly the "video player" case iOS's
   // idle timer exempts: the user is watching/controlling without touching
@@ -286,10 +286,18 @@ export function ViewerScreen({ route, navigation }: Props) {
           ]);
         },
       },
-      lanTlsCertSha256,
+      signalingTlsPin,
     );
     connRef.current = conn;
-    conn.start().catch((e) => setError(toAppError(e)));
+    conn.start().catch((e) => {
+      setError(toAppError(e));
+      // Without this the screen kept its `connecting` spinner and merely grew
+      // a line of red text under it — no Reconnect button, since that only
+      // renders for `failed`/`ended`. `start()` rejecting means the session
+      // never began and nothing further is coming, which IS `failed`; saying
+      // so is what puts the retry in reach.
+      setState('failed');
+    });
     return () => {
       if (longPressTimer.current) clearTimeout(longPressTimer.current);
       if (clipboardToastTimer.current) clearTimeout(clipboardToastTimer.current);
@@ -305,7 +313,7 @@ export function ViewerScreen({ route, navigation }: Props) {
     reconnectAttempt,
     syncGeometry,
     desktopDeviceId,
-    lanTlsCertSha256,
+    signalingTlsPin,
   ]);
 
   // Lazily create (once per action) and start/stop the toolbar's held-repeat
@@ -538,6 +546,13 @@ export function ViewerScreen({ route, navigation }: Props) {
           scopes: res.scopes,
           desktopDeviceName: res.desktopDeviceName ?? pair.name,
           desktopDeviceId: pair.desktopDeviceId,
+          // The mirror of the bug in the laptop list, and it pointed the other
+          // way: this path dropped the pin entirely while `requestConnectForPair`
+          // could perfectly well hand it a LAN URL, so a Reconnect that resolved
+          // to the LAN opened an unpinned socket against a self-signed
+          // certificate — a guaranteed failure. Carrying what the ring returned
+          // is right in both directions.
+          signalingTlsPin: res.signalingTlsPin,
         });
       } catch (e) {
         setError(toAppError(e));

@@ -85,7 +85,8 @@ export function Control() {
   const pending = state?.pending_request ?? null;
   // "Keep this phone paired" (M5.4): default ON — the pairing ceremony (scan +
   // explicit approve) IS the trust decision; unchecking covers one-off
-  // sessions on devices you don't own.
+  // sessions on devices you don't own. The tray's Approve asserts trust the
+  // same way (there is no checkbox there), so both surfaces mean the same thing.
   const [trust, setTrust] = useState(true);
   // Owned here, not inside the panels: it is what orders them.
   const [account, setAccount] = useState<AccountStateDto | null>(null);

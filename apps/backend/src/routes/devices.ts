@@ -58,6 +58,18 @@ export async function deviceRoutes(
    * tell them apart can enumerate other accounts' devices. */
   const notFound = (reply: FastifyReply) => reply.code(404).send({ error: 'not_found' });
 
+  /** Push the authoritative LAN trust list after a revoke/unpair so the
+   * desktop's cache drops the phone without waiting for the next presence
+   * reconnect. Best-effort: a blip leaves the next presence sync to catch up. */
+  const pushLanTrustSync = (desktopFingerprint: string) => {
+    void trust
+      .listTrustRecordsForDesktop(desktopFingerprint)
+      .then((records) => hub.deliverTrustSync(desktopFingerprint, records))
+      .catch((err) =>
+        log.signaling.warn({ err, desktopFingerprint }, 'LAN trust-sync after revoke failed'),
+      );
+  };
+
   // ── Account devices (P2) ──────────────────────────────────────────────────
   // A DIFFERENT list from the pairs below, answering a different question:
   // these are the machines the account owns, not which phone may reach which
@@ -284,6 +296,7 @@ export async function deviceRoutes(
         if (ended > 0) {
           log.signaling.info({ pairId: params.data.pairId, ended }, 'revoke ended a live session');
         }
+        pushLanTrustSync(fingerprints.desktopFingerprint);
       }
       void auditLog
         .sessionsRevoked({ metadata: { event: 'device_revoked', pairId: params.data.pairId } })
@@ -322,6 +335,7 @@ export async function deviceRoutes(
       if (pair && !pair.revoked) {
         await trust.revoke(pair.pairId);
         const ended = hub.endRoomsForDevicePair(desktopDeviceId, mobileDeviceId, 'unpaired');
+        pushLanTrustSync(desktopDeviceId);
         void auditLog
           .sessionsRevoked({
             metadata: {

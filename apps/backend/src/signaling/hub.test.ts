@@ -169,6 +169,30 @@ describe('SignalingHub — presence rooms (M5.4)', () => {
     hub.handleMessage(new FakePeer(), presenceReg);
     expect(seen).toEqual(['desktop-01']);
   });
+
+  it('deliverTrustSync replaces the LAN trust list on the presence seat', () => {
+    const hub = makeHub();
+    const desktop = new FakePeer();
+    hub.handleMessage(desktop, presenceReg);
+
+    const records = [
+      {
+        mobileDeviceId: 'mobile-01abcdef',
+        connectSecretHash: 'a'.repeat(64),
+        autoApprove: true,
+        displayName: 'Phone',
+      },
+    ];
+    hub.deliverTrustSync('desktop-01', records);
+
+    const sync = desktop.find('trust-sync');
+    expect(sync?.payload.records).toEqual(records);
+
+    // Empty list must still be delivered — that is how a full revoke lands.
+    hub.deliverTrustSync('desktop-01', []);
+    const empty = desktop.sent.filter((m) => m.type === 'trust-sync').at(-1);
+    expect(empty?.payload).toEqual({ records: [] });
+  });
 });
 
 describe('SignalingHub — trust-on-approve (M5.4)', () => {

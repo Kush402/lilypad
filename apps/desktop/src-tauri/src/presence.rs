@@ -22,7 +22,8 @@ use tauri::{AppHandle, Emitter, Manager};
 use crate::auth::{DesktopAuth, NoToken};
 use crate::lan::{TrustCache, TrustedMobile};
 use crate::signaling::{
-    connect, messages::ConnectRequestPayload, messages::TrustRecordPayload, Envelope,
+    connect, messages::ConnectRequestPayload, messages::TrustRecordPayload,
+    messages::TrustSyncPayload, Envelope,
 };
 use crate::state::SharedState;
 
@@ -333,6 +334,37 @@ fn handle_inbound(app: &AppHandle, signaling_url: &str, env: Envelope) {
                 }
             }
         }
+        "trust-sync" => {
+            let payload: TrustSyncPayload = match serde_json::from_value(env.payload) {
+                Ok(p) => p,
+                Err(e) => {
+                    log::warn!(target: "lilypad::presence", "bad trust-sync payload: {e}");
+                    return;
+                }
+            };
+            if let Some(cache) = app.try_state::<std::sync::Arc<TrustCache>>() {
+                let rows: Vec<TrustedMobile> = payload
+                    .records
+                    .into_iter()
+                    .map(|r| TrustedMobile {
+                        mobile_device_id: r.mobile_device_id,
+                        connect_secret_hash: r.connect_secret_hash,
+                        auto_approve: r.auto_approve,
+                        display_name: r.display_name,
+                    })
+                    .collect();
+                let count = rows.len();
+                if let Err(e) = cache.replace_all(rows) {
+                    log::warn!(target: "lilypad::lan", "trust-sync cache replace failed: {e}");
+                } else {
+                    log::info!(
+                        target: "lilypad::lan",
+                        "LAN trust cache replaced ({count} phone{})",
+                        if count == 1 { "" } else { "s" }
+                    );
+                }
+            }
+        }
         // Why this device was refused its own presence room is the single most
         // useful line in a "my laptop is offline in the app" report, and it was
         // being dropped on the floor. `LinkState` (polled by the dashboard) is
@@ -387,17 +419,16 @@ pub(crate) fn dispatch_connect_request(
 }
 
 fn on_connect_request(app: &AppHandle, signaling_url: &str, payload: ConnectRequestPayload) {
+    // `auto_approve` is deliberately NOT recorded here. It used to be, one lock
+    // acquisition before the Disconnect below, and the superseded runner's
+    // `Ended` — applied while `current_room_id` still named the OLD room — then
+    // cleared it. `commands::claim_room` writes it together with the room it
+    // belongs to instead. Kanban L-186.
     let (old_tx, device_id, offered_scopes) = {
         let state = app.state::<SharedState>();
         let mut s = state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if payload.auto_approve {
-            // Consumed by `apply_session_event`'s PairRequested arm: the ring
-            // is skipped and the approval fires through the normal control
-            // path the instant the phone's pair-request arrives.
-            s.auto_approve_room = Some(payload.session_room_id.clone());
-        }
         (
             s.control_tx.take(),
             s.device_id.clone(),
@@ -423,6 +454,7 @@ fn on_connect_request(app: &AppHandle, signaling_url: &str, payload: ConnectRequ
         signaling_url.to_owned(),
         device_id,
         offered_scopes,
+        payload.auto_approve,
     );
 }
 

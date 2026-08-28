@@ -296,9 +296,11 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                 let _ = commands::show_qr_overlay(app);
             }
             "approve" => {
-                // Tray approve never asserts trust — that's a deliberate,
-                // visible checkbox decision in the Control window only.
-                let _ = commands::approve_session(app.clone(), app.state(), None);
+                // Same as the Control window's default: Approve means trust.
+                // Passing `None` used to skip `onTrustEstablished`, so a tray
+                // approval left the phone paired in its list with no connect
+                // secret — and the next ring failed (kanban L-183).
+                let _ = commands::approve_session(app.clone(), app.state(), Some(true));
             }
             "deny" => {
                 let _ = commands::deny_session(app.clone(), app.state());
@@ -458,12 +460,13 @@ pub fn run() {
             // `autostart.rs` for the security posture.
             if let Ok(dir) = app.path().app_config_dir() {
                 autostart::ensure_first_run_enabled(&dir);
-                match lan::start(app.handle(), &dir, &device_id) {
-                    Ok((cache, endpoints)) => {
-                        app.manage(cache);
-                        if let Some(ep) = endpoints {
-                            app.manage(ep);
-                        }
+                // No device id is passed: the LAN plane reads this Mac's
+                // CURRENT id from `AppState` on every use, because
+                // `adopt_device_id` can replace it after launch. See
+                // `lan::server::DeviceIdSource`.
+                match lan::start(app.handle(), &dir) {
+                    Ok(cache) => {
+                        let _ = app.manage(cache);
                     }
                     Err(e) => {
                         log::warn!(target: "lilypad::lan", "LAN bootstrap failed: {e:#}");

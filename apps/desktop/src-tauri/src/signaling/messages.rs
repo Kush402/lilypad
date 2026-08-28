@@ -488,6 +488,13 @@ pub struct TrustRecordPayload {
     pub display_name: Option<String>,
 }
 
+/// Server → desktop (presence room): authoritative LAN trust-cache replacement.
+/// Omissions are revocations — see `TrustCache::replace_all`.
+#[derive(Deserialize, Debug, Clone)]
+pub struct TrustSyncPayload {
+    pub records: Vec<TrustRecordPayload>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

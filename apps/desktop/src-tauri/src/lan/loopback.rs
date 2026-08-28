@@ -33,7 +33,7 @@ use tokio::sync::mpsc::{self, UnboundedReceiver};
 
 use crate::signaling::{Envelope, SignalingHandle};
 
-use super::endpoints::LanEndpoints;
+use super::endpoints::LanAdvertisement;
 use super::hub::{LanHub, Role, SendFn};
 
 /// Is `signaling_url` this desktop's own embedded LAN endpoint?
@@ -43,8 +43,12 @@ use super::hub::{LanHub, Role, SendFn};
 /// desktop back on the socket that cannot verify its own certificate, so the
 /// comparison is kept here, next to the reason, rather than inline at the call
 /// site.
-pub fn is_own_lan_room(endpoints: Option<&LanEndpoints>, signaling_url: &str) -> bool {
-    endpoints.is_some_and(|ep| ep.signaling_url == signaling_url)
+///
+/// Asked of the whole advertisement rather than only its current address: this
+/// Mac's LAN address can change while the process runs (L-181), and a room
+/// minted on the address it had a moment ago is still a room on this hub.
+pub fn is_own_lan_room(advertisement: Option<&LanAdvertisement>, signaling_url: &str) -> bool {
+    advertisement.is_some_and(|ad| ad.is_own_signaling_url(signaling_url))
 }
 
 /// Take the desktop seat in a room on this desktop's own LAN hub.
@@ -75,7 +79,7 @@ pub fn connect(
     // Infallible today (`attach` creates the room when absent), and a failure
     // to seat would be reported by the session runner timing out on approval
     // rather than by this call.
-    let _ = hub.attach(room_id, Role::Desktop, device_id.to_owned(), send);
+    let token = hub.attach(room_id, Role::Desktop, device_id.to_owned(), send);
 
     let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Envelope>();
     let room = room_id.to_owned();
@@ -88,7 +92,15 @@ pub fn connect(
                 }
             }
         }
-        hub.detach(&room, Role::Desktop);
+        // Only the seat THIS call took, which is not necessarily the one the
+        // room holds now. `SignalingClient::begin_reconnect` calls back in here
+        // for the same room and the old handle is dropped straight afterwards,
+        // so an unqualified release deleted the seat the reconnect had just
+        // taken and left the desktop spinning on a room it kept re-emptying.
+        // See `hub::SeatToken`.
+        if let Ok(token) = token {
+            hub.detach(&room, Role::Desktop, token);
+        }
         log::debug!(target: "lilypad::lan", "loopback seat released for room {room}");
     });
 
@@ -105,18 +117,23 @@ mod tests {
     /// room must be.
     #[test]
     fn only_this_desktops_own_lan_room_is_routed_in_process() {
-        let ep = crate::lan::build_lan_endpoints(Ipv4Addr::new(192, 168, 1, 10), 8787, "ab");
+        let ad = LanAdvertisement::new();
+        ad.publish(crate::lan::build_lan_endpoints(
+            Ipv4Addr::new(192, 168, 1, 10),
+            8787,
+            "ab",
+        ));
         assert!(is_own_lan_room(
-            Some(&ep),
+            Some(&ad),
             "wss://192.168.1.10:8787/ws/signal"
         ));
         assert!(!is_own_lan_room(
-            Some(&ep),
+            Some(&ad),
             "wss://api.takedia.com/ws/signal"
         ));
         // Another laptop's LAN server, reached over the network like any peer.
         assert!(!is_own_lan_room(
-            Some(&ep),
+            Some(&ad),
             "wss://192.168.1.11:8787/ws/signal"
         ));
         // No LAN server running at all: every room is a cloud room.
@@ -202,6 +219,52 @@ mod tests {
         let (_sig, mut inbound) = connect(hub.clone(), room, "desktop-12345678");
         let env = inbound.recv().await.expect("buffered ring is replayed");
         assert_eq!(env.msg_type, "pair-request");
+    }
+
+    /// L-182, trigger 2, at this module's own boundary: a second `connect` for
+    /// the same room, then the first handle going away — which is precisely
+    /// what `SignalingClient::begin_reconnect` does, since `next_event` drops
+    /// the superseded `SignalingHandle` the instant it installs the new one.
+    ///
+    /// Before the seat carried a token, the dropped handle's task detached the
+    /// seat the reconnect had just taken. The room emptied, was deleted, the
+    /// fresh inbound channel closed, and the session runner read that as one
+    /// more transport drop — so it reconnected into the same trap, forever.
+    #[tokio::test]
+    async fn a_reconnect_keeps_the_seat_when_the_superseded_handle_drops() {
+        let hub = Arc::new(LanHub::new());
+        let room = "room-lan-4";
+        let mobile = seat_mobile(&hub, room);
+
+        let (first_sig, first_inbound) = connect(hub.clone(), room, "desktop-12345678");
+        let (_sig, mut inbound) = connect(hub.clone(), room, "desktop-12345678");
+        drop(first_sig);
+        drop(first_inbound);
+
+        // The release runs on a spawned task, so let it happen before asking.
+        for _ in 0..50 {
+            if !hub.has_seat(room, Role::Desktop) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(
+            hub.has_seat(room, Role::Desktop),
+            "the reconnected desktop seat must survive the old handle's release"
+        );
+
+        // And the seat must still be WIRED, not merely present: the phone's
+        // next frame has to reach the new inbound channel.
+        hub.handle(
+            Role::Mobile,
+            r#"{"type":"pair-request","roomId":"room-lan-4","from":"mobile","ts":0,"payload":{"deviceId":"mobile-12345678","deviceName":"phone","requestedScopes":["view"]}}"#,
+        );
+        let env = tokio::time::timeout(std::time::Duration::from_secs(5), inbound.recv())
+            .await
+            .expect("the reconnected seat must still receive frames")
+            .expect("ring envelope");
+        assert_eq!(env.msg_type, "pair-request");
+        drop(mobile);
     }
 
     /// Dropping the handle releases the seat, so the next ring on a new room

@@ -627,6 +627,75 @@ describe('reconnecting after the laptop drops', () => {
     );
   });
 
+  /**
+   * The mirror of the laptop-list bug, pointing the other way.
+   *
+   * Reconnect dropped the pin entirely while `requestConnectForPair` was
+   * perfectly able to hand it a LAN URL — so a Reconnect that resolved to the
+   * LAN opened an unpinned socket against a self-signed certificate, which is a
+   * deterministic failure rather than an intermittent one. Both directions are
+   * fixed by the same rule: carry the pin the ring returned, and nothing else.
+   */
+  it('carries the pin into the new room when the ring resolved to the LAN', async () => {
+    loadPairs.mockResolvedValue([
+      {
+        desktopDeviceId: 'desktop-1',
+        name: 'MacBook',
+        apiBaseUrl: 'https://api.example',
+        connectSecret: 'secret',
+        lanTlsCertSha256: 'a'.repeat(64),
+      },
+    ]);
+    requestConnectForPair.mockResolvedValue({
+      roomId: 'room-lan',
+      signalingUrl: 'wss://192.168.1.10:8787/ws/signal',
+      scopes: ['view', 'control'],
+      desktopDeviceName: 'MacBook',
+      signalingTlsPin: 'a'.repeat(64),
+    });
+    const { navigation } = renderViewer(['view', 'control'], TEST_SAFE_AREA_METRICS, 'desktop-1');
+
+    act(() => lastConn().cb.onState('ended'));
+    fireEvent.press(await screen.findByText('Reconnect'));
+
+    await waitFor(() =>
+      expect(navigation.replace).toHaveBeenCalledWith(
+        'Viewer',
+        expect.objectContaining({
+          signalingUrl: 'wss://192.168.1.10:8787/ws/signal',
+          signalingTlsPin: 'a'.repeat(64),
+        }),
+      ),
+    );
+  });
+
+  /** …and the cloud half of the same rule: the pair's pin exists, the ring
+   * fell back to cloud, so nothing is pinned. */
+  it('does not carry a pin into a cloud room', async () => {
+    loadPairs.mockResolvedValue([
+      {
+        desktopDeviceId: 'desktop-1',
+        name: 'MacBook',
+        apiBaseUrl: 'https://api.example',
+        connectSecret: 'secret',
+        lanTlsCertSha256: 'a'.repeat(64),
+      },
+    ]);
+    requestConnectForPair.mockResolvedValue({
+      roomId: 'room-cloud',
+      signalingUrl: 'wss://api.example/ws/signal',
+      scopes: ['view'],
+      desktopDeviceName: 'MacBook',
+    });
+    const { navigation } = renderViewer(['view'], TEST_SAFE_AREA_METRICS, 'desktop-1');
+
+    act(() => lastConn().cb.onState('ended'));
+    fireEvent.press(await screen.findByText('Reconnect'));
+
+    await waitFor(() => expect(navigation.replace).toHaveBeenCalled());
+    expect(navigation.replace.mock.calls[0][1].signalingTlsPin).toBeUndefined();
+  });
+
   it('falls back to retrying in place when there is no secret to ring with', async () => {
     // A QR session for a laptop this phone never saved. There is nothing to
     // ring with, so the in-place retry — and the instruction to scan again —

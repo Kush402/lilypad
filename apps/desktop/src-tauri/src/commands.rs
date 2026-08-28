@@ -256,12 +256,15 @@ pub async fn create_pairing(
 
     // Start the real signaling session: connect, register as desktop, and listen
     // for a phone to redeem + request control. This replaces the M1 mock.
+    // Never auto-approved: a QR pairing IS the human decision, and the phone
+    // that scans it has not been trusted yet.
     spawn_session_runner(
         &app,
         parsed.room_id,
         parsed.signaling_url,
         device_id,
         offered_scopes,
+        false,
     );
     log::info!(target: "lilypad::audit", "pairing_created — room started, awaiting scan");
 
@@ -274,12 +277,16 @@ pub async fn create_pairing(
 /// (updating coarse session state and emitting `lilypad://session`).
 /// `pub(crate)`: also the presence channel's entry point for accepted
 /// connect-requests (M5.4) — a rung session and a QR session run identically.
+///
+/// `auto_approve` is set here, together with `current_room_id`, rather than by
+/// the caller — see `claim_room`.
 pub(crate) fn spawn_session_runner(
     app: &AppHandle,
     room_id: String,
     signaling_url: String,
     device_id: String,
     offered_scopes: Vec<String>,
+    auto_approve: bool,
 ) {
     let (control_tx, control_rx) = unbounded_channel::<Control>();
     let (event_tx, mut event_rx) = unbounded_channel::<SessionEvent>();
@@ -288,7 +295,7 @@ pub(crate) fn spawn_session_runner(
         let state = app.state::<SharedState>();
         let mut s = lock_state(&state);
         s.control_tx = Some(control_tx);
-        s.current_room_id = Some(room_id.clone());
+        claim_room(&mut s, &room_id, auto_approve);
         s.offered_scopes = offered_scopes;
         s.session = SessionStatus::Pairing;
         s.pending_request = None;
@@ -322,15 +329,18 @@ pub(crate) fn spawn_session_runner(
     });
 
     // Drive the session.
-    let lan_ad = app
-        .try_state::<Arc<lan::LanEndpoints>>()
-        .map(|ep| ep.as_ref().clone());
+    let advertisement = app
+        .try_state::<Arc<lan::LanAdvertisement>>()
+        .map(|ad| ad.inner().clone());
+    let lan_ad = advertisement.as_ref().and_then(|ad| ad.snapshot());
     // A room minted by THIS desktop's embedded LAN server is joined in-process.
     // Opening a socket to it would mean verifying our own self-signed
     // certificate against webpki roots, which fails — see `lan::loopback`.
     let lan_loopback = app
         .try_state::<Arc<lan::LanHub>>()
-        .filter(|_| lan::loopback::is_own_lan_room(lan_ad.as_ref(), &signaling_url))
+        .filter(|_| {
+            lan::loopback::is_own_lan_room(advertisement.as_deref(), &signaling_url)
+        })
         .map(|hub| hub.inner().clone());
     if lan_loopback.is_some() {
         log::info!(
@@ -366,6 +376,30 @@ pub(crate) fn spawn_session_runner(
         let mut s = lock_state(&state);
         s.session_task = Some(handle);
     }
+}
+
+/// Take ownership of `room_id` as the session this desktop is now running.
+///
+/// The two fields move together, under one lock, and that is the whole point.
+/// `auto_approve_room` used to be set by `presence::on_connect_request` BEFORE
+/// it disconnected the previous runner, while `current_room_id` was only
+/// advanced here — so in the window between them the old room still matched, the
+/// superseded runner's `Ended` was accepted by `apply_session_event` (the
+/// forwarder's guard compares against `current_room_id`, which had not moved
+/// yet) and cleared `auto_approve_room` along with everything else. The
+/// reconnect that was meant to be silent then demanded a manual tap, which the
+/// user experiences as the laptop ringing for a phone it already trusts. Kanban
+/// L-186.
+///
+/// Claimed together, the guard covers both: an event from the old runner either
+/// arrives while `current_room_id` is still the old room — before this claim, so
+/// there is no new `auto_approve_room` to lose — or after it, where the
+/// forwarder drops it as superseded.
+fn claim_room(s: &mut AppState, room_id: &str, auto_approve: bool) {
+    s.current_room_id = Some(room_id.to_owned());
+    // Keyed by room, and cleared when this session is not an auto-approving
+    // one, so a QR pairing can never inherit a trusted ring's consent.
+    s.auto_approve_room = auto_approve.then(|| room_id.to_owned());
 }
 
 /// Map a runner event onto the coarse `SessionStatus` the polling UI reads.

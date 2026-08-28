@@ -1,4 +1,6 @@
+import { SIGNALING_OPEN_TIMEOUT_MS } from '@lilypad/protocol';
 import { MobileSignaling, type SignalingLifecycleEvent } from './signaling';
+import { toAppError } from './errors';
 
 /**
  * Jest's `react-native` preset runs tests under `jest-environment-node` — no
@@ -116,6 +118,38 @@ describe('MobileSignaling', () => {
     const p = sig.connect();
     lastSocket().fail();
     await expect(p).rejects.toThrow('signaling connection failed');
+  });
+
+  /**
+   * The failure mode behind the reported hang, reduced to its essentials: a
+   * socket that neither opens nor errors.
+   *
+   * `attach()` settled only from `onopen`/`onerror`, which assumes a socket
+   * always reports one or the other. On v0.1.21 one did not — a cloud endpoint
+   * pinned to the laptop's certificate could never finish its TLS handshake,
+   * and iOS emitted nothing at all for a connection that failed before opening
+   * — so this promise stayed pending and the Viewer sat on "Connecting…" with
+   * nothing to show and no way back. The pin bug is fixed elsewhere; this is
+   * the guarantee that the next event to go missing costs ten seconds rather
+   * than the session.
+   */
+  it('connect() rejects on a deadline when the socket says nothing at all', async () => {
+    const sig = new MobileSignaling('wss://x', 'room1', () => {});
+    const p = sig.connect();
+    const rejected = p.catch((e: unknown) => e);
+
+    await tick(SIGNALING_OPEN_TIMEOUT_MS - 1);
+    expect(lastSocket().readyState).toBe(FakeWebSocket.CONNECTING);
+
+    await tick(1);
+    const err = await rejected;
+    // Classified, so the Viewer can say something true and offer a retry
+    // instead of rendering a spinner forever.
+    expect(toAppError(err).code).toBe('signaling_timeout');
+    expect(toAppError(err).retryable).toBe(true);
+    // The abandoned socket is dropped rather than left connecting behind a
+    // promise nobody holds any more.
+    expect(lastSocket().readyState).toBe(FakeWebSocket.CLOSED);
   });
 
   it('a socket that never opened does not emit a "closed" lifecycle event on failure', async () => {

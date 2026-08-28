@@ -50,6 +50,32 @@ impl TrustCache {
         self.persist()
     }
 
+    /// Drop one phone. Used when the desktop itself revokes a pair and already
+    /// knows the mobile id — the cloud path also pushes a full `trust-sync`,
+    /// but local removal must not wait on that round-trip.
+    pub fn remove(&self, mobile_device_id: &str) -> Result<()> {
+        {
+            let mut guard = self.inner.lock().unwrap_or_else(|p| p.into_inner());
+            guard.mobiles.remove(mobile_device_id);
+        }
+        self.persist()
+    }
+
+    /// Replace the entire cache with an authoritative list from the backend.
+    /// Omissions are revocations: the cloud communicates "no longer trusted"
+    /// by leaving a phone out of the re-sync, and an append-only cache cannot
+    /// see an omission.
+    pub fn replace_all(&self, rows: Vec<TrustedMobile>) -> Result<()> {
+        {
+            let mut guard = self.inner.lock().unwrap_or_else(|p| p.into_inner());
+            guard.mobiles.clear();
+            for row in rows {
+                guard.mobiles.insert(row.mobile_device_id.clone(), row);
+            }
+        }
+        self.persist()
+    }
+
     pub fn get(&self, mobile_device_id: &str) -> Option<TrustedMobile> {
         self.inner
             .lock()
@@ -120,6 +146,79 @@ mod tests {
         assert!(cache
             .authorize_connect("mobile-12345678", Some("wrong"))
             .is_none());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn replace_all_prunes_phones_omitted_from_the_resync() {
+        let dir = std::env::temp_dir().join(format!("lilypad-lan-trust-{}", uuid::Uuid::new_v4()));
+        let cache = TrustCache::load(&dir).unwrap();
+        let secret = "abcdefghijklmnop";
+        cache
+            .upsert(TrustedMobile {
+                mobile_device_id: "mobile-keep".into(),
+                connect_secret_hash: hash_secret(secret),
+                auto_approve: true,
+                display_name: None,
+            })
+            .unwrap();
+        cache
+            .upsert(TrustedMobile {
+                mobile_device_id: "mobile-gone".into(),
+                connect_secret_hash: hash_secret(secret),
+                auto_approve: true,
+                display_name: None,
+            })
+            .unwrap();
+
+        cache
+            .replace_all(vec![TrustedMobile {
+                mobile_device_id: "mobile-keep".into(),
+                connect_secret_hash: hash_secret(secret),
+                auto_approve: true,
+                display_name: Some("Phone".into()),
+            }])
+            .unwrap();
+
+        assert!(cache.get("mobile-keep").is_some());
+        assert!(cache.get("mobile-gone").is_none());
+        assert!(cache
+            .authorize_connect("mobile-gone", Some(secret))
+            .is_none());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn replace_all_with_empty_list_clears_the_cache() {
+        let dir = std::env::temp_dir().join(format!("lilypad-lan-trust-{}", uuid::Uuid::new_v4()));
+        let cache = TrustCache::load(&dir).unwrap();
+        cache
+            .upsert(TrustedMobile {
+                mobile_device_id: "mobile-only".into(),
+                connect_secret_hash: hash_secret("abcdefghijklmnop"),
+                auto_approve: true,
+                display_name: None,
+            })
+            .unwrap();
+        cache.replace_all(vec![]).unwrap();
+        assert!(cache.get("mobile-only").is_none());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn remove_drops_one_phone() {
+        let dir = std::env::temp_dir().join(format!("lilypad-lan-trust-{}", uuid::Uuid::new_v4()));
+        let cache = TrustCache::load(&dir).unwrap();
+        cache
+            .upsert(TrustedMobile {
+                mobile_device_id: "mobile-a".into(),
+                connect_secret_hash: hash_secret("abcdefghijklmnop"),
+                auto_approve: true,
+                display_name: None,
+            })
+            .unwrap();
+        cache.remove("mobile-a").unwrap();
+        assert!(cache.get("mobile-a").is_none());
         let _ = fs::remove_dir_all(dir);
     }
 }

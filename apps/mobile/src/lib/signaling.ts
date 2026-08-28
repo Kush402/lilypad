@@ -2,12 +2,14 @@ import {
   encodeSignal,
   decodeSignal,
   MAX_SIGNALING_RECONNECTS,
+  SIGNALING_OPEN_TIMEOUT_MS,
   jitteredBackoffMs,
   type SignalingMessage,
   type SessionScope,
   type CaptureMode,
 } from '@lilypad/protocol';
 import { createSignalingSocket } from './lanTls';
+import { appError, ClassifiedError } from './errors';
 
 type Handler = (msg: SignalingMessage) => void;
 
@@ -57,24 +59,50 @@ export class MobileSignaling {
     return this.attach(createSignalingSocket(this.url, this.tlsPin) as WebSocket);
   }
 
-  /** Open one socket and wire it up; resolves/rejects on that socket's own
+  /**
+   * Open one socket and wire it up; resolves/rejects on that socket's own
    * open/error outcome. Shared by the initial `connect()` and every
-   * reconnect attempt so both paths behave identically. */
+   * reconnect attempt so both paths behave identically — which is also why the
+   * deadline lives here rather than in `connect()`, so a reconnect attempt
+   * cannot inherit the unbounded version.
+   *
+   * Every exit is bounded now. It used to settle only from `onopen`/`onerror`,
+   * on the reasonable-sounding assumption that a socket always reports one or
+   * the other. A socket does not: on v0.1.21 a phone pinned a cloud endpoint to
+   * the laptop's LAN certificate, the TLS handshake could never complete, iOS
+   * emitted nothing at all for a connection that failed before opening — and
+   * this promise stayed pending, holding the Viewer on "Connecting…" with no
+   * error to show. The pin bug is fixed above; this is the guarantee that the
+   * next thing to swallow an event costs a user ten seconds instead of a
+   * session.
+   */
   private attach(ws: WebSocket): Promise<void> {
     return new Promise((resolve, reject) => {
       this.ws = ws;
       let opened = false;
       let settled = false;
-      ws.onopen = () => {
-        opened = true;
-        settled = true;
-        resolve();
-      };
-      ws.onerror = () => {
+      let openTimer: ReturnType<typeof setTimeout> | null = null;
+      const settle = (outcome: () => void): void => {
         if (settled) return;
         settled = true;
-        reject(new Error('signaling connection failed'));
+        if (openTimer) clearTimeout(openTimer);
+        openTimer = null;
+        outcome();
       };
+      openTimer = setTimeout(() => {
+        settle(() => {
+          // Close before rejecting: a socket nobody is waiting on any more is
+          // still a socket, and one that opens late would otherwise sit there
+          // registered as this client's transport with its promise long gone.
+          ws.close();
+          reject(new ClassifiedError(appError('signaling_timeout')));
+        });
+      }, SIGNALING_OPEN_TIMEOUT_MS);
+      ws.onopen = () => {
+        opened = true;
+        settle(resolve);
+      };
+      ws.onerror = () => settle(() => reject(new Error('signaling connection failed')));
       ws.onmessage = (e: WebSocketMessageEvent) => {
         try {
           this.onMessage(decodeSignal(String(e.data)));
@@ -83,6 +111,11 @@ export class MobileSignaling {
         }
       };
       ws.onclose = () => {
+        // A close before the open is this attempt failing, and it is the shape
+        // Android already reported (`onFailure` → `LanTlsWebSocketClose`) and
+        // iOS now does too. Left unsettled it was a silent hang: no error, no
+        // retry, no way for the caller to learn anything happened.
+        settle(() => reject(new Error('signaling connection closed before opening')));
         // A newer socket already replaced this one, or close() tore this
         // client down intentionally — either way, this specific socket's
         // death isn't news.

@@ -67,7 +67,21 @@ class LilypadLanTls: RCTEventEmitter, URLSessionDelegate, URLSessionWebSocketDel
 
   // MARK: - Pinned WebSocket
 
-  @objc func connectWebSocket(
+  /**
+   Allocate a pinned socket and hand JS its id, WITHOUT starting the handshake.
+
+   Split from `startWebSocket` on purpose. `RCTEventEmitter.sendEvent` throws an
+   event away when `_listenerCount` is 0 — it logs `RCTLogWarn` and returns —
+   and JS cannot subscribe until it knows the socket id, which it learns from
+   this promise. The old single `connectWebSocket` called `task.resume()` one
+   line before resolving, with the delegate on a background queue: on a fast LAN
+   the open event could win that race against the bridge round-trip and be
+   discarded in Objective-C, leaving JS waiting on a socket that had in fact
+   connected. Nothing in the JS could recover from it, because nothing was ever
+   delivered. Two calls with JS's `addListener` in between removes the race
+   instead of narrowing it.
+   */
+  @objc func createWebSocket(
     _ urlString: String,
     expectedSha256: String,
     resolver resolve: @escaping RCTPromiseResolveBlock,
@@ -83,18 +97,28 @@ class LilypadLanTls: RCTEventEmitter, URLSessionDelegate, URLSessionWebSocketDel
       socketId: socketId,
       expectedSha256: expectedSha256.lowercased()
     )
-    let session = URLSession(configuration: .ephemeral, delegate: wsDelegate, delegateQueue: OperationQueue())
+    // Serial: the delegate's own open/closed bookkeeping is read and written
+    // from these callbacks, and a concurrent queue would let two of them
+    // interleave over it.
+    let queue = OperationQueue()
+    queue.maxConcurrentOperationCount = 1
+    let session = URLSession(configuration: .ephemeral, delegate: wsDelegate, delegateQueue: queue)
+    let task = session.webSocketTask(with: url)
     lock.lock()
     sessions[socketId] = session
     delegates[socketId] = wsDelegate
-    lock.unlock()
-
-    let task = session.webSocketTask(with: url)
-    lock.lock()
     webSockets[socketId] = task
     lock.unlock()
-    task.resume()
     resolve(socketId)
+  }
+
+  /// Begin the handshake, once JS has subscribed to this socket's events.
+  @objc func startWebSocket(_ socketId: NSNumber) {
+    let id = socketId.intValue
+    lock.lock()
+    let task = webSockets[id]
+    lock.unlock()
+    task?.resume()
   }
 
   @objc func sendWebSocket(_ socketId: NSNumber, text: String) {
@@ -176,6 +200,12 @@ private final class WebSocketPinningDelegate: NSObject, URLSessionWebSocketDeleg
   weak var emitter: LilypadLanTls?
   let socketId: Int
   let expectedSha256: String
+  private var opened = false
+  private var closeEmitted = false
+  /// `receive`'s completion handler is not documented to run on the delegate
+  /// queue, so the two flags above get their own lock rather than an
+  /// assumption.
+  private let stateLock = NSLock()
 
   init(emitter: LilypadLanTls, socketId: Int, expectedSha256: String) {
     self.emitter = emitter
@@ -204,6 +234,9 @@ private final class WebSocketPinningDelegate: NSObject, URLSessionWebSocketDeleg
   }
 
   func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didOpenWithProtocol protocol: String?) {
+    stateLock.lock()
+    opened = true
+    stateLock.unlock()
     emitter?.sendEvent(withName: "LanTlsWebSocketOpen", body: ["socketId": socketId])
     receiveNext(on: webSocketTask)
   }
@@ -214,6 +247,39 @@ private final class WebSocketPinningDelegate: NSObject, URLSessionWebSocketDeleg
     didCloseWith closeCode: URLSessionWebSocketTask.CloseCode,
     reason: Data?
   ) {
+    emitClosed()
+  }
+
+  /**
+   The failure iOS reported to nobody.
+
+   Everything that told JS a socket had died hung off a socket that had first
+   lived: `didCloseWith` is a close handshake, and the receive loop below only
+   runs from `didOpenWithProtocol`. A connection that failed BEFORE opening — a
+   cancelled auth challenge from a pin that could never match, a refused or
+   unreachable host — reached only this callback, which did not exist. So JS
+   got no event, `connectWebSocket` had already resolved so its `catch` was
+   long past, and the app waited on a socket that was never coming. Android has
+   always reported this (`onFailure` → `LanTlsWebSocketClose`); the two
+   platforms disagreeing is the bug.
+   */
+  func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+    guard error != nil else { return }
+    stateLock.lock()
+    let everOpened = opened
+    stateLock.unlock()
+    // An opened socket's death is already covered above and by the receive
+    // loop, both of which say more about it than this does.
+    guard !everOpened else { return }
+    emitClosed()
+  }
+
+  private func emitClosed() {
+    stateLock.lock()
+    let alreadySent = closeEmitted
+    closeEmitted = true
+    stateLock.unlock()
+    guard !alreadySent else { return }
     emitter?.sendEvent(withName: "LanTlsWebSocketClose", body: ["socketId": socketId])
   }
 
@@ -230,7 +296,7 @@ private final class WebSocketPinningDelegate: NSObject, URLSessionWebSocketDeleg
         }
         self.receiveNext(on: task)
       case .failure:
-        self.emitter?.sendEvent(withName: "LanTlsWebSocketClose", body: ["socketId": self.socketId])
+        self.emitClosed()
       }
     }
   }

@@ -3,7 +3,8 @@ import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react-native';
 import { DeviceListScreen } from './DeviceListScreen';
-import { loadPairs, reconcilePairs, type PairedDesktop } from '../lib/pairs';
+import { loadPairs, reconcilePairs, touchPair, type PairedDesktop } from '../lib/pairs';
+import { requestConnectForPair } from '../lib/api';
 import { listMyPairs } from '../lib/accountDevices';
 import { useSession } from '../lib/sessionContext';
 import type { RootStackParamList } from '../types';
@@ -40,6 +41,17 @@ function AccountDevicesStub({ route }: { route: { params?: { apiBaseUrl?: string
   );
 }
 
+/** Renders the pin that actually crossed into the Viewer, so the assertion is
+ * about the value the route carried rather than about a mock's arguments. */
+function ViewerStub({ route }: { route: { params?: { signalingTlsPin?: string } } }) {
+  const ReactActual = jest.requireActual('react') as typeof React;
+  return ReactActual.createElement(
+    'Text',
+    null,
+    `viewer-pin:${route.params?.signalingTlsPin ?? 'none'}`,
+  );
+}
+
 function pair(over: Partial<PairedDesktop> = {}): PairedDesktop {
   return {
     desktopDeviceId: 'desktop-1',
@@ -57,6 +69,7 @@ function renderScreen() {
       <Stack.Navigator>
         <Stack.Screen name="Devices" component={DeviceListScreen} />
         <Stack.Screen name="AccountDevices" component={AccountDevicesStub as any} />
+        <Stack.Screen name="Viewer" component={ViewerStub as any} />
       </Stack.Navigator>
     </NavigationContainer>,
   );
@@ -125,5 +138,53 @@ describe('which backend “Your devices” asks', () => {
     expect(text).toMatch(/Your devices/);
     // …and what this list is separately about.
     expect(text).toMatch(/[Pp]airing is the separate step/);
+  });
+});
+
+/**
+ * The reported v0.1.21 bug, at the exact line that caused it.
+ *
+ * Tapping a paired laptop passed `pair.lanTlsCertSha256` into the Viewer no
+ * matter which target the ring had actually resolved to. When the laptop and
+ * the phone landed on different subnets the LAN probe failed,
+ * `requestConnectForPair` correctly fell back to cloud — and the phone opened a
+ * socket to `api.takedia.com` pinned to the Mac's self-signed certificate. That
+ * handshake can never complete: six rings, all HTTP 200, the desktop seated in
+ * all six rooms, and not one WebSocket upgrade from the phone's IP.
+ */
+describe('which TLS pin a ring hands the Viewer', () => {
+  beforeEach(() => {
+    // Fire-and-forget in the screen, but it is `.catch()`ed there — an
+    // undefined return throws before the navigate ever runs.
+    (touchPair as jest.Mock).mockResolvedValue(undefined);
+  });
+
+  it('sends none when the ring fell back to cloud, even though the pair has one', async () => {
+    (loadPairs as jest.Mock).mockResolvedValue([pair({ lanTlsCertSha256: 'a'.repeat(64) })]);
+    (requestConnectForPair as jest.Mock).mockResolvedValue({
+      roomId: 'room-1',
+      signalingUrl: 'wss://api.takedia.com/ws/signal',
+      scopes: ['view'],
+      desktopDeviceName: 'Kush’s MacBook',
+    });
+    renderScreen();
+    fireEvent.press(await screen.findByText('Connect'));
+
+    expect(await screen.findByText('viewer-pin:none')).toBeTruthy();
+  });
+
+  it('sends the one the ring returned when LAN won', async () => {
+    (loadPairs as jest.Mock).mockResolvedValue([pair({ lanTlsCertSha256: 'a'.repeat(64) })]);
+    (requestConnectForPair as jest.Mock).mockResolvedValue({
+      roomId: 'room-1',
+      signalingUrl: 'wss://192.168.1.50:8787/ws/signal',
+      scopes: ['view'],
+      desktopDeviceName: 'Kush’s MacBook',
+      signalingTlsPin: 'b'.repeat(64),
+    });
+    renderScreen();
+    fireEvent.press(await screen.findByText('Connect'));
+
+    expect(await screen.findByText(`viewer-pin:${'b'.repeat(64)}`)).toBeTruthy();
   });
 });
