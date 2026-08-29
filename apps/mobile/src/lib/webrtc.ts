@@ -1015,7 +1015,7 @@ export class ViewerConnection {
       // because the input DataChannel never opened on the first ICE pair.
       // Applying that offer to this PC fails; accept it on a fresh relay-only
       // peer instead. Same iceServers as session-start — we already have them.
-      record('offer rejected on current peer — recreating with relay', String(err));
+      record('offer rejected on current peer, recreating with relay', String(err));
       this.setupPeer(this.iceServers, 'relay');
       if (!this.pc || this.isClosed) return;
       await this.pc.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp }));
