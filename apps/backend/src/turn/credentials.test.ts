@@ -150,6 +150,35 @@ describe('TURN credentials (coturn use-auth-secret)', () => {
   });
 });
 
+describe('production coturn SSRF deny-list', () => {
+  it('blocks IPv4-mapped / NAT64 / 6to4 / Teredo encodings of private peers', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { dirname, resolve } = await import('node:path');
+    const { fileURLToPath } = await import('node:url');
+    const conf = readFileSync(
+      resolve(
+        dirname(fileURLToPath(import.meta.url)),
+        '../../../../infra/coturn-prod/turnserver.conf',
+      ),
+      'utf8',
+    );
+    // The IPv4 RFC1918 / CGNAT / link-local lines are not enough: with
+    // bindv6only=0, ::ffff:169.254.169.254 is a working path to IMDS.
+    for (const range of [
+      'denied-peer-ip=169.254.0.0-169.254.255.255',
+      'denied-peer-ip=100.64.0.0-100.127.255.255',
+      'denied-peer-ip=::ffff:0.0.0.0-::ffff:255.255.255.255',
+      'denied-peer-ip=64:ff9b::-64:ff9b::ffff:ffff',
+      'denied-peer-ip=2001::-2001:1ff:ffff:ffff:ffff:ffff:ffff:ffff',
+      'denied-peer-ip=2002::-2002:ffff:ffff:ffff:ffff:ffff:ffff:ffff',
+    ]) {
+      expect(conf, `missing ${range}`).toContain(range);
+    }
+    // Loopback is denied unless this flag is set. A mention in a comment is fine.
+    expect(conf).not.toMatch(/^\s*allow-loopback-peers\b/m);
+  });
+});
+
 describe('withTcpTurn', () => {
   it('adds a TCP sibling to a bare UDP turn URL and leaves turns:/qualified URLs alone', () => {
     expect(
