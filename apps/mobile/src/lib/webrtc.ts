@@ -165,6 +165,7 @@ const BUFFERED_AMOUNT_LOW_THRESHOLD_BYTES = MAX_BUFFERED_AMOUNT_BYTES / 2;
 
 type DataChannelLike = {
   label?: string;
+  readyState?: string;
   bufferedAmount?: number | null;
   bufferedAmountLowThreshold?: number;
   onbufferedamountlow?: ((event: unknown) => void) | null;
@@ -231,6 +232,7 @@ export class ViewerConnection {
   private degradedGraceTimer: ReturnType<typeof setTimeout> | null = null;
   /** Timestamp of last network restoration renegotiate to debounce flapping. */
   private lastNetworkRestoreRenegotiate: number = Number.NEGATIVE_INFINITY;
+  private iceServers: IceServer[] = [];
 
   constructor(
     signalingUrl: string,
@@ -374,13 +376,25 @@ export class ViewerConnection {
     this.sendAgent({ kind: 'agent_decision', runId, stepId, approve, ts: Date.now() });
   }
 
+  private sendWhenOpen(getChannel: () => DataChannelLike | null): (data: string) => void {
+    return (data: string) => {
+      const channel = getChannel();
+      if (!channel) return;
+      // Missing `readyState` (Jest fakes) is treated as open so unit tests
+      // keep covering the send path. A real RTCDataChannel is only writable
+      // in `open`.
+      if (channel.readyState && channel.readyState !== 'open') return;
+      try {
+        channel.send(data);
+      } catch {
+        /* channel not open */
+      }
+    };
+  }
+
   private sendAgent(msg: Parameters<typeof encodeAgentMessage>[0]): void {
     if (!this.dataChannel || this.isClosed) return;
-    try {
-      this.dataChannel.send(encodeAgentMessage(msg));
-    } catch {
-      // channel not open - drop
-    }
+    this.sendWhenOpen(() => this.dataChannel)(encodeAgentMessage(msg));
   }
 
   private onSignal(m: SignalingMessage): void {
@@ -591,6 +605,7 @@ export class ViewerConnection {
       /* ignore */
     }
 
+    this.iceServers = iceServers;
     const pc = new RTCPeerConnection({
       iceServers: iceServers as any,
       iceTransportPolicy: iceTransportPolicy ?? 'all',
@@ -668,13 +683,7 @@ export class ViewerConnection {
         const channel = e.channel as DataChannelLike;
         this.dataChannel = channel;
         this.configureBackpressureFlush(channel);
-        this.input = new InputSender((data) => {
-          try {
-            this.dataChannel?.send(data);
-          } catch {
-            /* channel not open */
-          }
-        });
+        this.input = new InputSender(this.sendWhenOpen(() => this.dataChannel));
         this.input.setCriticalChannelRef(channel);
         // The desktop sends the AI agent's step feed back on this same
         // reliable channel — listen for it (input, by contrast, is send-only
@@ -682,6 +691,10 @@ export class ViewerConnection {
         if (typeof channel.addEventListener === 'function') {
           channel.addEventListener('message', (ev: { data: unknown }) => {
             this.handleAgentFrame(ev.data);
+          });
+          channel.addEventListener('open', () => {
+            record('input DataChannel open');
+            this.input?.flush();
           });
         }
         if (this.moveDataChannel) this.wireMoveChannel();
@@ -725,13 +738,10 @@ export class ViewerConnection {
 
   private wireMoveChannel(): void {
     if (!this.input || !this.moveDataChannel) return;
-    this.input.setMoveChannel((data) => {
-      try {
-        this.moveDataChannel?.send(data);
-      } catch {
-        /* channel not open */
-      }
-    }, this.moveDataChannel);
+    this.input.setMoveChannel(
+      this.sendWhenOpen(() => this.moveDataChannel),
+      this.moveDataChannel,
+    );
   }
 
   /** The receiver's ground-truth liveness: has decoded video advanced within
@@ -998,7 +1008,18 @@ export class ViewerConnection {
     // offer arrives mid-`recovering_ice` — stomping that back to a generic
     // 'negotiating' would regress the more specific, more useful state the
     // user is already seeing. See docs/audit/m3/mobile-ux.md Finding 1.
-    await this.pc.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp }));
+    try {
+      await this.pc.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp }));
+    } catch (err) {
+      // The desktop recreated its PeerConnection (new DTLS fingerprint)
+      // because the input DataChannel never opened on the first ICE pair.
+      // Applying that offer to this PC fails; accept it on a fresh relay-only
+      // peer instead. Same iceServers as session-start — we already have them.
+      record('offer rejected on current peer — recreating with relay', String(err));
+      this.setupPeer(this.iceServers, 'relay');
+      if (!this.pc || this.isClosed) return;
+      await this.pc.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp }));
+    }
     const answer = await this.pc.createAnswer();
     await this.pc.setLocalDescription(answer);
     this.sig.answer((answer as any).sdp);

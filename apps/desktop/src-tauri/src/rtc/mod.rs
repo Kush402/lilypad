@@ -24,6 +24,7 @@ use webrtc::media::Sample;
 use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::offer_answer_options::RTCOfferOptions;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
+use webrtc::peer_connection::policy::ice_transport_policy::RTCIceTransportPolicy;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::rtcp::payload_feedbacks::full_intra_request::FullIntraRequest;
@@ -45,6 +46,18 @@ pub struct IceServerConfig {
     pub urls: Vec<String>,
     pub username: String,
     pub credential: String,
+}
+
+/// Which ICE candidates this peer is allowed to use. `All` is normal ICE
+/// (host/srflx/relay). `Relay` is the fallback when a "direct" pair carries
+/// RTP but never opens the input DataChannel — SCTP over some CGNAT/srflx
+/// pairs is a known WebRTC failure mode; TURN UDP already gathered in those
+/// sessions and is what actually delivers control.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum IcePolicy {
+    #[default]
+    All,
+    Relay,
 }
 
 /// One-line diagnostic form of an SDP candidate string: its type (host/
@@ -161,9 +174,21 @@ impl WebRtcPeer {
         ice_servers: Vec<IceServerConfig>,
         events: UnboundedSender<PeerEvent>,
     ) -> Result<Self> {
+        Self::with_ice_policy(ice_servers, events, IcePolicy::All).await
+    }
+
+    pub async fn with_ice_policy(
+        ice_servers: Vec<IceServerConfig>,
+        events: UnboundedSender<PeerEvent>,
+        policy: IcePolicy,
+    ) -> Result<Self> {
         let api = build_api()?;
         let config = RTCConfiguration {
             ice_servers: ice_servers.into_iter().map(RTCIceServer::from).collect(),
+            ice_transport_policy: match policy {
+                IcePolicy::All => RTCIceTransportPolicy::All,
+                IcePolicy::Relay => RTCIceTransportPolicy::Relay,
+            },
             ..Default::default()
         };
         let pc = Arc::new(api.new_peer_connection(config).await?);

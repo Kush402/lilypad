@@ -1,6 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import { createHmac } from 'node:crypto';
-import { generateTurnCredential, buildIceServers, DEFAULT_TTL_SECONDS } from './credentials.js';
+import {
+  generateTurnCredential,
+  buildIceServers,
+  withTcpTurn,
+  DEFAULT_TTL_SECONDS,
+} from './credentials.js';
 
 const SECRET = 'unit-test-secret';
 const NOW = 1_700_000_000_000; // fixed ms for determinism
@@ -51,7 +56,10 @@ describe('TURN credentials (coturn use-auth-secret)', () => {
     expect(iceServers.length).toBeGreaterThanOrEqual(2);
 
     const stun = iceServers.find((s) => String(s.urls).startsWith('stun'));
-    const turn = iceServers.find((s) => String(s.urls).startsWith('turn'));
+    const turn = iceServers.find((s) => {
+      const urls = Array.isArray(s.urls) ? s.urls : [s.urls];
+      return urls.some((u) => u.startsWith('turn:'));
+    });
     expect(stun).toBeDefined();
     expect(turn?.username).toBe(credential.username);
     expect(turn?.credential).toBe(credential.credential);
@@ -81,8 +89,15 @@ describe('TURN credentials (coturn use-auth-secret)', () => {
       (env as { PUBLIC_TURN_USERNAME: string }).PUBLIC_TURN_USERNAME = 'user1';
       (env as { PUBLIC_TURN_CREDENTIAL: string }).PUBLIC_TURN_CREDENTIAL = 'pass1';
       servers = buildIceServers({ secret: SECRET, now: NOW }).iceServers;
-      const relay = servers.find((s) => s.urls === 'turn:relay.example:3478');
+      const relay = servers.find((s) => {
+        const urls = Array.isArray(s.urls) ? s.urls : [s.urls];
+        return urls.includes('turn:relay.example:3478');
+      });
       expect(relay).toMatchObject({ username: 'user1', credential: 'pass1' });
+      expect(Array.isArray(relay?.urls) ? relay.urls : [relay?.urls]).toEqual([
+        'turn:relay.example:3478',
+        'turn:relay.example:3478?transport=tcp',
+      ]);
 
       // Comma-separated URL list → one entry advertising every transport
       // variant (cellular carriers often block UDP:80; TCP 443 survives).
@@ -91,7 +106,11 @@ describe('TURN credentials (coturn use-auth-secret)', () => {
       servers = buildIceServers({ secret: SECRET, now: NOW }).iceServers;
       const multi = servers.find((s) => Array.isArray(s.urls) && s.username === 'user1');
       expect(multi).toMatchObject({
-        urls: ['turn:relay.example:80', 'turn:relay.example:443?transport=tcp'],
+        urls: [
+          'turn:relay.example:80',
+          'turn:relay.example:80?transport=tcp',
+          'turn:relay.example:443?transport=tcp',
+        ],
         username: 'user1',
         credential: 'pass1',
       });
@@ -115,7 +134,10 @@ describe('TURN credentials (coturn use-auth-secret)', () => {
       (env as { PUBLIC_TURN_CREDENTIAL: string }).PUBLIC_TURN_CREDENTIAL = '';
 
       const { iceServers, credential } = buildIceServers({ secret: SECRET, now: NOW });
-      const relay = iceServers.find((s) => s.urls === 'turn:relay.example:3478');
+      const relay = iceServers.find((s) => {
+        const urls = Array.isArray(s.urls) ? s.urls : [s.urls];
+        return urls.includes('turn:relay.example:3478');
+      });
       expect(relay).toMatchObject({
         username: credential.username,
         credential: credential.credential,
@@ -125,5 +147,23 @@ describe('TURN credentials (coturn use-auth-secret)', () => {
       (env as { PUBLIC_TURN_USERNAME: string }).PUBLIC_TURN_USERNAME = orig.user;
       (env as { PUBLIC_TURN_CREDENTIAL: string }).PUBLIC_TURN_CREDENTIAL = orig.cred;
     }
+  });
+});
+
+describe('withTcpTurn', () => {
+  it('adds a TCP sibling to a bare UDP turn URL and leaves turns:/qualified URLs alone', () => {
+    expect(
+      withTcpTurn(['turn:relay.example:3478', 'turns:relay.example:443?transport=tcp']),
+    ).toEqual([
+      'turn:relay.example:3478',
+      'turn:relay.example:3478?transport=tcp',
+      'turns:relay.example:443?transport=tcp',
+    ]);
+  });
+
+  it('does not duplicate an already-advertised TCP variant', () => {
+    expect(
+      withTcpTurn(['turn:relay.example:3478', 'turn:relay.example:3478?transport=tcp']),
+    ).toEqual(['turn:relay.example:3478', 'turn:relay.example:3478?transport=tcp']);
   });
 });

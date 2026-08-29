@@ -59,6 +59,31 @@ export function generateTurnCredential(opts: TurnCredentialOptions = {}): TurnCr
  */
 const PUBLIC_STUN_URLS = ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'];
 
+function packUrls(urls: string[]): string | string[] {
+  return urls.length === 1 ? urls[0]! : urls;
+}
+
+/** Advertise a TCP sibling for each UDP `turn:` URL that does not already
+ * name a transport. Cellular carriers that degrade UDP still reach TURN over
+ * TCP; `turns:` / already-qualified URLs are left alone. */
+export function withTcpTurn(urls: string[]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const add = (u: string) => {
+    if (!seen.has(u)) {
+      out.push(u);
+      seen.add(u);
+    }
+  };
+  for (const u of urls) {
+    add(u);
+    if (/^turn:/i.test(u) && !/[?&]transport=/i.test(u)) {
+      add(`${u}${u.includes('?') ? '&' : '?'}transport=tcp`);
+    }
+  }
+  return out;
+}
+
 /**
  * ICE servers advertised to a peer in `pair-approved`: STUN first (host/srflx),
  * then TURN over UDP + TCP with a fresh time-limited credential.
@@ -72,7 +97,7 @@ export function buildIceServers(opts: TurnCredentialOptions = {}): {
     { urls: env.STUN_URL },
     { urls: PUBLIC_STUN_URLS },
     {
-      urls: env.TURN_URL,
+      urls: packUrls(withTcpTurn([env.TURN_URL])),
       username: cred.username,
       credential: cred.credential,
     },
@@ -97,12 +122,14 @@ export function buildIceServers(opts: TurnCredentialOptions = {}): {
     // single `turn:...:80` left phones with no usable relay on such paths,
     // silently downgrading them to fragile direct pairs. Both clients
     // accept a string[] here (`IceServerSchema.urls` is string|string[]).
-    const urls = env.PUBLIC_TURN_URL.split(',')
-      .map((u) => u.trim())
-      .filter((u) => u.length > 0);
+    const urls = withTcpTurn(
+      env.PUBLIC_TURN_URL.split(',')
+        .map((u) => u.trim())
+        .filter((u) => u.length > 0),
+    );
     const useStatic = Boolean(env.PUBLIC_TURN_USERNAME && env.PUBLIC_TURN_CREDENTIAL);
     iceServers.push({
-      urls: urls.length === 1 ? urls[0]! : urls,
+      urls: packUrls(urls),
       username: useStatic ? env.PUBLIC_TURN_USERNAME : cred.username,
       credential: useStatic ? env.PUBLIC_TURN_CREDENTIAL : cred.credential,
     });

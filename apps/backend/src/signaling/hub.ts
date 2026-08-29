@@ -620,7 +620,7 @@ export class SignalingHub {
         },
       });
     }
-    log.session.info({ roomId: room.id, sessionId }, 'session approved, ICE issued');
+    log.session.info({ roomId: room.id, sessionId, grantedScopes }, 'session approved, ICE issued');
   }
 
   private relay(room: Room, to: DeviceKind, msg: SignalingMessage): void {

@@ -30,7 +30,7 @@ use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use crate::agent::{self, AgentController};
 use crate::input::Scope;
 use crate::media::CaptureMode;
-use crate::rtc::{IceServerConfig, PeerEvent, WebRtcPeer};
+use crate::rtc::{IcePolicy, IceServerConfig, PeerEvent, WebRtcPeer, PATH_LAN, PATH_RELAY};
 use crate::signaling::{messages, Envelope};
 use clipboard_watcher::ClipboardWatcher;
 use fsm::{SessionFsm, SessionState};
@@ -285,6 +285,42 @@ fn ice_budget_earned_back(
     }
 }
 
+/// How long media may run without an open input DataChannel before we give
+/// up on the selected ICE pair and recreate the peer as relay-only.
+///
+/// Observed 2026-08-29 (cellular, v0.1.22): ICE nominated a srflx↔srflx
+/// "direct" pair, video decoded, `set-display` (signaling) worked, and the
+/// input worker received **zero** events for the whole session. The same
+/// phone on LAN (host↔host) and earlier relayed cellular sessions injected
+/// fine. SCTP/DataChannel over some CGNAT reflexive pairs is a known WebRTC
+/// failure mode; RTP can flow while the association never completes.
+/// webrtc-rs 0.11 does not implement `setConfiguration`, so the only way
+/// onto TURN is a new PeerConnection with `iceTransportPolicy: relay`.
+const INPUT_CHANNEL_FALLBACK_GRACE: Duration = Duration::from_secs(6);
+
+/// Pure decision: recreate the peer as relay-only because the input
+/// DataChannel never opened on the current pair.
+///
+/// Skip LAN (host↔host carries SCTP) and an already-relayed path (retrying
+/// relay cannot change the pair). `path == None` still qualifies — ICE
+/// connected but never classified is not a reason to leave control dead.
+fn input_channel_fallback_due(
+    channel_open: bool,
+    already_forced: bool,
+    path: Option<&str>,
+    connected_without_dc_since: Option<Instant>,
+    now: Instant,
+    grace: Duration,
+) -> bool {
+    if channel_open || already_forced {
+        return false;
+    }
+    if matches!(path, Some(p) if p == PATH_LAN || p == PATH_RELAY) {
+        return false;
+    }
+    connected_without_dc_since.is_some_and(|t| now.duration_since(t) >= grace)
+}
+
 /// Bundles the session-lifetime state that used to be five independent
 /// `run_session` locals (`peer`, `pipeline`/`abr` via `media`, `ice_restarts`,
 /// `recovery_deadline`, `peer_connected`) behind a handful of small,
@@ -354,6 +390,18 @@ struct SessionRunner {
     /// Whether this session was granted `control` scope — the admission gate
     /// for agent commands (mirrors the input-injection scope).
     granted_control: bool,
+    /// ICE servers from `session-start`, kept so a DataChannel-failed
+    /// session can rebuild the peer as relay-only without waiting for
+    /// another hub message.
+    ice_servers: Vec<IceServerConfig>,
+    ice_policy: IcePolicy,
+    /// Last classified connection path (`lan` / `direct` / `relay`).
+    connection_path: Option<&'static str>,
+    input_channel_open: bool,
+    /// First moment we were `connected` without an open input DataChannel.
+    connected_without_dc_since: Option<Instant>,
+    /// We already recreated the peer with `iceTransportPolicy: relay`.
+    forced_relay: bool,
 }
 
 impl SessionRunner {
@@ -382,6 +430,12 @@ impl SessionRunner {
             events,
             agent: AgentController::new(),
             granted_control: false,
+            ice_servers: Vec::new(),
+            ice_policy: IcePolicy::All,
+            connection_path: None,
+            input_channel_open: false,
+            connected_without_dc_since: None,
+            forced_relay: false,
         }
     }
 
@@ -511,6 +565,18 @@ impl SessionRunner {
                     .granted_scopes
                     .iter()
                     .any(|s| matches!(s, messages::SessionScope::Control));
+                log::info!(
+                    target: "lilypad::session",
+                    "session-start granted {:?} (control={})",
+                    p.granted_scopes
+                        .iter()
+                        .map(|s| match s {
+                            messages::SessionScope::View => "view",
+                            messages::SessionScope::Control => "control",
+                        })
+                        .collect::<Vec<_>>(),
+                    self.granted_control
+                );
                 let ice_servers: Vec<IceServerConfig> = p
                     .ice_servers
                     .iter()
@@ -520,6 +586,14 @@ impl SessionRunner {
                         credential: s.credential.clone().unwrap_or_default(),
                     })
                     .collect();
+                let policy = match p.ice_transport_policy {
+                    messages::IceTransportPolicy::All => IcePolicy::All,
+                    messages::IceTransportPolicy::Relay => IcePolicy::Relay,
+                };
+                self.ice_servers = ice_servers.clone();
+                self.ice_policy = policy;
+                // Hub already asked for relay — don't later recreate "to" relay.
+                self.forced_relay = matches!(policy, IcePolicy::Relay);
                 // Defensive: a repeat session-start must not leak the
                 // previous PeerConnection (its ICE/DTLS/RTCP-reader tasks
                 // live until close).
@@ -527,7 +601,9 @@ impl SessionRunner {
                     log::warn!(target: "lilypad::session", "new session-start replacing an existing peer — closing the old one");
                     let _ = old.close().await;
                 }
-                let new_peer = Arc::new(WebRtcPeer::new(ice_servers, peer_ev_tx.clone()).await?);
+                let new_peer = Arc::new(
+                    WebRtcPeer::with_ice_policy(ice_servers, peer_ev_tx.clone(), policy).await?,
+                );
                 let sdp = new_peer.create_offer().await?;
                 sig.send(Envelope::offer(&self.room_id, &sdp))?;
                 if let Some(ep) = &self.lan_ad {
@@ -574,14 +650,9 @@ impl SessionRunner {
                 // sends nothing — apps/mobile/src/lib/webrtc.ts). So an inbound renegotiate
                 // means "I'm not receiving — please ICE-restart," and we HONOR it.
                 //
-                // We deliberately do NOT gate this on `peer_traffic_fresh()`: when the
-                // forward path is dead the phone spams PLI/keyframe-requests and loss
-                // reports, which `peer_traffic_fresh()` counts as "traffic" — so gating on
-                // it MISREADS a phone that's getting 0 kbps as "video is flowing" and
-                // declines the exact restart it needs (observed live: sessions stranded at
-                // 0 kbps while the desktop logged "declining renegotiate — video is
-                // flowing"). Only the throttle guards us, so a flapping radio can't storm
-                // restarts while still letting a genuine recovery through.
+                // Exception: if the input DataChannel never opened, an ICE restart on
+                // the same PeerConnection would re-nominate the same srflx pair.
+                // Recreate as relay-only instead (webrtc-rs has no setConfiguration).
                 if self
                     .last_ice_restart
                     .is_some_and(|t| t.elapsed() < MIN_ICE_RESTART_SPACING)
@@ -591,6 +662,24 @@ impl SessionRunner {
                         "renegotiate throttled — ICE restarted {}s ago",
                         self.last_ice_restart.unwrap().elapsed().as_secs()
                     );
+                } else if input_channel_fallback_due(
+                    self.input_channel_open,
+                    self.forced_relay,
+                    self.connection_path,
+                    self.connected_without_dc_since,
+                    Instant::now(),
+                    Duration::ZERO,
+                ) {
+                    if self
+                        .recreate_peer_relay_only(
+                            sig,
+                            peer_ev_tx,
+                            "phone renegotiate, input DataChannel never opened",
+                        )
+                        .await?
+                    {
+                        return Ok(true);
+                    }
                 } else if self.attempt_ice_restart(sig, "phone renegotiate").await? {
                     return Ok(true);
                 }
@@ -725,10 +814,14 @@ impl SessionRunner {
                     // nothing.
                     if let Some(p) = self.peer.as_ref() {
                         if let Some(path) = p.connection_path().await {
+                            self.connection_path = Some(path);
                             self.emit(SessionEvent::ConnectionPath {
                                 path: path.to_owned(),
                             });
                         }
+                    }
+                    if !self.input_channel_open && self.connected_without_dc_since.is_none() {
+                        self.connected_without_dc_since = Some(Instant::now());
                     }
                 }
             }
@@ -759,9 +852,14 @@ impl SessionRunner {
         }
         if matches!(ev, PeerEvent::InputChannelOpen) {
             self.gate.set_channel_open(true);
+            self.input_channel_open = true;
+            self.connected_without_dc_since = None;
+            log::info!(target: "lilypad::session", "input DataChannel open");
         }
         if matches!(ev, PeerEvent::InputChannelClosed) {
             self.gate.set_channel_open(false);
+            self.input_channel_open = false;
+            log::info!(target: "lilypad::session", "input DataChannel closed");
         }
         if let PeerEvent::InputMessage(bytes) = &ev {
             // Demux: an agent frame (command/stop/decision) routes to the AI
@@ -851,6 +949,69 @@ impl SessionRunner {
                 Ok(true)
             }
         }
+    }
+
+    /// Tear down the current PeerConnection and build a relay-only one.
+    /// webrtc-rs 0.11's `setConfiguration` is unimplemented, so this is the
+    /// only way to change `iceTransportPolicy` after the first gather.
+    ///
+    /// Returns `Ok(false)` after sending the new offer, or when a recreate
+    /// cannot help (no ICE servers, already relay-only). Never ends the
+    /// session — video can keep working while control is recovered.
+    async fn recreate_peer_relay_only(
+        &mut self,
+        sig: &SignalingClient,
+        peer_ev_tx: &UnboundedSender<PeerEvent>,
+        reason: &str,
+    ) -> Result<bool> {
+        if self.ice_servers.is_empty() {
+            log::warn!(
+                target: "lilypad::session",
+                "cannot force relay ({reason}) — session-start carried no ICE servers"
+            );
+            return Ok(false);
+        }
+        if matches!(self.ice_policy, IcePolicy::Relay) {
+            self.forced_relay = true;
+            return Ok(false);
+        }
+        self.forced_relay = true;
+        self.input_channel_open = false;
+        self.gate.set_channel_open(false);
+        self.connected_without_dc_since = None;
+        self.connection_path = None;
+        self.media.stop_pipeline().await;
+        if let Some(old) = self.peer.take() {
+            let _ = old.close().await;
+        }
+        log::warn!(
+            target: "lilypad::session",
+            "recreating peer with iceTransportPolicy=relay ({reason})"
+        );
+        let new_peer = Arc::new(
+            WebRtcPeer::with_ice_policy(
+                self.ice_servers.clone(),
+                peer_ev_tx.clone(),
+                IcePolicy::Relay,
+            )
+            .await?,
+        );
+        let sdp = new_peer.create_offer().await?;
+        sig.send(Envelope::offer(&self.room_id, &sdp))?;
+        self.pending_offer = Some(PendingOffer {
+            sdp,
+            sent_at: Instant::now(),
+            resends: 0,
+        });
+        self.peer = Some(new_peer);
+        self.peer_connected = false;
+        self.ice_policy = IcePolicy::Relay;
+        self.last_ice_restart = Some(Instant::now());
+        self.fsm.transition(SessionState::Recovering);
+        self.emit(SessionEvent::ConnectionState {
+            state: "connecting".to_owned(),
+        });
+        Ok(false)
     }
 
     /// Tell the phone the current capture resolution and mode, so it maps
@@ -1326,6 +1487,23 @@ pub async fn run_session(
                     runner.end("peer disconnected");
                     break;
                 }
+                if input_channel_fallback_due(
+                    runner.input_channel_open,
+                    runner.forced_relay,
+                    runner.connection_path,
+                    runner.connected_without_dc_since,
+                    Instant::now(),
+                    INPUT_CHANNEL_FALLBACK_GRACE,
+                ) && runner
+                    .recreate_peer_relay_only(
+                        &sig,
+                        &peer_ev_tx,
+                        "input DataChannel did not open on the selected ICE pair",
+                    )
+                    .await?
+                {
+                    break;
+                }
             }
 
             _ = clipboard_poll.tick(), if runner.peer_connected => {
@@ -1538,6 +1716,80 @@ mod tests {
             None,
             now,
             COUNTERPART_GONE_MEDIA_WINDOW
+        ));
+    }
+
+    // ── Input DataChannel fallback (cellular srflx pair, 2026-08-29) ──────
+
+    #[test]
+    fn input_fallback_waits_out_the_grace() {
+        let now = Instant::now();
+        let since = Some(now - Duration::from_secs(2));
+        assert!(!input_channel_fallback_due(
+            false,
+            false,
+            Some("direct"),
+            since,
+            now,
+            INPUT_CHANNEL_FALLBACK_GRACE
+        ));
+    }
+
+    #[test]
+    fn input_fallback_fires_on_a_direct_pair_after_grace() {
+        let now = Instant::now();
+        let since = Some(now - INPUT_CHANNEL_FALLBACK_GRACE - Duration::from_millis(1));
+        assert!(input_channel_fallback_due(
+            false,
+            false,
+            Some("direct"),
+            since,
+            now,
+            INPUT_CHANNEL_FALLBACK_GRACE
+        ));
+    }
+
+    #[test]
+    fn input_fallback_does_not_touch_lan_or_already_relayed_sessions() {
+        let now = Instant::now();
+        let since = Some(now - INPUT_CHANNEL_FALLBACK_GRACE - Duration::from_secs(1));
+        assert!(!input_channel_fallback_due(
+            false,
+            false,
+            Some("lan"),
+            since,
+            now,
+            INPUT_CHANNEL_FALLBACK_GRACE
+        ));
+        assert!(!input_channel_fallback_due(
+            false,
+            false,
+            Some("relay"),
+            since,
+            now,
+            INPUT_CHANNEL_FALLBACK_GRACE
+        ));
+    }
+
+    #[test]
+    fn input_fallback_does_not_fire_once_the_channel_is_open_or_already_forced() {
+        let now = Instant::now();
+        let since = Some(now - INPUT_CHANNEL_FALLBACK_GRACE - Duration::from_secs(1));
+        assert!(!input_channel_fallback_due(
+            true,
+            false,
+            Some("direct"),
+            since,
+            now,
+            INPUT_CHANNEL_FALLBACK_GRACE
+        ));
+        assert!(!input_channel_fallback_due(
+            false,
+            true,
+            Some("direct"),
+            since,
+            now,
+            INPUT_CHANNEL_FALLBACK_GRACE
         ));
     }
 }

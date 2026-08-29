@@ -394,6 +394,15 @@ impl IceServerJson {
     }
 }
 
+#[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum IceTransportPolicy {
+    #[default]
+    #[serde(rename = "all")]
+    All,
+    #[serde(rename = "relay")]
+    Relay,
+}
+
 #[derive(Deserialize, Debug, Clone)]
 pub struct SessionStartPayload {
     #[serde(rename = "sessionId")]
@@ -402,6 +411,9 @@ pub struct SessionStartPayload {
     pub granted_scopes: Vec<SessionScope>,
     #[serde(rename = "iceServers")]
     pub ice_servers: Vec<IceServerJson>,
+    /// Omitted by older hubs and by the LAN hub; `All` is normal ICE.
+    #[serde(rename = "iceTransportPolicy", default)]
+    pub ice_transport_policy: IceTransportPolicy,
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -612,6 +624,19 @@ mod tests {
         assert_eq!(p.ice_servers[0].url_list(), vec!["stun:localhost:3478"]);
         assert_eq!(p.ice_servers[1].url_list(), vec!["turn:localhost:3478"]);
         assert_eq!(p.ice_servers[1].username.as_deref(), Some("1700:sess"));
+        assert_eq!(p.ice_transport_policy, IceTransportPolicy::All);
+    }
+
+    #[test]
+    fn session_start_honours_relay_ice_transport_policy() {
+        let json = serde_json::json!({
+            "sessionId": "sess-1",
+            "grantedScopes": ["view"],
+            "iceServers": [],
+            "iceTransportPolicy": "relay"
+        });
+        let p: SessionStartPayload = serde_json::from_value(json).unwrap();
+        assert_eq!(p.ice_transport_policy, IceTransportPolicy::Relay);
     }
 
     #[test]

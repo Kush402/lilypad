@@ -254,6 +254,35 @@ describe('ViewerConnection', () => {
     expect(newCritical.send).toHaveBeenCalledTimes(1);
   });
 
+  it('recreates the peer as relay-only when a mid-session offer is rejected', async () => {
+    // Desktop recreates its PeerConnection (new DTLS fingerprint) when the
+    // input DataChannel never opens on a srflx pair. Applying that offer to
+    // the existing phone PC fails; the phone must follow onto a relay-only PC.
+    const cb = makeCallbacks();
+    const { sig, peer } = await startConnected(cb);
+    peer.setRemoteDescription.mockRejectedValueOnce(new Error('InvalidAccessError'));
+    const RTCPeerConnection = (
+      jest.requireMock('react-native-webrtc') as { RTCPeerConnection: jest.Mock }
+    ).RTCPeerConnection;
+    const before = rtcMock.__mockPeerInstances.length;
+
+    sig.onMessage({
+      type: 'offer',
+      roomId: 'room1',
+      from: 'desktop',
+      ts: 2,
+      payload: { type: 'offer', sdp: 'v=0' },
+    });
+    for (let i = 0; i < 10; i += 1) await Promise.resolve();
+
+    expect(rtcMock.__mockPeerInstances.length).toBe(before + 1);
+    expect(RTCPeerConnection).toHaveBeenLastCalledWith(
+      expect.objectContaining({ iceTransportPolicy: 'relay' }),
+    );
+    expect(lastPeer().setRemoteDescription).toHaveBeenCalled();
+    expect(lastSignaling().answer).toHaveBeenCalled();
+  });
+
   it('forwards a frame-size signal to onFrameSize (for letterbox-aware touch mapping)', async () => {
     const cb = makeCallbacks();
     const conn = new ViewerConnection('wss://x', 'room1', ['control'], cb);

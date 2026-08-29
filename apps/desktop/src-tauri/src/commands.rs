@@ -420,7 +420,7 @@ fn apply_session_event(app: &AppHandle, ev: &SessionEvent) {
                     let scopes = s.offered_scopes.clone();
                     log::info!(
                         target: "lilypad::audit",
-                        "session auto-approved — trusted device (Always allow)"
+                        "session auto-approved — trusted device (Always allow), scopes={scopes:?}"
                     );
                     let _ = tx.send(Control::Approve {
                         scopes,

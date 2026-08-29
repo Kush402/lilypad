@@ -403,7 +403,7 @@ impl MediaController {
     /// capture frame-wait timeout (~2s) — callers are expected to have
     /// already run this off the async runtime worker's fast path (it
     /// internally uses `spawn_blocking`).
-    async fn stop_pipeline(&mut self) {
+    pub(crate) async fn stop_pipeline(&mut self) {
         if let Some(pl) = self.pipeline.take() {
             let _ = tokio::task::spawn_blocking(move || {
                 let mut pl = pl;
