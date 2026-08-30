@@ -1,4 +1,4 @@
-import type { DeviceKind, SessionScope } from '@lilypad/protocol';
+import type { DeviceKind, SessionScope, SignalingMessage } from '@lilypad/protocol';
 import { SessionStateMachine, type SessionState } from '../session/stateMachine.js';
 import type { RoomRecord } from '../session/roomStore.js';
 import type { Peer } from './peer.js';
@@ -34,6 +34,15 @@ export class Room {
 
   public scopes: SessionScope[] = ['view'];
   public sessionId?: string;
+
+  /**
+   * Frames addressed to a seat that had not attached yet, replayed the moment
+   * it does. Same job as LAN `pending_desktop`: the phone has the room id the
+   * instant `/connect/request` returns, while a takeover desktop may still be
+   * tearing down the previous runner (`SESSION_TEARDOWN_WAIT`). Dropping that
+   * `pair-request` is how Ring-while-Active hung on "Waiting for approval…".
+   */
+  private readonly pending: Partial<Record<DeviceKind, SignalingMessage[]>> = {};
 
   private constructor(
     public readonly id: string,
@@ -206,6 +215,25 @@ export class Room {
 
   markEstablished(): void {
     this.establishedFlag = true;
+  }
+
+  // ── pending relay ──────────────────────────────────────────────────────
+
+  static readonly MAX_PENDING = 32;
+
+  /** Queue a frame for a seat that is not here yet. Returns false if the
+   * buffer is full — the caller must not treat that as delivered. */
+  enqueuePending(role: DeviceKind, msg: SignalingMessage): boolean {
+    const q = (this.pending[role] ??= []);
+    if (q.length >= Room.MAX_PENDING) return false;
+    q.push(msg);
+    return true;
+  }
+
+  takePending(role: DeviceKind): SignalingMessage[] {
+    const q = this.pending[role] ?? [];
+    this.pending[role] = [];
+    return q;
   }
 
   // ── FSM ────────────────────────────────────────────────────────────────

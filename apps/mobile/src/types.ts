@@ -55,5 +55,10 @@ export type RootStackParamList = {
      * which is `undefined` unless the LAN target actually won.
      */
     signalingTlsPin?: string;
+    /**
+     * This Viewer is rejoining a still-Active room (process restart / in-app
+     * resume). Register with `rejoin: true` and skip `pair-request`.
+     */
+    rejoin?: boolean;
   };
 };

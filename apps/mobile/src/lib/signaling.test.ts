@@ -113,6 +113,19 @@ describe('MobileSignaling', () => {
     expect(sig.isOpen()).toBe(true);
   });
 
+  it('register({ rejoin: true }) puts rejoin on the wire', async () => {
+    const sig = new MobileSignaling('wss://x', 'room1', () => {});
+    const p = sig.connect();
+    lastSocket().open();
+    await p;
+    sig.register('mobile-device-1', { rejoin: true });
+    expect(lastSocket().sentType('register')?.payload).toEqual({
+      role: 'mobile',
+      deviceId: 'mobile-device-1',
+      rejoin: true,
+    });
+  });
+
   it('connect() rejects if the socket errors before opening', async () => {
     const sig = new MobileSignaling('wss://x', 'room1', () => {});
     const p = sig.connect();

@@ -65,6 +65,10 @@ jest.mock('../lib/pairs', () => ({
 }));
 
 jest.mock('../lib/api', () => ({ requestConnectForPair: jest.fn() }));
+jest.mock('../lib/sessionResume', () => ({
+  saveResumeHandle: jest.fn().mockResolvedValue(undefined),
+  clearResumeHandle: jest.fn().mockResolvedValue(undefined),
+}));
 
 const { __instances } = jest.requireMock('../lib/webrtc') as { __instances: any[] };
 function lastConn() {
@@ -615,6 +619,7 @@ describe('reconnecting after the laptop drops', () => {
           apiBaseUrl: 'https://api.example',
           connectSecret: 'secret',
         }),
+        { resume: true },
       ),
     );
     // `replace`: leaving the dead room in the stack means Back returns to a

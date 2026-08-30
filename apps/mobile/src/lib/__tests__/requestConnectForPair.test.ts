@@ -114,4 +114,35 @@ describe('requestConnectForPair', () => {
     expect(res.signalingTlsPin).toBe('a'.repeat(64));
     expect(globalThis.fetch).not.toHaveBeenCalled();
   });
+
+  it('sends resume: true when asked to rejoin a live session', async () => {
+    resolveMock.mockResolvedValue({ apiBaseUrl: 'https://api.takedia.com' });
+    globalThis.fetch = jest.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          roomId: 'room-live',
+          signalingUrl: 'wss://api.takedia.com/ws/signal',
+          scopes: ['view'],
+          resumed: true,
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      ),
+    );
+
+    const res = await requestConnectForPair(
+      {
+        desktopDeviceId: 'desktop-abcdefgh',
+        name: 'Mac',
+        apiBaseUrl: 'https://api.takedia.com',
+        connectSecret: 'secret',
+        addedAt: 0,
+        lastConnectedAt: null,
+      },
+      { resume: true },
+    );
+
+    expect(res.resumed).toBe(true);
+    const body = JSON.parse((globalThis.fetch as jest.Mock).mock.calls[0][1].body as string);
+    expect(body.resume).toBe(true);
+  });
 });

@@ -1,7 +1,7 @@
 ---
 status: Implemented
 owner: @kushsharma024
-last-verified: 2026-08-12
+last-verified: 2026-08-29
 summary: Canonical map of the system as built.
 ---
 
@@ -127,7 +127,13 @@ registration in the reserved `presence:<deviceId>` room — same hub, same
 heartbeat/reaping/guards as sessions). The desktop spawns its normal session
 runner on that room; auto-approve skips the ring; everything downstream is
 byte-for-byte the pairing flow. A trusted ring **supersedes** any stale
-session state — it can never be silently ignored.
+session state — it can never be silently ignored. Cloud and LAN hubs buffer a
+`pair-request` that arrives before the desktop has seated (takeover teardown
+gap). Reopening the phone while the Mac is still Active uses
+`resume: true` + `register.rejoin` to rejoin **that** room instead of minting
+another. Force-kill with no JS callback ends the session from the hub
+heartbeat / `peer-status` + 15s counterpart-gone window, not from an on-kill
+hook.
 
 ## Resilience machinery (the product's spine)
 

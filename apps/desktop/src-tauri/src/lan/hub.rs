@@ -77,6 +77,9 @@ struct Room {
     session_id: Option<String>,
     scopes: Vec<String>,
     established: bool,
+    /// Last mobile that held this room. Survives detach so a swipe-killed
+    /// phone can resume without handing the empty seat to a different pair.
+    last_mobile_id: Option<String>,
     /// Frames addressed to a seat that had not attached yet, replayed the
     /// moment it does.
     ///
@@ -133,11 +136,12 @@ impl LanHub {
                 session_id: None,
                 scopes: vec!["view".into()],
                 established: false,
+                last_mobile_id: None,
                 pending_desktop: Vec::new(),
                 pending_mobile: Vec::new(),
             });
             let seat = Seat {
-                device_id,
+                device_id: device_id.clone(),
                 send,
                 epoch,
             };
@@ -148,6 +152,7 @@ impl LanHub {
                     nudge_online = false;
                 }
                 Role::Mobile => {
+                    room.last_mobile_id = Some(device_id);
                     room.mobile = Some(seat);
                     replay = std::mem::take(&mut room.pending_mobile);
                     // Same as the cloud hub: a mobile reclaim after an
@@ -180,6 +185,49 @@ impl LanHub {
             );
         }
         Ok(SeatToken(epoch))
+    }
+
+    /// Live session this desktop↔mobile pair can resume, or `None`.
+    ///
+    /// Requires an approved room (`session_id`), a seated desktop, and that
+    /// this phone is the last mobile that held the seat — an empty seat after
+    /// a kill is not an invitation for a different trusted phone.
+    pub fn find_resumable_room(&self, desktop_id: &str, mobile_id: &str) -> Option<String> {
+        let rooms = self.rooms.lock().unwrap_or_else(|p| p.into_inner());
+        rooms.iter().find_map(|(id, room)| {
+            if room.session_id.is_none() {
+                return None;
+            }
+            let desktop_ok = room
+                .desktop
+                .as_ref()
+                .is_some_and(|s| s.device_id == desktop_id);
+            let mobile_ok = room.last_mobile_id.as_deref() == Some(mobile_id);
+            (desktop_ok && mobile_ok).then(|| id.clone())
+        })
+    }
+
+    /// Re-issue `session-start` on the existing session id so a process-death
+    /// rejoin can mint a new WebRTC transport without a second ring.
+    pub fn reissue_session_start(&self, room_id: &str) {
+        let start = {
+            let rooms = self.rooms.lock().unwrap_or_else(|p| p.into_inner());
+            let Some(room) = rooms.get(room_id) else {
+                return;
+            };
+            let Some(session_id) = room.session_id.clone() else {
+                return;
+            };
+            json!({
+                "sessionId": session_id,
+                "grantedScopes": room.scopes,
+                "iceServers": [],
+                "iceTransportPolicy": "all",
+            })
+        };
+        for role in [Role::Desktop, Role::Mobile] {
+            self.send_to(role, room_id, "session-start", start.clone());
+        }
     }
 
     /// Whether `role` currently holds a seat in `room_id`.
@@ -665,6 +713,103 @@ mod tests {
         assert!(
             frames.iter().any(|v| v["type"] == "session-start"),
             "the phone's live socket must receive the approval, got {frames:?}"
+        );
+    }
+
+    #[test]
+    fn find_resumable_room_is_the_approved_room_for_this_pair() {
+        let hub = LanHub::new();
+        let (d_send, _) = capture_send();
+        let (m_send, _) = capture_send();
+        register(&hub, "room-1", Role::Desktop, "desktop-12345678", d_send);
+        register(&hub, "room-1", Role::Mobile, "mobile-12345678", m_send);
+        hub.handle(
+            Role::Desktop,
+            r#"{"type":"pair-approved","roomId":"room-1","from":"desktop","ts":0,"payload":{"grantedScopes":["view"],"trust":false}}"#,
+        );
+
+        assert_eq!(
+            hub.find_resumable_room("desktop-12345678", "mobile-12345678")
+                .as_deref(),
+            Some("room-1")
+        );
+        assert!(hub
+            .find_resumable_room("desktop-12345678", "mobile-other90")
+            .is_none());
+    }
+
+    #[test]
+    fn find_resumable_room_survives_a_vacated_mobile_seat() {
+        let hub = LanHub::new();
+        let (d_send, _) = capture_send();
+        let (m_send, _) = capture_send();
+        register(&hub, "room-1", Role::Desktop, "desktop-12345678", d_send);
+        let token = register(&hub, "room-1", Role::Mobile, "mobile-12345678", m_send);
+        hub.handle(
+            Role::Desktop,
+            r#"{"type":"pair-approved","roomId":"room-1","from":"desktop","ts":0,"payload":{"grantedScopes":["view"],"trust":false}}"#,
+        );
+        hub.detach("room-1", Role::Mobile, token);
+
+        assert_eq!(
+            hub.find_resumable_room("desktop-12345678", "mobile-12345678")
+                .as_deref(),
+            Some("room-1")
+        );
+    }
+
+    #[test]
+    fn find_resumable_room_ignores_a_room_that_never_approved() {
+        let hub = LanHub::new();
+        let (d_send, _) = capture_send();
+        let (m_send, _) = capture_send();
+        register(&hub, "room-1", Role::Desktop, "desktop-12345678", d_send);
+        register(&hub, "room-1", Role::Mobile, "mobile-12345678", m_send);
+        assert!(hub
+            .find_resumable_room("desktop-12345678", "mobile-12345678")
+            .is_none());
+    }
+
+    #[test]
+    fn reissue_session_start_reuses_the_existing_session_id() {
+        let hub = LanHub::new();
+        let (d_send, d_out) = capture_send();
+        let (m_send, m_out) = capture_send();
+        register(&hub, "room-1", Role::Desktop, "desktop-12345678", d_send);
+        register(&hub, "room-1", Role::Mobile, "mobile-12345678", m_send);
+        hub.handle(
+            Role::Desktop,
+            r#"{"type":"pair-approved","roomId":"room-1","from":"desktop","ts":0,"payload":{"grantedScopes":["view","control"],"trust":false}}"#,
+        );
+        let first: Vec<Value> = m_out
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|s| serde_json::from_str(s).ok())
+            .filter(|v: &Value| v["type"] == "session-start")
+            .collect();
+        assert_eq!(first.len(), 1);
+        let session_id = first[0]["payload"]["sessionId"].clone();
+
+        hub.reissue_session_start("room-1");
+        let second: Vec<Value> = m_out
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|s| serde_json::from_str(s).ok())
+            .filter(|v: &Value| v["type"] == "session-start")
+            .collect();
+        assert_eq!(second.len(), 2);
+        assert_eq!(second[1]["payload"]["sessionId"], session_id);
+        assert!(
+            d_out
+                .lock()
+                .unwrap()
+                .iter()
+                .filter_map(|s| serde_json::from_str::<Value>(s).ok())
+                .filter(|v| v["type"] == "session-start")
+                .count()
+                >= 2
         );
     }
 

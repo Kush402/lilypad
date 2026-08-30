@@ -269,6 +269,7 @@ describe('ringing a laptop that signed itself out', () => {
       [403, 'revoked', 'trust_revoked'],
       [503, 'desktop_offline', 'desktop_offline'],
       [404, 'not_trusted', 'not_trusted'],
+      [409, 'session_gone', 'session_gone'],
     ];
     for (const [status, serverCode, expected] of cases) {
       globalThis.fetch = jest.fn().mockResolvedValue(jsonResponse({ error: serverCode }, status));

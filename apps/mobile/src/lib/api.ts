@@ -142,12 +142,21 @@ export type ConnectForPairResult = ConnectResponse & {
   signalingTlsPin?: string;
 };
 
-export async function requestConnectForPair(pair: PairedDesktop): Promise<ConnectForPairResult> {
+export async function requestConnectForPair(
+  pair: PairedDesktop,
+  opts?: { resume?: boolean },
+): Promise<ConnectForPairResult> {
   const cloud = pair.apiBaseUrl.replace(/\/$/, '');
   const target = await resolveConnectTarget(pair);
 
   const tryConnect = (t: typeof target) =>
-    requestConnect(t.apiBaseUrl, pair.desktopDeviceId, pair.connectSecret, t.lanTlsCertSha256);
+    requestConnect(
+      t.apiBaseUrl,
+      pair.desktopDeviceId,
+      pair.connectSecret,
+      t.lanTlsCertSha256,
+      opts,
+    );
 
   try {
     const res = await tryConnect(target);
@@ -185,6 +194,7 @@ export async function requestConnect(
   desktopDeviceId: string,
   pairSecret?: string,
   lanTlsCertSha256?: string,
+  opts?: { resume?: boolean },
 ): Promise<ConnectResponse> {
   const controller = new AbortController();
   let timedOut = false;
@@ -210,6 +220,7 @@ export async function requestConnect(
         mobileDeviceId,
         mobileDeviceName: `${Platform.OS} phone`,
         ...(pairSecret ? { pairSecret } : {}),
+        ...(opts?.resume ? { resume: true } : {}),
       }),
       signal: controller.signal,
     });
@@ -267,6 +278,7 @@ export async function requestUnpair(apiBaseUrl: string, desktopDeviceId: string)
 /** Map /connect/request failures onto the error taxonomy. The endpoint's
  * machine codes are authoritative where present; status is the fallback. */
 function classifyConnectStatus(status: number, body: string) {
+  if (status === 409 && body.includes('session_gone')) return appError('session_gone');
   if (status === 404 && body.includes('not_trusted')) return appError('not_trusted');
   // Before the `revoked` line: a laptop released by its own sign-out is a
   // different fact from a pairing somebody ended, and it has a different

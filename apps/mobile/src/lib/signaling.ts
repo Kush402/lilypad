@@ -190,13 +190,13 @@ export class MobileSignaling {
     });
   }
 
-  register(deviceId: string): void {
+  register(deviceId: string, opts?: { rejoin?: boolean }): void {
     this.emit({
       type: 'register',
       roomId: this.roomId,
       from: 'mobile',
       ts: Date.now(),
-      payload: { role: 'mobile', deviceId },
+      payload: { role: 'mobile', deviceId, ...(opts?.rejoin ? { rejoin: true } : {}) },
     });
   }
 

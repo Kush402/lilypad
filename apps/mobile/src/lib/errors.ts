@@ -65,7 +65,7 @@ const COPY: Record<AppErrorCode, string> = {
   // unpinned socket would quietly drop the control — refuse instead.
   lan_pinning_unavailable:
     'Lilypad can’t verify this laptop’s identity on this build. Update the app, or scan the laptop’s QR code.',
-  session_gone: 'That session ended. Reconnecting to the laptop…',
+  session_gone: 'That session ended. Connect again when you’re ready.',
   peer_denied: 'The laptop denied this request. Approve it there, then try again.',
   ice_failed: 'Could not reach the laptop. Check that both devices are online, then try again.',
   not_trusted: 'This phone isn’t paired with that laptop yet. Scan its code once to pair.',

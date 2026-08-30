@@ -240,6 +240,7 @@ export class ViewerConnection {
     private readonly scopes: SessionScope[],
     private readonly cb: ViewerCallbacks,
     tlsPin?: string,
+    private readonly rejoin = false,
   ) {
     this.sig = new MobileSignaling(
       signalingUrl,
@@ -255,8 +256,13 @@ export class ViewerConnection {
     recordState('connecting');
     this.cb.onState('connecting');
     await this.sig.connect();
-    this.sig.register(getDeviceId());
-    this.sig.pairRequest(getDeviceId(), `${Platform.OS} phone`, this.scopes);
+    this.sig.register(getDeviceId(), this.rejoin ? { rejoin: true } : undefined);
+    // Rejoin of a live Active room: the hub re-issues session-start. A
+    // pair-request would be ignored by a desktop already past approval
+    // and leave the phone on "Waiting for approval…".
+    if (!this.rejoin) {
+      this.sig.pairRequest(getDeviceId(), `${Platform.OS} phone`, this.scopes);
+    }
     // The pair-request is now in flight — the desktop is showing "Approve /
     // Deny" to a human, not routing a packet. That wait can take a while and
     // deserves its own "look at your laptop" moment instead of reusing the
@@ -273,11 +279,12 @@ export class ViewerConnection {
     this.heartbeat = setInterval(() => this.sig.heartbeat(), APP_HEARTBEAT_INTERVAL_MS);
     this.lifecycle = new AppLifecycleController({
       onBackground: () => {
+        // Pause the stream; keep the signaling socket. Dropping it made a
+        // normal app-switch look like process death (peer-status → 15s
+        // counterpart_gone). A freeze or swipe-kill still ends the session
+        // via heartbeat timeout / socket close — that is the fallback, not
+        // something we should fake on every background.
         this.sig.pause('backgrounded');
-        // Tell the hub the seat is vacant now, not after iOS freezes JS
-        // and heartbeats stop. The desktop ends after reregister grace
-        // if we never reclaim; a foreground within that window reconnects.
-        this.sig.dropTransport();
       },
       onForeground: () => {
         if (!this.sig.isOpen() && !this.sig.isReconnecting()) {

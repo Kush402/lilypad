@@ -1,7 +1,7 @@
 ---
 status: Implemented
 owner: @kushsharma024
-last-verified: 2026-08-12
+last-verified: 2026-08-29
 summary: JSON-over-WebSocket signaling contract.
 ---
 
@@ -24,27 +24,27 @@ Every message shares:
 
 ## Message types
 
-| type               | direction                 | payload                                                     |
-| ------------------ | ------------------------- | ----------------------------------------------------------- |
-| `register`         | peer → server             | `{ role, deviceId }` — join the room as desktop/mobile      |
-| `pair-request`     | mobile → server → desktop | `{ deviceId, deviceName, requestedScopes }`                 |
-| `pair-approved`    | desktop → server          | `{ grantedScopes }` — server mints session id + ICE         |
-| `pair-denied`      | desktop → server → mobile | `{ reason }`                                                |
-| `session-start`    | server → both             | `{ sessionId, grantedScopes, iceServers }`                  |
-| `offer`            | desktop → mobile          | `{ type:"offer", sdp }`                                     |
-| `answer`           | mobile → desktop          | `{ type:"answer", sdp }`                                    |
-| `ice-candidate`    | both                      | `{ candidate, sdpMid, sdpMLineIndex }`                      |
-| `renegotiate`      | either → desktop          | `{ reason?, iceRestart? }` — desktop re-offers              |
-| `pause` / `resume` | either                    | `{ reason? }` / `{}` — stop/restart stream, keep ICE        |
-| `disconnect`       | either                    | `{ reason? }` — graceful teardown                           |
-| `heartbeat`        | peer → server             | `{ seq? }` — liveness; stale peers are reaped               |
-| `session-end`      | server → both             | `{ reason }`                                                |
-| `frame-size`       | desktop → mobile          | `{ width, height, mode, displays?, activeDisplayId? }`      |
-| `set-capture-mode` | mobile → desktop          | `{ mode: "motion" \| "text" }` — switch capture/encode mode |
-| `set-display`      | mobile → desktop          | `{ displayId }` — show a different attached display         |
-| `clipboard-update` | desktop → mobile          | `{ text }` — desktop clipboard changed                      |
-| `error`            | server → peer             | `{ code, message }`                                         |
-| `ping` / `pong`    | keepalive                 | `{}`                                                        |
+| type               | direction                 | payload                                                                                                                                                                                                 |
+| ------------------ | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `register`         | peer → server             | `{ role, deviceId, rejoin? }` — join the room. `rejoin: true` is a process-death resume: the hub re-issues `session-start` so both peers mint a new WebRTC transport. Mid-session socket flaps omit it. |
+| `pair-request`     | mobile → server → desktop | `{ deviceId, deviceName, requestedScopes }`                                                                                                                                                             |
+| `pair-approved`    | desktop → server          | `{ grantedScopes }` — server mints session id + ICE                                                                                                                                                     |
+| `pair-denied`      | desktop → server → mobile | `{ reason }`                                                                                                                                                                                            |
+| `session-start`    | server → both             | `{ sessionId, grantedScopes, iceServers }`                                                                                                                                                              |
+| `offer`            | desktop → mobile          | `{ type:"offer", sdp }`                                                                                                                                                                                 |
+| `answer`           | mobile → desktop          | `{ type:"answer", sdp }`                                                                                                                                                                                |
+| `ice-candidate`    | both                      | `{ candidate, sdpMid, sdpMLineIndex }`                                                                                                                                                                  |
+| `renegotiate`      | either → desktop          | `{ reason?, iceRestart? }` — desktop re-offers                                                                                                                                                          |
+| `pause` / `resume` | either                    | `{ reason? }` / `{}` — stop/restart stream, keep ICE                                                                                                                                                    |
+| `disconnect`       | either                    | `{ reason? }` — graceful teardown                                                                                                                                                                       |
+| `heartbeat`        | peer → server             | `{ seq? }` — liveness; stale peers are reaped                                                                                                                                                           |
+| `session-end`      | server → both             | `{ reason }`                                                                                                                                                                                            |
+| `frame-size`       | desktop → mobile          | `{ width, height, mode, displays?, activeDisplayId? }`                                                                                                                                                  |
+| `set-capture-mode` | mobile → desktop          | `{ mode: "motion" \| "text" }` — switch capture/encode mode                                                                                                                                             |
+| `set-display`      | mobile → desktop          | `{ displayId }` — show a different attached display                                                                                                                                                     |
+| `clipboard-update` | desktop → mobile          | `{ text }` — desktop clipboard changed                                                                                                                                                                  |
+| `error`            | server → peer             | `{ code, message }`                                                                                                                                                                                     |
+| `ping` / `pong`    | keepalive                 | `{}`                                                                                                                                                                                                    |
 
 ## Connection lifecycle
 
@@ -94,6 +94,10 @@ Trickle ICE: candidates are sent as they are gathered via `ice-candidate`.
 
 - A room has exactly two seats (desktop + mobile). Extra `register`s are rejected.
 - Messages are only relayed to the **other** seat in the same room.
+- A frame for a seat that has not attached yet is **buffered** (capped) and
+  replayed when that seat registers. Same on the LAN hub. Without this, a
+  `pair-request` that beats the desktop's `SESSION_TEARDOWN_WAIT` on a takeover
+  is dropped and the phone sits on "Waiting for approval…".
 - The desktop's explicit `pair-approved` is the gate — no media flows before it.
 - **`pair-approved` is single-shot per room, and a repeat is ignored.** Once a
   room has a session id it is approved; a second approval would mint a second

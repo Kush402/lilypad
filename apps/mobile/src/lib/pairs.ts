@@ -12,6 +12,7 @@
  * new trust ceremony.
  */
 import * as Keychain from 'react-native-keychain';
+import { clearResumeHandle } from './sessionResume';
 
 const SERVICE = 'com.takedia.lilypad.paired-desktops';
 
@@ -161,6 +162,7 @@ export async function touchPair(desktopDeviceId: string): Promise<void> {
 export async function forgetPair(desktopDeviceId: string): Promise<void> {
   const pairs = await loadPairs();
   await persist(pairs.filter((p) => p.desktopDeviceId !== desktopDeviceId));
+  await clearResumeHandle(desktopDeviceId);
 }
 
 /**
@@ -174,6 +176,7 @@ export async function forgetPair(desktopDeviceId: string): Promise<void> {
  */
 export async function forgetAllPairs(): Promise<void> {
   await persist([]);
+  await clearResumeHandle();
 }
 
 /**

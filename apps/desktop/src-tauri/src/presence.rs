@@ -419,6 +419,24 @@ pub(crate) fn dispatch_connect_request(
 }
 
 fn on_connect_request(app: &AppHandle, signaling_url: &str, payload: ConnectRequestPayload) {
+    // Same-room resume must not teardown. A Ring mints a new room id and
+    // still supersedes; this is only the case where the phone was told the
+    // live room and something still notified (belt-and-suspenders — the
+    // resume HTTP path does not notify).
+    {
+        let state = app.state::<SharedState>();
+        let s = state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if s.current_room_id.as_deref() == Some(payload.session_room_id.as_str()) {
+            log::info!(
+                target: "lilypad::presence",
+                "connect_request names the current room {} — already seated, not a takeover",
+                payload.session_room_id
+            );
+            return;
+        }
+    }
     // `auto_approve` is deliberately NOT recorded here. It used to be, one lock
     // acquisition before the Disconnect below, and the superseded runner's
     // `Ended` — applied while `current_room_id` still named the OLD room — then

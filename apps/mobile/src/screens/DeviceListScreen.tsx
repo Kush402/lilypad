@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { View, Text, Pressable, StyleSheet, FlatList, Alert } from 'react-native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -16,6 +16,7 @@ import { requestConnectForPair, requestUnpair } from '../lib/api';
 import { toAppError } from '../lib/errors';
 import { useSession } from '../lib/sessionContext';
 import { listMyPairs } from '../lib/accountDevices';
+import { clearResumeHandle, loadResumeHandle } from '../lib/sessionResume';
 import { LaptopGlyph } from '../components/Glyph';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Devices'>;
@@ -41,6 +42,7 @@ export function DeviceListScreen({ navigation }: Props) {
   const insets = useSafeAreaInsets();
   const [pairs, setPairs] = useState<PairedDesktop[]>([]);
   const [connecting, setConnecting] = useState<string | null>(null);
+  const resumeAttempted = useRef(false);
   const { session, signOut } = useSession();
   /**
    * Which backend "Your devices" asks.
@@ -65,6 +67,45 @@ export function DeviceListScreen({ navigation }: Props) {
   const refresh = useCallback(() => {
     void loadPairs().then((p) => setPairs(orderPairs(p)));
   }, []);
+
+  // Cold start while the Mac is still Active: rejoin that room. Explicit
+  // Connect below is a Ring and still supersedes.
+  useEffect(() => {
+    if (resumeAttempted.current) return;
+    resumeAttempted.current = true;
+    void (async () => {
+      const handle = await loadResumeHandle();
+      if (!handle) return;
+      const local = await loadPairs();
+      const pair = local.find((p) => p.desktopDeviceId === handle.desktopDeviceId);
+      if (!pair?.connectSecret) {
+        await clearResumeHandle();
+        return;
+      }
+      setConnecting(pair.desktopDeviceId);
+      try {
+        const res = await requestConnectForPair(pair, { resume: true });
+        if (!res.resumed) {
+          await clearResumeHandle();
+          return;
+        }
+        void touchPair(pair.desktopDeviceId).catch(() => {});
+        navigation.navigate('Viewer', {
+          roomId: res.roomId,
+          signalingUrl: res.signalingUrl,
+          scopes: res.scopes,
+          desktopDeviceName: res.desktopDeviceName ?? pair.name,
+          desktopDeviceId: pair.desktopDeviceId,
+          signalingTlsPin: res.signalingTlsPin,
+          rejoin: true,
+        });
+      } catch (e) {
+        if (toAppError(e).code === 'session_gone') await clearResumeHandle();
+      } finally {
+        setConnecting(null);
+      }
+    })();
+  }, [navigation]);
 
   /**
    * Ask the backend which of these laptops still exist, and drop the ones that

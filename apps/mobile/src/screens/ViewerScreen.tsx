@@ -46,6 +46,7 @@ import { agentFeedReducer, INITIAL_AGENT_FEED } from '../lib/agentFeed';
 import { forgetPair, loadPairs, setPairLanEndpoints, setPairSecret } from '../lib/pairs';
 import { requestConnectForPair } from '../lib/api';
 import { AgentPanel } from './AgentPanel';
+import { clearResumeHandle, saveResumeHandle } from '../lib/sessionResume';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Viewer'>;
 
@@ -114,8 +115,15 @@ const MODE_LABEL: Record<CaptureMode, string> = {
 };
 
 export function ViewerScreen({ route, navigation }: Props) {
-  const { roomId, signalingUrl, scopes, desktopDeviceName, desktopDeviceId, signalingTlsPin } =
-    route.params;
+  const {
+    roomId,
+    signalingUrl,
+    scopes,
+    desktopDeviceName,
+    desktopDeviceId,
+    signalingTlsPin,
+    rejoin,
+  } = route.params;
   // A live remote-control session is exactly the "video player" case iOS's
   // idle timer exempts: the user is watching/controlling without touching
   // the screen. Without this, Auto-Lock (30s under Low Power Mode) suspends
@@ -227,6 +235,9 @@ export function ViewerScreen({ route, navigation }: Props) {
         onState: (next, detail) => {
           setState(next);
           setRecovery(next === 'recovering_ice' ? (detail ?? null) : null);
+          if (next === 'connected' && desktopDeviceId) {
+            void saveResumeHandle({ desktopDeviceId }).catch(() => {});
+          }
         },
         onError: setError,
         onStats: setQuality,
@@ -287,6 +298,7 @@ export function ViewerScreen({ route, navigation }: Props) {
         },
       },
       signalingTlsPin,
+      rejoin === true,
     );
     connRef.current = conn;
     conn.start().catch((e) => {
@@ -314,6 +326,7 @@ export function ViewerScreen({ route, navigation }: Props) {
     syncGeometry,
     desktopDeviceId,
     signalingTlsPin,
+    rejoin,
   ]);
 
   // Lazily create (once per action) and start/stop the toolbar's held-repeat
@@ -480,6 +493,7 @@ export function ViewerScreen({ route, navigation }: Props) {
   );
 
   const disconnect = useCallback(() => {
+    if (desktopDeviceId) void clearResumeHandle(desktopDeviceId).catch(() => {});
     connRef.current?.close();
     // Return to the EXISTING "Your laptops" screen at the stack root, not a
     // fresh copy. `replace('Devices')` swapped the Viewer for a *second*
@@ -487,7 +501,7 @@ export function ViewerScreen({ route, navigation }: Props) {
     // an identical page. Devices is always the root (initialRouteName), so
     // popToTop returns to the single instance with no back button.
     navigation.popToTop();
-  }, [navigation]);
+  }, [navigation, desktopDeviceId]);
 
   // Two-tap confirm: the Disconnect button sits in the thumb-reach zone
   // directly below a scrollable toolbar the user is actively tapping through
@@ -511,18 +525,9 @@ export function ViewerScreen({ route, navigation }: Props) {
   /**
    * Get back into a session with this laptop.
    *
-   * Bumping `reconnectAttempt` alone re-runs the effect against the SAME
-   * `roomId`, and a room does not outlive the laptop leaving it: once the
-   * desktop is reaped, its authorization record goes with it and every
-   * re-register earns `unauthorized_room`. Retrying that is retrying
-   * something that cannot succeed — observed on production as three attempts
-   * in four seconds, then nothing.
-   *
-   * So: ring the laptop again first, exactly as the laptop list does, and
-   * carry the phone into the NEW room. Falling back to the in-place retry is
-   * still right for the cases a fresh ring cannot serve — a QR session for a
-   * laptop this phone never saved, where there is no secret to ring with, and
-   * where the honest instruction is to scan again.
+   * Prefer resume of the still-Active room (same session, no Ring). If the
+   * hub has already torn that room down, ring a new one — the old room's
+   * authorization record is gone and retrying it earns `unauthorized_room`.
    */
   const reconnect = useCallback(() => {
     void (async () => {
@@ -536,23 +541,23 @@ export function ViewerScreen({ route, navigation }: Props) {
         return;
       }
       try {
-        const res = await requestConnectForPair(pair);
-        // `replace`, not `navigate`: the old room is gone, and leaving a
-        // screen pointed at it in the stack means Back returns to a session
-        // that can only fail.
+        let res;
+        let joinExisting = false;
+        try {
+          res = await requestConnectForPair(pair, { resume: true });
+          joinExisting = res.resumed === true;
+        } catch (e) {
+          if (toAppError(e).code !== 'session_gone') throw e;
+          res = await requestConnectForPair(pair);
+        }
         navigation.replace('Viewer', {
           roomId: res.roomId,
           signalingUrl: res.signalingUrl,
           scopes: res.scopes,
           desktopDeviceName: res.desktopDeviceName ?? pair.name,
           desktopDeviceId: pair.desktopDeviceId,
-          // The mirror of the bug in the laptop list, and it pointed the other
-          // way: this path dropped the pin entirely while `requestConnectForPair`
-          // could perfectly well hand it a LAN URL, so a Reconnect that resolved
-          // to the LAN opened an unpinned socket against a self-signed
-          // certificate — a guaranteed failure. Carrying what the ring returned
-          // is right in both directions.
           signalingTlsPin: res.signalingTlsPin,
+          rejoin: joinExisting,
         });
       } catch (e) {
         setError(toAppError(e));

@@ -38,6 +38,7 @@ jest.mock('react-native-keychain', () => {
 import { upsertPair, setPairSecret } from '../pairs';
 import { saveSession } from '../session';
 import { initDeviceKey, resetDeviceKeyCache } from '../identity';
+import { saveResumeHandle, resetResumeHandleCache } from '../sessionResume';
 
 describe('every Keychain write is THIS_DEVICE_ONLY', () => {
   beforeEach(() => {
@@ -69,6 +70,12 @@ describe('every Keychain write is THIS_DEVICE_ONLY', () => {
   it('identity.ts — the device key, which was already correct', async () => {
     resetDeviceKeyCache();
     await initDeviceKey();
+    assertAllPinned();
+  });
+
+  it('sessionResume.ts — the reopen handle is not a secret, but still this-device-only', async () => {
+    resetResumeHandleCache();
+    await saveResumeHandle({ desktopDeviceId: 'desk-1' });
     assertAllPinned();
   });
 });

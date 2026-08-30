@@ -1,7 +1,7 @@
 ---
 status: Implemented
 owner: @kushsharma024
-last-verified: 2026-08-25
+last-verified: 2026-08-29
 summary: End-user guide for the Mac + iPhone apps.
 ---
 
@@ -152,11 +152,16 @@ You're magnifying a compressed video stream. Switch to **Text** mode for a
 sharper source when reading.
 
 **The session drops when I leave the app.**
-iOS suspends backgrounded apps — that's the OS, not a bug. Lilypad
-reconnects automatically when you come back within about 30 seconds. After
-that the session is gone, but the pairing is not: go to **Your laptops** and
-tap **Connect**. You never re-scan a QR for a Mac you have already paired
-with. The screen stays awake during an active session, so it won't drop from
+Switching away briefly does not end the session: the phone pauses the stream
+and keeps the signaling socket. Coming back resumes control. iOS may freeze or
+kill the process if you stay away long enough — that looks like the phone
+disappearing, and the Mac goes Idle after the signaling timeout (about 25
+seconds if the socket did not close, then 15 seconds of quiet media). Force-
+closing Lilypad is the same: there is often no chance to say goodbye. Reopen
+the app while the Mac is still Active and it reconnects to **that** session.
+After the Mac is Idle, go to **Your laptops** and tap **Connect** — that starts
+a new session. You never re-scan a QR for a Mac you have already paired with.
+The screen stays awake during an active session, so it won't drop from
 auto-lock.
 
 **My Mac's screen turns off and the stream dies.**

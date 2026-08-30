@@ -79,6 +79,7 @@ struct ConnectRequestBody {
     mobile_device_id: String,
     mobile_device_name: Option<String>,
     pair_secret: Option<String>,
+    resume: Option<bool>,
 }
 
 #[derive(serde::Serialize)]
@@ -88,6 +89,8 @@ struct ConnectResponseBody {
     signaling_url: String,
     scopes: Vec<String>,
     desktop_device_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    resumed: Option<bool>,
 }
 
 pub async fn run(state: Arc<LanServerState>, cert_pem: Vec<u8>, key_pem: Vec<u8>) -> Result<()> {
@@ -153,6 +156,8 @@ enum ConnectRefusal {
     /// the two it actually was is logged locally, where the person diagnosing
     /// is already looking and where it crosses no network.
     NotTrusted,
+    /// `resume: true` and there is no live room for this pair.
+    SessionGone,
 }
 
 impl IntoResponse for ConnectRefusal {
@@ -166,12 +171,16 @@ impl IntoResponse for ConnectRefusal {
                 "not_trusted",
                 "no trust relationship — pair with a QR first",
             ),
+            ConnectRefusal::SessionGone => (
+                "session_gone",
+                "there is no live session to resume — ring the laptop to start a new one",
+            ),
         };
-        (
-            StatusCode::NOT_FOUND,
-            Json(json!({ "error": code, "message": message })),
-        )
-            .into_response()
+        let status = match self {
+            ConnectRefusal::SessionGone => StatusCode::CONFLICT,
+            _ => StatusCode::NOT_FOUND,
+        };
+        (status, Json(json!({ "error": code, "message": message }))).into_response()
     }
 }
 
@@ -220,8 +229,25 @@ async fn connect_request(
         return Err(ConnectRefusal::WrongDesktop);
     };
 
-    let room_id = Uuid::new_v4().to_string();
     let scopes = vec![SessionScope::View, SessionScope::Control];
+
+    if body.resume == Some(true) {
+        return match state
+            .hub
+            .find_resumable_room(&device_id, &body.mobile_device_id)
+        {
+            Some(room_id) => Ok(Json(ConnectResponseBody {
+                room_id,
+                signaling_url: endpoints.signaling_url,
+                scopes: vec!["view".into(), "control".into()],
+                desktop_device_name: trusted.display_name,
+                resumed: Some(true),
+            })),
+            None => Err(ConnectRefusal::SessionGone),
+        };
+    }
+
+    let room_id = Uuid::new_v4().to_string();
     let payload = ConnectRequestPayload {
         session_room_id: room_id.clone(),
         mobile_device_id: body.mobile_device_id,
@@ -236,6 +262,7 @@ async fn connect_request(
         signaling_url: endpoints.signaling_url,
         scopes: vec!["view".into(), "control".into()],
         desktop_device_name: trusted.display_name,
+        resumed: None,
     }))
 }
 
@@ -296,7 +323,14 @@ async fn handle_ws(socket: WebSocket, state: Arc<LanServerState>) {
                             })
                         };
                         if let Ok(token) = state.hub.attach(&room_id, role, device_id, send) {
-                            registered = Some((room_id, role, token));
+                            registered = Some((room_id.clone(), role, token));
+                            let rejoin = v
+                                .pointer("/payload/rejoin")
+                                .and_then(|x| x.as_bool())
+                                .unwrap_or(false);
+                            if rejoin && role == Role::Mobile {
+                                state.hub.reissue_session_start(&room_id);
+                            }
                         }
                     }
                 }

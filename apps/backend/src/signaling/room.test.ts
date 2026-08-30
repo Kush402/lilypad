@@ -260,3 +260,29 @@ describe('Room — persistence (toRecord / resurrect)', () => {
     expect(seen).toEqual([{ sessionId: 'sess-1', from: 'connected', to: 'paused' }]);
   });
 });
+
+describe('Room — pending relay', () => {
+  const pairRequest = {
+    type: 'pair-request' as const,
+    roomId: 'room-1',
+    from: 'mobile' as const,
+    ts: 0,
+    payload: { deviceId: 'mobile-01', deviceName: 'phone', requestedScopes: ['view' as const] },
+  };
+
+  it('replays buffered frames in order and clears the queue', () => {
+    const room = makeRoom();
+    expect(room.enqueuePending('desktop', pairRequest)).toBe(true);
+    expect(room.takePending('desktop')).toEqual([pairRequest]);
+    expect(room.takePending('desktop')).toEqual([]);
+  });
+
+  it('refuses to grow past MAX_PENDING', () => {
+    const room = makeRoom();
+    for (let i = 0; i < Room.MAX_PENDING; i++) {
+      expect(room.enqueuePending('desktop', pairRequest)).toBe(true);
+    }
+    expect(room.enqueuePending('desktop', pairRequest)).toBe(false);
+    expect(room.takePending('desktop')).toHaveLength(Room.MAX_PENDING);
+  });
+});

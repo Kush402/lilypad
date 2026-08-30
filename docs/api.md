@@ -1,7 +1,7 @@
 ---
 status: Implemented
 owner: @kushsharma024
-last-verified: 2026-08-12
+last-verified: 2026-08-29
 summary: REST + WebSocket API reference.
 ---
 
@@ -141,8 +141,13 @@ Called by the **mobile** app after scanning. Atomically burns the token.
 
 Called by a **trusted phone** to ring its desktop without a QR. The backend
 verifies the pair, mints a room-auth-bound session room, and delivers a
-`connect-request` over the desktop's presence channel. The response
-deliberately mirrors `POST /pairing/redeem`, so the phone's downstream session
+`connect-request` over the desktop's presence channel. **`resume: true`** skips
+the mint and the ring: if this exact phone is still the seated controller of a
+live (approved) room, the response reuses that `roomId` and the phone registers
+with `rejoin: true`. Otherwise **409 `session_gone`** — never a silent new
+session. A Ring (`resume` absent) still supersedes an Active session. The
+response
+deliberately mirrors `POST /pairing/redeem` so the phone's downstream session
 flow is identical either way. Rate-limited **30/minute per IP**. Schemas:
 [`connect.ts`](../packages/protocol/src/connect.ts).
 
@@ -154,15 +159,22 @@ thing between an attacker and it was knowing two device ids and a secret.
 // request
 { "desktopDeviceId": "desktop-…", "mobileDeviceId": "mobile-…",
   "mobileDeviceName": "iPhone",   // optional
-  "pairSecret": "…" }                // per-pair secret; required — a pair
-                                     // without one is refused (SEC-5)
+  "pairSecret": "…",              // per-pair secret; required — a pair
+                                  // without one is refused (SEC-5)
+  "resume": true }                // optional. Rejoin the desktop's live
+                                  // session instead of minting a room.
+                                  // Absent / false is a Ring (new room,
+                                  // takeover if the Mac is already Active).
 // 200 OK
 { "roomId": "uuid", "signalingUrl": "wss://…", "scopes": ["view","control"],
-  "desktopDeviceName": "Ada’s MacBook Pro" }
+  "desktopDeviceName": "Ada’s MacBook Pro",
+  "resumed": true }               // present only when the live room was reused
 // 404 not_trusted   — no pair, or a bad pairSecret (reported identically on
 //                     purpose, so device-id guessing can't probe for existence)
 // 403 revoked       — the pairing was revoked; re-pair with a QR
 // 503 desktop_offline — the desktop has no live presence channel
+// 409 session_gone  — `resume: true` and there is no live session for this
+//                     phone on that laptop. Ring without `resume` to start one.
 ```
 
 ## Account devices ✅ 🔒 device token (P2)

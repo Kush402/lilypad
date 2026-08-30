@@ -7,6 +7,7 @@ import { loadPairs, reconcilePairs, touchPair, type PairedDesktop } from '../lib
 import { requestConnectForPair } from '../lib/api';
 import { listMyPairs } from '../lib/accountDevices';
 import { useSession } from '../lib/sessionContext';
+import { RedeemError, appError } from '../lib/errors';
 import type { RootStackParamList } from '../types';
 
 jest.mock('../lib/pairs', () => ({
@@ -21,6 +22,10 @@ jest.mock('../lib/pairs', () => ({
 jest.mock('../lib/api', () => ({ requestConnectForPair: jest.fn(), requestUnpair: jest.fn() }));
 jest.mock('../lib/accountDevices', () => ({ listMyPairs: jest.fn() }));
 jest.mock('../lib/sessionContext', () => ({ useSession: jest.fn() }));
+jest.mock('../lib/sessionResume', () => ({
+  loadResumeHandle: jest.fn().mockResolvedValue(null),
+  clearResumeHandle: jest.fn().mockResolvedValue(undefined),
+}));
 
 const ACCOUNT_API = 'https://api.takedia.com';
 /** A laptop that advertises a different host. This is not exotic: it is what a
@@ -43,12 +48,16 @@ function AccountDevicesStub({ route }: { route: { params?: { apiBaseUrl?: string
 
 /** Renders the pin that actually crossed into the Viewer, so the assertion is
  * about the value the route carried rather than about a mock's arguments. */
-function ViewerStub({ route }: { route: { params?: { signalingTlsPin?: string } } }) {
+function ViewerStub({
+  route,
+}: {
+  route: { params?: { signalingTlsPin?: string; rejoin?: boolean; roomId?: string } };
+}) {
   const ReactActual = jest.requireActual('react') as typeof React;
   return ReactActual.createElement(
     'Text',
     null,
-    `viewer-pin:${route.params?.signalingTlsPin ?? 'none'}`,
+    `viewer-pin:${route.params?.signalingTlsPin ?? 'none'} rejoin:${route.params?.rejoin ? 'yes' : 'no'} room:${route.params?.roomId ?? 'none'}`,
   );
 }
 
@@ -84,6 +93,12 @@ beforeEach(() => {
   (loadPairs as jest.Mock).mockResolvedValue([]);
   (listMyPairs as jest.Mock).mockRejectedValue(new Error('offline'));
   (reconcilePairs as jest.Mock).mockResolvedValue([]);
+  const { loadResumeHandle, clearResumeHandle } = jest.requireMock('../lib/sessionResume') as {
+    loadResumeHandle: jest.Mock;
+    clearResumeHandle: jest.Mock;
+  };
+  loadResumeHandle.mockResolvedValue(null);
+  clearResumeHandle.mockResolvedValue(undefined);
 });
 
 /**
@@ -170,7 +185,7 @@ describe('which TLS pin a ring hands the Viewer', () => {
     renderScreen();
     fireEvent.press(await screen.findByText('Connect'));
 
-    expect(await screen.findByText('viewer-pin:none')).toBeTruthy();
+    expect(await screen.findByText('viewer-pin:none rejoin:no room:room-1')).toBeTruthy();
   });
 
   it('sends the one the ring returned when LAN won', async () => {
@@ -185,6 +200,69 @@ describe('which TLS pin a ring hands the Viewer', () => {
     renderScreen();
     fireEvent.press(await screen.findByText('Connect'));
 
-    expect(await screen.findByText(`viewer-pin:${'b'.repeat(64)}`)).toBeTruthy();
+    expect(
+      await screen.findByText(`viewer-pin:${'b'.repeat(64)} rejoin:no room:room-1`),
+    ).toBeTruthy();
+  });
+
+  it('Connect is a Ring: it does not ask to resume', async () => {
+    (loadPairs as jest.Mock).mockResolvedValue([pair()]);
+    (requestConnectForPair as jest.Mock).mockResolvedValue({
+      roomId: 'room-new',
+      signalingUrl: 'wss://api.takedia.com/ws/signal',
+      scopes: ['view'],
+    });
+    renderScreen();
+    fireEvent.press(await screen.findByText('Connect'));
+    await screen.findByText(/viewer-pin:/);
+    expect(requestConnectForPair).toHaveBeenCalledWith(
+      expect.objectContaining({ desktopDeviceId: 'desktop-1' }),
+    );
+    expect(requestConnectForPair).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ resume: true }),
+    );
+  });
+});
+
+describe('reopen while the Mac is still Active', () => {
+  const { loadResumeHandle, clearResumeHandle } = jest.requireMock('../lib/sessionResume') as {
+    loadResumeHandle: jest.Mock;
+    clearResumeHandle: jest.Mock;
+  };
+
+  beforeEach(() => {
+    (touchPair as jest.Mock).mockResolvedValue(undefined);
+    loadResumeHandle.mockReset().mockResolvedValue(null);
+    clearResumeHandle.mockReset().mockResolvedValue(undefined);
+  });
+
+  it('auto-rejoins the live room without a Ring', async () => {
+    loadResumeHandle.mockResolvedValue({ desktopDeviceId: 'desktop-1' });
+    (loadPairs as jest.Mock).mockResolvedValue([pair()]);
+    (requestConnectForPair as jest.Mock).mockResolvedValue({
+      roomId: 'room-live',
+      signalingUrl: 'wss://api.takedia.com/ws/signal',
+      scopes: ['view', 'control'],
+      resumed: true,
+    });
+    renderScreen();
+    expect(await screen.findByText('viewer-pin:none rejoin:yes room:room-live')).toBeTruthy();
+    expect(requestConnectForPair).toHaveBeenCalledWith(
+      expect.objectContaining({ desktopDeviceId: 'desktop-1' }),
+      { resume: true },
+    );
+  });
+
+  it('stays on the list when the session is already gone', async () => {
+    loadResumeHandle.mockResolvedValue({ desktopDeviceId: 'desktop-1' });
+    (loadPairs as jest.Mock).mockResolvedValue([pair()]);
+    (requestConnectForPair as jest.Mock).mockRejectedValue(
+      new RedeemError(appError('session_gone')),
+    );
+    renderScreen();
+    await waitFor(() => expect(clearResumeHandle).toHaveBeenCalled());
+    expect(screen.queryByText(/viewer-pin:/)).toBeNull();
+    expect(await screen.findByText('Kush’s MacBook')).toBeTruthy();
   });
 });

@@ -59,6 +59,13 @@ const register = z.object({
   payload: z.object({
     role: DeviceKindSchema,
     deviceId: z.string().min(8).max(MAX_ID_LEN),
+    /**
+     * Process-death rejoin of a live room. The hub re-issues `session-start`
+     * so both peers mint a new WebRTC transport. Mid-session socket flaps
+     * omit this — media is still flowing and a fresh session-start would
+     * tear it down.
+     */
+    rejoin: z.boolean().optional(),
   }),
 });
 
@@ -167,13 +174,18 @@ const resume = z.object({
   payload: z.object({}),
 });
 
-/** Ask the desktop to produce a new offer (e.g. resolution/track change, ICE restart). */
+/** Ask the desktop to produce a new offer (e.g. resolution/track change, ICE restart).
+ * `rejoin: true` is a process-death resume: the phone has a new PeerConnection
+ * (new DTLS fingerprint), so ICE-restart on the old desktop peer cannot work.
+ * The hub re-issues `session-start` to both seats with fresh ICE instead of
+ * relaying this as a restart request. */
 const renegotiate = z.object({
   type: z.literal('renegotiate'),
   ...envelope,
   payload: z.object({
     reason: z.string().max(MAX_REASON_LEN).nullable().optional(),
     iceRestart: z.boolean().optional(),
+    rejoin: z.boolean().optional(),
   }),
 });
 

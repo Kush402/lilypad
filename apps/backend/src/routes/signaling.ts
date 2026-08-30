@@ -128,7 +128,7 @@ export async function signalingRoutes(
       if (!parsed.success) {
         return reply.code(400).send({ error: 'invalid_request', issues: parsed.error.issues });
       }
-      const { desktopDeviceId, mobileDeviceId, mobileDeviceName, pairSecret } = parsed.data;
+      const { desktopDeviceId, mobileDeviceId, mobileDeviceName, pairSecret, resume } = parsed.data;
 
       // The caller must BE the phone it names (M9, ADR-0010). Ringing someone
       // else's laptop is the single highest-value thing an attacker could do
@@ -260,13 +260,41 @@ export async function signalingRoutes(
           .send({ error: 'desktop_offline', message: 'the desktop is not reachable right now' });
       }
 
+      const scopes = ['view', 'control'] as const;
+
+      // Reopen-while-Active: reuse the live room. Do not mint, do not ring,
+      // do not teardown. A Ring (`resume` absent/false) still supersedes.
+      if (resume) {
+        const liveRoomId = hub.findLiveSessionForPair(desktopDeviceId, mobileDeviceId);
+        const authorized =
+          liveRoomId != null &&
+          (await roomAuth.verify(liveRoomId, 'mobile', mobileDeviceId)) &&
+          (await roomAuth.verify(liveRoomId, 'desktop', desktopDeviceId));
+        if (!authorized || !liveRoomId) {
+          return reply.code(409).send({
+            error: 'session_gone',
+            message: 'there is no live session to resume — ring the laptop to start a new one',
+          });
+        }
+        void trust
+          .touchConnected(pair.pairId)
+          .catch((err) => log.signaling.warn({ err }, 'lastConnectedAt update failed'));
+        const resumed: ConnectResponse = {
+          roomId: liveRoomId,
+          signalingUrl: advertisedUrls().signalingUrl,
+          scopes: [...scopes],
+          desktopDeviceName: pair.displayName,
+          resumed: true,
+        };
+        return reply.code(200).send(resumed);
+      }
+
       // Mint the session room exactly as a redeem would: room-auth bound to
       // BOTH devices (session TTL) BEFORE either device can try to register.
       const roomId = randomUUID();
       await roomAuth.recordDesktop(roomId, desktopDeviceId);
       await roomAuth.recordMobile(roomId, desktopDeviceId, mobileDeviceId);
 
-      const scopes = ['view', 'control'] as const;
       const delivered = hub.notifyConnectRequest(desktopDeviceId, {
         sessionRoomId: roomId,
         mobileDeviceId,

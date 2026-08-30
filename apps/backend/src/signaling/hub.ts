@@ -314,6 +314,29 @@ export class SignalingHub {
   }
 
   /**
+   * The live session room this exact desktop↔mobile pair can resume, or
+   * null. Presence rooms, terminal rooms, rooms that never reached
+   * approval (`sessionId` unset — Mac is Pairing, not Active), a desktop
+   * that has already left, and a room whose mobile seat belongs to a
+   * different phone are all "not this session."
+   *
+   * Identity is the pair + a still-live hub room. `roomId` is not a
+   * bearer capability; room-auth still gates the subsequent `register`.
+   */
+  findLiveSessionForPair(desktopDeviceId: string, mobileDeviceId: string): string | null {
+    for (const room of this.registry.all()) {
+      if (presenceRoomDeviceId(room.id) !== null) continue;
+      if (room.fsmIsTerminal()) continue;
+      if (!room.sessionId) continue;
+      if (room.deviceIdFor('desktop') !== desktopDeviceId) continue;
+      if (room.deviceIdFor('mobile') !== mobileDeviceId) continue;
+      if (!room.hasSeat('desktop')) continue;
+      return room.id;
+    }
+    return null;
+  }
+
+  /**
    * Force-end every live room for this exact desktop↔mobile device pair,
    * reusing the existing `endRoom` (sends `session-end` with `reason` to both
    * seats, then closes both sockets) — the desktop's own session runner
@@ -499,16 +522,25 @@ export class SignalingHub {
       }
     }
 
-    // A mobile (re)claiming its seat AFTER approval but BEFORE the session
-    // established missed its `session-start` — its socket flapped across the
-    // exact delivery window, and nothing else ever re-sends it. Observed
-    // live (M5.4 bring-up): phone stuck on "Waiting for approval…" while
-    // the desktop's offer sat unanswered until the recovery deadline killed
-    // the room. Re-issue to THIS seat only, with fresh ICE credentials.
-    // Mobile-only: the desktop authored the approval (it can't miss it),
-    // and its client treats session-start as a fresh negotiation — safe
-    // here for the phone precisely because no answer exists yet.
-    if (room.sessionId && !room.isEstablished() && role === 'mobile') {
+    // Desktop present → move out of idle so a pairing can proceed.
+    if (role === 'desktop') room.tryFsm('pairing');
+
+    // Process-death rejoin of an already-approved room: both peers need a
+    // fresh session-start (new ICE, new PeerConnection). Mid-session
+    // socket flaps omit `rejoin` and keep the existing WebRTC path.
+    if (role === 'mobile' && room.sessionId && msg.payload.rejoin) {
+      this.issueSessionStart(room, 'rejoin');
+      log.signaling.info(
+        { roomId: room.id, role },
+        're-issued session-start for an explicit rejoin',
+      );
+    } else if (room.sessionId && !room.isEstablished() && role === 'mobile') {
+      // A mobile (re)claiming its seat AFTER approval but BEFORE the session
+      // established missed its `session-start` — its socket flapped across the
+      // exact delivery window, and nothing else ever re-sends it. Observed
+      // live (M5.4 bring-up): phone stuck on "Waiting for approval…" while
+      // the desktop's offer sat unanswered until the recovery deadline killed
+      // the room. Re-issue to THIS seat only, with fresh ICE credentials.
       this.send(room, role, {
         type: 'session-start',
         payload: {
@@ -524,8 +556,21 @@ export class SignalingHub {
       );
     }
 
-    // Desktop present → move out of idle so a pairing can proceed.
-    if (role === 'desktop') room.tryFsm('pairing');
+    // Replay frames that arrived before this seat existed (LAN already
+    // does this). Must run AFTER `pairing` so a buffered `pair-request`
+    // can legally enter `waiting_approval`.
+    const queued = room.takePending(role);
+    if (queued.length > 0) {
+      const from = room.otherRole(role);
+      for (const queuedMsg of queued) {
+        this.executeRoute(room, from, queuedMsg);
+      }
+      log.signaling.info(
+        { roomId: room.id, role, count: queued.length },
+        'replayed buffered frames to a newly seated peer',
+      );
+    }
+
     this.persistRoom(room);
   }
 
@@ -608,25 +653,37 @@ export class SignalingHub {
       scopes: grantedScopes,
     });
 
-    // Each peer gets its own fresh time-limited ICE credentials.
+    this.issueSessionStart(room, 'approve');
+    log.session.info({ roomId: room.id, sessionId, grantedScopes }, 'session approved, ICE issued');
+  }
+
+  /** Send `session-start` to both seats with fresh ICE credentials.
+   * Reuses the room's existing `sessionId` — a rejoin is the same
+   * session, not a second mint. */
+  private issueSessionStart(room: Room, label: string): void {
+    const sessionId = room.sessionId;
+    if (!sessionId) return;
     for (const role of ['desktop', 'mobile'] as const) {
       this.send(room, role, {
         type: 'session-start',
         payload: {
           sessionId,
-          grantedScopes,
-          iceServers: this.deps.buildIceServers(`${sessionId}:${role}`),
+          grantedScopes: room.scopes,
+          iceServers: this.deps.buildIceServers(`${sessionId}:${role}:${label}`),
           iceTransportPolicy: this.deps.iceTransportPolicy ?? 'all',
         },
       });
     }
-    log.session.info({ roomId: room.id, sessionId, grantedScopes }, 'session approved, ICE issued');
   }
 
   private relay(room: Room, to: DeviceKind, msg: SignalingMessage): void {
     const target = room.seat(to);
     if (!target) {
-      log.signaling.debug({ roomId: room.id, to, type: msg.type }, 'relay dropped: peer absent');
+      const buffered = room.enqueuePending(to, msg);
+      log.signaling.debug(
+        { roomId: room.id, to, type: msg.type, buffered },
+        buffered ? 'relay buffered: peer absent' : 'relay dropped: peer absent (buffer full)',
+      );
       return;
     }
     target.send(msg);

@@ -25,6 +25,15 @@ export const ConnectRequestSchema = z.object({
    * once admitted with no secret at all (SEC-5, migration `0005`). A phone
    * that lost its secret re-pairs once with a QR. */
   pairSecret: z.string().min(16).max(128).optional(),
+  /**
+   * Rejoin the desktop's live session instead of minting a room.
+   *
+   * Absent / false is a Ring: new room, presence `connect-request`, takeover
+   * if the Mac is already Active. `true` is reopen-while-Active: same room
+   * if this phone is still the seated controller and the room is still live;
+   * otherwise `409 session_gone` — never a silent new mint.
+   */
+  resume: z.boolean().optional(),
 });
 export type ConnectRequest = z.infer<typeof ConnectRequestSchema>;
 
@@ -33,11 +42,13 @@ export const ConnectResponseSchema = z.object({
   signalingUrl: z.string(),
   scopes: z.array(SessionScopeSchema),
   desktopDeviceName: z.string().nullable(),
+  /** True when the server reused a live room instead of minting one. */
+  resumed: z.boolean().optional(),
 });
 export type ConnectResponse = z.infer<typeof ConnectResponseSchema>;
 
 /** Machine-readable failure codes the connect endpoint returns. */
-export type ConnectErrorCode = 'not_trusted' | 'revoked' | 'desktop_offline';
+export type ConnectErrorCode = 'not_trusted' | 'revoked' | 'desktop_offline' | 'session_gone';
 
 /** Mobile-initiated unpair (the symmetric counterpart to ConnectRequest):
  * a phone "Forgets" a laptop, severing the trust pairing on the backend so it

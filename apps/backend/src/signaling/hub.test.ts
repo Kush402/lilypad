@@ -985,12 +985,11 @@ describe('SignalingHub — approve requires both seats', () => {
 });
 
 describe('SignalingHub — pairing before both seats exist', () => {
-  it('drops a pair-request that arrives before the desktop ever registers', () => {
-    // The mobile seat can register and send pair-request before the desktop
-    // ever connects (e.g. a slow desktop launch after the phone scanned).
-    // relay() has nowhere to deliver it — this pins the CURRENT behavior
-    // (silently dropped, not queued or retried) rather than asserting it's
-    // the ideal behavior; a fix would replay it once the desktop registers.
+  it('replays a pair-request that arrives before the desktop registers', () => {
+    // Takeover race (proven 2026-08-29): phone mints room B, seats, and
+    // pair-requests while the Mac is still inside SESSION_TEARDOWN_WAIT on
+    // room A. LAN already buffered this gap; dropping it left the phone on
+    // "Waiting for approval…" with no auto-approve.
     const hub = makeHub();
     const mobile = new FakePeer();
     hub.handleMessage(mobile, reg('mobile', 'mobile-01'));
@@ -1002,14 +1001,100 @@ describe('SignalingHub — pairing before both seats exist', () => {
         requestedScopes: ['view'],
       }),
     );
-    // No error is sent to the mobile — the hub doesn't know the pair-request
-    // failed to reach anyone; it's just silently absorbed.
     expect(mobile.find('error')).toBeUndefined();
 
-    // When the desktop later registers, the lost pair-request is not replayed.
     const desktop = new FakePeer();
     hub.handleMessage(desktop, reg('desktop', 'desktop-01'));
-    expect(desktop.find('pair-request')).toBeUndefined();
+    expect(desktop.find('pair-request')).toBeTruthy();
+    expect(desktop.find('pair-request')?.payload).toMatchObject({
+      deviceId: 'mobile-01',
+      requestedScopes: ['view'],
+    });
+  });
+});
+
+describe('SignalingHub — resume a live session', () => {
+  function approvedEstablished() {
+    const { hub, desktop, mobile } = connectedRoom();
+    hub.handleMessage(
+      mobile,
+      frame('pair-request', 'mobile', {
+        deviceId: 'mobile-01',
+        deviceName: 'phone',
+        requestedScopes: ['view', 'control'],
+      }),
+    );
+    hub.handleMessage(desktop, frame('pair-approved', 'desktop', { grantedScopes: ['view'] }));
+    hub.handleMessage(desktop, frame('offer', 'desktop', { type: 'offer', sdp: 'v=0' }));
+    hub.handleMessage(mobile, frame('answer', 'mobile', { type: 'answer', sdp: 'v=0' }));
+    return { hub, desktop, mobile };
+  }
+
+  it('finds the live room for the seated pair', () => {
+    const { hub } = approvedEstablished();
+    expect(hub.findLiveSessionForPair('desktop-01', 'mobile-01')).toBe(ROOM);
+  });
+
+  it('refuses a different phone (no silent takeover via resume)', () => {
+    const { hub } = approvedEstablished();
+    expect(hub.findLiveSessionForPair('desktop-01', 'mobile-other')).toBeNull();
+  });
+
+  it('refuses a pairing-only room that never reached approval', () => {
+    const hub = makeHub();
+    hub.handleMessage(new FakePeer(), reg('desktop', 'desktop-01'));
+    hub.handleMessage(new FakePeer(), reg('mobile', 'mobile-01'));
+    expect(hub.findLiveSessionForPair('desktop-01', 'mobile-01')).toBeNull();
+  });
+
+  it('still finds the room after the phone seat is vacated (swipe-kill)', () => {
+    const { hub, mobile } = approvedEstablished();
+    hub.handleClose(mobile);
+    expect(hub.findLiveSessionForPair('desktop-01', 'mobile-01')).toBe(ROOM);
+  });
+
+  it('cannot resurrect a room the hub has already ended', () => {
+    const { hub, desktop } = approvedEstablished();
+    hub.handleMessage(desktop, frame('disconnect', 'desktop', { reason: null }));
+    expect(hub.findLiveSessionForPair('desktop-01', 'mobile-01')).toBeNull();
+  });
+
+  it('skips presence rooms', () => {
+    const hub = makeHub();
+    hub.handleMessage(new FakePeer(), {
+      type: 'register',
+      roomId: 'presence:desktop-01',
+      from: 'desktop',
+      ts: 0,
+      payload: { role: 'desktop', deviceId: 'desktop-01' },
+    });
+    expect(hub.findLiveSessionForPair('desktop-01', 'mobile-01')).toBeNull();
+  });
+
+  it('an explicit rejoin re-issues session-start to both seats of an established room', () => {
+    const { hub, desktop, mobile } = approvedEstablished();
+    hub.handleClose(mobile);
+    desktop.sent = desktop.sent.filter((m) => m.type !== 'session-start');
+
+    const mobile2 = new FakePeer();
+    hub.handleMessage(mobile2, {
+      ...reg('mobile', 'mobile-01'),
+      payload: { role: 'mobile', deviceId: 'mobile-01', rejoin: true },
+    });
+
+    expect(mobile2.find('session-start')).toBeTruthy();
+    expect(desktop.find('session-start')).toBeTruthy();
+    expect(mobile2.find('session-start')?.payload.sessionId).toBe(
+      desktop.find('session-start')?.payload.sessionId,
+    );
+  });
+
+  it('a flap without rejoin does not rebuild an established peer', () => {
+    const { hub, mobile } = approvedEstablished();
+    hub.handleClose(mobile);
+    const mobile2 = new FakePeer();
+    hub.handleMessage(mobile2, reg('mobile', 'mobile-01'));
+    expect(mobile2.find('session-start')).toBeUndefined();
   });
 });
 

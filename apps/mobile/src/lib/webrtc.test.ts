@@ -207,6 +207,16 @@ describe('ViewerConnection', () => {
     expect(lastLifecycle()).toBeDefined();
   });
 
+  it('start({ rejoin: true }) registers with rejoin and skips pair-request', async () => {
+    const cb = makeCallbacks();
+    const conn = new ViewerConnection('wss://x', 'room1', ['view'], cb, undefined, true);
+    await conn.start();
+
+    const sig = lastSignaling();
+    expect(sig.register).toHaveBeenCalledWith(expect.any(String), { rejoin: true });
+    expect(sig.pairRequest).not.toHaveBeenCalled();
+  });
+
   it('reaching session-start builds a peer connection that reports negotiating then connected', async () => {
     const cb = makeCallbacks();
     const conn = new ViewerConnection('wss://x', 'room1', ['control'], cb);
@@ -958,15 +968,12 @@ describe('ViewerConnection', () => {
   });
 
   describe('app lifecycle wiring', () => {
-    it('onBackground sends a pause with a reason and drops the signaling socket', async () => {
+    it('onBackground sends a pause with a reason and keeps the signaling socket', async () => {
       const cb = makeCallbacks();
       const { sig } = await startConnected(cb);
       lastLifecycle().cb.onBackground();
       expect(sig.pause).toHaveBeenCalledWith('backgrounded');
-      // Drop the socket so the hub vacates the seat now, not after iOS
-      // freezes JS and the 25s heartbeat timeout. Not `close()`/`disconnect`:
-      // those hang up; this is reclaimable.
-      expect(sig.dropTransport).toHaveBeenCalledTimes(1);
+      expect(sig.dropTransport).not.toHaveBeenCalled();
       expect(sig.disconnect).not.toHaveBeenCalled();
       expect(sig.close).not.toHaveBeenCalled();
     });
@@ -987,14 +994,9 @@ describe('ViewerConnection', () => {
       expect(sig.resume).toHaveBeenCalledTimes(2);
     });
 
-    it('foreground after dropTransport re-attaches signaling without hanging up WebRTC', async () => {
-      // Product path: 2s debounce already fired (this test is past it),
-      // socket was dropped so the hub can reap a kill, then the user is
-      // back. Reclaim the seat; do not disconnect/close the peer.
+    it('foreground reconnects if the OS dropped the socket, without hanging up WebRTC', async () => {
       const cb = makeCallbacks();
       const { sig, peer } = await startConnected(cb);
-      lastLifecycle().cb.onBackground();
-      expect(sig.dropTransport).toHaveBeenCalledTimes(1);
 
       sig.isOpen.mockReturnValue(false);
       sig.isReconnecting.mockReturnValue(false);
