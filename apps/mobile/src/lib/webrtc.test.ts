@@ -103,6 +103,7 @@ jest.mock('./signaling', () => {
           setDisplay: jest.fn(),
           heartbeat: jest.fn(),
           disconnect: jest.fn(),
+          dropTransport: jest.fn(),
           close: jest.fn(),
           beginReconnect: jest.fn(),
           isReconnecting: jest.fn().mockReturnValue(false),
@@ -957,11 +958,17 @@ describe('ViewerConnection', () => {
   });
 
   describe('app lifecycle wiring', () => {
-    it('onBackground sends a pause with a reason', async () => {
+    it('onBackground sends a pause with a reason and drops the signaling socket', async () => {
       const cb = makeCallbacks();
       const { sig } = await startConnected(cb);
       lastLifecycle().cb.onBackground();
       expect(sig.pause).toHaveBeenCalledWith('backgrounded');
+      // Drop the socket so the hub vacates the seat now, not after iOS
+      // freezes JS and the 25s heartbeat timeout. Not `close()`/`disconnect`:
+      // those hang up; this is reclaimable.
+      expect(sig.dropTransport).toHaveBeenCalledTimes(1);
+      expect(sig.disconnect).not.toHaveBeenCalled();
+      expect(sig.close).not.toHaveBeenCalled();
     });
 
     it('onForeground resumes, and reconnects only if the socket is not open', async () => {
@@ -978,6 +985,26 @@ describe('ViewerConnection', () => {
       lastLifecycle().cb.onForeground();
       expect(sig.beginReconnect).toHaveBeenCalledWith(expect.any(String));
       expect(sig.resume).toHaveBeenCalledTimes(2);
+    });
+
+    it('foreground after dropTransport re-attaches signaling without hanging up WebRTC', async () => {
+      // Product path: 2s debounce already fired (this test is past it),
+      // socket was dropped so the hub can reap a kill, then the user is
+      // back. Reclaim the seat; do not disconnect/close the peer.
+      const cb = makeCallbacks();
+      const { sig, peer } = await startConnected(cb);
+      lastLifecycle().cb.onBackground();
+      expect(sig.dropTransport).toHaveBeenCalledTimes(1);
+
+      sig.isOpen.mockReturnValue(false);
+      sig.isReconnecting.mockReturnValue(false);
+      lastLifecycle().cb.onForeground();
+
+      expect(sig.beginReconnect).toHaveBeenCalledWith(expect.any(String));
+      expect(sig.resume).toHaveBeenCalled();
+      expect(sig.disconnect).not.toHaveBeenCalled();
+      expect(sig.close).not.toHaveBeenCalled();
+      expect(peer.close).not.toHaveBeenCalled();
     });
 
     it('onNetworkRestored renegotiates only once a peer connection exists', async () => {

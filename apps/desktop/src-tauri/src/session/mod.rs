@@ -163,27 +163,21 @@ const MAX_ICE_RESTARTS: u32 = 2;
 /// recovered — just not a merely-silent one.
 const TRAFFIC_LIVENESS_WINDOW: Duration = Duration::from_secs(34);
 
-/// Once the backend reports the phone's SIGNALING is gone (`peer-status`
-/// online:false), we no longer need the long cellular-gap tolerance to decide
-/// it's truly gone — a killed app / dead network produces NEITHER signaling NOR
-/// peer-to-peer media. So while the counterpart is signaling-offline, require
-/// fresh P2P traffic within this window to keep the session; past it, with
-/// signaling also gone, the phone is genuinely gone — end promptly instead of
-/// sitting "active" indefinitely. If media is still flowing P2P (a signaling
-/// blip, not a gone phone), traffic stays fresh and the session survives until
-/// the phone re-registers.
+/// Once the hub reports the phone's SIGNALING is gone (`peer-status`
+/// online:false), we no longer wait out the long cellular-gap tolerance to
+/// decide the phone is gone. A killed / swipe-killed / crashed app produces
+/// a socket close immediately; inbound RTCP/PLI then stops. Outbound
+/// capture does not count as liveness — without this check the Mac stayed
+/// Active and encoding for the full window (observed 2026-08-29T23:40Z
+/// room `9664972e`: last inbound ~23:40:51, `phone gone` at 23:41:36).
 ///
-/// MUST be comfortably longer than `TRAFFIC_LIVENESS_WINDOW` (34s), not
-/// shorter. Live cellular logs showed signaling and media blip TOGETHER for
-/// up to ~34s while the phone was still alive — with the old 10s value, a
-/// normal cellular gap tripped this check and false-ended a working session
-/// seconds after the desktop's own "ICE reports failed but peer traffic is
-/// live — ignoring" tolerance had just decided to ride it out. 45s clears
-/// `TRAFFIC_LIVENESS_WINDOW` with real margin, so this only fires when media
-/// has been absent well beyond the normal cellular-gap tolerance while
-/// signaling is ALSO gone — i.e. the phone is genuinely gone, not merely
-/// blipping.
-const COUNTERPART_GONE_MEDIA_WINDOW: Duration = Duration::from_secs(45);
+/// Sized to `@lilypad/protocol`'s `BACKEND_REREGISTER_GRACE_MS` (15s): a
+/// flap that reclaims the mobile seat (reconnect budget 7.5s) still
+/// survives; 45s of Active after the app is gone does not. Media still
+/// flowing P2P outvotes this (a signaling-only blip, not a gone phone).
+/// A brief iOS app-switch never produces `peer-status` — the 2s pause
+/// debounce keeps the socket up.
+const COUNTERPART_GONE_MEDIA_WINDOW: Duration = Duration::from_secs(15);
 
 /// Minimum wall-clock spacing between ICE restarts, regardless of what
 /// triggers them (a desktop-side "failed" verdict or a phone-initiated
@@ -707,16 +701,28 @@ impl SessionRunner {
                 }
             }
             "peer-status" => {
-                // Backend nudge: the phone's SIGNALING transport dropped
+                // Hub nudge: the phone's SIGNALING transport dropped
                 // (online:false) or came back (online:true). We don't end
                 // here — the heartbeat tick combines this with
                 // peer-to-peer media liveness (see
                 // COUNTERPART_GONE_MEDIA_WINDOW) so a signaling blip where
-                // media still flows doesn't kill a working session.
+                // media still flows doesn't kill a working session. We DO
+                // stop *sending* video immediately: a swipe-killed phone
+                // will never reclaim, and encoding into the void is the
+                // "Mac still Active" product bug. Capture itself stops
+                // when counterpart_gone ends the session (~15s). A reclaim
+                // unpauses. `pause` from a still-seated phone is separate
+                // and is not undone here.
                 if let Ok(p) =
                     serde_json::from_value::<messages::PeerStatusPayload>(env.payload.clone())
                 {
                     self.counterpart_signaling_offline = !p.online;
+                    self.media.set_paused(!p.online);
+                    log::info!(
+                        target: "lilypad::session",
+                        "counterpart signaling {}",
+                        if p.online { "online" } else { "offline — pausing send" }
+                    );
                 }
             }
             "pair-denied" | "disconnect" | "session-end" => {
@@ -800,6 +806,12 @@ impl SessionRunner {
                 // is back, whether or not a `peer-status` online:true nudge
                 // ever arrived (a reconnect implies the phone re-registered)
                 // — belt-and-suspenders alongside the `peer-status` handler.
+                if self.counterpart_signaling_offline {
+                    // ICE `connected` implies the phone is back, whether or
+                    // not a `peer-status` online:true has landed yet — don't
+                    // leave send paused after we clear the offline flag.
+                    self.media.set_paused(false);
+                }
                 self.counterpart_signaling_offline = false;
                 self.ever_connected = true;
                 if !was_connected {
@@ -1658,6 +1670,31 @@ mod tests {
             last_ice_restart,
             calm,
             ICE_RESTART_STABILITY_WINDOW
+        ));
+    }
+
+    #[test]
+    fn counterpart_gone_window_matches_reregister_grace() {
+        // Product pin: 45s of Active after a killed phone was the bug
+        // (2026-08-29T23:40Z room 9664972e). A flap's reconnect budget is
+        // 7.5s; the hub holds the vacated seat 15s. Do not widen this
+        // back to TRAFFIC_LIVENESS_WINDOW without re-opening that bug.
+        assert_eq!(COUNTERPART_GONE_MEDIA_WINDOW, Duration::from_secs(15));
+    }
+
+    #[test]
+    fn counterpart_gone_false_inside_reregister_grace() {
+        // 10s of silence after a signaling drop is still inside the
+        // reclaim window — a reconnect in flight must not look like a
+        // killed app.
+        let now = Instant::now();
+        let last_traffic = Some(now - Duration::from_secs(10));
+        assert!(!counterpart_gone(
+            true,
+            true,
+            last_traffic,
+            now,
+            COUNTERPART_GONE_MEDIA_WINDOW
         ));
     }
 

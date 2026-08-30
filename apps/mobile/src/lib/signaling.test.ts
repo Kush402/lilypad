@@ -286,6 +286,31 @@ describe('MobileSignaling', () => {
       expect(events).toEqual([{ kind: 'closed' }]);
       expect(sig.isReconnecting()).toBe(false);
     });
+
+    it('dropTransport closes the socket without hanging up or firing closed', async () => {
+      const { sig, events } = await connected();
+      const ws = lastSocket();
+      sig.dropTransport();
+      expect(sig.isOpen()).toBe(false);
+      expect(ws.readyState).toBe(FakeWebSocket.CLOSED);
+      expect(ws.sentType('disconnect')).toBeUndefined();
+      // Not a lifecycle close — that would start reconnecting while
+      // backgrounded. Foreground calls beginReconnect itself.
+      expect(events).toEqual([]);
+      expect(sig.isReconnecting()).toBe(false);
+
+      sig.beginReconnect('mobile-device-1');
+      expect(sig.isReconnecting()).toBe(true);
+      await tick(500);
+      lastSocket().open();
+      await tick(0);
+      expect(sig.isOpen()).toBe(true);
+      expect(lastSocket().sentType('register')).toMatchObject({
+        payload: { role: 'mobile', deviceId: 'mobile-device-1' },
+      });
+      expect(lastSocket().sentType('disconnect')).toBeUndefined();
+      expect(events).toEqual([{ kind: 'reconnected' }]);
+    });
   });
 
   describe('protocol message shape', () => {

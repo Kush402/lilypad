@@ -300,6 +300,24 @@ export class MobileSignaling {
     });
   }
 
+  /** Close the current socket without marking this client dead, so a later
+   * `beginReconnect` can reclaim the seat. Used when the app is backgrounded
+   * past the 2s debounce: iOS will freeze JS next, and without this the hub
+   * waits out the 25s heartbeat timeout before telling the desktop the
+   * phone is gone. Does not send `disconnect` — that would hang up a brief
+   * switch that already survived the debounce. Nulling `ws` before `close()`
+   * makes `onclose` treat this as a superseded socket, so we do not fire
+   * `{kind:'closed'}` and start reconnecting while still backgrounded. */
+  dropTransport(): void {
+    const ws = this.ws;
+    this.ws = null;
+    try {
+      ws?.close();
+    } catch {
+      /* ignore */
+    }
+  }
+
   close(): void {
     this.closing = true;
     this.reconnectToken++; // cancels any in-flight reconnect loop

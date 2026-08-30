@@ -272,7 +272,13 @@ export class ViewerConnection {
     this.sig.heartbeat();
     this.heartbeat = setInterval(() => this.sig.heartbeat(), APP_HEARTBEAT_INTERVAL_MS);
     this.lifecycle = new AppLifecycleController({
-      onBackground: () => this.sig.pause('backgrounded'),
+      onBackground: () => {
+        this.sig.pause('backgrounded');
+        // Tell the hub the seat is vacant now, not after iOS freezes JS
+        // and heartbeats stop. The desktop ends after reregister grace
+        // if we never reclaim; a foreground within that window reconnects.
+        this.sig.dropTransport();
+      },
       onForeground: () => {
         if (!this.sig.isOpen() && !this.sig.isReconnecting()) {
           recordState('reconnecting signaling');

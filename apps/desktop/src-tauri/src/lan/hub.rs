@@ -124,6 +124,7 @@ impl LanHub {
     ) -> Result<SeatToken, String> {
         let epoch = self.next_epoch.fetch_add(1, Ordering::Relaxed);
         let replay: Vec<String>;
+        let nudge_online: bool;
         {
             let mut rooms = self.rooms.lock().unwrap_or_else(|p| p.into_inner());
             let room = rooms.entry(room_id.to_owned()).or_insert_with(|| Room {
@@ -144,10 +145,16 @@ impl LanHub {
                 Role::Desktop => {
                     room.desktop = Some(seat);
                     replay = std::mem::take(&mut room.pending_desktop);
+                    nudge_online = false;
                 }
                 Role::Mobile => {
                     room.mobile = Some(seat);
                     replay = std::mem::take(&mut room.pending_mobile);
+                    // Same as the cloud hub: a mobile reclaim after an
+                    // established session is the desktop's "phone is back"
+                    // signal. First attach is pre-established and must not
+                    // fire this — the desktop was never nudged offline.
+                    nudge_online = room.established && room.desktop.is_some();
                 }
             }
         }
@@ -162,6 +169,14 @@ impl LanHub {
                 "replayed {} buffered frame(s) to the {} seat of room {room_id}",
                 replay.len(),
                 role.as_str()
+            );
+        }
+        if nudge_online {
+            self.send_to(
+                Role::Desktop,
+                room_id,
+                "peer-status",
+                json!({ "online": true }),
             );
         }
         Ok(SeatToken(epoch))
@@ -183,29 +198,46 @@ impl LanHub {
     /// on from, and clearing the seat there is the L-182 eviction. See
     /// `SeatToken`.
     pub fn detach(&self, room_id: &str, role: Role, token: SeatToken) {
-        let mut rooms = self.rooms.lock().unwrap_or_else(|p| p.into_inner());
-        let Some(room) = rooms.get_mut(room_id) else {
-            return;
-        };
-        let seat = match role {
-            Role::Desktop => &mut room.desktop,
-            Role::Mobile => &mut room.mobile,
-        };
-        match seat {
-            Some(current) if current.epoch != token.0 => {
-                log::debug!(
-                    target: "lilypad::lan",
-                    "ignoring a stale detach of the {} seat of room {room_id} — \
-                     {} re-took it since",
-                    role.as_str(),
-                    current.device_id
-                );
+        let nudge_offline = {
+            let mut rooms = self.rooms.lock().unwrap_or_else(|p| p.into_inner());
+            let Some(room) = rooms.get_mut(room_id) else {
                 return;
+            };
+            let seat = match role {
+                Role::Desktop => &mut room.desktop,
+                Role::Mobile => &mut room.mobile,
+            };
+            match seat {
+                Some(current) if current.epoch != token.0 => {
+                    log::debug!(
+                        target: "lilypad::lan",
+                        "ignoring a stale detach of the {} seat of room {room_id} — \
+                         {} re-took it since",
+                        role.as_str(),
+                        current.device_id
+                    );
+                    return;
+                }
+                _ => *seat = None,
             }
-            _ => *seat = None,
-        }
-        if room.desktop.is_none() && room.mobile.is_none() {
-            rooms.remove(room_id);
+            // Cloud hub sends `peer-status` `{online:false}` when the mobile
+            // seat vacates a live session, so the desktop can leave Active
+            // after grace instead of encoding until ICE gives up. LAN had
+            // no equivalent, so a swipe-killed phone on LAN left the Mac
+            // Active indefinitely (L-188's "runner gives up" ceiling).
+            let nudge = role == Role::Mobile && room.established && room.desktop.is_some();
+            if room.desktop.is_none() && room.mobile.is_none() {
+                rooms.remove(room_id);
+            }
+            nudge
+        };
+        if nudge_offline {
+            self.send_to(
+                Role::Desktop,
+                room_id,
+                "peer-status",
+                json!({ "online": false }),
+            );
         }
     }
 
@@ -715,5 +747,112 @@ mod tests {
             .filter_map(|s| serde_json::from_str(s).ok())
             .collect();
         assert_eq!(mobile[0]["type"], "offer");
+    }
+
+    fn frames(out: &Arc<StdMutex<Vec<String>>>) -> Vec<Value> {
+        out.lock()
+            .unwrap()
+            .iter()
+            .filter_map(|s| serde_json::from_str(s).ok())
+            .collect()
+    }
+
+    fn establish(hub: &LanHub, room: &str) {
+        hub.handle(
+            Role::Mobile,
+            &format!(
+                r#"{{"type":"answer","roomId":"{room}","from":"mobile","ts":0,"payload":{{"type":"answer","sdp":"v=0"}}}}"#
+            ),
+        );
+    }
+
+    /// A swipe-killed phone on LAN must nudge the desktop the same way the
+    /// cloud hub does, or counterpart_gone never fires (signaling_offline
+    /// stays false) and the Mac keeps encoding.
+    #[test]
+    fn mobile_detach_mid_session_nudges_desktop_peer_status_offline() {
+        let hub = LanHub::new();
+        let (d_send, d_out) = capture_send();
+        let (m_send, _) = capture_send();
+        register(&hub, "room-1", Role::Desktop, "desktop-12345678", d_send);
+        let mobile = register(&hub, "room-1", Role::Mobile, "mobile-12345678", m_send);
+        establish(&hub, "room-1");
+
+        hub.detach("room-1", Role::Mobile, mobile);
+
+        let desktop = frames(&d_out);
+        assert!(
+            desktop
+                .iter()
+                .any(|v| v["type"] == "peer-status" && v["payload"]["online"] == false),
+            "expected peer-status online:false, got {desktop:?}"
+        );
+        assert!(
+            hub.has_seat("room-1", Role::Desktop),
+            "desktop stays seated so it can end the session itself"
+        );
+    }
+
+    #[test]
+    fn mobile_reattach_mid_session_nudges_desktop_peer_status_online() {
+        let hub = LanHub::new();
+        let (d_send, d_out) = capture_send();
+        let (m_send, _) = capture_send();
+        register(&hub, "room-1", Role::Desktop, "desktop-12345678", d_send);
+        let mobile = register(&hub, "room-1", Role::Mobile, "mobile-12345678", m_send);
+        establish(&hub, "room-1");
+        hub.detach("room-1", Role::Mobile, mobile);
+
+        let (m2_send, _) = capture_send();
+        register(&hub, "room-1", Role::Mobile, "mobile-12345678", m2_send);
+
+        let desktop = frames(&d_out);
+        let statuses: Vec<&Value> = desktop
+            .iter()
+            .filter(|v| v["type"] == "peer-status")
+            .collect();
+        assert_eq!(statuses.len(), 2, "got {statuses:?}");
+        assert_eq!(statuses[0]["payload"]["online"], false);
+        assert_eq!(statuses[1]["payload"]["online"], true);
+    }
+
+    #[test]
+    fn stale_mobile_detach_does_not_nudge_after_a_re_register() {
+        let hub = LanHub::new();
+        let (d_send, d_out) = capture_send();
+        let (old_send, _) = capture_send();
+        register(&hub, "room-1", Role::Desktop, "desktop-12345678", d_send);
+        let old = register(&hub, "room-1", Role::Mobile, "mobile-12345678", old_send);
+        establish(&hub, "room-1");
+        let (new_send, _) = capture_send();
+        register(&hub, "room-1", Role::Mobile, "mobile-12345678", new_send);
+
+        hub.detach("room-1", Role::Mobile, old);
+
+        let desktop = frames(&d_out);
+        assert!(
+            !desktop
+                .iter()
+                .any(|v| v["type"] == "peer-status" && v["payload"]["online"] == false),
+            "a stale teardown must not look like the phone leaving, got {desktop:?}"
+        );
+    }
+
+    #[test]
+    fn desktop_detach_does_not_send_peer_status_to_mobile() {
+        let hub = LanHub::new();
+        let (d_send, _) = capture_send();
+        let (m_send, m_out) = capture_send();
+        let desktop = register(&hub, "room-1", Role::Desktop, "desktop-12345678", d_send);
+        register(&hub, "room-1", Role::Mobile, "mobile-12345678", m_send);
+        establish(&hub, "room-1");
+
+        hub.detach("room-1", Role::Desktop, desktop);
+
+        let mobile = frames(&m_out);
+        assert!(
+            !mobile.iter().any(|v| v["type"] == "peer-status"),
+            "peer-status is a desktop-only nudge, got {mobile:?}"
+        );
     }
 }
