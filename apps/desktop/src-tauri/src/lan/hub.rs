@@ -195,9 +195,7 @@ impl LanHub {
     pub fn find_resumable_room(&self, desktop_id: &str, mobile_id: &str) -> Option<String> {
         let rooms = self.rooms.lock().unwrap_or_else(|p| p.into_inner());
         rooms.iter().find_map(|(id, room)| {
-            if room.session_id.is_none() {
-                return None;
-            }
+            room.session_id.as_ref()?;
             let desktop_ok = room
                 .desktop
                 .as_ref()

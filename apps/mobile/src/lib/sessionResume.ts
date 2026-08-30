@@ -39,7 +39,7 @@ export async function loadResumeHandle(): Promise<ResumeHandle | null> {
   if (cache !== undefined) return cache;
   try {
     const stored = await Keychain.getGenericPassword({ service: SERVICE });
-    if (stored?.password) {
+    if (stored && stored.password) {
       const parsed: unknown = JSON.parse(stored.password);
       if (
         parsed &&
