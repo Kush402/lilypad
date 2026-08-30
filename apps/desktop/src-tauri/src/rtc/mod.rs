@@ -5,6 +5,7 @@
 //!
 //! Named `rtc` to avoid clashing with the `webrtc` crate.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -126,6 +127,70 @@ impl From<IceServerConfig> for RTCIceServer {
     }
 }
 
+/// Generation counter so a replaced PeerConnection cannot kill the session
+/// that superseded it. `next()` before `close()` of the old peer: its
+/// `ConnectionState("closed")` / DataChannel-closed events are dropped at
+/// send and never reach the runner. Proven 2026-08-30T16:57:31Z, room
+/// `4c8d1ca3` — a LAN rejoin `session-start` closed the live peer, the
+/// queued `closed` ended the runner, phone stuck on Negotiating….
+#[derive(Clone, Default)]
+pub struct PeerEventGate {
+    live: Arc<AtomicU64>,
+}
+
+impl PeerEventGate {
+    pub fn new() -> Self {
+        Self {
+            live: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    /// Invalidate every earlier generation and return the id the next peer
+    /// must stamp.
+    pub fn next(&self) -> u64 {
+        self.live.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    fn allows(&self, mine: u64) -> bool {
+        // SeqCst to match `next()`: a webrtc callback on another thread
+        // must not observe a stale generation after the runner has bumped.
+        self.live.load(Ordering::SeqCst) == mine
+    }
+}
+
+#[derive(Clone)]
+struct EventSink {
+    tx: UnboundedSender<PeerEvent>,
+    gate: PeerEventGate,
+    mine: u64,
+}
+
+impl EventSink {
+    fn send(&self, ev: PeerEvent) {
+        if self.gate.allows(self.mine) {
+            let _ = self.tx.send(ev);
+            return;
+        }
+        // Death-shaped events are the ones that used to kill the runner.
+        // Log them so a kill→reopen retest shows the gate, not silence.
+        match &ev {
+            PeerEvent::ConnectionState(s) => {
+                log::info!(
+                    target: "lilypad::rtc",
+                    "dropping superseded peer ConnectionState({s})"
+                );
+            }
+            PeerEvent::InputChannelClosed => {
+                log::info!(
+                    target: "lilypad::rtc",
+                    "dropping superseded peer InputChannelClosed"
+                );
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Events the peer surfaces to its owner (the session runner).
 #[derive(Debug, Clone)]
 pub enum PeerEvent {
@@ -182,6 +247,23 @@ impl WebRtcPeer {
         events: UnboundedSender<PeerEvent>,
         policy: IcePolicy,
     ) -> Result<Self> {
+        let gate = PeerEventGate::new();
+        let mine = gate.next();
+        Self::with_gated_events(ice_servers, events, policy, gate, mine).await
+    }
+
+    pub async fn with_gated_events(
+        ice_servers: Vec<IceServerConfig>,
+        events: UnboundedSender<PeerEvent>,
+        policy: IcePolicy,
+        gate: PeerEventGate,
+        mine: u64,
+    ) -> Result<Self> {
+        let events = EventSink {
+            tx: events,
+            gate,
+            mine,
+        };
         let api = build_api()?;
         let config = RTCConfiguration {
             ice_servers: ice_servers.into_iter().map(RTCIceServer::from).collect(),
@@ -217,16 +299,16 @@ impl WebRtcPeer {
                         if any.downcast_ref::<PictureLossIndication>().is_some()
                             || any.downcast_ref::<FullIntraRequest>().is_some()
                         {
-                            let _ = ev.send(PeerEvent::VideoKeyframeRequest);
+                            ev.send(PeerEvent::VideoKeyframeRequest);
                         } else if let Some(remb) =
                             any.downcast_ref::<ReceiverEstimatedMaximumBitrate>()
                         {
-                            let _ = ev.send(PeerEvent::VideoRemb {
+                            ev.send(PeerEvent::VideoRemb {
                                 bitrate_bps: remb.bitrate as u64,
                             });
                         } else if let Some(rr) = any.downcast_ref::<ReceiverReport>() {
                             if let Some(worst) = rr.reports.iter().map(|r| r.fraction_lost).max() {
-                                let _ = ev.send(PeerEvent::VideoLossReport {
+                                ev.send(PeerEvent::VideoLossReport {
                                     fraction_lost: f64::from(worst) / 256.0,
                                 });
                             }
@@ -243,7 +325,7 @@ impl WebRtcPeer {
             input_channel.on_open(Box::new(move || {
                 let ev = ev.clone();
                 Box::pin(async move {
-                    let _ = ev.send(PeerEvent::InputChannelOpen);
+                    ev.send(PeerEvent::InputChannelOpen);
                 })
             }));
         }
@@ -252,7 +334,7 @@ impl WebRtcPeer {
             input_channel.on_close(Box::new(move || {
                 let ev = ev.clone();
                 Box::pin(async move {
-                    let _ = ev.send(PeerEvent::InputChannelClosed);
+                    ev.send(PeerEvent::InputChannelClosed);
                 })
             }));
         }
@@ -262,7 +344,7 @@ impl WebRtcPeer {
                 let ev = ev.clone();
                 let data = msg.data.to_vec();
                 Box::pin(async move {
-                    let _ = ev.send(PeerEvent::InputMessage(data));
+                    ev.send(PeerEvent::InputMessage(data));
                 })
             }));
         }
@@ -296,7 +378,7 @@ impl WebRtcPeer {
                 let ev = ev.clone();
                 let data = msg.data.to_vec();
                 Box::pin(async move {
-                    let _ = ev.send(PeerEvent::InputMessage(data));
+                    ev.send(PeerEvent::InputMessage(data));
                 })
             }));
         }
@@ -317,7 +399,7 @@ impl WebRtcPeer {
                                 target: "lilypad::rtc",
                                 "local candidate: {}", summarize_candidate(&init.candidate)
                             );
-                            let _ = ev.send(PeerEvent::IceCandidate {
+                            ev.send(PeerEvent::IceCandidate {
                                 candidate: init.candidate,
                                 sdp_mid: init.sdp_mid,
                                 sdp_mline_index: init.sdp_mline_index,
@@ -334,7 +416,7 @@ impl WebRtcPeer {
             pc.on_peer_connection_state_change(Box::new(move |s: RTCPeerConnectionState| {
                 let ev = ev.clone();
                 Box::pin(async move {
-                    let _ = ev.send(PeerEvent::ConnectionState(s.to_string()));
+                    ev.send(PeerEvent::ConnectionState(s.to_string()));
                 })
             }));
         }
@@ -501,6 +583,82 @@ mod tests {
         assert_eq!(
             classify_candidate_pair("something else entirely"),
             PATH_DIRECT
+        );
+    }
+
+    #[test]
+    fn bumping_the_gate_drops_the_previous_generation() {
+        let gate = PeerEventGate::new();
+        let first = gate.next();
+        assert!(gate.allows(first));
+        let second = gate.next();
+        assert!(!gate.allows(first));
+        assert!(gate.allows(second));
+    }
+
+    #[test]
+    fn superseded_peer_events_never_reach_the_runner() {
+        // The 16:57:31 stall: bump, then close() of the live peer. Its
+        // ConnectionState("closed") / DataChannel-closed / ICE-failed must
+        // not land — those are what `handle_peer_event` treats as runner
+        // death. The new generation still delivers, including a later
+        // closed that MUST end the session (in-app hangup, ICE actually
+        // dead, counterpart gone via the PC).
+        let gate = PeerEventGate::new();
+        let old = gate.next();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let old_sink = EventSink {
+            tx: tx.clone(),
+            gate: gate.clone(),
+            mine: old,
+        };
+        old_sink.send(PeerEvent::ConnectionState("connected".into()));
+
+        let live = gate.next();
+        let live_sink = EventSink {
+            tx: tx.clone(),
+            gate: gate.clone(),
+            mine: live,
+        };
+
+        old_sink.send(PeerEvent::ConnectionState("failed".into()));
+        old_sink.send(PeerEvent::ConnectionState("closed".into()));
+        old_sink.send(PeerEvent::InputChannelClosed);
+
+        live_sink.send(PeerEvent::ConnectionState("connecting".into()));
+        live_sink.send(PeerEvent::IceCandidate {
+            candidate: "candidate:1".into(),
+            sdp_mid: Some("0".into()),
+            sdp_mline_index: Some(0),
+        });
+        live_sink.send(PeerEvent::ConnectionState("closed".into()));
+        live_sink.send(PeerEvent::InputChannelClosed);
+
+        match rx.try_recv() {
+            Ok(PeerEvent::ConnectionState(s)) => assert_eq!(s, "connected"),
+            other => panic!("expected the pre-bump connected, got {other:?}"),
+        }
+        match rx.try_recv() {
+            Ok(PeerEvent::ConnectionState(s)) => assert_eq!(s, "connecting"),
+            other => panic!("expected the new generation connecting, got {other:?}"),
+        }
+        match rx.try_recv() {
+            Ok(PeerEvent::IceCandidate { candidate, .. }) => {
+                assert_eq!(candidate, "candidate:1")
+            }
+            other => panic!("expected the new generation ICE, got {other:?}"),
+        }
+        match rx.try_recv() {
+            Ok(PeerEvent::ConnectionState(s)) => assert_eq!(s, "closed"),
+            other => panic!("expected the live generation closed, got {other:?}"),
+        }
+        match rx.try_recv() {
+            Ok(PeerEvent::InputChannelClosed) => {}
+            other => panic!("expected the live generation DC closed, got {other:?}"),
+        }
+        assert!(
+            rx.try_recv().is_err(),
+            "old-generation death events must not have landed"
         );
     }
 }

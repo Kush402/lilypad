@@ -30,7 +30,9 @@ use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use crate::agent::{self, AgentController};
 use crate::input::Scope;
 use crate::media::CaptureMode;
-use crate::rtc::{IcePolicy, IceServerConfig, PeerEvent, WebRtcPeer, PATH_LAN, PATH_RELAY};
+use crate::rtc::{
+    IcePolicy, IceServerConfig, PeerEvent, PeerEventGate, WebRtcPeer, PATH_LAN, PATH_RELAY,
+};
 use crate::signaling::{messages, Envelope};
 use clipboard_watcher::ClipboardWatcher;
 use fsm::{SessionFsm, SessionState};
@@ -396,6 +398,9 @@ struct SessionRunner {
     connected_without_dc_since: Option<Instant>,
     /// We already recreated the peer with `iceTransportPolicy: relay`.
     forced_relay: bool,
+    /// Drop events from a PeerConnection we have already replaced. See
+    /// `PeerEventGate`.
+    event_gate: PeerEventGate,
 }
 
 impl SessionRunner {
@@ -430,6 +435,7 @@ impl SessionRunner {
             input_channel_open: false,
             connected_without_dc_since: None,
             forced_relay: false,
+            event_gate: PeerEventGate::new(),
         }
     }
 
@@ -472,10 +478,26 @@ impl SessionRunner {
     /// this only centralizes the (event, state) pair every termination path
     /// must emit together.
     fn end(&mut self, reason: impl Into<String>) {
-        self.emit(SessionEvent::Ended {
-            reason: reason.into(),
-        });
+        let reason = reason.into();
+        log::info!(target: "lilypad::session", "session ending: {reason}");
+        self.emit(SessionEvent::Ended { reason });
         self.fsm.transition(SessionState::Ended);
+    }
+
+    /// Invalidate the current peer's events, stop media, and close it.
+    /// Call *before* building a replacement so `ConnectionState("closed")`
+    /// from the old PC cannot end the new handshake (L-195).
+    async fn discard_current_peer(&mut self) -> u64 {
+        let mine = self.event_gate.next();
+        self.input_channel_open = false;
+        self.gate.set_channel_open(false);
+        self.connected_without_dc_since = None;
+        self.peer_connected = false;
+        self.media.stop_pipeline().await;
+        if let Some(old) = self.peer.take() {
+            let _ = old.close().await;
+        }
+        mine
     }
 
     /// Handle one inbound signaling message. `Ok(true)` means it terminates
@@ -588,15 +610,24 @@ impl SessionRunner {
                 self.ice_policy = policy;
                 // Hub already asked for relay — don't later recreate "to" relay.
                 self.forced_relay = matches!(policy, IcePolicy::Relay);
-                // Defensive: a repeat session-start must not leak the
-                // previous PeerConnection (its ICE/DTLS/RTCP-reader tasks
-                // live until close).
-                if let Some(old) = self.peer.take() {
+                // A repeat session-start must not leak the previous
+                // PeerConnection (its ICE/DTLS/RTCP-reader tasks live until
+                // close) AND must not let that close end this runner —
+                // `discard_current_peer` bumps the event gate first.
+                let replacing = self.peer.is_some();
+                let mine = self.discard_current_peer().await;
+                if replacing {
                     log::warn!(target: "lilypad::session", "new session-start replacing an existing peer — closing the old one");
-                    let _ = old.close().await;
                 }
                 let new_peer = Arc::new(
-                    WebRtcPeer::with_ice_policy(ice_servers, peer_ev_tx.clone(), policy).await?,
+                    WebRtcPeer::with_gated_events(
+                        ice_servers,
+                        peer_ev_tx.clone(),
+                        policy,
+                        self.event_gate.clone(),
+                        mine,
+                    )
+                    .await?,
                 );
                 let sdp = new_peer.create_offer().await?;
                 sig.send(Envelope::offer(&self.room_id, &sdp))?;
@@ -988,23 +1019,19 @@ impl SessionRunner {
             return Ok(false);
         }
         self.forced_relay = true;
-        self.input_channel_open = false;
-        self.gate.set_channel_open(false);
-        self.connected_without_dc_since = None;
         self.connection_path = None;
-        self.media.stop_pipeline().await;
-        if let Some(old) = self.peer.take() {
-            let _ = old.close().await;
-        }
+        let mine = self.discard_current_peer().await;
         log::warn!(
             target: "lilypad::session",
             "recreating peer with iceTransportPolicy=relay ({reason})"
         );
         let new_peer = Arc::new(
-            WebRtcPeer::with_ice_policy(
+            WebRtcPeer::with_gated_events(
                 self.ice_servers.clone(),
                 peer_ev_tx.clone(),
                 IcePolicy::Relay,
+                self.event_gate.clone(),
+                mine,
             )
             .await?,
         );
