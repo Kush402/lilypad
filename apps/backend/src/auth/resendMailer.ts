@@ -1,4 +1,4 @@
-import { log } from '../logging.js';
+import { log, hashForLog } from '../logging.js';
 import type { MailSender } from './magicLink.js';
 
 /**
@@ -75,7 +75,14 @@ export function createResendMailSender(
           `Enter it in the app to finish signing in. It can be used once, and expires shortly.\n\n` +
           `If you did not ask to sign in, you can ignore this message — nothing has changed.`,
       );
-      log.server.info({ to }, 'magic-link email handed to resend');
+      // Hashed rather than domain-only: a bare domain alone still names a
+      // company outright for anyone off a shared provider (and this backend
+      // has plenty of single-tenant domains), so it is not meaningfully
+      // safer than the raw address for the person it identifies — it just
+      // throws away the local part while keeping the part that most often
+      // does the identifying. `to` itself is still used functionally above
+      // (the actual send); only the LOGGING changes.
+      log.server.info({ to: hashForLog(to) }, 'magic-link email handed to resend');
     },
     async sendPasswordReset(to, token) {
       await send(
@@ -87,7 +94,9 @@ export function createResendMailSender(
           `Enter it in the app together with your new password. It can be used once, and expires shortly.\n\n` +
           `If you did not ask to reset your password, you can ignore this message — your password is unchanged.`,
       );
-      log.server.info({ to }, 'password-reset email handed to resend');
+      // See the matching comment in `sendMagicLink` above for why this is
+      // hashed rather than left raw or truncated to a domain.
+      log.server.info({ to: hashForLog(to) }, 'password-reset email handed to resend');
     },
   };
 }

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { createResendMailSender } from './resendMailer.js';
+import { log } from '../logging.js';
 
 /** Captures what would go over the wire, so the assertions are about the
  * REQUEST rather than about a mocked client's ergonomics. */
@@ -77,5 +78,30 @@ describe('createResendMailSender', () => {
     await expect(sender.sendMagicLink('secret@example.com', 'CODE')).rejects.not.toThrow(
       /secret@example\.com/,
     );
+  });
+
+  // Fix 3 (PII in operational logs): pino's stdout outlives the privacy
+  // policy's 2-day promise for security-log data (Docker rotates it by size,
+  // not age), so the recipient address must never land there raw, even
+  // though the send itself is still addressed to the real address above.
+  it('logs a hashed recipient, never the raw address, on a successful send', async () => {
+    stubFetch({ ok: true, status: 200 });
+    const infoSpy = vi.spyOn(log.server, 'info').mockImplementation(() => log.server);
+    const sender = createResendMailSender('key_123', 'Lilypad <no-reply@example.com>')!;
+
+    await sender.sendMagicLink('secret@example.com', 'CODE-1234');
+    await sender.sendPasswordReset('secret@example.com', 'RESET-9');
+
+    expect(infoSpy).toHaveBeenCalledTimes(2);
+    for (const call of infoSpy.mock.calls) {
+      const payload = call[0] as Record<string, unknown>;
+      expect(payload.to).not.toBe('secret@example.com');
+      expect(JSON.stringify(payload)).not.toContain('secret@example.com');
+      expect(payload.to).toMatch(/^[0-9a-f]{12}$/);
+    }
+    // Same address, same process — the two hashes still match each other,
+    // which is the whole point: correlation within a deploy still works.
+    expect(infoSpy.mock.calls[0]![0]).toEqual(infoSpy.mock.calls[1]![0]);
+    infoSpy.mockRestore();
   });
 });

@@ -24,7 +24,7 @@ import { bearerToken, verifyAccessToken, type Actor } from '../auth/tokens.js';
 import type { SignalingHubBundle } from '../signaling/hubBundle.js';
 import { advertisedUrls } from '../services/advertisedUrls.js';
 import { allowedProofHosts } from '../auth/proofOrigin.js';
-import { log } from '../logging.js';
+import { log, hashForLog } from '../logging.js';
 import { config } from '../config.js';
 import { isAuthorizedMetricsRequest } from '../metricsAuth.js';
 import { serverMetrics } from '../serverMetrics.js';
@@ -330,10 +330,17 @@ export async function signalingRoutes(
   const ipLimiter = new IpConnectionLimiter(MAX_CONNECTIONS_PER_IP);
 
   app.get(SIGNALING_PATH, { websocket: true }, (socket, req) => {
+    // `ip` itself is still used FUNCTIONALLY exactly as before — the per-IP
+    // connection cap below and the rate limiter both key on the raw value.
+    // Only what gets WRITTEN TO THE LOG changes: every `log.*` call in this
+    // handler hashes it first (`hashForLog`) rather than writing the raw
+    // address. pino's stdout is captured by Docker and rotated by SIZE, not
+    // by the privacy policy's 2-day promise for security-log data, so a raw
+    // IP logged here would quietly outlive that promise.
     const ip = req.ip;
     if (isUnexpectedBrowserOrigin(req.headers.origin, req.headers.host)) {
       log.signaling.warn(
-        { ip, origin: req.headers.origin },
+        { ip: hashForLog(ip), origin: req.headers.origin },
         'WS upgrade carried a browser Origin header — rejecting',
       );
       try {
@@ -344,7 +351,10 @@ export async function signalingRoutes(
       return;
     }
     if (!ipLimiter.acquire(ip)) {
-      log.signaling.warn({ ip }, 'per-IP connection cap reached — rejecting socket');
+      log.signaling.warn(
+        { ip: hashForLog(ip) },
+        'per-IP connection cap reached — rejecting socket',
+      );
       try {
         socket.close(4429, 'too many connections');
       } catch {
@@ -398,7 +408,7 @@ export async function signalingRoutes(
     // it once the register window elapses.
     const registerTimer = setTimeout(() => {
       if (!hub.isRegistered(peer)) {
-        log.signaling.warn({ ip }, 'socket did not register in time — closing');
+        log.signaling.warn({ ip: hashForLog(ip) }, 'socket did not register in time — closing');
         peer.close(4408, 'register timeout');
       }
     }, REGISTER_TIMEOUT_MS);
@@ -421,7 +431,7 @@ export async function signalingRoutes(
 
     async function processMessage(raw: Buffer): Promise<void> {
       if (!rate.allow()) {
-        log.signaling.warn({ ip }, 'per-socket message rate exceeded — closing');
+        log.signaling.warn({ ip: hashForLog(ip) }, 'per-socket message rate exceeded — closing');
         peer.close(4429, 'message rate exceeded');
         return;
       }
