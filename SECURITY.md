@@ -35,9 +35,13 @@ The load-bearing guarantees:
 
 ## Known gaps (pre-1.x, tracked)
 
-- **Builds are not notarized or store-distributed.** The macOS bundle is
-  ad-hoc signed, so Gatekeeper warns on first launch; iOS ships no store build.
-  Both wait on an Apple Developer Program subscription.
+_Last checked against the code and against
+[docs/apple-setup.md](docs/apple-setup.md) on 2026-08-31._
+
+- **iOS has no public App Store listing.** It ships through TestFlight to an
+  invited internal group only ([docs/apple-setup.md](docs/apple-setup.md)) —
+  there is no public link and no store page a stranger could find or install
+  from.
 - **One person, one server.** No dedicated security team, no third-party audit,
   and the control plane is a single machine. Stated the same way on the
   [privacy policy](https://lilypadhome.takedia.com/privacy).
@@ -51,3 +55,13 @@ trust model. That had not been true for some time: accounts, Ed25519 device
 identity and explicit device linking all shipped, and the unowned-device lane,
 where a device belonging to nobody could still act, was closed. A security
 policy that understates what exists hands a researcher the wrong scope.
+
+Build distribution is also no longer what this section claimed until
+2026-08-31: it said builds were "not notarized or store-distributed," the
+macOS bundle ad-hoc signed with a Gatekeeper warning on every launch, and iOS
+shipping no store build at all. Since 2026-08-24 the macOS build is signed
+with a Developer ID Application certificate, notarized, and stapled
+(`release.yml`) — Gatekeeper accepts it with no warning — and the same day an
+iOS build reached TestFlight. What has **not** changed is that TestFlight is
+invitation-only, not the public App Store; that is why iOS stays listed above
+as a real, narrower gap rather than dropping off the way accounts did.

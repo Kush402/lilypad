@@ -166,23 +166,25 @@ what-to-update-when table.
 
 ### Source of truth by area
 
-| Area                  | Owning document                                                      |
-| --------------------- | -------------------------------------------------------------------- |
-| Architecture          | [architecture.md](architecture.md)                                   |
-| Design rationale      | [technical-design.md](technical-design.md)                           |
-| Significant decisions | [adr/](adr/)                                                         |
-| REST + WS API         | [api.md](api.md), [signaling-protocol.md](signaling-protocol.md)     |
-| Input protocol        | [input-protocol.md](input-protocol.md)                               |
-| Database              | [db-schema.md](db-schema.md)                                         |
-| Security              | [threat-model.md](threat-model.md), [../SECURITY.md](../SECURITY.md) |
-| Connectivity          | [NETWORKING.md](NETWORKING.md)                                       |
-| Infrastructure cost   | [INFRASTRUCTURE-COST-MODEL.md](INFRASTRUCTURE-COST-MODEL.md)         |
-| Reuse / build-vs-buy  | [REUSE-INVENTORY.md](REUSE-INVENTORY.md)                             |
-| Infrastructure / ops  | [operations.md](operations.md), [RUNBOOK.md](RUNBOOK.md)             |
-| Consumer product      | [user-guide.md](user-guide.md)                                       |
-| Mac app's screens     | [desktop-screens.md](desktop-screens.md)                             |
-| Roadmap               | [milestones.md](milestones.md)                                       |
-| Status / index        | this file                                                            |
+| Area                                    | Owning document                                                      |
+| --------------------------------------- | -------------------------------------------------------------------- |
+| Architecture                            | [architecture.md](architecture.md)                                   |
+| Design rationale                        | [technical-design.md](technical-design.md)                           |
+| Significant decisions                   | [adr/](adr/)                                                         |
+| REST + WS API                           | [api.md](api.md), [signaling-protocol.md](signaling-protocol.md)     |
+| Input protocol                          | [input-protocol.md](input-protocol.md)                               |
+| Database                                | [db-schema.md](db-schema.md)                                         |
+| Security                                | [threat-model.md](threat-model.md), [../SECURITY.md](../SECURITY.md) |
+| Connectivity                            | [NETWORKING.md](NETWORKING.md)                                       |
+| Data access/export requests (GDPR/CCPA) | [data-requests.md](data-requests.md)                                 |
+| Google Play Data Safety mapping         | [play-data-safety.md](play-data-safety.md)                           |
+| Infrastructure cost                     | [INFRASTRUCTURE-COST-MODEL.md](INFRASTRUCTURE-COST-MODEL.md)         |
+| Reuse / build-vs-buy                    | [REUSE-INVENTORY.md](REUSE-INVENTORY.md)                             |
+| Infrastructure / ops                    | [operations.md](operations.md), [RUNBOOK.md](RUNBOOK.md)             |
+| Consumer product                        | [user-guide.md](user-guide.md)                                       |
+| Mac app's screens                       | [desktop-screens.md](desktop-screens.md)                             |
+| Roadmap                                 | [milestones.md](milestones.md)                                       |
+| Status / index                          | this file                                                            |
 
 Historical audit records live in [audit/m3/](audit/m3/) and are cited from code
 comments as rationale — they carry `status: Reference` and must not be deleted.

@@ -55,7 +55,7 @@
 
     <main id="top" tabindex="-1" class="legal">
       <h1>Privacy</h1>
-      <p class="legal__updated">Last updated 23 August 2026.</p>
+      <p class="legal__updated">Last updated 31 August 2026.</p>
 
       <p>
         This describes what the software and the server actually do, taken from the code that runs
@@ -93,17 +93,17 @@
           a code every time, plus when that pair last connected.
         </li>
         <li>
-          <strong>A short security log.</strong> Sign-ins, failed sign-ins, device changes, with the
-          IP address they came from. This is what makes "was that me?" answerable.
+          <strong>A short sign-in security log.</strong> Sign-ins, failed sign-ins, device changes,
+          with the IP address they came from. This is what makes "was that me?" answerable.
         </li>
       </ul>
 
       <h2>How long</h2>
       <p>
-        The security log is deleted automatically after <strong>2 days</strong>. Everything else
-        lasts until you remove it: removing a device deletes it, and deleting your account deletes
-        the account, every device on it, and every pairing between them. Deletion is immediate and
-        cannot be undone.
+        The sign-in security log described above is deleted automatically after
+        <strong>2 days</strong>. Everything else lasts until you remove it: removing a device
+        deletes it, and deleting your account deletes the account, every device on it, and every
+        pairing between them. Deletion is immediate and cannot be undone.
       </p>
       <p>
         Database backups are kept for <strong>7 days</strong> and then deleted. They are held on two
@@ -116,6 +116,10 @@
       <ul>
         <li><strong>Oracle Cloud</strong> runs the server.</li>
         <li><strong>Cloudflare</strong> carries traffic to it, and serves this website.</li>
+        <li>
+          <strong>Resend</strong> delivers the sign-in code and password-reset emails. It sees the
+          address you are signing in with and the code itself, and nothing else about your account.
+        </li>
         <li>
           <strong>Apple and Google</strong>, only if you choose to sign in with them, and only to
           verify that sign-in.
