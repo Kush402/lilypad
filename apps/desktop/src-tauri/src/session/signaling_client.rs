@@ -198,6 +198,11 @@ mod tests {
     async fn a_loopback_reconnect_keeps_the_seat_it_just_took() {
         let hub = Arc::new(LanHub::new());
         let room = "room-reconnect-1";
+        // `LanHub::attach` now refuses a room `connect_request` never
+        // minted (see `lan::hub::RoomAuth`), so this test's own attaches
+        // must be authorized first, exactly as the real desktop's
+        // `connect_request` would have done before either seat existed.
+        hub.authorize_room(room, "desktop-12345678".into(), "mobile-12345678".into());
         let phone = Arc::new(Mutex::new(Vec::<String>::new()));
         let sink = phone.clone();
         let send: SendFn = Arc::new(move |s: &str| sink.lock().unwrap().push(s.to_owned()));

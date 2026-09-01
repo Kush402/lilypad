@@ -140,8 +140,12 @@ mod tests {
         assert!(!is_own_lan_room(None, "wss://192.168.1.10:8787/ws/signal"));
     }
 
-    /// A phone seat, so the hub has someone to relay to.
+    /// A phone seat, so the hub has someone to relay to. Authorizes the room
+    /// for the canonical desktop/mobile pair every test in this module uses
+    /// — since `LanHub::attach` now refuses an unauthorized room (see
+    /// `hub::RoomAuth`), any test seating a peer needs this done first.
     fn seat_mobile(hub: &LanHub, room: &str) -> Arc<Mutex<Vec<serde_json::Value>>> {
+        hub.authorize_room(room, "desktop-12345678".into(), "mobile-12345678".into());
         let buf = Arc::new(Mutex::new(Vec::new()));
         let b2 = buf.clone();
         let send: SendFn = Arc::new(move |s: &str| {
@@ -273,6 +277,7 @@ mod tests {
     async fn dropping_the_handle_releases_the_seat() {
         let hub = Arc::new(LanHub::new());
         let room = "room-lan-3";
+        hub.authorize_room(room, "desktop-12345678".into(), "mobile-12345678".into());
         let (sig, inbound) = connect(hub.clone(), room, "desktop-12345678");
         drop(sig);
         drop(inbound);

@@ -71,6 +71,26 @@ struct Seat {
     epoch: u64,
 }
 
+/// Which two devices `POST /connect/request` (`lan::server::connect_request`)
+/// actually minted a room for — the seat-hijack gate `attach` checks before a
+/// WS `register` frame is allowed to create the room or claim a seat in it.
+///
+/// Mirrors the cloud path's `RoomAuthStore` (`apps/backend/src/services/
+/// roomAuth.ts`): a `roomId` alone must not be a bearer capability, because
+/// anything on the LAN can open a WebSocket and send a `register` frame
+/// naming any room/role/deviceId it likes. Deliberately simpler than the
+/// cloud version — one struct instead of `recordDesktop`+`recordMobile`,
+/// no TTL — because a LAN room is minted with both device ids already known
+/// and verified (`connect_request` has just checked the desktop id against
+/// this process's own and the phone's `pair_secret` against `TrustCache`),
+/// so there is no "desktop known, mobile not yet" window to model, and this
+/// hub has no existence past the process that authorized the room in the
+/// first place.
+struct RoomAuth {
+    desktop_device_id: String,
+    mobile_device_id: String,
+}
+
 struct Room {
     desktop: Option<Seat>,
     mobile: Option<Seat>,
@@ -95,6 +115,11 @@ struct Room {
 
 pub struct LanHub {
     rooms: Mutex<HashMap<String, Room>>,
+    /// One entry per room `connect_request` has minted, removed the moment
+    /// the room itself is (both `detach` and `end_room`'s removal sites) so a
+    /// dead `roomId` can never be replayed into a fresh authorization. See
+    /// `RoomAuth`.
+    authorized: Mutex<HashMap<String, RoomAuth>>,
     /// Source of `SeatToken`s. Hub-wide rather than per-seat so a token can
     /// never be mistaken for a later one after a room has been deleted and
     /// recreated under the same id — which is exactly what a supersession
@@ -106,6 +131,7 @@ impl Default for LanHub {
     fn default() -> Self {
         Self {
             rooms: Mutex::new(HashMap::new()),
+            authorized: Mutex::new(HashMap::new()),
             next_epoch: AtomicU64::new(1),
         }
     }
@@ -116,8 +142,43 @@ impl LanHub {
         Self::default()
     }
 
+    /// Record which two devices `room_id` was minted for — called by
+    /// `connect_request` before it hands the room id to either peer, so the
+    /// authorization exists before any `register` frame naming this room can
+    /// possibly arrive. See `RoomAuth`.
+    ///
+    /// Overwrites any existing record for `room_id` unconditionally: room ids
+    /// are fresh UUIDs per mint (`Uuid::new_v4()`), so a collision never
+    /// happens in practice, and even if it somehow did, the newest mint is
+    /// the authoritative one.
+    pub fn authorize_room(
+        &self,
+        room_id: &str,
+        desktop_device_id: String,
+        mobile_device_id: String,
+    ) {
+        let mut authorized = self.authorized.lock().unwrap_or_else(|p| p.into_inner());
+        authorized.insert(
+            room_id.to_owned(),
+            RoomAuth {
+                desktop_device_id,
+                mobile_device_id,
+            },
+        );
+    }
+
     /// Attach a peer after `register`, returning the token that transport must
     /// present to vacate the seat again. See `SeatToken`.
+    ///
+    /// Refuses (`Err`) rather than seating anyone when `room_id` has no
+    /// `RoomAuth` record at all (nobody ever minted this room — a `roomId` a
+    /// WS client invented, or a room that has since ended and been cleaned
+    /// up) or when `device_id` does not match what `connect_request`
+    /// authorized for `role`. Before this gate, `attach` would
+    /// `or_insert_with` the room into existence and seat WHATEVER
+    /// roomId/role/deviceId a `register` frame claimed — the seat-hijack
+    /// class the cloud path closed with `RoomAuthStore`
+    /// (`apps/backend/src/services/roomAuth.ts`); this mirrors it.
     pub fn attach(
         &self,
         room_id: &str,
@@ -125,11 +186,28 @@ impl LanHub {
         device_id: String,
         send: SendFn,
     ) -> Result<SeatToken, String> {
+        {
+            let authorized = self.authorized.lock().unwrap_or_else(|p| p.into_inner());
+            let auth = authorized
+                .get(room_id)
+                .ok_or_else(|| "unauthorized_room".to_owned())?;
+            let expected = match role {
+                Role::Desktop => &auth.desktop_device_id,
+                Role::Mobile => &auth.mobile_device_id,
+            };
+            if *expected != device_id {
+                return Err("wrong_device".to_owned());
+            }
+        }
         let epoch = self.next_epoch.fetch_add(1, Ordering::Relaxed);
         let replay: Vec<String>;
         let nudge_online: bool;
         {
             let mut rooms = self.rooms.lock().unwrap_or_else(|p| p.into_inner());
+            // Safe to create the room entry here now: the authorization check
+            // above already proved `room_id` was actually minted by
+            // `connect_request`, so this is no longer the bare
+            // `or_insert_with` that used to seat an invented room.
             let room = rooms.entry(room_id.to_owned()).or_insert_with(|| Room {
                 desktop: None,
                 mobile: None,
@@ -244,6 +322,7 @@ impl LanHub {
     /// on from, and clearing the seat there is the L-182 eviction. See
     /// `SeatToken`.
     pub fn detach(&self, room_id: &str, role: Role, token: SeatToken) {
+        let mut room_removed = false;
         let nudge_offline = {
             let mut rooms = self.rooms.lock().unwrap_or_else(|p| p.into_inner());
             let Some(room) = rooms.get_mut(room_id) else {
@@ -274,9 +353,21 @@ impl LanHub {
             let nudge = role == Role::Mobile && room.established && room.desktop.is_some();
             if room.desktop.is_none() && room.mobile.is_none() {
                 rooms.remove(room_id);
+                room_removed = true;
             }
             nudge
         };
+        // Outside the `rooms` lock, same as `nudge_offline` below: the two
+        // mutexes are never nested, only ever taken one after the other. A
+        // dead room's `RoomAuth` must not outlive it, or the two devices it
+        // named could `register` back into the dead `roomId` and resurrect a
+        // room the lifecycle above already tore down.
+        if room_removed {
+            self.authorized
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .remove(room_id);
+        }
         if nudge_offline {
             self.send_to(
                 Role::Desktop,
@@ -528,6 +619,24 @@ impl LanHub {
         );
     }
 
+    /// The same `{type:"error"}` shape `reject` sends through a seated peer's
+    /// `relay_to` — but usable when there is no seat to relay through at all,
+    /// because there never was one. `server::handle_ws` calls this directly
+    /// for a `register` frame `attach` refused: with no seat taken, `reject`
+    /// (which requires one) has nothing to send through, but the socket is
+    /// still open and deserves the same error frame the rest of the LAN
+    /// protocol uses rather than a silent close.
+    pub fn refusal_frame(role: Role, room_id: &str, code: &str, message: &str) -> String {
+        json!({
+            "type": "error",
+            "roomId": room_id,
+            "from": role.other().as_str(),
+            "ts": now_ms(),
+            "payload": { "code": code, "message": message },
+        })
+        .to_string()
+    }
+
     fn end_room(&self, room_id: &str, reason: &str) {
         let seats;
         {
@@ -537,6 +646,12 @@ impl LanHub {
             };
             seats = (room.desktop, room.mobile);
         }
+        // Same reasoning as `detach`'s cleanup: a dead room's `RoomAuth` must
+        // not survive it.
+        self.authorized
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(room_id);
         let end = |role: Role, seat: &Seat| {
             let msg = json!({
                 "type": "session-end",
@@ -577,7 +692,16 @@ mod tests {
         (send, buf)
     }
 
+    /// Every test in this module registers under the same canonical pair of
+    /// device ids (`"desktop-12345678"` / `"mobile-12345678"`), so this
+    /// helper authorizes the room for that pair before every attach —
+    /// harmless to repeat per-call since `authorize_room` overwrites with the
+    /// identical value, and it keeps every existing test's intent (seat,
+    /// detach, resume, relay behavior) unchanged by the seat-authorization
+    /// gate. Tests that specifically exercise that gate call `authorize_room`
+    /// and `attach` directly instead of going through this helper.
     fn register(hub: &LanHub, room: &str, role: Role, device: &str, send: SendFn) -> SeatToken {
+        hub.authorize_room(room, "desktop-12345678".into(), "mobile-12345678".into());
         hub.attach(room, role, device.into(), send).unwrap()
     }
 
@@ -997,5 +1121,160 @@ mod tests {
             !mobile.iter().any(|v| v["type"] == "peer-status"),
             "peer-status is a desktop-only nudge, got {mobile:?}"
         );
+    }
+
+    /// The core of the seat-hijack fix: a `roomId` nobody ever minted
+    /// (`authorize_room` never called for it) must not seat anyone, and must
+    /// not spring the room into existence either — the pre-fix `attach`
+    /// `or_insert_with`'d a fresh `Room` for whatever id a `register` frame
+    /// claimed.
+    #[test]
+    fn attach_to_an_unminted_room_is_refused() {
+        let hub = LanHub::new();
+        let (send, _) = capture_send();
+
+        let err = hub
+            .attach(
+                "room-never-minted",
+                Role::Desktop,
+                "desktop-12345678".into(),
+                send,
+            )
+            .expect_err("an unauthorized room must refuse the seat");
+
+        assert_eq!(err, "unauthorized_room");
+        assert!(
+            !hub.has_seat("room-never-minted", Role::Desktop),
+            "a refused attach must not create the room at all"
+        );
+    }
+
+    /// The other half: `room_id` WAS minted, but the device presenting for a
+    /// role is not the one `connect_request` authorized for it — for both
+    /// roles, since either could be the attacker impersonating the other
+    /// device's claimed room.
+    #[test]
+    fn attach_with_the_wrong_device_id_is_refused_for_either_role() {
+        let hub = LanHub::new();
+        hub.authorize_room(
+            "room-1",
+            "desktop-12345678".into(),
+            "mobile-12345678".into(),
+        );
+
+        let (d_send, _) = capture_send();
+        let desktop_err = hub
+            .attach("room-1", Role::Desktop, "desktop-IMPOSTOR".into(), d_send)
+            .expect_err("an impostor desktop id must be refused");
+        assert_eq!(desktop_err, "wrong_device");
+
+        let (m_send, _) = capture_send();
+        let mobile_err = hub
+            .attach("room-1", Role::Mobile, "mobile-IMPOSTOR".into(), m_send)
+            .expect_err("an impostor mobile id must be refused");
+        assert_eq!(mobile_err, "wrong_device");
+
+        assert!(!hub.has_seat("room-1", Role::Desktop));
+        assert!(!hub.has_seat("room-1", Role::Mobile));
+    }
+
+    /// The legitimate flow, unaffected by the gate: the exact pair
+    /// `connect_request` authorized can still attach and pair normally.
+    #[test]
+    fn the_authorized_pair_can_still_attach_and_pair() {
+        let hub = LanHub::new();
+        hub.authorize_room(
+            "room-1",
+            "desktop-12345678".into(),
+            "mobile-12345678".into(),
+        );
+        let (d_send, d_out) = capture_send();
+        let (m_send, m_out) = capture_send();
+
+        hub.attach("room-1", Role::Desktop, "desktop-12345678".into(), d_send)
+            .expect("the authorized desktop id must be seated");
+        hub.attach("room-1", Role::Mobile, "mobile-12345678".into(), m_send)
+            .expect("the authorized mobile id must be seated");
+
+        hub.handle(
+            Role::Desktop,
+            r#"{"type":"pair-approved","roomId":"room-1","from":"desktop","ts":0,"payload":{"grantedScopes":["view"],"trust":false}}"#,
+        );
+
+        assert!(
+            frames(&m_out).iter().any(|v| v["type"] == "session-start"),
+            "the authorized mobile must still receive session-start"
+        );
+        assert!(
+            frames(&d_out).iter().any(|v| v["type"] == "session-start"),
+            "the authorized desktop must still receive session-start"
+        );
+    }
+
+    /// Resume must keep working: the room minted by the first connect stays
+    /// authorized (the desktop seat never vacates, so neither the room nor
+    /// its `RoomAuth` is ever removed), so the SAME room id the phone is
+    /// handed back by `find_resumable_room` can still be attached to after
+    /// the mobile seat alone was vacated (a swipe-kill, a lock, a network
+    /// flip).
+    #[test]
+    fn resume_reattach_to_the_same_room_is_still_authorized() {
+        let hub = LanHub::new();
+        hub.authorize_room(
+            "room-1",
+            "desktop-12345678".into(),
+            "mobile-12345678".into(),
+        );
+        let (d_send, _) = capture_send();
+        hub.attach("room-1", Role::Desktop, "desktop-12345678".into(), d_send)
+            .unwrap();
+        let (m_send, _) = capture_send();
+        let mobile_token = hub
+            .attach("room-1", Role::Mobile, "mobile-12345678".into(), m_send)
+            .unwrap();
+        hub.handle(
+            Role::Desktop,
+            r#"{"type":"pair-approved","roomId":"room-1","from":"desktop","ts":0,"payload":{"grantedScopes":["view"],"trust":false}}"#,
+        );
+
+        // The phone's socket drops — desktop stays seated, room survives.
+        hub.detach("room-1", Role::Mobile, mobile_token);
+        assert_eq!(
+            hub.find_resumable_room("desktop-12345678", "mobile-12345678")
+                .as_deref(),
+            Some("room-1"),
+            "the live room must still be resumable"
+        );
+
+        let (m2_send, _) = capture_send();
+        hub.attach("room-1", Role::Mobile, "mobile-12345678".into(), m2_send)
+            .expect("the resumed room's authorization must still be on record");
+        assert!(hub.has_seat("room-1", Role::Mobile));
+    }
+
+    /// The cleanup half of the fix: once a room is fully torn down (both
+    /// seats gone), its `RoomAuth` must go with it — a dead `roomId` must
+    /// never be replayable into a fresh authorization for a different pair.
+    #[test]
+    fn authorization_is_removed_once_the_room_is_fully_torn_down() {
+        let hub = LanHub::new();
+        hub.authorize_room(
+            "room-1",
+            "desktop-12345678".into(),
+            "mobile-12345678".into(),
+        );
+        let (d_send, _) = capture_send();
+        let desktop_token = hub
+            .attach("room-1", Role::Desktop, "desktop-12345678".into(), d_send)
+            .unwrap();
+
+        hub.detach("room-1", Role::Desktop, desktop_token);
+        assert!(hub.rooms.lock().unwrap().is_empty());
+
+        let (d2_send, _) = capture_send();
+        let err = hub
+            .attach("room-1", Role::Desktop, "desktop-12345678".into(), d2_send)
+            .expect_err("a torn-down room's authorization must not survive it");
+        assert_eq!(err, "unauthorized_room");
     }
 }

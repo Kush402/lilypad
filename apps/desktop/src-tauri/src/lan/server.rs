@@ -248,6 +248,21 @@ async fn connect_request(
     }
 
     let room_id = Uuid::new_v4().to_string();
+    // Record which two devices this room was actually minted for BEFORE
+    // either device can possibly send a WS `register` frame naming it. This
+    // is what turns `roomId` from a bearer capability (whoever registers
+    // first with any deviceId gets the seat — `LanHub::attach`'s pre-fix
+    // behavior) into an authorized claim, mirroring the cloud path's
+    // `RoomAuthStore.recordDesktop`+`recordMobile`
+    // (apps/backend/src/services/roomAuth.ts). Both devices are already
+    // known-good by this point — `device_id` was checked against this
+    // process's own id above, and the phone's `pair_secret` was just
+    // verified by `authorize_connect` — so unlike the cloud flow's async
+    // scan-then-redeem, there is no "desktop known, mobile not yet" window
+    // to model: one call records both.
+    state
+        .hub
+        .authorize_room(&room_id, device_id, body.mobile_device_id.clone());
     let payload = ConnectRequestPayload {
         session_room_id: room_id.clone(),
         mobile_device_id: body.mobile_device_id,
@@ -322,14 +337,41 @@ async fn handle_ws(socket: WebSocket, state: Arc<LanServerState>) {
                                 let _ = tx.send(s.to_owned());
                             })
                         };
-                        if let Ok(token) = state.hub.attach(&room_id, role, device_id, send) {
-                            registered = Some((room_id.clone(), role, token));
-                            let rejoin = v
-                                .pointer("/payload/rejoin")
-                                .and_then(|x| x.as_bool())
-                                .unwrap_or(false);
-                            if rejoin && role == Role::Mobile {
-                                state.hub.reissue_session_start(&room_id);
+                        match state.hub.attach(&room_id, role, device_id, send) {
+                            Ok(token) => {
+                                registered = Some((room_id.clone(), role, token));
+                                let rejoin = v
+                                    .pointer("/payload/rejoin")
+                                    .and_then(|x| x.as_bool())
+                                    .unwrap_or(false);
+                                if rejoin && role == Role::Mobile {
+                                    state.hub.reissue_session_start(&room_id);
+                                }
+                            }
+                            Err(code) => {
+                                // No seat was ever taken, so `LanHub::reject`
+                                // — which relays through an already-seated
+                                // peer — has nothing to send through. Write
+                                // the SAME `{type:"error"}` shape directly to
+                                // this socket's own channel (see
+                                // `LanHub::refusal_frame`) and close the
+                                // connection rather than leaving it hanging:
+                                // this is the seat-authorization gate refusing
+                                // either an unminted `roomId` or a `deviceId`
+                                // that does not match what `connect_request`
+                                // authorized for the claimed role. See
+                                // `LanHub::attach`.
+                                log::warn!(
+                                    target: "lilypad::lan",
+                                    "LAN register refused for room {room_id}: {code}"
+                                );
+                                let _ = tx.send(LanHub::refusal_frame(
+                                    role,
+                                    &room_id,
+                                    &code,
+                                    "registration refused",
+                                ));
+                                break;
                             }
                         }
                     }
