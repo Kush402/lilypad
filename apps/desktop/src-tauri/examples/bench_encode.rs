@@ -4,6 +4,7 @@
 //!
 //!   cargo run --release --example bench_encode
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use lilypad_desktop_lib::media::encoder::{create_encoder, EncoderKind, EncoderSettings};
@@ -15,14 +16,16 @@ const WARMUP: usize = 30;
 fn moving_frame(w: u32, h: u32, i: u64) -> RawFrame {
     let mut f = RawFrame::new(w, h, Duration::from_millis(i * 33), i);
     let t = i as usize;
+    // `RawFrame::new` hands back a uniquely-owned `Arc<Vec<u8>>`.
+    let bgra = Arc::get_mut(&mut f.bgra).unwrap();
     for y in 0..h as usize {
         let row = y * w as usize * 4;
         for x in 0..w as usize {
             let p = row + x * 4;
-            f.bgra[p] = ((x + t * 2) & 0xff) as u8;
-            f.bgra[p + 1] = ((y + t * 3) & 0xff) as u8;
-            f.bgra[p + 2] = ((x + y + t) & 0xff) as u8;
-            f.bgra[p + 3] = 255;
+            bgra[p] = ((x + t * 2) & 0xff) as u8;
+            bgra[p + 1] = ((y + t * 3) & 0xff) as u8;
+            bgra[p + 2] = ((x + y + t) & 0xff) as u8;
+            bgra[p + 3] = 255;
         }
     }
     f

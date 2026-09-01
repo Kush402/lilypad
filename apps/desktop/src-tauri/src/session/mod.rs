@@ -261,7 +261,7 @@ fn counterpart_gone(
 ) -> bool {
     signaling_offline
         && ever_connected
-        && !last_traffic.is_some_and(|t| now.duration_since(t) < window)
+        && last_traffic.is_none_or(|t| now.duration_since(t) >= window)
 }
 
 /// Whether resumed peer traffic should earn the ICE-restart budget back.

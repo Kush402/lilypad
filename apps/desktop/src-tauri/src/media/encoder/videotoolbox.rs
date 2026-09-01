@@ -348,7 +348,12 @@ mod tests {
 
     fn ramp_frame(w: u32, h: u32, i: u64) -> RawFrame {
         let mut f = RawFrame::new(w, h, Duration::from_millis(i * 33), i);
-        for (n, p) in f.bgra.iter_mut().enumerate() {
+        // `RawFrame::new` hands back a uniquely-owned `Arc<Vec<u8>>`.
+        for (n, p) in std::sync::Arc::get_mut(&mut f.bgra)
+            .unwrap()
+            .iter_mut()
+            .enumerate()
+        {
             *p = ((n + i as usize * 7) & 0xff) as u8;
         }
         f

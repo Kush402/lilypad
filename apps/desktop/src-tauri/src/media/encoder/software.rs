@@ -11,8 +11,8 @@ use openh264::formats::YUVSlices;
 use openh264::OpenH264API;
 
 use super::{EncodedSample, EncoderSettings, VideoEncoder};
-use crate::media::convert::bgra_to_i420;
-use crate::media::frame::RawFrame;
+use crate::media::convert::bgra_to_i420_into;
+use crate::media::frame::{I420Buffer, RawFrame};
 
 pub struct Openh264Encoder {
     inner: Oh264Encoder,
@@ -28,6 +28,19 @@ pub struct Openh264Encoder {
     /// Off by default. See `docs/audit/m3/streaming-media.md` Finding 14.
     fail_after: Option<u64>,
     fail_count: Option<u64>,
+    /// Scratch I420 buffer reused across every `encode()` call
+    /// (`convert::bgra_to_i420_into` resizes it in place only when the
+    /// frame's dimensions actually change) instead of allocating three
+    /// fresh `Vec`s (Y/U/V) per frame. Safe to reuse — unlike
+    /// `VideoToolboxEncoder`'s ping-ponged IOSurfaces, which a hardware
+    /// session may still be asynchronously reading when the next frame is
+    /// submitted — because `self.inner.encode(&yuv)` is a single synchronous
+    /// FFI call into openh264 (`ISVCEncoder::EncodeFrame`): it reads
+    /// `self.i420`'s planes only for the duration of that call and copies
+    /// what it needs into its own internal picture buffer before returning,
+    /// so nothing outside this struct still borrows or aliases `i420` once
+    /// `encode()` has returned. One buffer, not two, is therefore enough.
+    i420: I420Buffer,
 }
 
 impl Openh264Encoder {
@@ -39,6 +52,10 @@ impl Openh264Encoder {
         let fail_count = std::env::var("LILYPAD_ENCODER_FAIL_COUNT")
             .ok()
             .and_then(|v| v.parse::<u64>().ok());
+        // Real dimensions are whatever the first `encode()` call's frame
+        // says — `bgra_to_i420_into` resizes on first use exactly like any
+        // later resolution change, so starting at 0×0 costs nothing extra.
+        let i420 = I420Buffer::new(0, 0, std::time::Duration::ZERO);
         Ok(Self {
             inner,
             settings,
@@ -46,6 +63,7 @@ impl Openh264Encoder {
             frame_index: 0,
             fail_after,
             fail_count,
+            i420,
         })
     }
 }
@@ -87,12 +105,18 @@ impl VideoEncoder for Openh264Encoder {
 
         // openh264 needs YUV; this is the one backend that pays the BGRA→I420
         // conversion cost (VideoToolbox consumes BGRA directly via IOSurface).
-        let i420 = bgra_to_i420(frame);
-        let (w, h) = (i420.width as usize, i420.height as usize);
+        // Writes into `self.i420` in place — see its field doc comment for
+        // why reusing the same buffer across calls is safe here.
+        bgra_to_i420_into(frame, &mut self.i420);
+        let (w, h) = (self.i420.width as usize, self.i420.height as usize);
         let yuv = YUVSlices::new(
-            (&i420.y, &i420.u, &i420.v),
+            (&self.i420.y, &self.i420.u, &self.i420.v),
             (w, h),
-            (i420.y_stride(), i420.chroma_stride(), i420.chroma_stride()),
+            (
+                self.i420.y_stride(),
+                self.i420.chroma_stride(),
+                self.i420.chroma_stride(),
+            ),
         );
 
         let bitstream = self
@@ -142,7 +166,12 @@ mod tests {
 
     fn ramp_frame(w: u32, h: u32, i: u64) -> RawFrame {
         let mut f = RawFrame::new(w, h, Duration::from_millis(i * 33), i);
-        for (n, p) in f.bgra.iter_mut().enumerate() {
+        // `RawFrame::new` hands back a uniquely-owned `Arc<Vec<u8>>`.
+        for (n, p) in std::sync::Arc::get_mut(&mut f.bgra)
+            .unwrap()
+            .iter_mut()
+            .enumerate()
+        {
             *p = ((n + i as usize * 7) & 0xff) as u8;
         }
         f
@@ -180,5 +209,64 @@ mod tests {
         let mut enc = Openh264Encoder::new(EncoderSettings::default()).unwrap();
         enc.set_bitrate(1500).unwrap();
         assert_eq!(enc.settings.bitrate_kbps, 1500);
+    }
+
+    /// The point of Fix 3: encoding a run of same-size frames must not
+    /// allocate a fresh I420 buffer every call — `self.i420` (see its field
+    /// doc comment) is reused in place across `encode()` calls.
+    #[test]
+    fn encoding_same_sized_frames_reuses_the_i420_scratch_buffer() {
+        let mut enc = Openh264Encoder::new(EncoderSettings {
+            width: 320,
+            height: 240,
+            fps: 30,
+            bitrate_kbps: 1000,
+            keyframe_interval: 30,
+        })
+        .expect("encoder init");
+
+        enc.encode(&ramp_frame(320, 240, 0), true).unwrap();
+        let (y_cap, u_cap, v_cap) = (
+            enc.i420.y.capacity(),
+            enc.i420.u.capacity(),
+            enc.i420.v.capacity(),
+        );
+
+        for i in 1..5u64 {
+            enc.encode(&ramp_frame(320, 240, i), false).unwrap();
+        }
+
+        assert_eq!(
+            enc.i420.y.capacity(),
+            y_cap,
+            "luma plane must not reallocate"
+        );
+        assert_eq!(enc.i420.u.capacity(), u_cap, "U plane must not reallocate");
+        assert_eq!(enc.i420.v.capacity(), v_cap, "V plane must not reallocate");
+    }
+
+    /// A resolution change mid-session (capture mode switch) must still be
+    /// handled correctly by the reused buffer, not leave it stuck at the old
+    /// size.
+    #[test]
+    fn encoding_survives_a_resolution_change_across_calls() {
+        let mut enc = Openh264Encoder::new(EncoderSettings {
+            width: 320,
+            height: 240,
+            fps: 30,
+            bitrate_kbps: 1000,
+            keyframe_interval: 30,
+        })
+        .expect("encoder init");
+
+        enc.encode(&ramp_frame(320, 240, 0), true).unwrap();
+        assert_eq!((enc.i420.width, enc.i420.height), (320, 240));
+
+        let s1 = enc
+            .encode(&ramp_frame(160, 120, 1), true)
+            .unwrap()
+            .expect("a forced keyframe at the new resolution must still encode");
+        assert!(s1.is_keyframe);
+        assert_eq!((enc.i420.width, enc.i420.height), (160, 120));
     }
 }

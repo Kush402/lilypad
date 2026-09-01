@@ -9,11 +9,29 @@ fn clamp_u8(v: i32) -> u8 {
     v.clamp(0, 255) as u8
 }
 
-/// Convert one BGRA frame to I420.
+/// Convert one BGRA frame to I420, allocating a fresh buffer for it.
+///
+/// Convenience wrapper around `bgra_to_i420_into` for callers that convert
+/// occasionally (or want an owned, self-contained result) rather than every
+/// frame on a hot path — `Openh264Encoder::encode` is the latter, and uses
+/// `bgra_to_i420_into` directly with a buffer it keeps across calls instead
+/// of paying this allocation every frame.
 pub fn bgra_to_i420(frame: &RawFrame) -> I420Buffer {
+    let mut out = I420Buffer::new(frame.width, frame.height, frame.timestamp);
+    bgra_to_i420_into(frame, &mut out);
+    out
+}
+
+/// Convert one BGRA frame to I420, writing into `out` in place instead of
+/// allocating. `out`'s planes are resized (`I420Buffer::ensure_size`) only
+/// when `frame`'s dimensions differ from what `out` already holds — a
+/// stable capture resolution, the common case, touches no allocation at
+/// all.
+pub fn bgra_to_i420_into(frame: &RawFrame, out: &mut I420Buffer) {
     let w = frame.width as usize;
     let h = frame.height as usize;
-    let mut out = I420Buffer::new(frame.width, frame.height, frame.timestamp);
+    out.ensure_size(frame.width, frame.height);
+    out.timestamp = frame.timestamp;
     let cw = w.div_ceil(2);
     let src = &frame.bgra;
 
@@ -62,8 +80,6 @@ pub fn bgra_to_i420(frame: &RawFrame) -> I420Buffer {
             out.v[cy * cw + cx] = clamp_u8(v);
         }
     }
-
-    out
 }
 
 #[cfg(test)]
@@ -73,7 +89,12 @@ mod tests {
 
     fn solid(w: u32, h: u32, b: u8, g: u8, r: u8) -> RawFrame {
         let mut f = RawFrame::new(w, h, Duration::ZERO, 0);
-        for px in f.bgra.chunks_exact_mut(4) {
+        // `RawFrame::new` hands back a uniquely-owned `Arc<Vec<u8>>` — safe
+        // to mutate in place via `get_mut`.
+        for px in std::sync::Arc::get_mut(&mut f.bgra)
+            .unwrap()
+            .chunks_exact_mut(4)
+        {
             px[0] = b;
             px[1] = g;
             px[2] = r;
@@ -110,5 +131,59 @@ mod tests {
     #[test]
     fn odd_dimensions_do_not_panic() {
         let _ = bgra_to_i420(&solid(3, 3, 10, 20, 30));
+    }
+
+    /// The point of `bgra_to_i420_into`: a stable resolution across calls
+    /// must not touch the allocation at all — this is what lets
+    /// `Openh264Encoder` reuse one `I420Buffer` for the life of the encoder
+    /// instead of allocating three fresh `Vec`s every frame.
+    #[test]
+    fn bgra_to_i420_into_reuses_the_allocation_when_dimensions_are_unchanged() {
+        let mut out = I420Buffer::new(4, 4, Duration::ZERO);
+        bgra_to_i420_into(&solid(4, 4, 0, 0, 0), &mut out);
+        let (y_cap, u_cap, v_cap) = (out.y.capacity(), out.u.capacity(), out.v.capacity());
+
+        bgra_to_i420_into(&solid(4, 4, 255, 255, 255), &mut out);
+
+        assert_eq!(out.y.capacity(), y_cap, "luma plane must not reallocate");
+        assert_eq!(out.u.capacity(), u_cap, "U plane must not reallocate");
+        assert_eq!(out.v.capacity(), v_cap, "V plane must not reallocate");
+        // And it must still hold the SECOND frame's content, not stale data
+        // from the first.
+        assert!(out.y[0] >= 234, "expected white luma, got {}", out.y[0]);
+    }
+
+    /// The other half: a genuine resolution change (capture mode switch,
+    /// display change) must still resize correctly, not silently keep
+    /// stale-sized planes.
+    #[test]
+    fn bgra_to_i420_into_resizes_when_dimensions_change() {
+        let mut out = I420Buffer::new(4, 4, Duration::ZERO);
+        bgra_to_i420_into(&solid(4, 4, 0, 0, 0), &mut out);
+
+        bgra_to_i420_into(&solid(8, 6, 0, 0, 0), &mut out);
+
+        assert_eq!(out.width, 8);
+        assert_eq!(out.height, 6);
+        assert_eq!(out.y.len(), 8 * 6);
+        assert_eq!(out.u.len(), 4 * 3);
+        assert_eq!(out.v.len(), 4 * 3);
+    }
+
+    /// `bgra_to_i420_into` must produce exactly what `bgra_to_i420` does —
+    /// it's meant to be a drop-in, not an approximation, for a caller on a
+    /// hot path that can't afford the allocation.
+    #[test]
+    fn bgra_to_i420_into_matches_the_allocating_version() {
+        let frame = solid(6, 6, 40, 90, 200);
+        let allocated = bgra_to_i420(&frame);
+
+        let mut reused = I420Buffer::new(1, 1, Duration::ZERO);
+        bgra_to_i420_into(&frame, &mut reused);
+
+        assert_eq!(reused.y, allocated.y);
+        assert_eq!(reused.u, allocated.u);
+        assert_eq!(reused.v, allocated.v);
+        assert_eq!(reused.timestamp, allocated.timestamp);
     }
 }

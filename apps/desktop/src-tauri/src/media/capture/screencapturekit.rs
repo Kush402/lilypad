@@ -276,13 +276,27 @@ impl SCStreamOutputTrait for FrameHandler {
         // Reuse the allocation of a frame the consumer never picked up
         // (drop-oldest semantics) instead of allocating ~4MB per frame; a
         // fresh Vec is only needed when the consumer is keeping up.
+        //
+        // `old.bgra` is `Arc<Vec<u8>>` (see `RawFrame`'s doc comment), so
+        // reclaiming the Vec to write into needs `Arc::try_unwrap` rather
+        // than a plain move. This always succeeds in practice: a frame only
+        // ever sits here, unconsumed, because `next_frame()` (the ONLY other
+        // reader of this slot) has not yet called `guard.take()` on it — and
+        // that `take()` is the earliest moment its `Arc` could possibly be
+        // cloned (into `ScreenCaptureKitSource::last_frame`). A frame still
+        // waiting in the slot has therefore never been handed to anyone, so
+        // its refcount is always exactly 1 here. The `unwrap_or_else` clone
+        // exists only so this stays total if that invariant is ever broken —
+        // NOT as an expected fallback; if it starts actually cloning, the
+        // whole point of this reuse path (and the keepalive fix it now backs)
+        // has quietly regressed.
         let mut bgra = self
             .slot
             .frame
             .lock()
             .unwrap()
             .take()
-            .map(|old| old.bgra)
+            .map(|old| Arc::try_unwrap(old.bgra).unwrap_or_else(|shared| (*shared).clone()))
             .unwrap_or_default();
         bgra.clear();
         bgra.reserve(total);
@@ -302,7 +316,7 @@ impl SCStreamOutputTrait for FrameHandler {
         let frame = RawFrame {
             width,
             height,
-            bgra,
+            bgra: Arc::new(bgra),
             timestamp: self.start.elapsed(),
             captured_at: Instant::now(),
             index,
@@ -439,6 +453,15 @@ impl CaptureBackend for ScreenCaptureKitSource {
         loop {
             if let Some(frame) = guard.take() {
                 drop(guard);
+                // Keep a spare for the keepalive re-send below. `RawFrame::
+                // clone` only deep-copies the pixels for the width/height
+                // fields it can't share — `bgra` itself is an `Arc<Vec<u8>>`,
+                // so this is a refcount bump, not the ~8.8MB (1920×1200
+                // BGRA) memcpy it used to be on every single frame. Taking
+                // `frame` out of the slot (just above) is also the earliest
+                // point this buffer's `Arc` can be cloned at all, which is
+                // what keeps `did_output_sample_buffer`'s reuse-the-
+                // allocation path honest — see its doc comment.
                 self.last_frame = Some(frame.clone());
                 return Ok(frame);
             }
@@ -671,5 +694,57 @@ mod tests {
                 .expect_err("should report missing permission");
             assert!(err.to_string().contains("Screen Recording"));
         }
+    }
+
+    /// The core of the per-frame-clone fix: `next_frame()` must hand the
+    /// caller the SAME pixel buffer `FrameHandler` delivered — no copy — and
+    /// the keepalive spare it stashes in `last_frame` must SHARE that same
+    /// buffer rather than clone it, or the fix is a no-op with extra steps.
+    ///
+    /// Talks to `slot`/`FrameSlot` directly rather than going through a real
+    /// `SCStream` (which `start()` requires and which this test harness
+    /// cannot grant Screen Recording permission for) — exactly what
+    /// `FrameHandler::did_output_sample_buffer` does when it publishes a
+    /// frame, minus the BGRA conversion itself, which is not what this test
+    /// is about.
+    #[test]
+    fn next_frame_shares_the_keepalive_buffer_instead_of_copying_it() {
+        let slot = Arc::new(FrameSlot {
+            frame: Mutex::new(None),
+            cond: Condvar::new(),
+            dead: Mutex::new(None),
+        });
+        let mut src = ScreenCaptureKitSource::new(CaptureConfig::default());
+        src.slot = Some(slot.clone());
+
+        let delivered = RawFrame::new(4, 4, Duration::from_millis(1), 0);
+        let buffer_ptr = Arc::as_ptr(&delivered.bgra);
+        *slot.frame.lock().unwrap() = Some(delivered);
+        slot.cond.notify_one();
+
+        let returned = src
+            .next_frame()
+            .expect("a frame already sitting in the slot must be returned immediately");
+        assert_eq!(
+            Arc::as_ptr(&returned.bgra),
+            buffer_ptr,
+            "next_frame must hand back the SAME buffer FrameHandler published, not a copy"
+        );
+
+        let spare = src
+            .last_frame
+            .as_ref()
+            .expect("next_frame must stash a keepalive spare for the static-screen path");
+        assert_eq!(
+            Arc::as_ptr(&spare.bgra),
+            buffer_ptr,
+            "the keepalive spare must SHARE the buffer `next_frame` just returned, not clone it \
+             — this is the ~8.8MB-per-frame memcpy the fix removes"
+        );
+        assert_eq!(
+            Arc::strong_count(&spare.bgra),
+            2,
+            "exactly two live references to the shared buffer: `returned` and `last_frame`"
+        );
     }
 }

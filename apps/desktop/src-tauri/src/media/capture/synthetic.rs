@@ -115,7 +115,7 @@ impl SyntheticSource {
         RawFrame {
             width: self.width,
             height: self.height,
-            bgra: self.scratch.clone(),
+            bgra: std::sync::Arc::new(self.scratch.clone()),
             timestamp: ts,
             captured_at: std::time::Instant::now(),
             index,
