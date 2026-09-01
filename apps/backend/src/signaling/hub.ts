@@ -201,13 +201,55 @@ export class SignalingHub {
       return;
     }
     room.bumpLastSeen(existing.role, this.now());
+    // Snapshot the fields that actually round-trip through `RoomRecord`
+    // BEFORE routing — four field reads, no serialization — so the
+    // persistence decision below can tell "this message changed something
+    // that must survive a restart" from "this message didn't," without
+    // hard-coding message types (a future router case that mutates state
+    // stays covered automatically; one that doesn't gets the cheap path for
+    // free).
+    const before = this.persistFingerprint(room);
     this.executeRoute(room, existing.role, msg);
     // Covers every routed mutation uniformly (approve, answer's `established`
     // flip, FSM transitions, …) with one call site instead of one per case.
     // `endRoom` (itself reachable from an 'end' action above) deletes the
     // record instead — persisting a room this call just removed would just
     // resurrect a dead room on the next restart.
-    if (this.registry.get(room.id)) this.persistRoom(room);
+    if (this.registry.get(room.id)) {
+      // Fix (heartbeat write amplification): this used to call
+      // `persistRoom` — a full `JSON.stringify` + `SET EX` — after EVERY
+      // routed message, unconditionally. Both peers heartbeat every
+      // `APP_HEARTBEAT_INTERVAL_MS` (4s, `@lilypad/protocol`) for a
+      // session's entire lifetime, and `messageRouter.ts`'s `heartbeat` case
+      // is a documented zero-action no-op — so the steady state was two full
+      // record rewrites every 4 seconds, for hours, to re-save fields that
+      // never changed.
+      //
+      // Investigated before picking a fix: does anything read the persisted
+      // record's staleness (its `updatedAt`) to make a grace-window/expiry
+      // decision after a restart? No — `Room.resurrect` unconditionally
+      // marks every occupied seat vacated "now" the moment a prior process's
+      // record is resurrected, regardless of how old that record is (see its
+      // doc comment). `updatedAt` is written and round-tripped but never
+      // read for that purpose anywhere in this codebase. What DOES matter
+      // for restart-safety is simpler: the record's Redis TTL (`RoomStore`'s
+      // 6h default) is the only thing deciding whether it survives to be
+      // resurrected AT ALL, and that TTL has to be refreshed by something or
+      // a long, heartbeat-dominated session's record silently expires out of
+      // Redis hours before the session itself ends.
+      //
+      // So: a message that left every persisted field unchanged still
+      // refreshes the TTL — cheap (`RoomStore.touch`, a plain `EXPIRE`, no
+      // body write) — instead of skipping persistence outright, which would
+      // have been cheap but NOT restart-safe. Only a message that actually
+      // moved the FSM, minted a session, changed scopes, or flipped
+      // `established` pays for the full rewrite.
+      if (this.samePersistFingerprint(before, this.persistFingerprint(room))) {
+        this.touchRoom(room);
+      } else {
+        this.persistRoom(room);
+      }
+    }
   }
 
   /** A peer's transport closed. Mid-session the seat is held for the same
@@ -304,13 +346,16 @@ export class SignalingHub {
    * something false rather than omit something missing. Per-process, which is
    * accurate while the backend is single-instance (OPS-1); M11's scale-out is
    * where this needs a shared view.
+   *
+   * O(1) via `RoomRegistry`'s device index rather than a linear scan of
+   * every active room — `GET /devices` calls this once per device row, so a
+   * platform-wide scan per row was O(devices × all rooms) on an endpoint the
+   * mobile "My Devices" screen hits on every load. Semantics are identical
+   * to the scan it replaced: same presence-room exclusion, same "vacated but
+   * still in grace still counts" behavior (see `RoomRegistry.hasIndexedDevice`).
    */
   hasLiveSession(role: DeviceKind, deviceId: string): boolean {
-    for (const room of this.registry.all()) {
-      if (presenceRoomDeviceId(room.id) !== null) continue;
-      if (room.deviceIdFor(role) === deviceId) return true;
-    }
-    return false;
+    return this.registry.hasIndexedDevice(role, deviceId);
   }
 
   /**
@@ -322,14 +367,24 @@ export class SignalingHub {
    *
    * Identity is the pair + a still-live hub room. `roomId` is not a
    * bearer capability; room-auth still gates the subsequent `register`.
+   *
+   * Same device index `hasLiveSession` uses, intersected: instead of
+   * scanning every active room, only the (typically zero or one) roomIds
+   * where BOTH this desktop and this mobile currently hold a seat are ever
+   * inspected, and only for the extra checks (terminal state, session
+   * minted, desktop seat live) the index itself doesn't encode. Presence
+   * rooms need no separate filter here — the index never contains them.
    */
   findLiveSessionForPair(desktopDeviceId: string, mobileDeviceId: string): string | null {
-    for (const room of this.registry.all()) {
-      if (presenceRoomDeviceId(room.id) !== null) continue;
+    const mobileRoomIds = this.registry.roomIdsForDevice('mobile', mobileDeviceId);
+    for (const roomId of this.registry.roomIdsForDevice('desktop', desktopDeviceId)) {
+      if (!mobileRoomIds.has(roomId)) continue;
+      const room = this.registry.get(roomId);
+      // Defensive only: the index is kept in sync with `RoomRegistry.remove`,
+      // so every id it yields should still resolve to a live room.
+      if (!room) continue;
       if (room.fsmIsTerminal()) continue;
       if (!room.sessionId) continue;
-      if (room.deviceIdFor('desktop') !== desktopDeviceId) continue;
-      if (room.deviceIdFor('mobile') !== mobileDeviceId) continue;
       if (!room.hasSeat('desktop')) continue;
       return room.id;
     }
@@ -493,6 +548,11 @@ export class SignalingHub {
       peer.close(4409, result.reason === 'seat_taken' ? 'seat taken' : 'seat reserved');
       return;
     }
+    // Keeps `hasLiveSession`/`findLiveSessionForPair`'s O(1) index current —
+    // unconditional and idempotent (see `RoomRegistry.indexSeat`'s doc
+    // comment), so every successful branch below (fresh claim, grace
+    // reclaim, same-device zombie eviction) is covered by this one call.
+    this.registry.indexSeat(msg.roomId, role, msg.payload.deviceId);
     if (result.reclaimed) {
       log.signaling.info({ roomId: msg.roomId, role }, 'peer re-registered within grace');
       // Mirror image of the offline nudge sent in `handleClose`: only a
@@ -589,6 +649,43 @@ export class SignalingHub {
     this.deps.roomStore
       .save(room.toRecord())
       .catch((err) => log.signaling.warn({ err, roomId: room.id }, 'room persistence failed'));
+  }
+
+  /** Cheap sibling of `persistRoom`, for a routed message that left every
+   * persisted field unchanged (see `handleMessage`'s `persistFingerprint`
+   * comparison) — refreshes the record's Redis TTL without rewriting its
+   * body. Same fire-and-forget contract as `persistRoom`: never awaited,
+   * never throws into the caller, presence rooms excluded (never persisted
+   * in the first place, so nothing to refresh). */
+  private touchRoom(room: Room): void {
+    if (!this.deps.roomStore) return;
+    if (presenceRoomDeviceId(room.id) !== null) return;
+    this.deps.roomStore
+      .touch(room.id)
+      .catch((err) => log.signaling.warn({ err, roomId: room.id }, 'room TTL refresh failed'));
+  }
+
+  /** The subset of a room's state that round-trips through `RoomRecord`
+   * (`Room.toRecord`), minus device ids — those only change via
+   * `Room.registerSeat`, a different code path (`register()`) that already
+   * calls `persistRoom` unconditionally on every register, never through
+   * this per-message comparison. Cheap by construction: four field reads,
+   * no allocation, safe to call twice per message (see `handleMessage`). */
+  private persistFingerprint(
+    room: Room,
+  ): readonly [SessionState, string | undefined, SessionScope[], boolean] {
+    return [room.fsmState(), room.sessionId, room.scopes, room.isEstablished()];
+  }
+
+  private samePersistFingerprint(
+    a: ReturnType<SignalingHub['persistFingerprint']>,
+    b: ReturnType<SignalingHub['persistFingerprint']>,
+  ): boolean {
+    // `scopes` is always REASSIGNED as a whole new array, never mutated in
+    // place (see the `pair-request` case in `messageRouter.ts` and
+    // `approve()` below), so reference equality correctly detects a scopes
+    // change here without an array comparison.
+    return a[0] === b[0] && a[1] === b[1] && a[2] === b[2] && a[3] === b[3];
   }
 
   /** Ask the router what this message means for the room, then execute each

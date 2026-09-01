@@ -8,10 +8,13 @@ import { SignalingHub, type Peer, type SignalingHubDeps } from './hub.js';
  * (or a restart) reading/writing the same Redis. */
 class FakeRedis implements RoomKvStore {
   private data = new Map<string, string>();
+  readonly setCalls: string[] = [];
+  readonly expireCalls: string[] = [];
   async get(key: string): Promise<string | null> {
     return this.data.get(key) ?? null;
   }
   async set(key: string, value: string): Promise<unknown> {
+    this.setCalls.push(key);
     this.data.set(key, value);
     return 'OK';
   }
@@ -24,6 +27,10 @@ class FakeRedis implements RoomKvStore {
   }
   async mget(...keys: string[]): Promise<(string | null)[]> {
     return keys.map((k) => this.data.get(k) ?? null);
+  }
+  async expire(key: string): Promise<unknown> {
+    this.expireCalls.push(key);
+    return this.data.has(key) ? 1 : 0;
   }
 }
 
@@ -1151,32 +1158,34 @@ describe('SignalingHub — metrics', () => {
   });
 });
 
-describe('SignalingHub — Redis-backed room resurrection', () => {
-  function liveRoomWithStore(nowRef: { t: number }, roomStore: RoomStore) {
-    const hub = new SignalingHub({
-      buildIceServers: () => ICE,
-      now: () => nowRef.t,
-      reregisterGraceMs: 15_000,
-      roomStore,
-    });
-    const desktop = new FakePeer();
-    const mobile = new FakePeer();
-    hub.handleMessage(desktop, reg('desktop', 'desktop-01'));
-    hub.handleMessage(mobile, reg('mobile', 'mobile-01'));
-    hub.handleMessage(
-      mobile,
-      frame('pair-request', 'mobile', {
-        deviceId: 'mobile-01',
-        deviceName: 'phone',
-        requestedScopes: ['view'],
-      }),
-    );
-    hub.handleMessage(desktop, frame('pair-approved', 'desktop', { grantedScopes: ['view'] }));
-    hub.handleMessage(desktop, frame('offer', 'desktop', { type: 'offer', sdp: 'v=0' }));
-    hub.handleMessage(mobile, frame('answer', 'mobile', { type: 'answer', sdp: 'v=0-ans' }));
-    return { hub, desktop, mobile };
-  }
+// Shared by the resurrection suite below and the persistence/touch suite
+// further down — a fully established, live, Redis-persisted room.
+function liveRoomWithStore(nowRef: { t: number }, roomStore: RoomStore) {
+  const hub = new SignalingHub({
+    buildIceServers: () => ICE,
+    now: () => nowRef.t,
+    reregisterGraceMs: 15_000,
+    roomStore,
+  });
+  const desktop = new FakePeer();
+  const mobile = new FakePeer();
+  hub.handleMessage(desktop, reg('desktop', 'desktop-01'));
+  hub.handleMessage(mobile, reg('mobile', 'mobile-01'));
+  hub.handleMessage(
+    mobile,
+    frame('pair-request', 'mobile', {
+      deviceId: 'mobile-01',
+      deviceName: 'phone',
+      requestedScopes: ['view'],
+    }),
+  );
+  hub.handleMessage(desktop, frame('pair-approved', 'desktop', { grantedScopes: ['view'] }));
+  hub.handleMessage(desktop, frame('offer', 'desktop', { type: 'offer', sdp: 'v=0' }));
+  hub.handleMessage(mobile, frame('answer', 'mobile', { type: 'answer', sdp: 'v=0-ans' }));
+  return { hub, desktop, mobile };
+}
 
+describe('SignalingHub — Redis-backed room resurrection', () => {
   it('persists established: true only once the answer lands, matching the live room', async () => {
     const nowRef = { t: 0 };
     const redis = new FakeRedis();
@@ -1320,6 +1329,9 @@ describe('SignalingHub — Redis-backed room resurrection', () => {
       async mget(): Promise<(string | null)[]> {
         throw new Error('redis unavailable');
       }
+      async expire(): Promise<unknown> {
+        throw new Error('redis unavailable');
+      }
     }
     const roomStore = new RoomStore(new ThrowingRedis());
     const hub = new SignalingHub({ buildIceServers: () => ICE, roomStore });
@@ -1336,6 +1348,120 @@ describe('SignalingHub — Redis-backed room resurrection', () => {
     // Let the fire-and-forget persist promise's rejection settle so it
     // doesn't surface as an unhandled rejection in the test run.
     await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+});
+
+describe('SignalingHub — heartbeat write-amplification fix (touch vs. full persist)', () => {
+  it('a heartbeat refreshes the TTL (EXPIRE) but never triggers another full SET rewrite', async () => {
+    const nowRef = { t: 0 };
+    const redis = new FakeRedis();
+    const roomStore = new RoomStore(redis, 3600, () => nowRef.t);
+    const hub = new SignalingHub({ buildIceServers: () => ICE, now: () => nowRef.t, roomStore });
+    const desktop = new FakePeer();
+    hub.handleMessage(desktop, reg('desktop', 'desktop-01'));
+    await Promise.resolve();
+    const setCallsAfterRegister = redis.setCalls.length;
+    expect(setCallsAfterRegister).toBeGreaterThan(0); // register() always fully persists
+
+    hub.handleMessage(desktop, frame('heartbeat', 'desktop', {}));
+    hub.handleMessage(desktop, frame('heartbeat', 'desktop', {}));
+    await Promise.resolve();
+
+    // No new body rewrite from either heartbeat…
+    expect(redis.setCalls.length).toBe(setCallsAfterRegister);
+    // …but the TTL was refreshed once per heartbeat.
+    expect(redis.expireCalls).toEqual(['lilypad:room:room-1', 'lilypad:room:room-1']);
+  });
+
+  it('a pure relay (ice-candidate) also touches instead of rewriting — no room-state mutation, same as heartbeat', async () => {
+    const nowRef = { t: 0 };
+    const redis = new FakeRedis();
+    const roomStore = new RoomStore(redis, 3600, () => nowRef.t);
+    const hub = new SignalingHub({ buildIceServers: () => ICE, now: () => nowRef.t, roomStore });
+    const desktop = new FakePeer();
+    const mobile = new FakePeer();
+    hub.handleMessage(desktop, reg('desktop', 'desktop-01'));
+    hub.handleMessage(mobile, reg('mobile', 'mobile-01'));
+    await Promise.resolve();
+    const setCallsBefore = redis.setCalls.length;
+
+    hub.handleMessage(mobile, frame('ice-candidate', 'mobile', { candidate: 'c1' }));
+    await Promise.resolve();
+
+    expect(redis.setCalls.length).toBe(setCallsBefore); // relayed, but nothing persisted changed
+    expect(redis.expireCalls.at(-1)).toBe('lilypad:room:room-1');
+    expect(desktop.find('ice-candidate')?.payload).toEqual({ candidate: 'c1' });
+  });
+
+  it('a state-changing message (pair-approved) still triggers a full rewrite, not just a touch', async () => {
+    const nowRef = { t: 0 };
+    const redis = new FakeRedis();
+    const roomStore = new RoomStore(redis, 3600, () => nowRef.t);
+    const hub = new SignalingHub({ buildIceServers: () => ICE, now: () => nowRef.t, roomStore });
+    const desktop = new FakePeer();
+    const mobile = new FakePeer();
+    hub.handleMessage(desktop, reg('desktop', 'desktop-01'));
+    hub.handleMessage(mobile, reg('mobile', 'mobile-01'));
+    hub.handleMessage(
+      mobile,
+      frame('pair-request', 'mobile', {
+        deviceId: 'mobile-01',
+        deviceName: 'phone',
+        requestedScopes: ['view'],
+      }),
+    );
+    await Promise.resolve();
+    const setCallsBeforeApprove = redis.setCalls.length;
+
+    hub.handleMessage(desktop, frame('pair-approved', 'desktop', { grantedScopes: ['view'] }));
+    await Promise.resolve();
+
+    // `approve()` mints a sessionId and flips the FSM — a real state change,
+    // so this must pay for the full rewrite, not merely a touch.
+    expect(redis.setCalls.length).toBeGreaterThan(setCallsBeforeApprove);
+  });
+
+  it('restart-safety: a session kept alive by heartbeats ALONE for longer than the room-record TTL still resurrects intact, because touch keeps refreshing the TTL', async () => {
+    const nowRef = { t: 0 };
+    const redis = new FakeRedis();
+    const ttlSeconds = 100;
+    const roomStore = new RoomStore(redis, ttlSeconds, () => nowRef.t);
+    const { hub, desktop, mobile } = liveRoomWithStore(nowRef, roomStore);
+    await Promise.resolve();
+
+    // Simulate a long session that sends nothing but heartbeats for well
+    // past the TTL a single `save` would have set — each heartbeat still
+    // refreshes the TTL via `touch`, so the record never actually expires
+    // in a real Redis. This fake doesn't model real TTL countdown, so the
+    // assertion that matters is behavioral: `expire` keeps getting called
+    // with the room's key, proving the TTL clock keeps resetting.
+    for (let i = 0; i < 5; i++) {
+      nowRef.t += (ttlSeconds / 2) * 1000; // well within, but repeatedly
+      hub.handleMessage(desktop, frame('heartbeat', 'desktop', {}));
+      hub.handleMessage(mobile, frame('heartbeat', 'mobile', {}));
+    }
+    await Promise.resolve();
+
+    expect(redis.expireCalls.length).toBe(10); // 2 heartbeats × 5 rounds
+    expect(redis.expireCalls.every((k) => k === 'lilypad:room:room-1')).toBe(true);
+
+    // A fresh process reads back the SAME record a single early `save` wrote
+    // — heartbeats never touched its body, only its TTL — and resurrects it
+    // with every field intact.
+    const hubB = new SignalingHub({
+      buildIceServers: () => ICE,
+      now: () => nowRef.t,
+      reregisterGraceMs: 15_000,
+      roomStore,
+    });
+    const resurrectedCount = await hubB.resurrectRoomsFromStore();
+    expect(resurrectedCount).toBe(1);
+    expect(hubB.roomCount()).toBe(1);
+
+    const [record] = await roomStore.loadAll();
+    expect(record.established).toBe(true);
+    expect(record.sessionId).toBeTruthy();
+    expect(record.deviceIds).toEqual({ desktop: 'desktop-01', mobile: 'mobile-01' });
   });
 });
 
@@ -1464,5 +1590,144 @@ describe('SignalingHub — device liveness and device revocation (P2)', () => {
     const { hub, desktop } = connectedRoom();
     expect(hub.endRoomsForDevice('mobile-01', 'revoked')).toBe(1);
     expect(desktop.find('session-end')?.payload.reason).toBe('revoked');
+  });
+});
+
+describe('SignalingHub — Fix 2: device index consistency across tricky transitions', () => {
+  /** Drive a room to `connected` (pair → approve → offer → answer), same
+   * shape as the grace-window suite's `liveRoom` helper. */
+  function liveRoom(nowRef: { t: number }) {
+    const hub = new SignalingHub({
+      buildIceServers: () => ICE,
+      now: () => nowRef.t,
+      reregisterGraceMs: 15_000,
+    });
+    const desktop = new FakePeer();
+    const mobile = new FakePeer();
+    hub.handleMessage(desktop, reg('desktop', 'desktop-01'));
+    hub.handleMessage(mobile, reg('mobile', 'mobile-01'));
+    hub.handleMessage(
+      mobile,
+      frame('pair-request', 'mobile', {
+        deviceId: 'mobile-01',
+        deviceName: 'phone',
+        requestedScopes: ['view'],
+      }),
+    );
+    hub.handleMessage(desktop, frame('pair-approved', 'desktop', { grantedScopes: ['view'] }));
+    hub.handleMessage(desktop, frame('offer', 'desktop', { type: 'offer', sdp: 'v=0' }));
+    hub.handleMessage(mobile, frame('answer', 'mobile', { type: 'answer', sdp: 'v=0-ans' }));
+    return { hub, desktop, mobile };
+  }
+
+  it('re-register replacing a seat (same-device zombie-socket reconnect) keeps hasLiveSession true and does not leak a duplicate entry', () => {
+    const { hub, mobile } = connectedRoom();
+    expect(hub.hasLiveSession('desktop', 'desktop-01')).toBe(true);
+
+    // The old socket never closed on the server's side (a true zombie) —
+    // the SAME device reconnects on a brand-new transport and supersedes it.
+    const desktop2 = new FakePeer();
+    hub.handleMessage(desktop2, reg('desktop', 'desktop-01'));
+
+    expect(hub.hasLiveSession('desktop', 'desktop-01')).toBe(true);
+    // No leaked second index entry from the eviction: ending the one real
+    // room clears the device completely (a duplicate/orphaned entry would
+    // leave this `true`).
+    hub.endRoomsForDevice('desktop-01', 'evicted-cleanup');
+    expect(hub.hasLiveSession('desktop', 'desktop-01')).toBe(false);
+    void mobile;
+  });
+
+  it('room end (explicit disconnect) clears the index for both seats', () => {
+    const { hub, mobile } = connectedRoom();
+    expect(hub.hasLiveSession('desktop', 'desktop-01')).toBe(true);
+    expect(hub.hasLiveSession('mobile', 'mobile-01')).toBe(true);
+
+    hub.handleMessage(mobile, frame('disconnect', 'mobile', { reason: 'bye' }));
+
+    expect(hub.hasLiveSession('desktop', 'desktop-01')).toBe(false);
+    expect(hub.hasLiveSession('mobile', 'mobile-01')).toBe(false);
+  });
+
+  it("grace-window close: a vacated-but-held seat still reads as a live session (matches the old scan's semantics), and goes false once the grace elapses and the room is reaped", () => {
+    const nowRef = { t: 0 };
+    const { hub, desktop, mobile } = liveRoom(nowRef);
+
+    hub.handleClose(desktop); // transport drop; established session holds the seat
+    expect(hub.hasLiveSession('desktop', 'desktop-01')).toBe(true); // still "live" during grace
+
+    nowRef.t = 15_001; // past grace, but mobile is still present → room survives
+    hub.reapStale();
+    expect(hub.hasLiveSession('desktop', 'desktop-01')).toBe(true); // room never ended
+
+    hub.handleClose(mobile); // now both are gone → room actually ends
+    expect(hub.hasLiveSession('desktop', 'desktop-01')).toBe(false);
+    expect(hub.hasLiveSession('mobile', 'mobile-01')).toBe(false);
+  });
+
+  it('grace-window reclaim: hasLiveSession stays true continuously through a vacate-then-reclaim, and the index is not duplicated by the reclaim', () => {
+    const nowRef = { t: 0 };
+    const { hub, desktop, mobile } = liveRoom(nowRef);
+    void mobile;
+
+    hub.handleClose(desktop);
+    expect(hub.hasLiveSession('desktop', 'desktop-01')).toBe(true);
+
+    nowRef.t = 5_000; // within the 15s grace
+    const desktop2 = new FakePeer();
+    hub.handleMessage(desktop2, reg('desktop', 'desktop-01'));
+    expect(hub.hasLiveSession('desktop', 'desktop-01')).toBe(true);
+
+    // Ending the room now must fully clear it — proving the reclaim's
+    // `indexSeat` call didn't create a second, orphaned entry.
+    hub.endRoomsForDevice('desktop-01', 'cleanup');
+    expect(hub.hasLiveSession('desktop', 'desktop-01')).toBe(false);
+  });
+
+  it('restore-from-persistence: a resurrected room is findable via hasLiveSession immediately, with no register() call', async () => {
+    const redis = new FakeRedis();
+    const roomStore = new RoomStore(redis);
+    await roomStore.save({
+      id: 'room-restored',
+      fsmState: 'connected',
+      sessionId: 'sess-restored',
+      scopes: ['view'],
+      deviceIds: { desktop: 'desktop-01', mobile: 'mobile-01' },
+      established: true,
+    });
+
+    const hub = new SignalingHub({ buildIceServers: () => ICE, roomStore });
+    expect(hub.hasLiveSession('desktop', 'desktop-01')).toBe(false); // not resurrected yet
+
+    const count = await hub.resurrectRoomsFromStore();
+    expect(count).toBe(1);
+
+    expect(hub.hasLiveSession('desktop', 'desktop-01')).toBe(true);
+    expect(hub.hasLiveSession('mobile', 'mobile-01')).toBe(true);
+  });
+
+  it('findLiveSessionForPair uses the same index: returns the room for a matching, approved pair, null for a mismatched one, and null after the room ends', () => {
+    const nowRef = { t: 0 };
+    const { hub, mobile } = liveRoom(nowRef); // approved + established, so sessionId is minted
+
+    expect(hub.findLiveSessionForPair('desktop-01', 'mobile-01')).toBe(ROOM);
+    expect(hub.findLiveSessionForPair('desktop-01', 'some-other-phone')).toBeNull();
+    expect(hub.findLiveSessionForPair('some-other-laptop', 'mobile-01')).toBeNull();
+
+    hub.handleMessage(mobile, frame('disconnect', 'mobile', { reason: 'bye' }));
+    expect(hub.findLiveSessionForPair('desktop-01', 'mobile-01')).toBeNull();
+  });
+
+  it('findLiveSessionForPair still requires a MINTED session — a room with both seats but no approval yet does not resolve', () => {
+    const hub = makeHub();
+    const desktop = new FakePeer();
+    const mobile = new FakePeer();
+    hub.handleMessage(desktop, reg('desktop', 'desktop-01'));
+    hub.handleMessage(mobile, reg('mobile', 'mobile-01'));
+
+    // Both seats are indexed (registerSeat happened for both), but no
+    // `pair-approved` ever landed — `sessionId` is still unset.
+    expect(hub.hasLiveSession('desktop', 'desktop-01')).toBe(true);
+    expect(hub.findLiveSessionForPair('desktop-01', 'mobile-01')).toBeNull();
   });
 });

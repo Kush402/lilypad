@@ -6,6 +6,7 @@ import { RoomStore, type RoomKvStore, type RoomRecord } from './roomStore.js';
 class FakeRedis implements RoomKvStore {
   private data = new Map<string, string>();
   readonly setCalls: Array<{ key: string; ttlSeconds: number }> = [];
+  readonly expireCalls: Array<{ key: string; ttlSeconds: number }> = [];
 
   async get(key: string): Promise<string | null> {
     return this.data.get(key) ?? null;
@@ -25,6 +26,12 @@ class FakeRedis implements RoomKvStore {
   }
   async mget(...keys: string[]): Promise<(string | null)[]> {
     return keys.map((k) => this.data.get(k) ?? null);
+  }
+  async expire(key: string, ttlSeconds: number): Promise<unknown> {
+    this.expireCalls.push({ key, ttlSeconds });
+    // A real `EXPIRE` is a no-op (returns 0) on a key that isn't there — this
+    // fake only needs to track the call, not simulate real TTL expiry.
+    return this.data.has(key) ? 1 : 0;
   }
 }
 
@@ -90,5 +97,33 @@ describe('RoomStore', () => {
 
     await store.save(record());
     expect(redis.setCalls).toEqual([{ key: 'lilypad:room:room-1', ttlSeconds: 999 }]);
+  });
+
+  describe('touch (Fix 1 — cheap TTL refresh)', () => {
+    it('refreshes the TTL with a plain EXPIRE, not a SET — no body rewrite', async () => {
+      const redis = new FakeRedis();
+      const store = new RoomStore(redis, 999);
+      await store.save(record());
+      redis.setCalls.length = 0; // only the initial save should have SET
+
+      await store.touch('room-1');
+
+      expect(redis.setCalls).toEqual([]); // touch never rewrites the body
+      expect(redis.expireCalls).toEqual([{ key: 'lilypad:room:room-1', ttlSeconds: 999 }]);
+    });
+
+    it("leaves the record's contents completely untouched", async () => {
+      const redis = new FakeRedis();
+      const store = new RoomStore(redis, 3600, () => 1_000);
+      await store.save(record());
+
+      await store.touch('room-1');
+
+      const [after] = await store.loadAll();
+      // `updatedAt` still reflects the original `save`, not the `touch` — a
+      // plain EXPIRE never rewrites the value, so nothing in the record
+      // could have moved.
+      expect(after).toEqual({ ...record(), updatedAt: 1_000 });
+    });
   });
 });

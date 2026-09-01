@@ -11,6 +11,9 @@ export interface RoomKvStore {
   del(key: string): Promise<unknown>;
   keys(pattern: string): Promise<string[]>;
   mget(...keys: string[]): Promise<(string | null)[]>;
+  /** Refresh a key's TTL without touching its value — `RoomStore.touch`'s
+   * primitive (see its doc comment for why a plain `EXPIRE` exists at all). */
+  expire(key: string, ttlSeconds: number): Promise<unknown>;
 }
 
 /**
@@ -69,6 +72,25 @@ export class RoomStore {
 
   async delete(id: string): Promise<void> {
     await this.store.del(redisKeys.room(id));
+  }
+
+  /** Cheap sibling of `save`: refresh a record's TTL WITHOUT paying for
+   * `JSON.stringify` + a full body rewrite, for a caller that knows nothing
+   * persistable changed (see `SignalingHub.handleMessage`'s heartbeat/relay
+   * case — both peers heartbeat every `APP_HEARTBEAT_INTERVAL_MS` for a
+   * session's whole lifetime, and a heartbeat's only effect is liveness, not
+   * anything `toRecord()` would serialize differently).
+   *
+   * Still real work, not a no-op: `RoomRecord.updatedAt` is never read to
+   * judge staleness after a restart (`Room.resurrect` unconditionally marks
+   * every occupied seat vacated "now," regardless of the record's age), but
+   * the record's Redis TTL (`ttlSeconds`, default 6h) is what decides
+   * whether it SURVIVES to be resurrected at all — and only something
+   * refreshing that TTL keeps a long, heartbeat-dominated session's record
+   * alive in Redis through hour six. A plain `EXPIRE` is exactly that,
+   * without the write-amplification cost of `save`. */
+  async touch(id: string): Promise<void> {
+    await this.store.expire(redisKeys.room(id), this.ttlSeconds);
   }
 
   /** Every non-expired room record, for the one-time boot-time resurrection
