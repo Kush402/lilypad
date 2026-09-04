@@ -550,6 +550,17 @@ impl SessionRunner {
                             .collect(),
                     });
                     self.fsm.transition(SessionState::AwaitingApproval);
+                } else {
+                    // Hub already moved the room to waiting_approval and the
+                    // phone is showing "Waiting for approval…". Swallowing
+                    // this leaves the Mac on Pairing with no Approve surface
+                    // at all — tray disabled, Control idle, QR still "Scan
+                    // to pair". Log it so the next one is not silent.
+                    log::error!(
+                        target: "lilypad::session",
+                        "pair-request payload unreadable — Approve UI will not appear: {}",
+                        env.payload
+                    );
                 }
             }
             "session-start" => {

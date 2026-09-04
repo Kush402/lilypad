@@ -2,13 +2,20 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import { QrOverlay } from './QrOverlay';
 import { api } from '../lib/tauri';
+import { useAppState } from '../lib/useAppState';
 
 vi.mock('../lib/tauri', () => ({
   api: {
     createPairing: vi.fn(),
     getState: vi.fn(),
     simulatePairRequest: vi.fn(),
+    approve: vi.fn(),
+    deny: vi.fn(),
   },
+}));
+
+vi.mock('../lib/useAppState', () => ({
+  useAppState: vi.fn(() => null),
 }));
 
 vi.mock('qrcode', () => ({
@@ -32,6 +39,7 @@ describe('QrOverlay', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(api.createPairing).mockResolvedValue(payload());
+    vi.mocked(useAppState).mockReturnValue(null);
   });
 
   it('generates a code on mount without asking for confirmation', async () => {
@@ -140,5 +148,30 @@ describe('QrOverlay', () => {
       await waitFor(() => expect(api.createPairing).toHaveBeenCalled());
       expect(screen.queryByText('Simulate phone scan')).not.toBeInTheDocument();
     });
+  });
+
+  it('shows Approve on this window when a phone is waiting, not the QR', async () => {
+    vi.mocked(useAppState).mockReturnValue({
+      device_id: 'd',
+      backend_base_url: 'x',
+      session: 'awaiting_approval',
+      current_room_id: 'r',
+      pending_request: {
+        device_name: 'iPhone',
+        requested_scopes: ['view', 'control'],
+        requested_at: Date.now(),
+      },
+      plugin_health: {},
+      connection_path: null,
+      presence: { state: 'online' } as const,
+      shared_display: null,
+    });
+    render(<QrOverlay />);
+    expect(screen.getByText('Approve')).toBeInTheDocument();
+    expect(screen.getByText('Deny')).toBeInTheDocument();
+    expect(screen.getByText(/iPhone/)).toBeInTheDocument();
+    expect(screen.queryByText('Scan to pair')).not.toBeInTheDocument();
+    screen.getByText('Approve').click();
+    await waitFor(() => expect(api.approve).toHaveBeenCalledWith(true));
   });
 });

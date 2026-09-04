@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import QRCode from 'qrcode';
 import { api, type QrPayloadDto } from '../lib/tauri';
+import { useAppState } from '../lib/useAppState';
 
 /** Build the exact JSON the mobile scanner expects (see @lilypad/protocol QrPayload). */
 function toQrString(p: QrPayloadDto): string {
@@ -15,11 +16,21 @@ function toQrString(p: QrPayloadDto): string {
   });
 }
 
+const SCOPE_LABEL: Record<string, string> = {
+  view: 'View',
+  control: 'Control',
+};
+
 export function QrOverlay() {
+  const state = useAppState();
+  const session = state?.session ?? 'idle';
+  const pending = state?.pending_request ?? null;
+  const awaiting = session === 'awaiting_approval';
   const [payload, setPayload] = useState<QrPayloadDto | null>(null);
   const [dataUrl, setDataUrl] = useState<string>('');
   const [error, setError] = useState<string>('');
   const [secondsLeft, setSecondsLeft] = useState<number>(0);
+  const [trust, setTrust] = useState(true);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   // Avoids a stale-closure read of `payload` inside `generate` without
   // re-creating the callback (and re-running the mount effect) every time
@@ -109,6 +120,48 @@ export function QrOverlay() {
   }, [payload, secondsLeft]);
 
   const expired = secondsLeft <= 0 && !!payload;
+
+  // The person photographing this window never looks at the dashboard or
+  // the tray. Approve used to exist only on Control, which is a different
+  // always-on-top window — so a scan left the phone on "Waiting for
+  // approval…" while this overlay still said "Scan to pair". An observed
+  // session remained pending for nearly seven minutes. This window is the
+  // Approve surface the moment a phone asks.
+  if (awaiting) {
+    return (
+      <div className="page qr">
+        <h1>Approve this device</h1>
+        <p className="muted">
+          <strong>{pending?.device_name ?? 'An unknown device'}</strong> wants to connect to this
+          Mac.
+        </p>
+        {pending && pending.requested_scopes.length > 0 ? (
+          <div className="row scope-row">
+            {pending.requested_scopes.map((scope) => (
+              <span key={scope} className="chip">
+                {SCOPE_LABEL[scope] ?? scope}
+              </span>
+            ))}
+          </div>
+        ) : null}
+        <label className="row trust-row">
+          <input type="checkbox" checked={trust} onChange={(e) => setTrust(e.target.checked)} />
+          <span>
+            Keep this phone paired{' '}
+            <span className="muted">so it reconnects later without scanning again</span>
+          </span>
+        </label>
+        <div className="row">
+          <button className="btn btn--primary" onClick={() => void api.approve(trust)}>
+            Approve
+          </button>
+          <button className="btn btn--danger" onClick={() => void api.deny()}>
+            Deny
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="page qr">

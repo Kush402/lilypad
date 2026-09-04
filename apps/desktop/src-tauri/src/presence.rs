@@ -86,6 +86,16 @@ fn proves_registered(msg_type: &str) -> bool {
     msg_type != "error"
 }
 
+/// Does this inbound frame prove the hub received something WE sent?
+///
+/// `pong` is the only such frame: it answers our `ping`. `connect-request`
+/// and `trust-sync` prove the hub can still write *to* us, which is the
+/// opposite direction. Counting them as liveness was the bug — the stale
+/// timer reset, we did not reconnect, and the hub reaped a silent send path.
+fn inbound_proves_send_path(msg_type: &str) -> bool {
+    msg_type == "pong"
+}
+
 /// Mirrors `@lilypad/protocol`'s `presenceRoomId` (`presence:<deviceId>`).
 fn presence_room_id(device_id: &str) -> String {
     format!("presence:{device_id}")
@@ -242,14 +252,33 @@ async fn run(app: AppHandle) {
                             }
                             env = inbound.recv() => {
                                 let Some(env) = env else { break };
-                                last_inbound = tokio::time::Instant::now();
+                                // Only a `pong` proves the hub received a ping
+                                // we sent. `connect-request` / `trust-sync`
+                                // prove the *other* direction — hub can still
+                                // write to us — and treating them as liveness
+                                // kept a half-open send path looking alive
+                                // until the hub's 25s reap. Observed
+                                // 2026-08-31: enrollment trust-sync then a
+                                // ring 4s later, then `heartbeat timeout`
+                                // `desktop_offline` while the Mac was still up.
+                                if inbound_proves_send_path(&env.msg_type) {
+                                    last_inbound = tokio::time::Instant::now();
+                                }
                                 if !registered && proves_registered(&env.msg_type) {
                                     registered = true;
                                     attempt = 0;
                                     set_presence(&app, crate::state::PresenceState::Online);
                                     log::info!(target: "lilypad::presence", "presence online ({room})");
                                 }
+                                let ring = env.msg_type == "connect-request";
                                 handle_inbound(&app, &url, env);
+                                // If the send path still works, bump hub
+                                // lastSeen before the 25s reap. Harmless if
+                                // it doesn't — the stale timer is what
+                                // reconnects.
+                                if ring {
+                                    let _ = handle.send(Envelope::ping(&room));
+                                }
                             }
                         }
                     }
@@ -313,7 +342,14 @@ fn handle_inbound(app: &AppHandle, signaling_url: &str, env: Envelope) {
                     return;
                 }
             };
-            dispatch_connect_request(app, signaling_url, payload);
+            // Off the ping loop. `spawn_session_runner` is sync besides a
+            // mutex, but starting a session must not delay the next ping —
+            // that delay is exactly how a live app looks `desktop_offline`.
+            let app = app.clone();
+            let signaling_url = signaling_url.to_owned();
+            tauri::async_runtime::spawn(async move {
+                dispatch_connect_request(&app, &signaling_url, payload);
+            });
         }
         "trust-record" => {
             let payload: TrustRecordPayload = match serde_json::from_value(env.payload) {
@@ -545,6 +581,29 @@ mod tests {
     fn a_pong_or_a_ring_proves_registration() {
         assert!(proves_registered("pong"));
         assert!(proves_registered("connect-request"));
+    }
+
+    /// A ring or a trust-sync is not proof our *pings* arrived. Resetting
+    /// last_inbound on those frames is what left an observed Mac seated for
+    /// a connect 200 and then reaped 4s later.
+    #[test]
+    fn only_a_pong_proves_the_send_path_is_alive() {
+        assert!(inbound_proves_send_path("pong"));
+        assert!(!inbound_proves_send_path("connect-request"));
+        assert!(!inbound_proves_send_path("trust-sync"));
+        assert!(!inbound_proves_send_path("trust-record"));
+        assert!(!inbound_proves_send_path("error"));
+    }
+
+    /// Reconnect must beat the hub's 25s reap. A ring at T+20s used to reset
+    /// last_inbound, so we sat still and were reaped at T+25. Now we notice
+    /// at 16s and have ~9s to re-seat.
+    #[test]
+    fn send_path_stale_reconnects_before_the_hub_reaps() {
+        assert!(
+            PRESENCE_STALE_AFTER.as_secs() + 5 < 25,
+            "client must notice a dead send path with time to reconnect before the 25s reap"
+        );
     }
 
     /// The livelock itself, as arithmetic on the backoff schedule.

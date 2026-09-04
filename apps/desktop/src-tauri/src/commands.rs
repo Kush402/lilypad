@@ -11,6 +11,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 use tokio::sync::mpsc::unbounded_channel;
+use tokio::sync::oneshot;
 
 use crate::account;
 use crate::auth::{with_bearer, AuthError, DesktopAuth, LinkState};
@@ -23,6 +24,22 @@ use crate::state::{AppState, AppStateDto, PendingRequest, SessionStatus, SharedS
 /// before starting anyway — bounds a stuck old teardown so a takeover can't
 /// hang indefinitely.
 const SESSION_TEARDOWN_WAIT: Duration = Duration::from_secs(3);
+/// How long `create_pairing` waits for the session runner to register in the
+/// minted room before it will show a scannable QR. A code the Mac is not
+/// seated in is a phone that waits forever on "Waiting for approval…" with no
+/// Approve on this side — proven 2026-08-31 (three `201`s, no desktop seat).
+const PAIRING_SEAT_WAIT: Duration = Duration::from_secs(8);
+
+type SeatNotify = Arc<std::sync::Mutex<Option<oneshot::Sender<Result<(), String>>>>>;
+
+fn take_seat_notify(cell: &Option<SeatNotify>) -> Option<oneshot::Sender<Result<(), String>>> {
+    cell.as_ref()
+        .and_then(|c| c.lock().unwrap_or_else(|p| p.into_inner()).take())
+}
+
+fn pairing_not_seated() -> &'static str {
+    "This Mac couldn’t join the pairing room. Check this Mac’s internet connection and try again."
+}
 
 /// Lock the shared state, recovering from poisoning instead of panicking.
 /// A panic while holding this lock must NOT brick every subsequent command
@@ -258,15 +275,32 @@ pub async fn create_pairing(
     // for a phone to redeem + request control. This replaces the M1 mock.
     // Never auto-approved: a QR pairing IS the human decision, and the phone
     // that scans it has not been trusted yet.
-    spawn_session_runner(
+    //
+    // Do not hand the UI a scannable code until this Mac is seated in the
+    // room. HTTP 201 only minted the record — the phone can redeem against
+    // that alone, then sit on "Waiting for approval…" while the overlay
+    // still says "Scan to pair" and tray Approve stays disabled (session
+    // never leaves Pairing). Three observed 0.1.27 pairing attempts did
+    // exactly that.
+    let pairing_room_id = parsed.room_id.clone();
+    let (seated_tx, seated_rx) = oneshot::channel();
+    spawn_session_runner_inner(
         &app,
         parsed.room_id,
         parsed.signaling_url,
         device_id,
         offered_scopes,
         false,
+        Some(seated_tx),
     );
-    log::info!(target: "lilypad::audit", "pairing_created — room started, awaiting scan");
+    match tokio::time::timeout(PAIRING_SEAT_WAIT, seated_rx).await {
+        Ok(Ok(Ok(()))) => {}
+        Ok(Ok(Err(_))) | Ok(Err(_)) | Err(_) => {
+            abort_unseated_pairing(&app, &pairing_room_id);
+            return Err(pairing_not_seated().to_owned());
+        }
+    }
+    log::info!(target: "lilypad::audit", "pairing_created — desktop seated, awaiting scan");
 
     open_window(&app, "qr-overlay", "Pair a phone", QR_WINDOW)?;
     crate::sync_tray_menu(&app);
@@ -288,8 +322,29 @@ pub(crate) fn spawn_session_runner(
     offered_scopes: Vec<String>,
     auto_approve: bool,
 ) {
+    spawn_session_runner_inner(
+        app,
+        room_id,
+        signaling_url,
+        device_id,
+        offered_scopes,
+        auto_approve,
+        None,
+    );
+}
+
+fn spawn_session_runner_inner(
+    app: &AppHandle,
+    room_id: String,
+    signaling_url: String,
+    device_id: String,
+    offered_scopes: Vec<String>,
+    auto_approve: bool,
+    on_seated: Option<oneshot::Sender<Result<(), String>>>,
+) {
     let (control_tx, control_rx) = unbounded_channel::<Control>();
     let (event_tx, mut event_rx) = unbounded_channel::<SessionEvent>();
+    let seated: Option<SeatNotify> = on_seated.map(|tx| Arc::new(std::sync::Mutex::new(Some(tx))));
 
     let old_task = {
         let state = app.state::<SharedState>();
@@ -309,6 +364,7 @@ pub(crate) fn spawn_session_runner(
     // new session's state nor reach the UI.
     let app_ev = app.clone();
     let runner_room = room_id.clone();
+    let seated_ev = seated.clone();
     tauri::async_runtime::spawn(async move {
         while let Some(ev) = event_rx.recv().await {
             let current = {
@@ -322,6 +378,18 @@ pub(crate) fn spawn_session_runner(
                     "dropping event from superseded runner (room {runner_room})"
                 );
                 continue;
+            }
+            if matches!(ev, SessionEvent::Registered) {
+                if let Some(tx) = take_seat_notify(&seated_ev) {
+                    let _ = tx.send(Ok(()));
+                }
+            }
+            if matches!(ev, SessionEvent::Ended { .. }) {
+                if let Some(tx) = take_seat_notify(&seated_ev) {
+                    let _ = tx.send(Err(
+                        "session ended before this Mac joined the pairing room".to_owned()
+                    ));
+                }
             }
             apply_session_event(&app_ev, &ev);
             let _ = app_ev.emit("lilypad://session", ev);
@@ -346,6 +414,7 @@ pub(crate) fn spawn_session_runner(
             "joining room {room_id} on the embedded LAN hub in-process"
         );
     }
+    let seated_run = seated.clone();
     let handle = tauri::async_runtime::spawn(async move {
         // Wait for the PREVIOUS session to fully tear down (its media.stop()
         // joins the capture thread) before this one starts, so screen capture
@@ -367,6 +436,9 @@ pub(crate) fn spawn_session_runner(
         .await
         {
             log::error!(target: "lilypad::session", "session runner error: {e}");
+            if let Some(tx) = take_seat_notify(&seated_run) {
+                let _ = tx.send(Err(e.to_string()));
+            }
         }
     });
     {
@@ -573,6 +645,7 @@ pub fn approve_session(
         }
     };
     crate::sync_tray_menu(&app);
+    close_window(&app, "qr-overlay");
     result
 }
 
@@ -790,6 +863,38 @@ fn reset_to_idle(state: &State<'_, SharedState>) {
     s.current_room_id = None;
     s.control_tx = None;
     s.pending_request = None;
+}
+
+/// Pairing minted a room but this Mac never sat in it. Kill that room's runner
+/// so a later retry is not fighting a hung connect, and put the UI back at
+/// Idle so tray Approve does not look live for a room nobody is in.
+///
+/// The room check is essential: a trusted presence ring can supersede this
+/// pairing while `create_pairing` is awaiting its seat notification. Its
+/// timeout must never abort the newer runner now stored in `session_task`.
+fn abort_unseated_pairing(app: &AppHandle, expected_room_id: &str) {
+    let state = app.state::<SharedState>();
+    let mut s = lock_state(&state);
+    clear_unseated_pairing_if_current(&mut s, expected_room_id);
+}
+
+fn clear_unseated_pairing_if_current(s: &mut AppState, expected_room_id: &str) -> bool {
+    if s.current_room_id.as_deref() != Some(expected_room_id) {
+        log::debug!(
+            target: "lilypad::session",
+            "not aborting superseded pairing room {expected_room_id}"
+        );
+        return false;
+    }
+    if let Some(handle) = s.session_task.take() {
+        handle.abort();
+    }
+    s.session = SessionStatus::Idle;
+    s.current_room_id = None;
+    s.control_tx = None;
+    s.pending_request = None;
+    s.auto_approve_room = None;
+    true
 }
 
 /// Every window this app opens is one of a fixed set of labels, each getting
@@ -1659,6 +1764,44 @@ mod tests {
         assert!(pairing_failure(429).contains("Wait a minute"));
         // Too old for the server is the one case retrying cannot fix.
         assert!(!pairing_failure(400).contains("Try again"));
+    }
+
+    #[test]
+    fn an_unseated_pairing_is_explained_in_words() {
+        let message = pairing_not_seated();
+        assert!(!message.contains("HTTP") && !message.contains("seat"));
+        assert!(message.ends_with('.') && message.chars().next().unwrap().is_uppercase());
+        assert!(message.contains("pairing room"));
+    }
+
+    #[test]
+    fn a_stale_pairing_timeout_cannot_abort_its_successor() {
+        let mut state = AppState::new("desktop".to_owned(), "https://example.test".to_owned());
+        state.current_room_id = Some("new-room".to_owned());
+        state.session = SessionStatus::Connecting;
+        state.auto_approve_room = Some("new-room".to_owned());
+
+        assert!(!clear_unseated_pairing_if_current(
+            &mut state,
+            "old-pairing-room"
+        ));
+        assert_eq!(state.current_room_id.as_deref(), Some("new-room"));
+        assert_eq!(state.session, SessionStatus::Connecting);
+        assert_eq!(state.auto_approve_room.as_deref(), Some("new-room"));
+    }
+
+    #[test]
+    fn an_unseated_current_pairing_is_reset_for_retry() {
+        let mut state = AppState::new("desktop".to_owned(), "https://example.test".to_owned());
+        state.current_room_id = Some("pairing-room".to_owned());
+        state.session = SessionStatus::Pairing;
+
+        assert!(clear_unseated_pairing_if_current(
+            &mut state,
+            "pairing-room"
+        ));
+        assert_eq!(state.current_room_id, None);
+        assert_eq!(state.session, SessionStatus::Idle);
     }
 }
 
