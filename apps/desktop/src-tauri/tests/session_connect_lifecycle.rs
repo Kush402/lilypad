@@ -14,7 +14,7 @@
 mod support;
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use lilypad_desktop_lib::session::{run_session, Control, SessionEvent};
@@ -25,6 +25,7 @@ use tokio::sync::mpsc::{self, unbounded_channel, UnboundedReceiver, UnboundedSen
 use webrtc::api::interceptor_registry::register_default_interceptors;
 use webrtc::api::media_engine::MediaEngine;
 use webrtc::api::APIBuilder;
+use webrtc::data_channel::RTCDataChannel;
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
 use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
@@ -86,6 +87,7 @@ struct ConnectedSession {
     from_desktop: UnboundedReceiver<Envelope>,
     answerer: Arc<RTCPeerConnection>,
     rtp_count: Arc<AtomicU64>,
+    input_channel: Arc<Mutex<Option<Arc<RTCDataChannel>>>>,
 }
 
 /// Drive a real session from scratch through pair-request → approve →
@@ -151,11 +153,15 @@ async fn connect_and_stream() -> ConnectedSession {
     // bare `WebRtcPeer` (already covered by `rtc_media_e2e.rs`/
     // `rtc_abr_e2e.rs`). See docs/audit/m3/input-touch.md Finding 2.
     let saw_move_channel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let input_channel = Arc::new(Mutex::new(None));
     {
         let saw_move_channel = Arc::clone(&saw_move_channel);
+        let input_channel = Arc::clone(&input_channel);
         answerer.on_data_channel(Box::new(move |dc| {
             if dc.label() == "lilypad-input-move" {
                 saw_move_channel.store(true, Ordering::Relaxed);
+            } else if dc.label() == "lilypad-input" {
+                *input_channel.lock().unwrap() = Some(Arc::clone(&dc));
             }
             Box::pin(async {})
         }));
@@ -332,7 +338,67 @@ async fn connect_and_stream() -> ConnectedSession {
         from_desktop,
         answerer,
         rtp_count,
+        input_channel,
     }
+}
+
+/// A force-closed phone cannot run JavaScript cleanup on iOS. The WebRTC
+/// DataChannel close is therefore the Mac's first local proof that the viewer
+/// is gone, earlier than the signaling heartbeat timeout. At that boundary the
+/// room remains reclaimable, but capture must stop and the UI must stop calling
+/// the session active.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn input_channel_close_suspends_capture_without_ending_the_rejoin_window() {
+    let ConnectedSession {
+        handle,
+        control_tx,
+        mut event_rx,
+        mut from_desktop,
+        answerer,
+        rtp_count,
+        input_channel,
+        ..
+    } = connect_and_stream().await;
+
+    let channel = input_channel
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("mobile received the desktop input DataChannel");
+    channel.close().await.expect("close mobile input channel");
+
+    expect_event(&mut event_rx, "InputChannelClosed", |e| {
+        matches!(e, SessionEvent::InputChannelClosed)
+    })
+    .await;
+
+    // Let any packet already handed to the receiver drain, then prove the
+    // synthetic capture stream has actually stopped rather than merely lost
+    // its input gate.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let after_close = rtp_count.load(Ordering::Relaxed);
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(
+        rtp_count.load(Ordering::Relaxed),
+        after_close,
+        "video kept flowing after the phone control channel closed"
+    );
+    assert!(
+        !handle.is_finished(),
+        "channel loss ended the room instead of preserving the trusted-rejoin window"
+    );
+
+    control_tx
+        .send(Control::Disconnect)
+        .expect("send disconnect");
+    expect_outbound(&mut from_desktop, "disconnect").await;
+    expect_event(&mut event_rx, "Ended", |e| {
+        matches!(e, SessionEvent::Ended { .. })
+    })
+    .await;
+
+    let _ = answerer.close().await;
+    let _ = tokio::time::timeout(Duration::from_secs(5), handle).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -381,6 +447,7 @@ async fn set_capture_mode_request_rebuilds_the_pipeline_and_keeps_streaming() {
         mut from_desktop,
         answerer,
         rtp_count,
+        ..
     } = connect_and_stream().await;
 
     // Drain the frame-size the initial connect already sent (Motion mode,

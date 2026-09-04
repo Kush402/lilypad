@@ -472,6 +472,18 @@ fn claim_room(s: &mut AppState, room_id: &str, auto_approve: bool) {
     s.auto_approve_room = auto_approve.then(|| room_id.to_owned());
 }
 
+/// Apply the capability-bearing input channel's availability to the UI state.
+/// Kept separate from the Tauri event adapter so the fail-closed status change
+/// has direct regression coverage without constructing an application window.
+fn apply_input_channel_event(state: &mut AppState, open: bool) {
+    state.session = if open {
+        SessionStatus::Active
+    } else {
+        state.shared_display = None;
+        SessionStatus::Connecting
+    };
+}
+
 /// Map a runner event onto the coarse `SessionStatus` the polling UI reads.
 fn apply_session_event(app: &AppHandle, ev: &SessionEvent) {
     let state = app.state::<SharedState>();
@@ -521,18 +533,24 @@ fn apply_session_event(app: &AppHandle, ev: &SessionEvent) {
             s.pending_request = None;
             s.session = SessionStatus::Connecting;
         }
-        // `failed`/`disconnected`/`closed` are NOT terminal from the UI's
-        // point of view: the runner treats them as recoverable (ICE restart,
-        // reconnect) and stays alive. Clearing `control_tx` here used to
-        // silently disable the Disconnect/Panic buttons while capture+encode
-        // kept running — a real safety bug. Only `Ended` (the runner's own
-        // definitive terminal signal) tears down UI state and the control
-        // channel. We reflect `connected` as Active and leave transient states
-        // showing Active so the indicator doesn't flicker to Idle mid-recovery.
-        SessionEvent::ConnectionState { state } => {
-            if state == "connected" {
-                s.session = SessionStatus::Active;
-            }
+        // ICE state alone does not mean a phone can control the Mac: the
+        // input DataChannel may still be opening, may have failed on this
+        // route, or may already have closed. `InputChannelOpen` below is the
+        // capability-bearing boundary that earns Active. Likewise, transient
+        // ICE states are recoverable and only `Ended` tears the session down.
+        SessionEvent::ConnectionState { .. } => {}
+        // A closed control channel is direct local proof that no phone can
+        // currently operate this Mac. The runner keeps the room briefly for a
+        // same-device trusted rejoin, so this is Connecting rather than Idle;
+        // calling it Active during that grace is both misleading and contrary
+        // to the capability suspension enforced by the runner.
+        SessionEvent::InputChannelClosed => {
+            apply_input_channel_event(&mut s, false);
+        }
+        // A successful rejoin may deliver this after the peer's connected
+        // event. Restore Active only now, once control is actually available.
+        SessionEvent::InputChannelOpen => {
+            apply_input_channel_event(&mut s, true);
         }
         // Recorded rather than acted on. Nothing branches on the path — the
         // product works the same over all three — but "was that relayed?" is
@@ -1802,6 +1820,20 @@ mod tests {
         ));
         assert_eq!(state.current_room_id, None);
         assert_eq!(state.session, SessionStatus::Idle);
+    }
+
+    #[test]
+    fn a_closed_input_channel_is_not_presented_as_an_active_controller() {
+        let mut state = AppState::new("desktop".to_owned(), "https://example.test".to_owned());
+        state.session = SessionStatus::Active;
+        state.shared_display = Some("Display 2".to_owned());
+
+        apply_input_channel_event(&mut state, false);
+        assert_eq!(state.session, SessionStatus::Connecting);
+        assert_eq!(state.shared_display, None);
+
+        apply_input_channel_event(&mut state, true);
+        assert_eq!(state.session, SessionStatus::Active);
     }
 }
 

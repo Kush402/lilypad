@@ -84,6 +84,10 @@ pub enum SessionEvent {
         state: String,
     },
     InputChannelOpen,
+    /// The phone's control channel closed. The room remains alive briefly so
+    /// the same trusted phone can reclaim it, but the Mac has already
+    /// suspended capture, input and Ask for that peer.
+    InputChannelClosed,
     /// The signaling WebSocket dropped mid-session; reconnecting with backoff
     /// (media keeps flowing peer-to-peer meanwhile).
     SignalingReconnecting,
@@ -394,6 +398,11 @@ struct SessionRunner {
     /// Last classified connection path (`lan` / `direct` / `relay`).
     connection_path: Option<&'static str>,
     input_channel_open: bool,
+    /// Once the critical channel closes it cannot reopen on this peer. Keep a
+    /// late queued `connected` callback from restarting capture during the
+    /// trusted-rejoin grace; `discard_current_peer` resets this for the
+    /// replacement PeerConnection.
+    input_channel_closed: bool,
     /// First moment we were `connected` without an open input DataChannel.
     connected_without_dc_since: Option<Instant>,
     /// We already recreated the peer with `iceTransportPolicy: relay`.
@@ -433,6 +442,7 @@ impl SessionRunner {
             ice_policy: IcePolicy::All,
             connection_path: None,
             input_channel_open: false,
+            input_channel_closed: false,
             connected_without_dc_since: None,
             forced_relay: false,
             event_gate: PeerEventGate::new(),
@@ -490,6 +500,7 @@ impl SessionRunner {
     async fn discard_current_peer(&mut self) -> u64 {
         let mine = self.event_gate.next();
         self.input_channel_open = false;
+        self.input_channel_closed = false;
         self.gate.set_channel_open(false);
         self.connected_without_dc_since = None;
         self.peer_connected = false;
@@ -818,7 +829,7 @@ impl SessionRunner {
         }
         if let PeerEvent::ConnectionState(s) = &ev {
             // Begin streaming once the peer connection is live (SRTP ready).
-            if s == "connected" && !self.media.is_started() {
+            if s == "connected" && !self.input_channel_closed && !self.media.is_started() {
                 if let Some(p) = self.peer.as_ref() {
                     match self.media.start(Arc::clone(p)).await {
                         Ok(()) => {
@@ -838,7 +849,7 @@ impl SessionRunner {
                 }
             }
             let was_connected = self.peer_connected;
-            self.peer_connected = s == "connected";
+            self.peer_connected = s == "connected" && !self.input_channel_closed;
             if self.peer_connected {
                 // Healthy again — reset the recovery budget.
                 self.ice_restarts = 0;
@@ -907,13 +918,32 @@ impl SessionRunner {
         if matches!(ev, PeerEvent::InputChannelOpen) {
             self.gate.set_channel_open(true);
             self.input_channel_open = true;
+            self.input_channel_closed = false;
             self.connected_without_dc_since = None;
+            self.media.set_paused(false);
             log::info!(target: "lilypad::session", "input DataChannel open");
         }
         if matches!(ev, PeerEvent::InputChannelClosed) {
+            // This is earlier and stronger local evidence than the signaling
+            // heartbeat timeout: the phone can no longer control this peer.
+            // Keep the room/peer object for the bounded trusted-rejoin path,
+            // but fail closed at every capability boundary immediately.
             self.gate.set_channel_open(false);
+            self.gate.set_peer_connected(false);
             self.input_channel_open = false;
-            log::info!(target: "lilypad::session", "input DataChannel closed");
+            self.input_channel_closed = true;
+            self.peer_connected = false;
+            self.media.set_paused(true);
+            self.agent.cancel_active();
+            self.emit(SessionEvent::InputChannelClosed);
+            log::info!(
+                target: "lilypad::session",
+                "input DataChannel closed — suspending capture and control while rejoin remains available"
+            );
+            // `set_paused` closes the send boundary synchronously. Stop the
+            // capture/encoder too so the Mac does not keep recording into the
+            // void (or retain its display-sleep assertion) during the grace.
+            self.media.stop_pipeline().await;
         }
         if let PeerEvent::InputMessage(bytes) = &ev {
             // Demux: an agent frame (command/stop/decision) routes to the AI
