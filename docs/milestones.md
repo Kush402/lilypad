@@ -359,7 +359,9 @@ limiting, backend Dockerfile, readiness probes, graceful drain. Closes OPS-1.
 ## M12 — Security hardening + isolation suite 🔜
 
 > **Partly closed early.** M9 shipped SEC-7's isolation suite
-> (`auth/authorize.test.ts`, `routes/authorization.test.ts`). What remains here
+> (`auth/authorize.test.ts`, `routes/authorization.test.ts`). 2026-08-30 added
+> two-account HTTP isolation (`routes/twoUserIsolation.test.ts`) and two-room
+> hub isolation (`signaling/hub.test.ts` N=2). What remains here
 > is the threat-model refresh, the agent prompt-injection and sandbox-escape
 > tests, and making a missing isolation case fail CI.
 

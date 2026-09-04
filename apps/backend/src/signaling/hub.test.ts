@@ -1466,3 +1466,140 @@ describe('SignalingHub — device liveness and device revocation (P2)', () => {
     expect(desktop.find('session-end')?.payload.reason).toBe('revoked');
   });
 });
+
+/**
+ * Two accounts, two Macs, two phones on one process. Isolation is the
+ * pair + room id, not "whoever registered first." M12's multi-user case;
+ * a single-room suite cannot catch a crossed relay.
+ */
+describe('SignalingHub — two concurrent pairs (N=2 isolation)', () => {
+  const ALICE = {
+    room: 'room-alice',
+    desktop: 'desktop-alice',
+    mobile: 'mobile-alice',
+  };
+  const BOB = {
+    room: 'room-bob',
+    desktop: 'desktop-bob',
+    mobile: 'mobile-bob',
+  };
+
+  function into(hub: SignalingHub, roomId: string, role: DeviceKind, deviceId: string): FakePeer {
+    const peer = new FakePeer();
+    hub.handleMessage(peer, {
+      type: 'register',
+      roomId,
+      from: role,
+      ts: 0,
+      payload: { role, deviceId },
+    });
+    return peer;
+  }
+
+  function establish(hub: SignalingHub, pair: { room: string; desktop: string; mobile: string }) {
+    const desktop = into(hub, pair.room, 'desktop', pair.desktop);
+    const mobile = into(hub, pair.room, 'mobile', pair.mobile);
+    hub.handleMessage(mobile, {
+      type: 'pair-request',
+      roomId: pair.room,
+      from: 'mobile',
+      ts: 0,
+      payload: {
+        deviceId: pair.mobile,
+        deviceName: 'phone',
+        requestedScopes: ['view', 'control'],
+      },
+    });
+    hub.handleMessage(desktop, {
+      type: 'pair-approved',
+      roomId: pair.room,
+      from: 'desktop',
+      ts: 0,
+      payload: { grantedScopes: ['view'] },
+    });
+    hub.handleMessage(desktop, {
+      type: 'offer',
+      roomId: pair.room,
+      from: 'desktop',
+      ts: 0,
+      payload: { type: 'offer', sdp: `v=0-${pair.room}` },
+    });
+    hub.handleMessage(mobile, {
+      type: 'answer',
+      roomId: pair.room,
+      from: 'mobile',
+      ts: 0,
+      payload: { type: 'answer', sdp: `v=0-${pair.room}` },
+    });
+    return { desktop, mobile };
+  }
+
+  it('keeps both sessions live and will not resume across pairs', () => {
+    const hub = makeHub();
+    establish(hub, ALICE);
+    establish(hub, BOB);
+
+    expect(hub.findLiveSessionForPair(ALICE.desktop, ALICE.mobile)).toBe(ALICE.room);
+    expect(hub.findLiveSessionForPair(BOB.desktop, BOB.mobile)).toBe(BOB.room);
+    expect(hub.findLiveSessionForPair(ALICE.desktop, BOB.mobile)).toBeNull();
+    expect(hub.findLiveSessionForPair(BOB.desktop, ALICE.mobile)).toBeNull();
+    expect(hub.hasLiveSession('desktop', ALICE.desktop)).toBe(true);
+    expect(hub.hasLiveSession('desktop', BOB.desktop)).toBe(true);
+  });
+
+  it('does not relay Alice’s offer into Bob’s room', () => {
+    const hub = makeHub();
+    const alice = establish(hub, ALICE);
+    const bob = establish(hub, BOB);
+    const bobOffersBefore = bob.mobile.sent.filter((m) => m.type === 'offer').length;
+
+    hub.handleMessage(alice.desktop, {
+      type: 'offer',
+      roomId: ALICE.room,
+      from: 'desktop',
+      ts: 0,
+      payload: { type: 'offer', sdp: 'v=0-alice-renegotiate' },
+    });
+
+    const aliceOffers = alice.mobile.sent.filter((m) => m.type === 'offer');
+    expect(aliceOffers.some((m) => m.payload.sdp === 'v=0-alice-renegotiate')).toBe(true);
+    expect(bob.mobile.sent.filter((m) => m.type === 'offer')).toHaveLength(bobOffersBefore);
+    expect(
+      bob.mobile.sent.some(
+        (m) => m.payload && 'sdp' in m.payload && m.payload.sdp === 'v=0-alice-renegotiate',
+      ),
+    ).toBe(false);
+  });
+
+  it('rings only the named desktop’s presence seat', () => {
+    const hub = makeHub();
+    const alice = into(hub, `presence:${ALICE.desktop}`, 'desktop', ALICE.desktop);
+    const bob = into(hub, `presence:${BOB.desktop}`, 'desktop', BOB.desktop);
+    expect(hub.isDesktopPresent(ALICE.desktop)).toBe(true);
+    expect(hub.isDesktopPresent(BOB.desktop)).toBe(true);
+
+    expect(
+      hub.notifyConnectRequest(ALICE.desktop, {
+        sessionRoomId: ALICE.room,
+        mobileDeviceId: ALICE.mobile,
+        mobileDeviceName: 'Alice phone',
+        requestedScopes: ['view', 'control'],
+        autoApprove: false,
+      }),
+    ).toBe(true);
+
+    expect(alice.find('connect-request')?.payload.sessionRoomId).toBe(ALICE.room);
+    expect(bob.find('connect-request')).toBeUndefined();
+  });
+
+  it('ending Alice’s rooms leaves Bob’s session running', () => {
+    const hub = makeHub();
+    establish(hub, ALICE);
+    const bob = establish(hub, BOB);
+
+    expect(hub.endRoomsForDevice(ALICE.desktop, 'revoked')).toBe(1);
+    expect(hub.findLiveSessionForPair(ALICE.desktop, ALICE.mobile)).toBeNull();
+    expect(hub.findLiveSessionForPair(BOB.desktop, BOB.mobile)).toBe(BOB.room);
+    expect(bob.desktop.find('session-end')).toBeUndefined();
+  });
+});
