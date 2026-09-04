@@ -22,7 +22,7 @@ half-finished run tells you less than none.
 | A Mac, macOS 12.3 or newer    | `minimumSystemVersion` in `tauri.conf.json`. Below this the app will not install.                                                   |
 | An iPhone                     | Install from **TestFlight** — see [Installing on the iPhone](#installing-on-the-iphone). Need v0.1.19+ for LAN-direct connectivity. |
 | Two networks                  | Home Wi-Fi and phone cellular, at minimum. A second Wi-Fi network is better still.                                                  |
-| An email address you can read | Only for the Resend-dependent steps, which are currently **blocked** — see [Password reset](#password-reset-blocked).               |
+| An email address you can read | Needed for the email sign-in and password-reset checks. Confirm production advertises email auth before relying on delivery.        |
 
 Production is `https://api.takedia.com`. Confirm it is up before you start —
 if this is not `ok`, stop, because every failure below will be this one:
@@ -396,11 +396,12 @@ and its stable Developer ID signature are what these checks exercise.
 | 9.5 | Check Your devices after the update                                                      | The same device row — the update must not create a second one.                                       |
 | 9.6 | Let the built-in updater find and apply a release                                        | Downloads, verifies its signature, relaunches on the new version.                                    |
 
-## Password reset (blocked)
+## Password reset
 
-Password reset and magic-link sign-in return **503** until Resend is configured
-in production. `GET /health` reports `checks.mail`; while it says
-`unconfigured`, skip these and record them as blocked rather than failed:
+Password reset and magic-link sign-in need the production mail provider.
+`GET /health` reports `checks.mail`, and `GET /auth/methods` reports whether
+`email` is available. If either says it is unavailable, skip these and record
+them as blocked rather than failed:
 
 - Mac → Sign in → _Forgot password_ → expect a code by email.
 - Enter the code plus a new password → expect to be signed in.
@@ -425,7 +426,7 @@ Lilypad version:         Signed: no / yes (identity: …)
 §6 Remote input          pass / fail / not run    notes:
 §7 Security              pass / fail / not run    notes:
 §8 Recovery              pass / fail / not run    notes:
-§9 After signing         blocked — no Apple credentials
-Password reset           blocked — Resend not configured
-Sign in with Apple       blocked — personal team cannot provision it
+§9 After signing         pass / fail / not run    notes:
+Password reset           pass / fail / blocked / not run    notes:
+Sign in with Apple       pass / fail / not run    notes:
 ```
