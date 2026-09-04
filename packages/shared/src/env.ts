@@ -28,13 +28,16 @@ const EnvSchema = z.object({
   // sits behind a reverse proxy or load balancer — passed straight through
   // to Fastify's `trustProxy` option (see `apps/backend/src/server.ts`).
   // Empty/unset means "don't trust any proxy," matching today's behavior for
-  // a directly-exposed dev server. A bare integer means "trust this many
-  // hops"; anything else (an IP, CIDR, or comma-separated list of either) is
-  // passed through as Fastify's address-allowlist form. Deliberately NOT a
+  // a directly-exposed dev server. Legacy `1` means the local Cloudflare
+  // connector (loopback/private Docker address); anything else should be an
+  // IP, CIDR, or comma-separated list of either and is passed through as
+  // Fastify's address-allowlist form. Numeric hop counts above one are
+  // rejected: they trust forwarded headers based on position even if a caller
+  // reaches the origin directly. Deliberately NOT a
   // bare `true` default even in production: blindly trusting every hop lets
   // any client spoof its own source IP via the header and dodge per-IP rate
-  // limiting, so an operator must explicitly say how many hops (or which
-  // addresses) are actually trusted proxies.
+  // limiting, so an operator must explicitly say which addresses are actually
+  // trusted proxies.
   TRUST_PROXY: z.string().default(''),
 
   // Zero-config internet reach: when "1", the backend spawns a Cloudflare
@@ -301,7 +304,7 @@ function productionSafetyProblems(env: Env): string[] {
   if (env.TRUST_PROXY.trim() === '') {
     problems.push(
       'TRUST_PROXY is not set — behind a proxy this collapses every client into one rate-limit ' +
-        'bucket (set the number of trusted hops, e.g. 1 for a single tunnel/CDN in front); ' +
+        'bucket (set trusted proxy addresses, or 1 for Lilypad’s local Cloudflare connector); ' +
         'set it to `false` if this origin is exposed directly with no proxy',
     );
   }

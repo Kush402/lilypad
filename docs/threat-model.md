@@ -62,8 +62,9 @@ public internet. This documents the assets, threats, and mitigations.
       with an unauthenticated `REDIS_URL`
       ([`packages/shared/src/env.ts`](../packages/shared/src/env.ts)).
 - [x] **`trustProxy` configuration** — rate limiting and per-IP connection
-      caps no longer silently key on a reverse proxy's own IP; configurable
-      via `TRUST_PROXY` ([`apps/backend/src/trustProxy.ts`](../apps/backend/src/trustProxy.ts)).
+      caps no longer silently key on a reverse proxy's own IP; trust is bound
+      to configured proxy addresses rather than a spoofable hop count via
+      `TRUST_PROXY` ([`apps/backend/src/trustProxy.ts`](../apps/backend/src/trustProxy.ts)).
 - [x] **Room-auth binding (seat-hijack fix)** — `register()`'s first-seat claim
       is checked against the pairing flow's own record before a `Room` is
       ever created ([`apps/backend/src/services/roomAuth.ts`](../apps/backend/src/services/roomAuth.ts),
