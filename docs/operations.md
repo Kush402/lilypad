@@ -1,7 +1,7 @@
 ---
 status: Implemented
 owner: @kushsharma024
-last-verified: 2026-08-12
+last-verified: 2026-08-30
 summary: Running, observing, and recovering the backend.
 ---
 
@@ -15,14 +15,48 @@ server-side footprint.)
 
 | Service  | Image / runtime      | Purpose                                               | State        |
 | -------- | -------------------- | ----------------------------------------------------- | ------------ |
-| backend  | Node 20+ (Fastify)   | REST pairing + WS signaling + TURN credential minting | stateless*   |
+| backend  | Node 20+ (Fastify)   | REST pairing + WS signaling + TURN credential minting | one process* |
 | Postgres | `postgres:16-alpine` | users/devices/sessions/audit logs                     | persistent   |
 | Redis    | `redis:7-alpine`     | pairing tokens (60s TTL), room records                | ephemeral-ok |
 | coturn   | `coturn/coturn:4.6`  | STUN/TURN relay for NAT traversal                     | stateless    |
 
-\* Live rooms are held in memory but persisted to Redis; on restart the
-backend resurrects non-terminal rooms (`hub.resurrect`), so a deploy does
-not end established peer-to-peer sessions.
+\* Live rooms, per-IP WebSocket caps, and `@fastify/rate-limit` counters are
+in-process `Map`s. Redis holds a **boot-time copy** of room records so **this
+one process**, after a restart, can resurrect non-terminal rooms
+(`hub.resurrectRoomsFromStore`). Established peer-to-peer media keeps flowing
+across a deploy (~9 s of signaling 502 historically). Redis is **not** a live
+replica bus: a second backend replica cannot see the first process's rooms, and
+revocation (`hub.endRoomsForDevice`) only kills rooms on the instance that
+handled the request. Cross-instance relay is milestone M11
+([ADR-0004](adr/0004-signaling-horizontal-scaling.md)), still 🔜 — do not start
+a second replica until it ships.
+
+## Capacity (what actually binds)
+
+These are the ceilings in the running code and coturn conf, not a promise.
+The Always Free API VM shape and reclaim risk are in
+[deployment.md](deployment.md). Do not treat `maxRooms` as a RAM budget.
+
+| Ceiling           | Number                                                          | Where                                                                          |
+| ----------------- | --------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| Backend processes | **1**                                                           | In-memory `RoomRegistry`; a second replica splits rooms                        |
+| Session rooms     | `DEFAULT_MAX_ROOMS = 10_000`                                    | `signaling/roomRegistry.ts` — DoS backstop. RAM on the 952 MiB box binds first |
+| Postgres pool     | **10**                                                          | `db/client.ts`                                                                 |
+| WebSocket per IP  | **20**                                                          | `MAX_CONNECTIONS_PER_IP` in `routes/signaling.ts`                              |
+| REST              | **120 / min / IP** global; `/connect/request` **30 / min / IP** | `server.ts`, `signaling.ts`. Ten users behind one NAT share one budget         |
+| TURN relay ports  | UDP **49160–49260** ≈ **50 concurrent relays**                  | `infra/coturn-prod/turnserver.conf` (`user-quota=12`, `total-quota=1200`)      |
+
+Presence is `presence:<deviceId>` per desktop fingerprint (`UNIQUE (kind, fingerprint)`).
+Two Macs on one account do not share a seat. Two processes with the **same**
+device id still eviction-war; the desktop `single_instance` flock is why that
+is not the normal case.
+
+`GET /metrics` already exposes `activeRooms` and `roomsRejectedAtCapacity`.
+When `roomsRejectedAtCapacity` moves, the DoS cap is the thing that fired —
+not “we ran out of customers.” Widen TURN ports when concurrent _relays_ are
+actually near ~50 ([ADR-0005](adr/0005-turn-topology.md), M13). Add a second
+backend only with M11. Move off Always Free when the $0 reclaim risk is no
+longer acceptable ([ADR-0009](adr/0009-control-plane-deployment.md)).
 
 ## Configuration
 
