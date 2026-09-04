@@ -231,32 +231,28 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      # The action reports its findings as a check run, and without this it
-      # does the audit correctly, prints "No vulnerabilities were found", and
-      # then fails the JOB on the API call afterwards:
-      #
-      #   ##[error]Resource not accessible by integration -
-      #   https://docs.github.com/rest/checks/runs#create-a-check-run
-      #
-      # Exactly the shape of the CodeQL failure documented in `security` above:
-      # a passing analysis producing a red build, which teaches people to
-      # ignore the red.
-      checks: write
     steps:
       - uses: actions/checkout@v4
 
-      - uses: rustsec/audit-check@v2
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          working-directory: apps/desktop/src-tauri
-          # RUSTSEC-2025-0008 — heap overflow in openh264's DECODING functions.
-          # Tracked as L-47. This codebase only ever encodes: `openh264` is
-          # reached through the encoder path alone, and no decode entry point is
-          # called anywhere in `src/`. The fix is a bump to >=0.8, which changes
-          # the encoder and therefore needs real-device video validation before
-          # it can ship. Re-check when that validation happens; do not extend
-          # this list without writing down the same kind of reasoning.
-          ignore: RUSTSEC-2025-0008
+      # The audit-check action tries to create GitHub issues for informational
+      # warnings on scheduled runs. With issues read-only, a clean audit printed
+      # "No vulnerabilities were found" and then failed on that API call. Run
+      # the same cargo-audit command directly: vulnerabilities still block;
+      # unmaintained/unsound warnings remain visible without turning CI red or
+      # opening issues for target-specific transitive crates.
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --version 0.22.2 --locked
+
+      - name: Audit Cargo.lock
+        working-directory: apps/desktop/src-tauri
+        # RUSTSEC-2025-0008 — heap overflow in openh264's DECODING functions.
+        # Tracked as L-47. This codebase only ever encodes: `openh264` is
+        # reached through the encoder path alone, and no decode entry point is
+        # called anywhere in `src/`. The fix is a bump to >=0.8, which changes
+        # the encoder and therefore needs real-device video validation before
+        # it can ship. Re-check when that validation happens; do not extend
+        # this list without writing down the same kind of reasoning.
+        run: cargo audit --ignore RUSTSEC-2025-0008 --file Cargo.lock
 
   rust:
     # ScreenCaptureKit + VideoToolbox are macOS-only (see apps/desktop/src-tauri/Cargo.toml

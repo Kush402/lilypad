@@ -96,12 +96,6 @@ jobs:
       # called workflow gets only what the caller grants.
       security-events: write
       actions: read
-      # `rust-audit` publishes its findings as a check run. Missing this does
-      # not fail the job — it refuses the entire run before any job starts,
-      # with `startup_failure`, zero jobs and zero log lines. `pnpm
-      # workflows:check` now compares this block against what ci.yml's jobs
-      # declare, because there is nothing to read when it goes wrong.
-      checks: write
 
   image:
     name: build and push image
