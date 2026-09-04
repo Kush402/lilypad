@@ -6,6 +6,37 @@ All notable changes to Lilypad are documented here. The format follows
 
 ## [Unreleased]
 
+No changes recorded after v0.1.28.
+
+## [0.1.28] — 2026-09-03
+
+### Fixed
+
+- Pairing approval is available in the QR window, and QR creation waits for the
+  desktop signaling seat before telling the user to scan.
+- Desktop presence now treats only a `pong` as proof that its outbound
+  signaling path is alive, preventing unrelated inbound frames from masking a
+  dead connection.
+- A stale QR timeout can no longer terminate a newer trusted reconnect that
+  replaced it.
+- LAN signaling rooms can only be joined by the desktop and mobile identities
+  authorized by `connect_request`; callers cannot mint rooms or claim seats.
+- CI uses a pinned `cargo-audit` command instead of the RustSec wrapper that
+  failed while attempting to create an issue despite a clean audit.
+- Patched transitive `browserslist` and `fast-uri` releases clear the new high
+  severity dependency advisories. Fastify 5.12.1 is included separately with
+  its numeric proxy-trust behavior migrated to address-bound local proxy
+  ranges.
+
+### Verification
+
+- Added two-account HTTP and signaling isolation coverage, LAN authorization
+  tests, pairing-timeout concurrency tests, and QR approval UI tests.
+- Full TypeScript, Rust, documentation, workflow, and dependency verification
+  passes. Physical Mac + iPhone/iPad pairing remains the release hardware gate.
+
+## Cumulative development record through v0.1.27
+
 ### P8 — every screen a Mac has, and names people recognise
 
 A Mac with a monitor plugged into it showed only its main display, and both
@@ -655,4 +686,5 @@ streaming, input, clipboard, reconnect.
 - All string fields length-bounded; input batches size-bounded; monotonic
   sequence ordering with stale-event rejection.
 
+[0.1.28]: https://github.com/Kush402/lilypad/releases/tag/v0.1.28
 [1.0.0]: https://github.com/lilypad/lilypad/releases/tag/v1.0.0
