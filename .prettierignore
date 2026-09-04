@@ -9,3 +9,5 @@ pnpm-lock.yaml
 # Drizzle-generated; drizzle-kit reformats these its own way on every
 # `db:generate`, so hand-formatting them just creates repeated diff noise.
 apps/backend/drizzle/meta
+# Local Obsidian working memory; canon under docs/ remains formatted and gated.
+lilypad

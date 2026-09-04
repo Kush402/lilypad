@@ -64,6 +64,8 @@ const SKIP_DIRS = new Set([
   '.gradle',
   '.codegraph',
   '.code-review-graph',
+  // Obsidian working memory. Canon stays docs/; the vault may wikilink freely.
+  'lilypad',
 ]);
 
 function walk(dir, out = []) {
@@ -129,7 +131,12 @@ function checkLinks(files) {
       if (/^(https?:|mailto:|#)/.test(target)) continue;
       const [path] = target.split('#');
       if (!path) continue;
-      if (!existsSync(resolve(dirname(file), path))) {
+      const resolved = resolve(dirname(file), path);
+      // Vault is local working memory. Protocol files may link into it; a clone
+      // without the copied `lilypad/` folder must not fail CI.
+      const relTarget = relative(ROOT, resolved);
+      if (relTarget === 'lilypad' || relTarget.startsWith(`lilypad/`)) continue;
+      if (!existsSync(resolved)) {
         fail(rel, `broken link → ${target}`);
       }
     }

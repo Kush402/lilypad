@@ -1,0 +1,6 @@
+---
+description: Follow AGENTS.md. The Obsidian vault is working memory for every coding agent (Cursor, Claude Code, Codex), not only Cursor.
+alwaysApply: true
+---
+
+Follow [AGENTS.md](AGENTS.md). You are the keeper of `lilypad/`. Read `lilypad/Now.md` before non-trivial work. `docs/` is canon.

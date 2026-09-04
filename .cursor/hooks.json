@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [
+      {
+        "command": "node scripts/brain.mjs sessionStart",
+        "timeout": 10
+      }
+    ],
+    "sessionEnd": [
+      {
+        "command": "node scripts/brain.mjs sessionEnd",
+        "timeout": 10
+      }
+    ],
+    "preCompact": [
+      {
+        "command": "node scripts/brain.mjs preCompact",
+        "timeout": 10
+      }
+    ],
+    "stop": [
+      {
+        "command": "node scripts/brain.mjs stop",
+        "timeout": 10,
+        "loop_limit": 1
+      }
+    ]
+  }
+}

@@ -47,6 +47,18 @@ apps/mobile/.expo/
 !.vscode/extensions.json
 *.log
 
+# Obsidian — local UI state and heartbeat. Notes are not ignored (they can be
+# committed later) but they are untracked today: sessions name testers.
+lilypad/.obsidian/workspace.json
+lilypad/.obsidian/workspace-mobile.json
+lilypad/.trash/
+# Heartbeat + compaction flag: rewritten every agent turn, not a commit.
+lilypad/Alive.md
+lilypad/.compact-pending
+
+# Claude Code local overrides (project settings.json is versioned)
+.claude/settings.local.json
+
 # Turbo
 .turbo/
 

@@ -97,6 +97,12 @@ the date you actually checked it against the code.
 | Desktop/mobile behavior    | `docs/user-guide.md`, `docs/architecture.md`                  |
 | A milestone's status       | `docs/milestones.md`, `docs/PROJECT-INDEX.md`, `CHANGELOG.md` |
 
+### Working memory (Obsidian)
+
+The vault at [`lilypad/`](lilypad/Home.md) is session brain for **any** coding agent (Cursor, Claude Code, Codex). The protocol is [AGENTS.md](AGENTS.md); Claude Code’s loader is [CLAUDE.md](CLAUDE.md); Codex’s loader is [CODEX.md](CODEX.md) (Codex also loads `AGENTS.md` natively). It is not a second copy of `docs/`. Open the `lilypad` **folder** as the vault, not the repo root. `pnpm docs:check` does not scan vault notes. Durable facts still land in `docs/` (or `docs/kanban.md` for a pre-launch finding) in the same PR as the code.
+
+Notes are not gitignored, but they are untracked today (tester emails). A fresh clone needs a copy of `lilypad/` from the Obsidian machine or `Now.md` will be missing. Do not invent a second vault.
+
 ### Architecture Decision Records
 
 Significant decisions get an ADR in [docs/adr/](docs/adr/) — hard-to-reverse
