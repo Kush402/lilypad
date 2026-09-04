@@ -248,6 +248,11 @@ async fn connect_request(
     }
 
     let room_id = Uuid::new_v4().to_string();
+    // Bind both WebSocket seats before either peer learns the room id. The
+    // request has already proved the desktop id and the phone's pair secret.
+    state
+        .hub
+        .authorize_room(&room_id, device_id.clone(), body.mobile_device_id.clone());
     let payload = ConnectRequestPayload {
         session_room_id: room_id.clone(),
         mobile_device_id: body.mobile_device_id,
@@ -322,14 +327,29 @@ async fn handle_ws(socket: WebSocket, state: Arc<LanServerState>) {
                                 let _ = tx.send(s.to_owned());
                             })
                         };
-                        if let Ok(token) = state.hub.attach(&room_id, role, device_id, send) {
-                            registered = Some((room_id.clone(), role, token));
-                            let rejoin = v
-                                .pointer("/payload/rejoin")
-                                .and_then(|x| x.as_bool())
-                                .unwrap_or(false);
-                            if rejoin && role == Role::Mobile {
-                                state.hub.reissue_session_start(&room_id);
+                        match state.hub.attach(&room_id, role, device_id, send) {
+                            Ok(token) => {
+                                registered = Some((room_id.clone(), role, token));
+                                let rejoin = v
+                                    .pointer("/payload/rejoin")
+                                    .and_then(|x| x.as_bool())
+                                    .unwrap_or(false);
+                                if rejoin && role == Role::Mobile {
+                                    state.hub.reissue_session_start(&room_id);
+                                }
+                            }
+                            Err(code) => {
+                                log::warn!(
+                                    target: "lilypad::lan",
+                                    "LAN register refused for room {room_id}: {code}"
+                                );
+                                let _ = tx.send(LanHub::refusal_frame(
+                                    role,
+                                    &room_id,
+                                    &code,
+                                    "registration refused",
+                                ));
+                                break;
                             }
                         }
                     }

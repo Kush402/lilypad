@@ -142,6 +142,7 @@ mod tests {
 
     /// A phone seat, so the hub has someone to relay to.
     fn seat_mobile(hub: &LanHub, room: &str) -> Arc<Mutex<Vec<serde_json::Value>>> {
+        hub.authorize_room(room, "desktop-12345678".into(), "mobile-12345678".into());
         let buf = Arc::new(Mutex::new(Vec::new()));
         let b2 = buf.clone();
         let send: SendFn = Arc::new(move |s: &str| {
@@ -273,6 +274,7 @@ mod tests {
     async fn dropping_the_handle_releases_the_seat() {
         let hub = Arc::new(LanHub::new());
         let room = "room-lan-3";
+        hub.authorize_room(room, "desktop-12345678".into(), "mobile-12345678".into());
         let (sig, inbound) = connect(hub.clone(), room, "desktop-12345678");
         drop(sig);
         drop(inbound);

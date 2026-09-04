@@ -198,6 +198,7 @@ mod tests {
     async fn a_loopback_reconnect_keeps_the_seat_it_just_took() {
         let hub = Arc::new(LanHub::new());
         let room = "room-reconnect-1";
+        hub.authorize_room(room, "desktop-12345678".into(), "mobile-12345678".into());
         let phone = Arc::new(Mutex::new(Vec::<String>::new()));
         let sink = phone.clone();
         let send: SendFn = Arc::new(move |s: &str| sink.lock().unwrap().push(s.to_owned()));

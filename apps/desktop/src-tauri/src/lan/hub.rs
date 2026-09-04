@@ -1,5 +1,5 @@
 //! Two-peer signaling hub for LAN rooms — mirrors backend `MessageRouter`
-//! semantics without Redis, room auth, or multi-tenancy.
+//! semantics without Redis or multi-tenancy.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -71,7 +71,17 @@ struct Seat {
     epoch: u64,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct RoomAuth {
+    desktop_device_id: String,
+    mobile_device_id: String,
+}
+
 struct Room {
+    /// The exact pair `/connect/request` authorized for this room. Kept in the
+    /// same mutex-protected record as the seats so authorization, attach, and
+    /// teardown are atomic with respect to one another.
+    auth: RoomAuth,
     desktop: Option<Seat>,
     mobile: Option<Seat>,
     session_id: Option<String>,
@@ -116,8 +126,48 @@ impl LanHub {
         Self::default()
     }
 
+    /// Mint a LAN room for the desktop/mobile pair already authenticated by
+    /// `server::connect_request`. Creating the room here means `attach` can no
+    /// longer create arbitrary rooms from an untrusted WebSocket `register`.
+    pub fn authorize_room(
+        &self,
+        room_id: &str,
+        desktop_device_id: String,
+        mobile_device_id: String,
+    ) {
+        let auth = RoomAuth {
+            desktop_device_id,
+            mobile_device_id,
+        };
+        let mut rooms = self.rooms.lock().unwrap_or_else(|p| p.into_inner());
+        match rooms.get(room_id) {
+            Some(room) if room.auth == auth => return,
+            Some(_) => {
+                // UUID room ids should never collide. If one does, the newest
+                // authenticated mint owns it; no old seats may survive.
+                log::warn!(target: "lilypad::lan", "replacing colliding authorized room {room_id}");
+            }
+            None => {}
+        }
+        rooms.insert(
+            room_id.to_owned(),
+            Room {
+                auth,
+                desktop: None,
+                mobile: None,
+                session_id: None,
+                scopes: vec!["view".into()],
+                established: false,
+                last_mobile_id: None,
+                pending_desktop: Vec::new(),
+                pending_mobile: Vec::new(),
+            },
+        );
+    }
+
     /// Attach a peer after `register`, returning the token that transport must
-    /// present to vacate the seat again. See `SeatToken`.
+    /// present to vacate the seat again. The room and device must match a prior
+    /// authenticated `connect_request`; a room id alone is not enough.
     pub fn attach(
         &self,
         room_id: &str,
@@ -130,16 +180,16 @@ impl LanHub {
         let nudge_online: bool;
         {
             let mut rooms = self.rooms.lock().unwrap_or_else(|p| p.into_inner());
-            let room = rooms.entry(room_id.to_owned()).or_insert_with(|| Room {
-                desktop: None,
-                mobile: None,
-                session_id: None,
-                scopes: vec!["view".into()],
-                established: false,
-                last_mobile_id: None,
-                pending_desktop: Vec::new(),
-                pending_mobile: Vec::new(),
-            });
+            let room = rooms
+                .get_mut(room_id)
+                .ok_or_else(|| "unauthorized_room".to_owned())?;
+            let expected_device_id = match role {
+                Role::Desktop => &room.auth.desktop_device_id,
+                Role::Mobile => &room.auth.mobile_device_id,
+            };
+            if expected_device_id != &device_id {
+                return Err("wrong_device".to_owned());
+            }
             let seat = Seat {
                 device_id: device_id.clone(),
                 send,
@@ -528,6 +578,19 @@ impl LanHub {
         );
     }
 
+    /// Error frame for a socket whose initial `register` was refused before it
+    /// owned a seat (and therefore cannot be reached through `reject`).
+    pub fn refusal_frame(role: Role, room_id: &str, code: &str, message: &str) -> String {
+        json!({
+            "type": "error",
+            "roomId": room_id,
+            "from": role.other().as_str(),
+            "ts": now_ms(),
+            "payload": { "code": code, "message": message },
+        })
+        .to_string()
+    }
+
     fn end_room(&self, room_id: &str, reason: &str) {
         let seats;
         {
@@ -578,6 +641,7 @@ mod tests {
     }
 
     fn register(hub: &LanHub, room: &str, role: Role, device: &str, send: SendFn) -> SeatToken {
+        hub.authorize_room(room, "desktop-12345678".into(), "mobile-12345678".into());
         hub.attach(room, role, device.into(), send).unwrap()
     }
 
@@ -996,6 +1060,90 @@ mod tests {
         assert!(
             !mobile.iter().any(|v| v["type"] == "peer-status"),
             "peer-status is a desktop-only nudge, got {mobile:?}"
+        );
+    }
+
+    #[test]
+    fn an_unminted_room_cannot_claim_a_seat() {
+        let hub = LanHub::new();
+        let (send, _) = capture_send();
+
+        let error = hub
+            .attach(
+                "invented-room",
+                Role::Desktop,
+                "desktop-12345678".into(),
+                send,
+            )
+            .expect_err("register must not mint its own room");
+
+        assert_eq!(error, "unauthorized_room");
+        assert!(!hub.has_seat("invented-room", Role::Desktop));
+    }
+
+    #[test]
+    fn a_minted_room_accepts_only_its_authorized_devices() {
+        let hub = LanHub::new();
+        hub.authorize_room(
+            "room-1",
+            "desktop-12345678".into(),
+            "mobile-12345678".into(),
+        );
+
+        for (role, device_id) in [
+            (Role::Desktop, "desktop-impostor"),
+            (Role::Mobile, "mobile-impostor"),
+        ] {
+            let (send, _) = capture_send();
+            assert_eq!(
+                hub.attach("room-1", role, device_id.into(), send),
+                Err("wrong_device".to_owned())
+            );
+            assert!(!hub.has_seat("room-1", role));
+        }
+
+        let (desktop_send, _) = capture_send();
+        let (mobile_send, _) = capture_send();
+        hub.attach(
+            "room-1",
+            Role::Desktop,
+            "desktop-12345678".into(),
+            desktop_send,
+        )
+        .expect("authorized desktop must attach");
+        hub.attach(
+            "room-1",
+            Role::Mobile,
+            "mobile-12345678".into(),
+            mobile_send,
+        )
+        .expect("authorized mobile must attach");
+    }
+
+    #[test]
+    fn room_authorization_ends_atomically_with_the_room() {
+        let hub = LanHub::new();
+        hub.authorize_room(
+            "room-1",
+            "desktop-12345678".into(),
+            "mobile-12345678".into(),
+        );
+        let (send, _) = capture_send();
+        let token = hub
+            .attach("room-1", Role::Desktop, "desktop-12345678".into(), send)
+            .unwrap();
+
+        hub.detach("room-1", Role::Desktop, token);
+
+        let (retry_send, _) = capture_send();
+        assert_eq!(
+            hub.attach(
+                "room-1",
+                Role::Desktop,
+                "desktop-12345678".into(),
+                retry_send,
+            ),
+            Err("unauthorized_room".to_owned())
         );
     }
 }
