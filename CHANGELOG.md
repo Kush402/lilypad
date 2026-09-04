@@ -8,7 +8,7 @@ All notable changes to Lilypad are documented here. The format follows
 
 No changes recorded after v0.1.28.
 
-## [0.1.28] — 2026-09-03
+## [0.1.28] — 2026-09-04
 
 ### Fixed
 
@@ -33,7 +33,9 @@ No changes recorded after v0.1.28.
 - Added two-account HTTP and signaling isolation coverage, LAN authorization
   tests, pairing-timeout concurrency tests, and QR approval UI tests.
 - Full TypeScript, Rust, documentation, workflow, and dependency verification
-  passes. Physical Mac + iPhone/iPad pairing remains the release hardware gate.
+  passes. The signed website download and TestFlight build receive a clean-install
+  Mac + iPhone/iPad validation immediately after publication, before this release
+  is declared validated.
 
 ## Cumulative development record through v0.1.27
 

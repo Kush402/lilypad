@@ -383,8 +383,9 @@ An operation that half-works is worse than one that fails.
 
 ## 9. After signing — re-run these
 
-**Cannot be run yet.** Everything here needs a Developer-ID-signed, notarized
-build, which needs Apple credentials the project does not have.
+Run these against the signed, notarized website download after each release.
+They must not be credited from a local or ad-hoc build: the published artifact
+and its stable Developer ID signature are what these checks exercise.
 
 | #   | Do                                                                                       | Expect                                                                                               |
 | --- | ---------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
