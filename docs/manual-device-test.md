@@ -430,3 +430,22 @@ Lilypad version:         Signed: no / yes (identity: …)
 Password reset           pass / fail / blocked / not run    notes:
 Sign in with Apple       pass / fail / not run    notes:
 ```
+
+### v0.1.28 published-artifact result — 2026-09-04
+
+Kush tested the website DMG and the TestFlight build using the same account on
+both devices. Installation, pairing, LAN streaming, direct internet streaming,
+trusted reconnect, viewing, and control were smooth in the observed sessions.
+Desktop and backend logs corroborated three balanced session starts/ends, one
+LAN path, two direct internet paths, and no session left live in production.
+
+Force-closing the phone exposed L-204: the Mac kept showing Active and captured
+briefly after the control DataChannel closed. Input was already blocked and the
+same trusted phone successfully reclaimed the room, but the remaining local
+capabilities should have suspended immediately. That fix is after v0.1.28 and
+needs a new published desktop build before it can receive hardware credit.
+
+This was not an exhaustive execution of every row above. Relay-selected
+transport, Sign in with Apple, password reset, destructive revoke/account
+flows, the built-in updater, and the post-L-204 desktop fix remain **not run**
+unless a later dated result says otherwise.
