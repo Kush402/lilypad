@@ -9,4 +9,4 @@
  * in lockstep, and fails loudly if any of them has drifted — which they all
  * had, sitting at `1.0`/`0.1.0` while the desktop shipped 0.1.4.
  */
-export const APP_VERSION = '0.1.28';
+export const APP_VERSION = '0.1.29';

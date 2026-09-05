@@ -20,19 +20,43 @@ earlier record was compacted away, which is the argument for the file.
 the code · 4 deliberately unchanged · 4 not a bug · 1 unrecoverable (L-20).
 214 rows.
 
-**2026-09-05 resumed pre-release checkpoint:** L-205 through L-215 are
-v0.1.29 candidate fixes, not shipped behavior. The VS Code task
-stopped on usage limits. Its changes were recovered and the unfinished ICE
-suspension path completed, including pause/recovery interaction coverage.
-Tracked iCloud placeholders are now zero. Typecheck, lint, formatting, all
-TypeScript tests (backend 794, mobile 585 with 11 skips, desktop UI 226),
-docs checks and 44 release-safety tests pass. Dependency audits pass with the
-existing exceptions. Native verification is running; candidate-commit CI,
-signed release execution, and physical-device validation remain **NOT VERIFIED**. The earlier Apple credential preflight passed on
-`086a728`; it does not prove this candidate was signed. The user approved
-L-211's encrypted clipboard migration, with both apps required for automatic
-Mac-to-phone sync. No version bump, release, or deployment has been performed.
-The private vault must remain unpublished and unchanged.
+**v0.1.29 publication authorized (2026-09-05):** User requested the established
+release process. Version metadata is bumped together. The release driver at
+`/tmp/lilypad-publish-0.1.29.py` logs to `/tmp/lilypad-publish-0.1.29.log`.
+It must pass local verification and exact-SHA main CI before pushing desktop
+and mobile tags, then wait for desktop publication before refreshing the site.
+Until those results are checked, publication and signed-device behavior are
+NOT VERIFIED. The private vault and unrelated CODEX.md edit remain excluded.
+
+**2026-09-05 resumed pre-release checkpoint:** Candidate implementation
+`dca6dee518fa398f97bf833635b8909c6f6028ad` is committed and pushed on
+`codex/v0.1.29-candidate`; main remains `086a728`. L-205 through L-215 are
+candidate fixes, not shipped behavior. The VS Code task's changes were
+recovered and its unfinished transport-loss/pause work completed. All tracked
+iCloud files are local.
+
+`pnpm verify` exits zero: backend 794, mobile 585 (11 intentional skips),
+desktop UI 226, Rust 405 unit tests and all integration/soak tests, plus
+formatting, lint, typecheck, docs and 44 release-safety tests. One earlier
+local encoder-fault test timed out; it passed in candidate CI and the final
+complete local rerun. Dependency audits pass with existing exceptions.
+Candidate [CI 33992503077](https://github.com/Kush402/lilypad/actions/runs/33992503077)
+and [Apple preflight 33992504523](https://github.com/Kush402/lilypad/actions/runs/33992504523)
+both passed on that exact implementation SHA. Local final verification log:
+`/tmp/lilypad-resume-verify-final.log`.
+
+Production API health is good at released revision `246e16c`, with Postgres,
+Redis and mail healthy. The latest inspected watchdog reports zero warnings
+and zero critical findings. No version bump, release tag, publication or
+deployment was performed. The candidate is ready for signed physical-device
+validation; actual signed execution, TURN-selected transport and the manual
+hardware checks remain NOT VERIFIED. Both apps must update for automatic
+Mac-to-phone clipboard sync; there is no plaintext fallback.
+
+The private vault and unrelated existing `CODEX.md` edit were excluded from
+the candidate commit. This verification checkpoint is a local documentation
+update after the candidate commit. Work stopped to preserve usage: the last
+account check showed 85% used in the five-hour window and 13% weekly.
 
 All sixteen rows found on 2026-08-27 (L-171 through L-188) are closed. L-189 is
 the cellular control failure from 2026-08-28: video and display-switch worked
