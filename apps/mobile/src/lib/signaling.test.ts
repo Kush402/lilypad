@@ -90,6 +90,37 @@ describe('MobileSignaling', () => {
     jest.useRealTimers();
   });
 
+  it('ignores messages from a dropped or replaced transport', async () => {
+    const received = jest.fn();
+    const sig = new MobileSignaling('wss://x', 'room1', received);
+    const first = sig.connect();
+    const old = lastSocket();
+    old.open();
+    await first;
+    const frame = {
+      data: JSON.stringify({
+        type: 'session-end',
+        roomId: 'room1',
+        from: 'desktop',
+        ts: 1,
+        payload: { reason: 'disconnected' },
+      }),
+    };
+    sig.dropTransport();
+    old.onmessage?.(frame);
+    const next = sig.connect();
+    const current = lastSocket();
+    current.open();
+    await next;
+    old.onmessage?.(frame);
+    expect(received).not.toHaveBeenCalled();
+    current.onmessage?.(frame);
+    expect(received).toHaveBeenCalledTimes(1);
+    sig.close();
+    current.onmessage?.(frame);
+    expect(received).toHaveBeenCalledTimes(1);
+  });
+
   it('drops frames while the socket is still CONNECTING instead of throwing (release-fatal)', async () => {
     const sig = new MobileSignaling('wss://x', 'room1', () => {});
     const p = sig.connect();

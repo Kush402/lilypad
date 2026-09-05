@@ -219,11 +219,15 @@ export function ViewerScreen({ route, navigation }: Props) {
   }, []);
 
   useEffect(() => {
+    let active = true;
     setStream(null);
     setError(null);
     setRecovery(null);
     setQuality(null);
     setStillThere(false);
+    setClipboardToast(false);
+    setSwitchNotice(null);
+    setConfirmingDisconnect(false);
     videoSize.current = null;
     syncGeometry();
     const conn = new ViewerConnection(
@@ -231,28 +235,38 @@ export function ViewerScreen({ route, navigation }: Props) {
       roomId,
       scopes,
       {
-        onStream: setStream,
+        onStream: (next) => {
+          if (active) setStream(next);
+        },
         onState: (next, detail) => {
+          if (!active) return;
           setState(next);
           setRecovery(next === 'recovering_ice' ? (detail ?? null) : null);
           if (next === 'connected' && desktopDeviceId) {
             void saveResumeHandle({ desktopDeviceId }).catch(() => {});
           }
         },
-        onError: setError,
-        onStats: setQuality,
+        onError: (next) => {
+          if (active) setError(next);
+        },
+        onStats: (next) => {
+          if (active) setQuality(next);
+        },
         onFrameSize: (w, h, mode) => {
+          if (!active) return;
           videoSize.current = { x: w, y: h };
           syncGeometry();
           setCaptureModeState(mode);
         },
         onDisplays: (list, activeId) => {
+          if (!active) return;
           // The Mac is the only authority on what it has attached and what it
           // is actually showing — an optimistic highlight is corrected here.
           setDisplays(list);
           setActiveDisplayId(activeId);
         },
         onClipboardUpdate: (text) => {
+          if (!active) return;
           Clipboard.setString(text);
           if (clipboardToastTimer.current) clearTimeout(clipboardToastTimer.current);
           setClipboardToast(true);
@@ -261,18 +275,25 @@ export function ViewerScreen({ route, navigation }: Props) {
             CLIPBOARD_TOAST_MS,
           );
         },
-        onAgentStep: (step) => dispatchAgent({ type: 'step', step }),
-        onAgentRunEnd: (end) => dispatchAgent({ type: 'run_end', end }),
+        onAgentStep: (step) => {
+          if (active) dispatchAgent({ type: 'step', step });
+        },
+        onAgentRunEnd: (end) => {
+          if (active) dispatchAgent({ type: 'run_end', end });
+        },
         onPairSecret: (secret) => {
+          if (!active) return;
           // Persist the connect secret against this desktop pair (M5.4), so
           // future no-QR reconnects present it. Only possible when we know which
           // desktop this is (always true for QR pairs via the redeem response).
           if (desktopDeviceId) void setPairSecret(desktopDeviceId, secret).catch(() => {});
         },
         onLanEndpoints: (endpoints) => {
+          if (!active) return;
           if (desktopDeviceId) void setPairLanEndpoints(desktopDeviceId, endpoints).catch(() => {});
         },
         onRevoked: () => {
+          if (!active) return;
           // The desktop revoked this phone's trust — the stale local pairing
           // can never reconnect (the backend pair row is gone), so drop it
           // now rather than leave a phantom entry in My Devices that just
@@ -288,6 +309,7 @@ export function ViewerScreen({ route, navigation }: Props) {
           ]);
         },
         onDeviceRemoved: () => {
+          if (!active) return;
           // Note what is NOT here: `forgetPair`. The laptop left the account, the
           // pairing did not, and the connect secret this phone holds is the only
           // copy in existence — dropping it would turn a reversible thing into a
@@ -302,6 +324,7 @@ export function ViewerScreen({ route, navigation }: Props) {
     );
     connRef.current = conn;
     conn.start().catch((e) => {
+      if (!active) return;
       setError(toAppError(e));
       // Without this the screen kept its `connecting` spinner and merely grew
       // a line of red text under it — no Reconnect button, since that only
@@ -311,6 +334,9 @@ export function ViewerScreen({ route, navigation }: Props) {
       setState('failed');
     });
     return () => {
+      // Invalidate callbacks before close: queued native events and the
+      // opening promise can settle while the next connection is taking over.
+      active = false;
       if (longPressTimer.current) clearTimeout(longPressTimer.current);
       if (clipboardToastTimer.current) clearTimeout(clipboardToastTimer.current);
       if (switchNoticeTimer.current) clearTimeout(switchNoticeTimer.current);

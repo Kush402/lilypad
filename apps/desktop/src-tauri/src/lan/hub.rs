@@ -30,6 +30,8 @@ impl Role {
     }
 }
 
+/// Transport handoff only: enqueue the frame without blocking or re-entering
+/// the hub. Production senders use unbounded channel sends.
 pub type SendFn = Arc<dyn Fn(&str) + Send + Sync>;
 
 /// Cap on frames held for a seat that has not attached yet. A handful of
@@ -104,6 +106,9 @@ struct Room {
 }
 
 pub struct LanHub {
+    /// Serialize socket admission + routing with seat replacement. Checking
+    /// a token and then routing under unrelated locks leaves a takeover race.
+    dispatch: Mutex<()>,
     rooms: Mutex<HashMap<String, Room>>,
     /// Source of `SeatToken`s. Hub-wide rather than per-seat so a token can
     /// never be mistaken for a later one after a room has been deleted and
@@ -115,6 +120,7 @@ pub struct LanHub {
 impl Default for LanHub {
     fn default() -> Self {
         Self {
+            dispatch: Mutex::new(()),
             rooms: Mutex::new(HashMap::new()),
             next_epoch: AtomicU64::new(1),
         }
@@ -135,6 +141,7 @@ impl LanHub {
         desktop_device_id: String,
         mobile_device_id: String,
     ) {
+        let _dispatch = self.dispatch.lock().unwrap_or_else(|p| p.into_inner());
         let auth = RoomAuth {
             desktop_device_id,
             mobile_device_id,
@@ -175,6 +182,7 @@ impl LanHub {
         device_id: String,
         send: SendFn,
     ) -> Result<SeatToken, String> {
+        let _dispatch = self.dispatch.lock().unwrap_or_else(|p| p.into_inner());
         let epoch = self.next_epoch.fetch_add(1, Ordering::Relaxed);
         let replay: Vec<String>;
         let nudge_online: bool;
@@ -294,6 +302,7 @@ impl LanHub {
     /// on from, and clearing the seat there is the L-182 eviction. See
     /// `SeatToken`.
     pub fn detach(&self, room_id: &str, role: Role, token: SeatToken) {
+        let _dispatch = self.dispatch.lock().unwrap_or_else(|p| p.into_inner());
         let nudge_offline = {
             let mut rooms = self.rooms.lock().unwrap_or_else(|p| p.into_inner());
             let Some(room) = rooms.get_mut(room_id) else {
@@ -337,7 +346,38 @@ impl LanHub {
         }
     }
 
-    pub fn handle(&self, from: Role, raw: &str) {
+    /// Socket/loopback entry point. Room and transport authority remain valid
+    /// through the entire synchronous routing operation, including disconnect.
+    pub fn handle_registered(
+        &self,
+        room_id: &str,
+        from: Role,
+        token: SeatToken,
+        raw: &str,
+    ) -> Result<(), &'static str> {
+        let Ok(v) = serde_json::from_str::<Value>(raw) else {
+            return Ok(());
+        };
+        if v.get("roomId").and_then(Value::as_str) != Some(room_id) {
+            return Err("room_mismatch");
+        }
+        let _dispatch = self.dispatch.lock().unwrap_or_else(|p| p.into_inner());
+        {
+            let rooms = self.rooms.lock().unwrap_or_else(|p| p.into_inner());
+            let seat = rooms.get(room_id).and_then(|room| match from {
+                Role::Desktop => room.desktop.as_ref(),
+                Role::Mobile => room.mobile.as_ref(),
+            });
+            if !seat.is_some_and(|seat| seat.epoch == token.0) {
+                return Err("seat_superseded");
+            }
+        }
+        self.handle(from, raw);
+        Ok(())
+    }
+
+    /// Trusted internal routing primitive; transports use `handle_registered`.
+    pub(crate) fn handle(&self, from: Role, raw: &str) {
         let Ok(v) = serde_json::from_str::<Value>(raw) else {
             return;
         };
@@ -423,7 +463,10 @@ impl LanHub {
                 self.relay(from, &room_id, &v);
             }
             "ice-candidate" => self.relay(from, &room_id, &v),
-            "frame-size" | "clipboard-update" | "lan-endpoints" => {
+            // Match the cloud boundary: private clipboard content belongs on
+            // the current encrypted peer channel, never signaling fallback.
+            "clipboard-update" => {}
+            "frame-size" | "lan-endpoints" => {
                 if from != Role::Desktop {
                     self.reject(
                         from,
@@ -643,6 +686,35 @@ mod tests {
     fn register(hub: &LanHub, room: &str, role: Role, device: &str, send: SendFn) -> SeatToken {
         hub.authorize_room(room, "desktop-12345678".into(), "mobile-12345678".into());
         hub.attach(room, role, device.into(), send).unwrap()
+    }
+
+    #[test]
+    fn superseded_transport_cannot_pause_answer_or_end_the_replacement() {
+        let hub = LanHub::new();
+        let (d_send, d_out) = capture_send();
+        let (old_send, _) = capture_send();
+        let (new_send, _) = capture_send();
+        register(&hub, "room-1", Role::Desktop, "desktop-12345678", d_send);
+        let old = register(&hub, "room-1", Role::Mobile, "mobile-12345678", old_send);
+        let current = register(&hub, "room-1", Role::Mobile, "mobile-12345678", new_send);
+        for kind in ["pause", "answer", "disconnect"] {
+            let raw =
+                json!({"type": kind, "roomId": "room-1", "from": "mobile", "ts": 1, "payload": {}})
+                    .to_string();
+            assert_eq!(
+                hub.handle_registered("room-1", Role::Mobile, old, &raw),
+                Err("seat_superseded")
+            );
+        }
+        assert!(d_out.lock().unwrap().is_empty());
+        assert!(hub.has_seat("room-1", Role::Mobile));
+        assert!(!hub.rooms.lock().unwrap()["room-1"].established);
+        let valid = r#"{"type":"pause","roomId":"room-1","from":"mobile","ts":2,"payload":{}}"#;
+        assert_eq!(
+            hub.handle_registered("room-1", Role::Mobile, current, valid),
+            Ok(())
+        );
+        assert_eq!(d_out.lock().unwrap().len(), 1);
     }
 
     #[test]
@@ -954,6 +1026,26 @@ mod tests {
             .filter_map(|s| serde_json::from_str(s).ok())
             .collect();
         assert_eq!(mobile[0]["type"], "offer");
+    }
+
+    #[test]
+    fn legacy_clipboard_frames_are_not_relayed_in_either_direction() {
+        let hub = LanHub::new();
+        let (d_send, d_out) = capture_send();
+        let (m_send, m_out) = capture_send();
+        let desktop = register(&hub, "room-1", Role::Desktop, "desktop-12345678", d_send);
+        let mobile = register(&hub, "room-1", Role::Mobile, "mobile-12345678", m_send);
+        for (role, seat, from) in [
+            (Role::Desktop, desktop, "desktop"),
+            (Role::Mobile, mobile, "mobile"),
+        ] {
+            let frame = json!({"type":"clipboard-update", "roomId":"room-1",
+                "from":from, "ts":1, "payload":{"text":"private text"}})
+            .to_string();
+            assert_eq!(hub.handle_registered("room-1", role, seat, &frame), Ok(()));
+        }
+        assert!(d_out.lock().unwrap().is_empty());
+        assert!(m_out.lock().unwrap().is_empty());
     }
 
     fn frames(out: &Arc<StdMutex<Vec<String>>>) -> Vec<Value> {

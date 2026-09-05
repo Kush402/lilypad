@@ -50,6 +50,10 @@ export class MessageRouter {
             },
           ];
         }
+        // Once approved these are GRANTED scopes, replayed on rejoin. A
+        // delayed retry (or a malicious phone) cannot replace the desktop's
+        // grant with a new request and acquire control without approval.
+        if (room.sessionId) return [];
         room.scopes = msg.payload.requestedScopes;
         room.tryFsm('waiting_approval');
         return [{ kind: 'relay', to: 'desktop', msg }];
@@ -166,22 +170,10 @@ export class MessageRouter {
         return [{ kind: 'relay', to: 'mobile', msg }];
 
       case 'clipboard-update':
-        // Desktop → mobile only: this is the desktop-OS-clipboard-changed
-        // direction (docs/audit/m3/prior-art.md Finding 6). The reverse
-        // direction (phone → desktop) already travels over the DataChannel
-        // as an `InputEvent`, not signaling, so a mobile sender here would
-        // be using the wrong channel entirely — reject rather than relay.
-        if (from !== 'desktop') {
-          return [
-            {
-              kind: 'reject',
-              to: from,
-              code: 'forbidden',
-              message: 'only the desktop may send this',
-            },
-          ];
-        }
-        return [{ kind: 'relay', to: 'mobile', msg }];
+        // v0.1.29 uses encrypted WebRTC for this private payload. Discard
+        // legacy signaling frames without a per-copy session error on old
+        // clients; there is deliberately no cloud fallback or relay.
+        return [];
 
       case 'lan-endpoints':
         // Desktop → mobile: cached LAN control-plane URLs for reconnect

@@ -171,7 +171,7 @@ impl InputDispatcher {
         }
     }
 
-    fn process_event(&mut self, event: InputEvent) {
+    pub(super) fn process_event(&mut self, event: InputEvent) {
         self.metrics.events_received.fetch_add(1, Ordering::Relaxed);
 
         if !self.enabled {

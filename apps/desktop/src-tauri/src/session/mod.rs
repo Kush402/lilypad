@@ -34,7 +34,7 @@ use crate::rtc::{
     IcePolicy, IceServerConfig, PeerEvent, PeerEventGate, WebRtcPeer, PATH_LAN, PATH_RELAY,
 };
 use crate::signaling::{messages, Envelope};
-use clipboard_watcher::ClipboardWatcher;
+use clipboard_watcher::{send_clipboard_update, ClipboardWatcher};
 use fsm::{SessionFsm, SessionState};
 use input_gate::InputGate;
 use media_controller::MediaController;
@@ -45,6 +45,18 @@ use signaling_client::{SignalingClient, SignalingClientEvent};
 /// audit's own suggested 500ms-1s range. See `docs/audit/m3/prior-art.md`
 /// Finding 6.
 const CLIPBOARD_POLL_INTERVAL: Duration = Duration::from_millis(750);
+
+/// A new peer owns a new queue. A send-time generation check alone cannot
+/// reject callbacks already queued when signaling replaces the peer.
+fn replace_peer_events(
+    gate: &PeerEventGate,
+    receiver: &mut UnboundedReceiver<PeerEvent>,
+) -> (u64, UnboundedSender<PeerEvent>) {
+    let generation = gate.next();
+    let (sender, next_receiver) = mpsc::unbounded_channel();
+    *receiver = next_receiver;
+    (generation, sender)
+}
 
 /// The initial offer awaiting its answer — see `SessionRunner::pending_offer`.
 #[derive(Debug, Clone)]
@@ -340,8 +352,8 @@ struct SessionRunner {
     /// When the LAN control server is running, advertise its URLs to the phone.
     lan_ad: Option<crate::lan::LanEndpoints>,
     peer_connected: bool,
-    /// Set once, the first time `ConnectionState("connected")` is observed,
-    /// and never cleared — unlike `peer_connected`, which is reassigned on
+    /// Set once per peer, the first time `ConnectionState("connected")` is
+    /// observed; reset on peer replacement — unlike `peer_connected`, reassigned on
     /// EVERY `ConnectionState` event (`self.peer_connected = s ==
     /// "connected"`) and so flips back to `false` the moment ICE reports
     /// `disconnected`/`failed`, well before the counterpart is actually gone.
@@ -403,6 +415,11 @@ struct SessionRunner {
     /// trusted-rejoin grace; `discard_current_peer` resets this for the
     /// replacement PeerConnection.
     input_channel_closed: bool,
+    /// While ICE is down and actual peer traffic has gone stale, capabilities
+    /// are stopped even if SCTP has not closed its channel. Preserve the prior
+    /// pause independently so recovery does not undo the phone's explicit pause.
+    peer_suspension: bool,
+    viewer_paused: bool,
     /// First moment we were `connected` without an open input DataChannel.
     connected_without_dc_since: Option<Instant>,
     /// We already recreated the peer with `iceTransportPolicy: relay`.
@@ -443,6 +460,8 @@ impl SessionRunner {
             connection_path: None,
             input_channel_open: false,
             input_channel_closed: false,
+            peer_suspension: false,
+            viewer_paused: false,
             connected_without_dc_since: None,
             forced_relay: false,
             event_gate: PeerEventGate::new(),
@@ -497,18 +516,35 @@ impl SessionRunner {
     /// Invalidate the current peer's events, stop media, and close it.
     /// Call *before* building a replacement so `ConnectionState("closed")`
     /// from the old PC cannot end the new handshake (L-195).
-    async fn discard_current_peer(&mut self) -> u64 {
-        let mine = self.event_gate.next();
+    async fn discard_current_peer(
+        &mut self,
+        peer_ev_rx: &mut UnboundedReceiver<PeerEvent>,
+    ) -> (u64, UnboundedSender<PeerEvent>) {
+        let next = replace_peer_events(&self.event_gate, peer_ev_rx);
+        self.agent.cancel_active();
+        self.media.set_paused(true);
+        self.gate.set_peer_connected(false);
         self.input_channel_open = false;
         self.input_channel_closed = false;
+        self.peer_suspension = false;
         self.gate.set_channel_open(false);
         self.connected_without_dc_since = None;
         self.peer_connected = false;
+        self.ever_connected = false;
+        self.last_peer_traffic = None;
+        self.recovery_deadline = None;
+        self.last_ice_restart = None;
+        self.ice_restarts = 0;
+        self.pending_offer = None;
+        self.connection_path = None;
+        if self.peer.is_some() {
+            self.emit(SessionEvent::InputChannelClosed);
+        }
         self.media.stop_pipeline().await;
         if let Some(old) = self.peer.take() {
             let _ = old.close().await;
         }
-        mine
+        next
     }
 
     /// Handle one inbound signaling message. `Ok(true)` means it terminates
@@ -519,7 +555,7 @@ impl SessionRunner {
         &mut self,
         env: &Envelope,
         sig: &SignalingClient,
-        peer_ev_tx: &UnboundedSender<PeerEvent>,
+        peer_ev_rx: &mut UnboundedReceiver<PeerEvent>,
     ) -> Result<bool> {
         match env.msg_type.as_str() {
             "pair-request" => {
@@ -637,7 +673,7 @@ impl SessionRunner {
                 // close) AND must not let that close end this runner —
                 // `discard_current_peer` bumps the event gate first.
                 let replacing = self.peer.is_some();
-                let mine = self.discard_current_peer().await;
+                let (mine, peer_ev_tx) = self.discard_current_peer(peer_ev_rx).await;
                 if replacing {
                     log::warn!(target: "lilypad::session", "new session-start replacing an existing peer — closing the old one");
                 }
@@ -651,6 +687,9 @@ impl SessionRunner {
                     )
                     .await?,
                 );
+                // Own it before any further fallible work, so offer/signaling
+                // failure still reaches the normal peer-close path.
+                self.peer = Some(Arc::clone(&new_peer));
                 let sdp = new_peer.create_offer().await?;
                 sig.send(Envelope::offer(&self.room_id, &sdp))?;
                 if let Some(ep) = &self.lan_ad {
@@ -720,7 +759,7 @@ impl SessionRunner {
                     if self
                         .recreate_peer_relay_only(
                             sig,
-                            peer_ev_tx,
+                            peer_ev_rx,
                             "phone renegotiate, input DataChannel never opened",
                         )
                         .await?
@@ -734,10 +773,16 @@ impl SessionRunner {
             "pause" => {
                 // Phone backgrounded (or user paused) — stop sending video
                 // without tearing down ICE/DataChannel, so resuming is instant.
-                self.media.set_paused(true);
+                self.viewer_paused = true;
+                self.sync_media_pause();
             }
             "resume" => {
-                self.media.set_paused(false);
+                // Don't export text copied while the viewer was backgrounded.
+                if self.media.is_paused() && self.granted_control {
+                    self.clipboard.seed();
+                }
+                self.viewer_paused = false;
+                self.sync_media_pause();
             }
             "set-capture-mode" => {
                 if let Ok(p) =
@@ -770,7 +815,7 @@ impl SessionRunner {
                     serde_json::from_value::<messages::PeerStatusPayload>(env.payload.clone())
                 {
                     self.counterpart_signaling_offline = !p.online;
-                    self.media.set_paused(!p.online);
+                    self.sync_media_pause();
                     log::info!(
                         target: "lilypad::session",
                         "counterpart signaling {}",
@@ -796,20 +841,92 @@ impl SessionRunner {
         Ok(false)
     }
 
-    /// Handle one WebRTC peer event. `Ok(true)` means it terminates the
-    /// session. Note the ICE-restart offer resend uses `?` deliberately (it
-    /// propagates out of this method and, via the orchestrator's own `?`,
-    /// out of `run_session` entirely — matching the original inline
-    /// `select!` arm's behavior bit-for-bit, including its bypass of the
-    /// normal teardown sequence on that specific failure).
+    fn sync_media_pause(&self) {
+        self.media.set_paused(
+            self.viewer_paused
+                || self.counterpart_signaling_offline
+                || self.peer_suspension
+                || self.input_channel_closed
+                || !self.input_channel_open,
+        );
+    }
+
     /// Fresh inbound traffic from the phone proves the path works regardless
     /// of what the ICE state machine currently claims.
     fn peer_traffic_fresh(&self) -> bool {
-        self.last_peer_traffic
-            .is_some_and(|t| t.elapsed() < TRAFFIC_LIVENESS_WINDOW)
+        !self.input_channel_closed
+            && self
+                .last_peer_traffic
+                .is_some_and(|t| t.elapsed() < TRAFFIC_LIVENESS_WINDOW)
+    }
+
+    /// An ICE verdict alone is insufficient: working input/RTCP still wins.
+    /// Once that evidence expires, stop local capabilities while retaining the
+    /// authenticated peer for the existing bounded recovery path.
+    async fn suspend_stale_peer(&mut self) {
+        if self.peer_connected
+            || !self.ever_connected
+            || self.input_channel_closed
+            || self.peer_traffic_fresh()
+            || self.peer_suspension
+        {
+            return;
+        }
+        self.peer_suspension = true;
+        self.gate.set_peer_connected(false);
+        self.media.set_paused(true);
+        self.agent.cancel_active();
+        self.emit(SessionEvent::InputChannelClosed);
+        // A disconnected-only peer might never emit failed. It still needs a
+        // deadline; repeat ticks must not keep extending that grace.
+        self.recovery_deadline.get_or_insert_with(|| {
+            Instant::now() + recovery_timeout_for_attempt(self.ice_restarts.max(1))
+        });
+        log::info!(target: "lilypad::session", "ICE down and peer traffic stale — suspending capture and control during recovery");
+        self.media.stop_pipeline().await;
+    }
+
+    /// Called only for a connected callback or fresh inbound peer traffic.
+    /// The original DataChannel must still be open; a truly closed channel is
+    /// never revived here, and replacing the peer discards this marker.
+    async fn restore_peer_capabilities(&mut self, sig: &SignalingClient) -> Result<()> {
+        if !self.peer_suspension {
+            return Ok(());
+        }
+        if self.input_channel_closed {
+            return Ok(());
+        }
+        if !self.media.is_started() {
+            if let Some(peer) = self.peer.as_ref() {
+                self.media.start(Arc::clone(peer)).await?;
+                self.refresh_displays();
+                self.gate.set_target_display(self.media.display_id());
+                self.send_frame_size(sig);
+                self.emit_shared_display();
+            }
+        }
+        self.peer_suspension = false;
+        // Text copied during transport loss is not part of the resumed session.
+        if self.granted_control {
+            self.clipboard.seed();
+        }
+        self.sync_media_pause();
+        self.gate.set_peer_connected(true);
+        if self.input_channel_open {
+            self.emit(SessionEvent::InputChannelOpen);
+        }
+        Ok(())
     }
 
     async fn handle_peer_event(&mut self, ev: PeerEvent, sig: &SignalingClient) -> Result<bool> {
+        // The unreliable move channel may outlive the critical channel. It
+        // must not admit Ask commands or revive liveness after control closed.
+        if matches!(ev, PeerEvent::InputMessage(_)) && !self.input_channel_open {
+            return Ok(false);
+        }
+        if matches!(ev, PeerEvent::InputChannelOpen) && self.input_channel_closed {
+            return Ok(false);
+        }
         // Any phone-originated event is liveness ground truth — record it
         // before the state machinery below gets a chance to act pessimistic.
         if matches!(
@@ -820,7 +937,8 @@ impl SessionRunner {
                 | PeerEvent::VideoKeyframeRequest
         ) {
             self.last_peer_traffic = Some(Instant::now());
-            if !self.peer_connected {
+            if !self.peer_connected && !self.input_channel_closed {
+                self.restore_peer_capabilities(sig).await?;
                 // ICE says down, traffic says up: traffic wins for injection
                 // gating — the loss reports/REMB prove the viewer is
                 // receiving video, which is the property the gate protects.
@@ -828,6 +946,9 @@ impl SessionRunner {
             }
         }
         if let PeerEvent::ConnectionState(s) = &ev {
+            if s == "connected" && !self.input_channel_closed {
+                self.restore_peer_capabilities(sig).await?;
+            }
             // Begin streaming once the peer connection is live (SRTP ready).
             if s == "connected" && !self.input_channel_closed && !self.media.is_started() {
                 if let Some(p) = self.peer.as_ref() {
@@ -859,19 +980,16 @@ impl SessionRunner {
                 // is back, whether or not a `peer-status` online:true nudge
                 // ever arrived (a reconnect implies the phone re-registered)
                 // — belt-and-suspenders alongside the `peer-status` handler.
-                if self.counterpart_signaling_offline {
-                    // ICE `connected` implies the phone is back, whether or
-                    // not a `peer-status` online:true has landed yet — don't
-                    // leave send paused after we clear the offline flag.
-                    self.media.set_paused(false);
-                }
                 self.counterpart_signaling_offline = false;
+                self.sync_media_pause();
                 self.ever_connected = true;
                 if !was_connected {
                     // Seed rather than push: whatever's already on the OS
                     // clipboard predates this session and shouldn't be
                     // forced onto a phone that just connected.
-                    self.clipboard.seed();
+                    if self.granted_control {
+                        self.clipboard.seed();
+                    }
                     // Ask ICE what it settled on, now that it has settled.
                     // Also after an ICE restart, because a session that
                     // recovers onto the relay has genuinely changed path and
@@ -892,6 +1010,9 @@ impl SessionRunner {
             }
             self.gate
                 .set_peer_connected(self.peer_connected || self.peer_traffic_fresh());
+            if matches!(s.as_str(), "disconnected" | "failed") {
+                self.suspend_stale_peer().await;
+            }
 
             // A failed connection is recoverable if the network path changed
             // (Wi-Fi → cellular, new interface): try a bounded number of ICE
@@ -920,7 +1041,7 @@ impl SessionRunner {
             self.input_channel_open = true;
             self.input_channel_closed = false;
             self.connected_without_dc_since = None;
-            self.media.set_paused(false);
+            self.sync_media_pause();
             log::info!(target: "lilypad::session", "input DataChannel open");
         }
         if matches!(ev, PeerEvent::InputChannelClosed) {
@@ -932,6 +1053,7 @@ impl SessionRunner {
             self.gate.set_peer_connected(false);
             self.input_channel_open = false;
             self.input_channel_closed = true;
+            self.peer_suspension = false;
             self.peer_connected = false;
             self.media.set_paused(true);
             self.agent.cancel_active();
@@ -999,7 +1121,7 @@ impl SessionRunner {
             // moment traffic resumes. Tearing down here over a transient
             // budget count would kill a de-facto-working stream; hold
             // instead and let traffic/recovery-deadline own the outcome.
-            if self.media.is_started() {
+            if self.media.is_started() || self.peer_suspension {
                 log::warn!(
                     target: "lilypad::session",
                     "ICE restart budget reached — holding; traffic/recovery-deadline owns recovery"
@@ -1045,7 +1167,7 @@ impl SessionRunner {
     async fn recreate_peer_relay_only(
         &mut self,
         sig: &SignalingClient,
-        peer_ev_tx: &UnboundedSender<PeerEvent>,
+        peer_ev_rx: &mut UnboundedReceiver<PeerEvent>,
         reason: &str,
     ) -> Result<bool> {
         if self.ice_servers.is_empty() {
@@ -1061,7 +1183,7 @@ impl SessionRunner {
         }
         self.forced_relay = true;
         self.connection_path = None;
-        let mine = self.discard_current_peer().await;
+        let (mine, peer_ev_tx) = self.discard_current_peer(peer_ev_rx).await;
         log::warn!(
             target: "lilypad::session",
             "recreating peer with iceTransportPolicy=relay ({reason})"
@@ -1076,6 +1198,7 @@ impl SessionRunner {
             )
             .await?,
         );
+        self.peer = Some(Arc::clone(&new_peer));
         let sdp = new_peer.create_offer().await?;
         sig.send(Envelope::offer(&self.room_id, &sdp))?;
         self.pending_offer = Some(PendingOffer {
@@ -1334,13 +1457,29 @@ impl SessionRunner {
         Ok(())
     }
 
-    /// Check the OS clipboard and, if it changed since the last check, push a
-    /// `clipboard-update` to the phone. Best-effort: a failed send here must
-    /// not tear down a healthy session, same rationale as the `frame-size`
-    /// send above.
-    fn poll_clipboard(&mut self, sig: &SignalingClient) {
+    fn clipboard_authorized(&self) -> bool {
+        self.granted_control
+            && self.input_channel_open
+            && !self.input_channel_closed
+            && (self.peer_connected || self.peer_traffic_fresh())
+            && !self.media.is_paused()
+    }
+
+    /// Private clipboard payloads have exactly one transport: the current
+    /// authorized peer's reliable encrypted DataChannel. No API/LAN-signaling
+    /// fallback, including when the DataChannel cannot accept the write.
+    async fn poll_clipboard(&mut self) {
+        if !self.clipboard_authorized() {
+            return;
+        }
+        let Some(peer) = self.peer.as_ref() else {
+            return;
+        };
         if let Some(text) = self.clipboard.poll() {
-            if let Err(e) = sig.send(Envelope::clipboard_update(&self.room_id, &text)) {
+            if let Err(e) =
+                send_clipboard_update(&self.room_id, &text, |frame| peer.send_input_text(frame))
+                    .await
+            {
                 log::warn!(target: "lilypad::session", "clipboard-update send failed: {e}");
             }
         }
@@ -1362,7 +1501,7 @@ pub async fn run_session(
     let _ = events.send(SessionEvent::Registered);
     log::info!(target: "lilypad::session", "registered as desktop in room {room_id}");
 
-    let (peer_ev_tx, mut peer_ev_rx) = mpsc::unbounded_channel::<PeerEvent>();
+    let (_initial_peer_tx, mut peer_ev_rx) = mpsc::unbounded_channel::<PeerEvent>();
     // Mirrors `@lilypad/protocol`'s `APP_HEARTBEAT_INTERVAL_MS` (4s) — see
     // docs/audit/m3/reconnect-lifecycle.md Finding 6's cross-tier timing
     // budget (this must stay well under the backend's heartbeat timeout).
@@ -1394,13 +1533,18 @@ pub async fn run_session(
                         if env.msg_type == "pair-request" {
                             paired = true; // a device is engaged — disarm the pairing timeout
                         }
-                        match runner.handle_signaling_message(&env, &sig, &peer_ev_tx).await {
+                        match runner.handle_signaling_message(&env, &sig, &mut peer_ev_rx).await {
                             Ok(true) => break, // terminal message
                             Ok(false) => {}
                             Err(e) => {
-                                // Surface the failure but keep the session alive.
+                                // Surface recoverable message errors. A failed
+                                // peer construction/recovery must tear down.
                                 log::error!(target: "lilypad::session", "handling '{}' failed: {e}", env.msg_type);
                                 runner.emit(SessionEvent::Error { message: format!("{}: {e}", env.msg_type) });
+                                if matches!(env.msg_type.as_str(), "session-start" | "renegotiate") {
+                                    runner.end(format!("{} failed: {e}", env.msg_type));
+                                    break;
+                                }
                             }
                         }
                     }
@@ -1494,14 +1638,23 @@ pub async fn run_session(
 
             pev = peer_ev_rx.recv() => {
                 if let Some(ev) = pev {
-                    if runner.handle_peer_event(ev, &sig).await? {
-                        break;
+                    match runner.handle_peer_event(ev, &sig).await {
+                        Ok(true) => break,
+                        Ok(false) => {}
+                        Err(e) => {
+                            runner.end(format!("peer recovery failed: {e}"));
+                            break;
+                        }
                     }
                 }
             }
 
             _ = heartbeat.tick() => {
                 let _ = sig.send(Envelope::heartbeat(&room_id));
+                // ICE may have gone down while its last RTCP was still fresh.
+                // Re-evaluate here when that evidence ages out, even if no
+                // further connection-state callback ever arrives.
+                runner.suspend_stale_peer().await;
                 // Pre-answer watchdog: a phone that missed the offer (socket
                 // flap right after approval) gets it again instead of both
                 // sides waiting each other out.
@@ -1574,20 +1727,25 @@ pub async fn run_session(
                     runner.connected_without_dc_since,
                     Instant::now(),
                     INPUT_CHANNEL_FALLBACK_GRACE,
-                ) && runner
-                    .recreate_peer_relay_only(
+                ) {
+                    match runner.recreate_peer_relay_only(
                         &sig,
-                        &peer_ev_tx,
+                        &mut peer_ev_rx,
                         "input DataChannel did not open on the selected ICE pair",
                     )
-                    .await?
-                {
-                    break;
+                    .await {
+                        Ok(true) => break,
+                        Ok(false) => {}
+                        Err(e) => {
+                            runner.end(format!("relay recovery failed: {e}"));
+                            break;
+                        }
+                    }
                 }
             }
 
-            _ = clipboard_poll.tick(), if runner.peer_connected => {
-                runner.poll_clipboard(&sig);
+            _ = clipboard_poll.tick(), if runner.clipboard_authorized() => {
+                runner.poll_clipboard().await;
             }
         }
     }
@@ -1643,6 +1801,199 @@ fn shared_display_name(displays: &[crate::media::Display], active: Option<u32>) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn stale_ice_suspends_once_and_live_traffic_restores_without_undoing_pause() {
+        let (events, mut event_rx) = mpsc::unbounded_channel();
+        let mut runner = SessionRunner::new("recovery-pause".into(), events, None);
+        let hub = Arc::new(crate::lan::LanHub::new());
+        hub.authorize_room(
+            "recovery-pause",
+            "desktop-12345678".into(),
+            "mobile-12345678".into(),
+        );
+        let sig = SignalingClient::connect(
+            "unused".into(),
+            "recovery-pause".into(),
+            "desktop-12345678".into(),
+            Some(hub),
+        )
+        .await
+        .unwrap();
+        let (_, mut peer_events) = mpsc::unbounded_channel();
+        runner.ever_connected = true;
+        runner.input_channel_open = true;
+        runner.last_peer_traffic = Some(Instant::now());
+        runner.suspend_stale_peer().await;
+        assert!(!runner.peer_suspension, "live traffic outvotes ICE");
+        runner.last_peer_traffic = Some(Instant::now() - TRAFFIC_LIVENESS_WINDOW);
+        runner.suspend_stale_peer().await;
+        assert!(runner.peer_suspension);
+        assert!(runner.media.is_paused());
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(SessionEvent::InputChannelClosed)
+        ));
+        let deadline = runner.recovery_deadline.unwrap();
+        runner.suspend_stale_peer().await;
+        assert_eq!(runner.recovery_deadline, Some(deadline));
+        assert!(event_rx.try_recv().is_err());
+
+        // Signaling recovery cannot turn capture back on, and a pause arriving
+        // during ICE recovery must remain in effect after fresh RTCP returns.
+        for (kind, payload) in [
+            ("resume", serde_json::json!({})),
+            ("peer-status", serde_json::json!({"online": true})),
+            ("pause", serde_json::json!({})),
+        ] {
+            let env = serde_json::from_value(serde_json::json!({
+                "type": kind, "roomId": "recovery-pause", "from": "mobile",
+                "ts": 1, "payload": payload,
+            }))
+            .unwrap();
+            runner
+                .handle_signaling_message(&env, &sig, &mut peer_events)
+                .await
+                .unwrap();
+            assert!(runner.media.is_paused());
+            assert!(runner.peer_suspension);
+        }
+        runner
+            .handle_peer_event(PeerEvent::VideoKeyframeRequest, &sig)
+            .await
+            .unwrap();
+        assert!(!runner.peer_suspension);
+        assert!(
+            runner.media.is_paused(),
+            "recovery must preserve the viewer's pause"
+        );
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(SessionEvent::InputChannelOpen)
+        ));
+
+        runner
+            .handle_peer_event(PeerEvent::InputChannelClosed, &sig)
+            .await
+            .unwrap();
+        runner
+            .handle_peer_event(PeerEvent::VideoKeyframeRequest, &sig)
+            .await
+            .unwrap();
+        assert!(!runner.peer_traffic_fresh());
+        assert!(runner.media.is_paused());
+        assert!(!runner.input_channel_open);
+    }
+
+    #[test]
+    fn clipboard_requires_control_a_live_current_channel_and_an_unpaused_viewer() {
+        let (events, _rx) = mpsc::unbounded_channel();
+        let mut runner = SessionRunner::new("clipboard-scope".into(), events, None);
+        runner.input_channel_open = true;
+        runner.peer_connected = true;
+        assert!(
+            !runner.clipboard_authorized(),
+            "view-only must not read the Mac clipboard"
+        );
+        runner.granted_control = true;
+        assert!(runner.clipboard_authorized());
+        runner.media.set_paused(true);
+        assert!(
+            !runner.clipboard_authorized(),
+            "backgrounded viewer must not receive clipboard"
+        );
+        runner.media.set_paused(false);
+        runner.input_channel_open = false;
+        assert!(!runner.clipboard_authorized());
+        runner.input_channel_open = true;
+        runner.input_channel_closed = true;
+        runner.last_peer_traffic = Some(Instant::now());
+        assert!(
+            !runner.clipboard_authorized(),
+            "fresh RTCP cannot revive closed control"
+        );
+        runner.input_channel_closed = false;
+        runner.peer_connected = false;
+        assert!(
+            runner.clipboard_authorized(),
+            "fresh traffic still outvotes a bad FSM"
+        );
+        runner.last_peer_traffic = None;
+        assert!(!runner.clipboard_authorized());
+    }
+
+    #[tokio::test]
+    async fn closed_control_cannot_be_revived_by_late_input_or_open_callbacks() {
+        let (events, _rx) = mpsc::unbounded_channel();
+        let mut runner = SessionRunner::new("closed-control".into(), events, None);
+        let hub = Arc::new(crate::lan::LanHub::new());
+        hub.authorize_room(
+            "closed-control",
+            "desktop-12345678".into(),
+            "mobile-12345678".into(),
+        );
+        let sig = SignalingClient::connect(
+            "unused".into(),
+            "closed-control".into(),
+            "desktop-12345678".into(),
+            Some(hub),
+        )
+        .await
+        .unwrap();
+        runner.input_channel_closed = true;
+        runner
+            .handle_peer_event(
+                PeerEvent::InputMessage(b"stale Ask or input".to_vec()),
+                &sig,
+            )
+            .await
+            .unwrap();
+        runner
+            .handle_peer_event(PeerEvent::InputChannelOpen, &sig)
+            .await
+            .unwrap();
+        assert!(!runner.peer_connected);
+        assert!(!runner.input_channel_open);
+        assert!(runner.last_peer_traffic.is_none());
+        // Video feedback must not revive capabilities after the critical
+        // channel closed, even though it can outvote transient ICE failures.
+        runner
+            .handle_peer_event(PeerEvent::VideoKeyframeRequest, &sig)
+            .await
+            .unwrap();
+        assert!(!runner.peer_connected);
+        assert!(!runner.peer_traffic_fresh());
+        runner.ever_connected = true;
+        runner.counterpart_signaling_offline = true;
+        let (_, mut peer_events) = mpsc::unbounded_channel();
+        runner.discard_current_peer(&mut peer_events).await;
+        assert!(
+            !runner.ever_connected,
+            "a new handshake must not inherit the old peer's gone timer"
+        );
+        assert!(runner.last_peer_traffic.is_none());
+        assert!(!runner.input_channel_closed);
+    }
+
+    #[test]
+    fn replacing_a_peer_discards_already_queued_callbacks_and_late_sends() {
+        let gate = PeerEventGate::new();
+        let (old_tx, mut rx) = mpsc::unbounded_channel();
+        gate.next();
+        old_tx
+            .send(PeerEvent::ConnectionState("closed".into()))
+            .unwrap();
+        old_tx.send(PeerEvent::InputChannelClosed).unwrap();
+        old_tx
+            .send(PeerEvent::InputMessage(b"stale command".to_vec()))
+            .unwrap();
+
+        let (_, new_tx) = replace_peer_events(&gate, &mut rx);
+        assert!(old_tx.send(PeerEvent::InputChannelOpen).is_err());
+        new_tx.send(PeerEvent::InputChannelOpen).unwrap();
+        assert!(matches!(rx.try_recv(), Ok(PeerEvent::InputChannelOpen)));
+        assert!(rx.try_recv().is_err(), "old callbacks reached the new peer");
+    }
 
     #[test]
     fn counterpart_gone_false_when_media_still_flowing() {

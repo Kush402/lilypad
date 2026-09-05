@@ -357,8 +357,18 @@ async fn handle_ws(socket: WebSocket, state: Arc<LanServerState>) {
             }
             continue;
         }
-        if let Some((_, role, _)) = registered {
-            state.hub.handle(role, &txt);
+        if let Some((room_id, role, token)) = &registered {
+            // Registration authorizes one room for this socket. A later
+            // envelope must not choose a different room, even if it knows an
+            // existing room id. Match the cloud hub's per-socket boundary.
+            if let Err(code) = state.hub.handle_registered(room_id, *role, *token, &txt) {
+                let _ = tx.send(LanHub::refusal_frame(
+                    *role,
+                    room_id,
+                    code,
+                    "message requires the current seat in the registered room",
+                ));
+            }
         }
     }
 

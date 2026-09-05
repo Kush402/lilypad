@@ -12,6 +12,7 @@ import {
   MAX_ICE_RESTARTS,
   iceRecoveryTimeoutMs,
   AgentOutboundSchema,
+  ClipboardUpdateSchema,
   encodeAgentMessage,
   type IceServer,
   type SessionScope,
@@ -233,6 +234,7 @@ export class ViewerConnection {
   /** Timestamp of last network restoration renegotiate to debounce flapping. */
   private lastNetworkRestoreRenegotiate: number = Number.NEGATIVE_INFINITY;
   private iceServers: IceServer[] = [];
+  private grantedScopes: SessionScope[] = [];
 
   constructor(
     signalingUrl: string,
@@ -252,10 +254,14 @@ export class ViewerConnection {
   }
 
   async start(): Promise<void> {
+    if (this.isClosed) return;
     startSession();
     recordState('connecting');
     this.cb.onState('connecting');
     await this.sig.connect();
+    // The screen may have left while the native socket was opening. Its
+    // resolved promise must not reinstall resources after close() disposed them.
+    if (this.isClosed) return;
     this.sig.register(getDeviceId(), this.rejoin ? { rejoin: true } : undefined);
     // Rejoin of a live Active room: the hub re-issues session-start. A
     // pair-request would be ignored by a desktop already past approval
@@ -321,10 +327,9 @@ export class ViewerConnection {
     return this.input;
   }
 
-  /** Parse and dispatch an agent step-feed frame from the desktop. Frames that
-   * aren't valid agent-outbound messages (nothing else is sent on this channel
-   * today, but be defensive) are silently ignored. */
-  private handleAgentFrame(data: unknown): void {
+  /** Private desktop payloads use the current encrypted reliable channel;
+   * neither signaling nor an old peer is an alternate delivery path. */
+  private handleDataChannelFrame(data: unknown): void {
     // Guard against processing after close
     if (this.isClosed) return;
     // The desktop sends agent frames as TEXT, but accept binary too — an
@@ -352,6 +357,17 @@ export class ViewerConnection {
     try {
       json = JSON.parse(text);
     } catch {
+      return;
+    }
+    const clipboard = ClipboardUpdateSchema.safeParse(json);
+    if (clipboard.success) {
+      if (
+        this.grantedScopes.includes('control') &&
+        clipboard.data.from === 'desktop' &&
+        clipboard.data.roomId === this.roomId
+      ) {
+        this.cb.onClipboardUpdate(clipboard.data.payload.text);
+      }
       return;
     }
     const parsed = AgentOutboundSchema.safeParse(json);
@@ -416,6 +432,7 @@ export class ViewerConnection {
     if (this.isClosed) return;
     switch (m.type) {
       case 'session-start':
+        this.grantedScopes = m.payload.grantedScopes;
         // Approval already happened and ICE servers are assigned — the peer
         // connection is about to be built and an offer is imminent. See
         // docs/audit/m3/mobile-ux.md Finding 1.
@@ -428,14 +445,7 @@ export class ViewerConnection {
         // an ICE-restart offer, and silently dropping it strands the session
         // in a dead-path state until the desktop's recovery deadline kills
         // it with no trace of why.
-        this.handleOffer(m.payload.sdp).catch((err) => {
-          // The raw text goes to the journal, not to the screen. "applying
-          // offer failed: InvalidAccessError: ..." is a sentence for whoever
-          // debugs it later, and this module already learned that lesson once
-          // for the hub's own words a few lines below.
-          record('offer failed', String(err));
-          this.cb.onError(appError('unknown'));
-        });
+        void this.handleOffer(m.payload.sdp);
         break;
       case 'ice-candidate':
         void this.pc
@@ -456,9 +466,8 @@ export class ViewerConnection {
         this.cb.onDisplays?.(m.payload.displays ?? [], m.payload.activeDisplayId ?? null);
         break;
       case 'clipboard-update':
-        // The desktop's OS clipboard changed — mirror it onto the phone's.
-        // See docs/audit/m3/prior-art.md Finding 6.
-        this.cb.onClipboardUpdate(m.payload.text);
+        // Legacy desktops used signaling. Never accept private clipboard
+        // content through that path; both apps need the encrypted transport.
         break;
       case 'pair-secret':
         this.cb.onPairSecret?.(m.payload.secret);
@@ -703,9 +712,11 @@ export class ViewerConnection {
         // from the phone). Non-agent frames are ignored here.
         if (typeof channel.addEventListener === 'function') {
           channel.addEventListener('message', (ev: { data: unknown }) => {
-            this.handleAgentFrame(ev.data);
+            if (this.isClosed || this.pc !== pc || this.dataChannel !== channel) return;
+            this.handleDataChannelFrame(ev.data);
           });
           channel.addEventListener('open', () => {
+            if (this.isClosed || this.pc !== pc || this.dataChannel !== channel) return;
             record('input DataChannel open');
             this.input?.flush();
           });
@@ -914,12 +925,14 @@ export class ViewerConnection {
 
   private async pollStats(): Promise<void> {
     if (!this.pc || this.isClosed) return;
+    const pc = this.pc;
     let report: Map<string, any>;
     try {
-      report = (await this.pc.getStats()) as unknown as Map<string, any>;
+      report = (await pc.getStats()) as unknown as Map<string, any>;
     } catch {
       return;
     }
+    if (this.isClosed || this.pc !== pc) return;
 
     let rttMs: number | null = null;
     let fps: number | null = null;
@@ -1016,26 +1029,39 @@ export class ViewerConnection {
     // Guard against acting after close() began
     if (this.isClosed) return;
     if (!this.pc) return;
+    let pc = this.pc;
     // No `onState('negotiating')` here: the initial offer follows
     // 'session-start' (which already set it), and a later renegotiation
     // offer arrives mid-`recovering_ice` — stomping that back to a generic
     // 'negotiating' would regress the more specific, more useful state the
     // user is already seeing. See docs/audit/m3/mobile-ux.md Finding 1.
     try {
-      await this.pc.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp }));
+      try {
+        await pc.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp }));
+      } catch (err) {
+        if (this.isClosed || this.pc !== pc) return;
+        // The desktop recreated its PeerConnection (new DTLS fingerprint)
+        // because the input DataChannel never opened on the first ICE pair.
+        // Accept its offer on a fresh relay-only peer using the same servers.
+        record('offer rejected on current peer, recreating with relay', String(err));
+        this.setupPeer(this.iceServers, 'relay');
+        if (!this.pc || this.isClosed) return;
+        pc = this.pc;
+        await pc.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp }));
+      }
+      if (this.isClosed || this.pc !== pc) return;
+      const answer = await pc.createAnswer();
+      if (this.isClosed || this.pc !== pc) return;
+      await pc.setLocalDescription(answer);
+      if (this.isClosed || this.pc !== pc) return;
+      this.sig.answer((answer as any).sdp);
     } catch (err) {
-      // The desktop recreated its PeerConnection (new DTLS fingerprint)
-      // because the input DataChannel never opened on the first ICE pair.
-      // Applying that offer to this PC fails; accept it on a fresh relay-only
-      // peer instead. Same iceServers as session-start — we already have them.
-      record('offer rejected on current peer, recreating with relay', String(err));
-      this.setupPeer(this.iceServers, 'relay');
-      if (!this.pc || this.isClosed) return;
-      await this.pc.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp }));
+      // Every native await can reject after teardown or peer replacement,
+      // including the relay retry. Only the peer still in use owns this error.
+      if (this.isClosed || this.pc !== pc) return;
+      record('offer failed', String(err));
+      this.cb.onError(appError('unknown'));
     }
-    const answer = await this.pc.createAnswer();
-    await this.pc.setLocalDescription(answer);
-    this.sig.answer((answer as any).sdp);
   }
 
   close(): void {

@@ -1,7 +1,7 @@
 ---
 status: Implemented
 owner: @kushsharma024
-last-verified: 2026-08-12
+last-verified: 2026-09-04
 summary: Build, release, auto-update, and disk-reclaim procedures.
 ---
 
@@ -174,26 +174,38 @@ why iOS codesigning fails from `~/Desktop` — see `apps/mobile/README.md`.
 
 ## 3. Cutting a release
 
-Versions are kept in sync by `pnpm release` (`scripts/release.mjs`), which bumps
-`apps/desktop/src-tauri/tauri.conf.json`, its `Cargo.toml`, and
-`apps/desktop/package.json` together.
+Versions are kept in sync by `pnpm release` (`scripts/release.mjs`): desktop
+Tauri/Cargo/package metadata (including the Cargo lockfile), mobile package
+and native version metadata, and website download references. Review its diff
+before committing; it does not commit, tag, push, or publish anything.
 
 ### Desktop (macOS)
 
 ```bash
-pnpm release <new-version>     # e.g. 0.2.0 — bumps the three files in sync
-git commit -am "chore(release): v0.2.0"
+pnpm release <new-version>     # e.g. 0.2.0
+pnpm verify
+# Stage only the intended release files; keep private local notes untracked.
+git commit -m "chore(release): v0.2.0"
+git push origin main
+# Wait for CI on this exact commit before creating the release tag.
 git tag v0.2.0
-git push && git push --tags
+git push origin v0.2.0
 ```
 
 Pushing a `v*` tag triggers `.github/workflows/release.yml`:
 
-1. builds the app on `macos-latest`,
+1. requires signing/updater credentials and builds the app on `macos-latest`,
 2. **signs** it with the Developer ID cert and **notarizes + staples** via the
    App Store Connect API key,
 3. produces the `.dmg` plus the updater artifact (`.app.tar.gz` + `.sig`),
-4. publishes a GitHub Release and uploads `latest.json` (the update feed).
+4. uploads artifacts and `latest.json` to a **draft** GitHub Release,
+5. verifies the app and download's notarization tickets and Gatekeeper
+   acceptance, then publishes. Failure leaves a draft, not a public update.
+
+The same version tag also starts the documented backend deployment, behind
+its CI gate. Verify deployment health and website/update-feed publication
+afterward. A published build still needs the signed physical-device tests;
+automated checks do not establish that hardware validation happened.
 
 Can also be run manually via **workflow_dispatch**.
 
@@ -203,8 +215,9 @@ Mobile releases are decoupled — tag `mobile-v*` to trigger
 `.github/workflows/mobile-ios.yml` and `mobile-android.yml`. These build via
 fastlane and ship to **TestFlight** / **Play internal**. See
 [apps/mobile/docs/RELEASE.md](../apps/mobile/docs/RELEASE.md) for the mobile
-secrets and setup. Until those secrets are configured the workflows **skip
-cleanly** (green, with a "not configured" log line) rather than failing.
+secrets and setup. The iOS workflow fails its preflight when required signing
+inputs are missing; do not treat an absent TestFlight build as a successful
+mobile release. Push the specific mobile tag only for the verified commit.
 
 ---
 

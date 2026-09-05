@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder, WindowEvent};
-use tokio::sync::mpsc::unbounded_channel;
+use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio::sync::oneshot;
 
 use crate::account;
@@ -343,58 +343,11 @@ fn spawn_session_runner_inner(
     on_seated: Option<oneshot::Sender<Result<(), String>>>,
 ) {
     let (control_tx, control_rx) = unbounded_channel::<Control>();
-    let (event_tx, mut event_rx) = unbounded_channel::<SessionEvent>();
+    let (event_tx, event_rx) = unbounded_channel::<SessionEvent>();
     let seated: Option<SeatNotify> = on_seated.map(|tx| Arc::new(std::sync::Mutex::new(Some(tx))));
-
-    let old_task = {
-        let state = app.state::<SharedState>();
-        let mut s = lock_state(&state);
-        s.control_tx = Some(control_tx);
-        claim_room(&mut s, &room_id, auto_approve);
-        s.offered_scopes = offered_scopes;
-        s.session = SessionStatus::Pairing;
-        s.pending_request = None;
-        s.session_task.take()
-    };
-
-    // Forward runner events to the UI + update coarse session state. Each
-    // forwarder is bound to ITS runner's room: once another runner has
-    // superseded this one (M5.4 trusted takeover), the old runner's dying
-    // events (its Ended, its ConnectionState flaps) must neither clobber the
-    // new session's state nor reach the UI.
     let app_ev = app.clone();
     let runner_room = room_id.clone();
     let seated_ev = seated.clone();
-    tauri::async_runtime::spawn(async move {
-        while let Some(ev) = event_rx.recv().await {
-            let current = {
-                let state = app_ev.state::<SharedState>();
-                let s = lock_state(&state);
-                s.current_room_id.clone()
-            };
-            if current.as_deref() != Some(runner_room.as_str()) {
-                log::debug!(
-                    target: "lilypad::session",
-                    "dropping event from superseded runner (room {runner_room})"
-                );
-                continue;
-            }
-            if matches!(ev, SessionEvent::Registered) {
-                if let Some(tx) = take_seat_notify(&seated_ev) {
-                    let _ = tx.send(Ok(()));
-                }
-            }
-            if matches!(ev, SessionEvent::Ended { .. }) {
-                if let Some(tx) = take_seat_notify(&seated_ev) {
-                    let _ = tx.send(Err(
-                        "session ended before this Mac joined the pairing room".to_owned()
-                    ));
-                }
-            }
-            apply_session_event(&app_ev, &ev);
-            let _ = app_ev.emit("lilypad://session", ev);
-        }
-    });
 
     // Drive the session.
     let advertisement = app
@@ -415,37 +368,129 @@ fn spawn_session_runner_inner(
         );
     }
     let seated_run = seated.clone();
-    let handle = tauri::async_runtime::spawn(async move {
-        // Wait for the PREVIOUS session to fully tear down (its media.stop()
-        // joins the capture thread) before this one starts, so screen capture
-        // is never double-opened during a trusted takeover. Bounded so a stuck
-        // old teardown can't hang the takeover — after the timeout we proceed
-        // and accept the pre-existing brief-overlap behavior as the fallback.
-        if let Some(old) = old_task {
-            let _ = tokio::time::timeout(SESSION_TEARDOWN_WAIT, old).await;
-        }
-        if let Err(e) = run_session(
-            signaling_url,
-            room_id,
-            device_id,
-            lan_ad,
-            lan_loopback,
-            control_rx,
-            event_tx,
-        )
-        .await
-        {
-            log::error!(target: "lilypad::session", "session runner error: {e}");
-            if let Some(tx) = take_seat_notify(&seated_run) {
-                let _ = tx.send(Err(e.to_string()));
-            }
-        }
-    });
-    {
-        let state = app.state::<SharedState>();
-        let mut s = lock_state(&state);
-        s.session_task = Some(handle);
+    let state = app.state::<SharedState>();
+    let claimed_room = room_id.clone();
+    install_session_runner(
+        &state,
+        &claimed_room,
+        auto_approve,
+        offered_scopes,
+        control_tx,
+        |old_task| {
+            // Only a successful claim may start a forwarder. Otherwise a rejected
+            // same-room ring's closed stream could end the runner already there.
+            tauri::async_runtime::spawn(forward_session_events(event_rx, move |ev| {
+                // Ownership and state mutation share a lock, so a takeover cannot
+                // land between the check and applying an old runner's Ended.
+                if !apply_session_event(&app_ev, &runner_room, &ev) {
+                    log::debug!(
+                        target: "lilypad::session",
+                        "dropping event from superseded runner (room {runner_room})"
+                    );
+                    return;
+                }
+                if matches!(ev, SessionEvent::Registered) {
+                    if let Some(tx) = take_seat_notify(&seated_ev) {
+                        let _ = tx.send(Ok(()));
+                    }
+                }
+                if matches!(ev, SessionEvent::Ended { .. }) {
+                    if let Some(tx) = take_seat_notify(&seated_ev) {
+                        let _ = tx.send(Err(
+                            "session ended before this Mac joined the pairing room".to_owned(),
+                        ));
+                    }
+                }
+                let _ = app_ev.emit("lilypad://session", ev);
+            }));
+            tauri::async_runtime::spawn(async move {
+                // Wait for the PREVIOUS session to fully tear down (its media.stop()
+                // joins the capture thread) before this one starts, so screen capture
+                // is never double-opened during a trusted takeover. Bounded so a stuck
+                // old teardown can't hang the takeover — after the timeout we proceed
+                // and accept the pre-existing brief-overlap behavior as the fallback.
+                if let Some(old) = old_task {
+                    let _ = tokio::time::timeout(SESSION_TEARDOWN_WAIT, old).await;
+                }
+                if let Err(e) = run_session(
+                    signaling_url,
+                    room_id,
+                    device_id,
+                    lan_ad,
+                    lan_loopback,
+                    control_rx,
+                    event_tx,
+                )
+                .await
+                {
+                    log::error!(target: "lilypad::session", "session runner error: {e}");
+                    if let Some(tx) = take_seat_notify(&seated_run) {
+                        let _ = tx.send(Err(e.to_string()));
+                    }
+                }
+            })
+        },
+    );
+}
+
+/// A runner can return before emitting anything if its first signaling connect
+/// fails. Closing its stream must release that room too. The consumer applies
+/// the same ownership check to this fallback as to ordinary runner events.
+async fn forward_session_events(
+    mut events: UnboundedReceiver<SessionEvent>,
+    mut forward: impl FnMut(SessionEvent),
+) {
+    let mut ended = false;
+    while let Some(event) = events.recv().await {
+        ended |= matches!(event, SessionEvent::Ended { .. });
+        forward(event);
     }
+    if !ended {
+        forward(SessionEvent::Ended {
+            reason: "session runner stopped".to_owned(),
+        });
+    }
+}
+
+/// Publish the room, consent, control sender and task as one transaction.
+/// Presence dispatches may run on different runtime workers. Checking for a
+/// same-room ring or taking the previous sender before this lock can disconnect
+/// the very runner another dispatch has just installed.
+fn install_session_runner(
+    state: &SharedState,
+    room_id: &str,
+    auto_approve: bool,
+    offered_scopes: Vec<String>,
+    control_tx: UnboundedSender<Control>,
+    spawn: impl FnOnce(
+        Option<tauri::async_runtime::JoinHandle<()>>,
+    ) -> tauri::async_runtime::JoinHandle<()>,
+) -> bool {
+    let mut s = lock_state(state);
+    if s.current_room_id.as_deref() == Some(room_id) {
+        log::info!(
+            target: "lilypad::session",
+            "room {room_id} is already seated — ignoring duplicate ring"
+        );
+        return false;
+    }
+    if let Some(old_tx) = s.control_tx.replace(control_tx) {
+        log::info!(
+            target: "lilypad::audit",
+            "superseding existing session — new room {room_id}"
+        );
+        let _ = old_tx.send(Control::Disconnect);
+    }
+    claim_room(&mut s, room_id, auto_approve);
+    s.offered_scopes = offered_scopes;
+    s.session = SessionStatus::Pairing;
+    s.pending_request = None;
+    s.shared_display = None;
+    let old_task = s.session_task.take();
+    // Spawning does not await or re-enter AppState. Keep the lock until the
+    // handle is stored so a second claim cannot publish this task under its room.
+    s.session_task = Some(spawn(old_task));
+    true
 }
 
 /// Take ownership of `room_id` as the session this desktop is now running.
@@ -485,9 +530,30 @@ fn apply_input_channel_event(state: &mut AppState, open: bool) {
 }
 
 /// Map a runner event onto the coarse `SessionStatus` the polling UI reads.
-fn apply_session_event(app: &AppHandle, ev: &SessionEvent) {
+fn apply_session_event(app: &AppHandle, runner_room: &str, ev: &SessionEvent) -> bool {
     let state = app.state::<SharedState>();
     let mut s = lock_state(&state);
+    let Some(ring) = apply_session_event_to_state(&mut s, runner_room, ev) else {
+        return false;
+    };
+    drop(s);
+    if ring {
+        let _ = show_control(app);
+    }
+    crate::sync_tray_menu(app);
+    true
+}
+
+/// `None` rejects a superseded event; `Some` carries whether to show the ring.
+/// Ownership and mutation share this borrow, so a takeover cannot split them.
+fn apply_session_event_to_state(
+    s: &mut AppState,
+    runner_room: &str,
+    ev: &SessionEvent,
+) -> Option<bool> {
+    if s.current_room_id.as_deref() != Some(runner_room) {
+        return None;
+    }
     match ev {
         SessionEvent::PairRequested {
             device_name,
@@ -545,12 +611,12 @@ fn apply_session_event(app: &AppHandle, ev: &SessionEvent) {
         // calling it Active during that grace is both misleading and contrary
         // to the capability suspension enforced by the runner.
         SessionEvent::InputChannelClosed => {
-            apply_input_channel_event(&mut s, false);
+            apply_input_channel_event(s, false);
         }
         // A successful rejoin may deliver this after the peer's connected
         // event. Restore Active only now, once control is actually available.
         SessionEvent::InputChannelOpen => {
-            apply_input_channel_event(&mut s, true);
+            apply_input_channel_event(s, true);
         }
         // Recorded rather than acted on. Nothing branches on the path — the
         // product works the same over all three — but "was that relayed?" is
@@ -577,12 +643,7 @@ fn apply_session_event(app: &AppHandle, ev: &SessionEvent) {
     }
     // Ring only when a human decision is actually pending (auto-approved
     // rings never show the window).
-    let ring = matches!(ev, SessionEvent::PairRequested { .. }) && s.pending_request.is_some();
-    drop(s);
-    if ring {
-        let _ = show_control(app);
-    }
-    crate::sync_tray_menu(app);
+    Some(matches!(ev, SessionEvent::PairRequested { .. }) && s.pending_request.is_some())
 }
 
 /// DEV-ONLY (M1): stand in for a phone redeeming the token over signaling.
@@ -1834,6 +1895,208 @@ mod tests {
 
         apply_input_channel_event(&mut state, true);
         assert_eq!(state.session, SessionStatus::Active);
+    }
+
+    #[test]
+    fn superseded_runner_events_cannot_change_the_new_rooms_state_or_consent() {
+        let mut state = AppState::new("desktop".to_owned(), "https://example.test".to_owned());
+        claim_room(&mut state, "new-room", true);
+        state.session = SessionStatus::Connecting;
+        state.shared_display = Some("New display".to_owned());
+        let (control_tx, mut control_rx) = unbounded_channel();
+        state.control_tx = Some(control_tx);
+
+        for event in [
+            SessionEvent::Ended {
+                reason: "old runner stopped".to_owned(),
+            },
+            SessionEvent::PairRequested {
+                device_name: Some("Old phone".to_owned()),
+                requested_scopes: vec!["control".to_owned()],
+            },
+            SessionEvent::InputChannelOpen,
+            SessionEvent::InputChannelClosed,
+        ] {
+            assert_eq!(
+                apply_session_event_to_state(&mut state, "old-room", &event),
+                None
+            );
+            assert_eq!(state.current_room_id.as_deref(), Some("new-room"));
+            assert_eq!(state.auto_approve_room.as_deref(), Some("new-room"));
+            assert_eq!(state.session, SessionStatus::Connecting);
+            assert_eq!(state.shared_display.as_deref(), Some("New display"));
+            assert!(state.pending_request.is_none());
+            assert!(matches!(
+                control_rx.try_recv(),
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn concurrent_room_claims_keep_the_room_sender_and_task_together() {
+        for rooms in [["same-room", "same-room"], ["first-room", "second-room"]] {
+            let state = Arc::new(SharedState::new(AppState::new(
+                "desktop".to_owned(),
+                "https://example.test".to_owned(),
+            )));
+            let barrier = Arc::new(std::sync::Barrier::new(2));
+            let runtime = tokio::runtime::Handle::current();
+            let mut claims = std::thread::scope(|scope| {
+                let threads: Vec<_> = rooms
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, room)| {
+                        let state = state.clone();
+                        let barrier = barrier.clone();
+                        let runtime = runtime.clone();
+                        scope.spawn(move || {
+                            let (control_tx, control_rx) = unbounded_channel();
+                            let mut task_id = None;
+                            let mut previous = None;
+                            barrier.wait();
+                            let installed = install_session_runner(
+                                &state,
+                                room,
+                                index == 0,
+                                vec![room.to_owned()],
+                                control_tx,
+                                |old| {
+                                    previous = old;
+                                    let handle = tauri::async_runtime::JoinHandle::Tokio(
+                                        runtime.spawn(std::future::pending::<()>()),
+                                    );
+                                    task_id = Some(handle.inner().id());
+                                    handle
+                                },
+                            );
+                            (room, index == 0, installed, task_id, previous, control_rx)
+                        })
+                    })
+                    .collect();
+                threads
+                    .into_iter()
+                    .map(|thread| thread.join().unwrap())
+                    .collect::<Vec<_>>()
+            });
+            let mut current = lock_state(&state);
+            let current_task = current.session_task.take().unwrap();
+            let mut winners = 0;
+            for (room, auto_approve, installed, task_id, previous, receiver) in &mut claims {
+                if *task_id == Some(current_task.inner().id()) {
+                    winners += 1;
+                    assert!(*installed);
+                    assert_eq!(current.current_room_id.as_deref(), Some(*room));
+                    assert_eq!(
+                        current.auto_approve_room.as_deref(),
+                        auto_approve.then_some(*room)
+                    );
+                    assert_eq!(current.offered_scopes, vec![*room]);
+                    assert_eq!(current.session, SessionStatus::Pairing);
+                    assert!(matches!(
+                        receiver.try_recv(),
+                        Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+                    ));
+                    current
+                        .control_tx
+                        .as_ref()
+                        .unwrap()
+                        .send(Control::Deny)
+                        .unwrap();
+                    assert!(matches!(receiver.try_recv(), Ok(Control::Deny)));
+                } else if *installed {
+                    assert!(matches!(receiver.try_recv(), Ok(Control::Disconnect)));
+                } else {
+                    // No task (and hence no terminal-event forwarder) may be
+                    // started for a duplicate ring of the currently owned room.
+                    assert!(task_id.is_none());
+                    assert!(previous.is_none());
+                }
+            }
+            assert_eq!(winners, 1);
+            assert_eq!(
+                claims.iter().filter(|claim| claim.2).count(),
+                if rooms[0] == rooms[1] { 1 } else { 2 }
+            );
+            assert_eq!(
+                claims.iter().filter(|claim| claim.4.is_some()).count(),
+                if rooms[0] == rooms[1] { 0 } else { 1 }
+            );
+            for (_, _, _, _, previous, _) in &claims {
+                if let Some(previous) = previous {
+                    assert!(claims
+                        .iter()
+                        .any(|claim| claim.3 == Some(previous.inner().id())));
+                    previous.abort();
+                }
+            }
+            current_task.abort();
+        }
+    }
+
+    #[tokio::test]
+    async fn initial_signaling_failure_releases_only_its_own_room() {
+        for superseded in [false, true] {
+            let mut state = AppState::new("desktop".to_owned(), "https://example.test".to_owned());
+            claim_room(&mut state, "failed-room", true);
+            state.session = SessionStatus::Pairing;
+            let (control_tx, control_rx) = unbounded_channel();
+            state.control_tx = Some(control_tx);
+            let (event_tx, event_rx) = unbounded_channel();
+            let result = run_session(
+                "invalid signaling URL".to_owned(),
+                "failed-room".to_owned(),
+                "desktop".to_owned(),
+                None,
+                None,
+                control_rx,
+                event_tx,
+            )
+            .await;
+            assert!(result.is_err());
+            if superseded {
+                claim_room(&mut state, "new-room", true);
+                state.session = SessionStatus::Connecting;
+            }
+            let mut accepted = 0;
+            forward_session_events(event_rx, |event| {
+                if apply_session_event_to_state(&mut state, "failed-room", &event).is_some() {
+                    accepted += 1;
+                    assert!(matches!(event, SessionEvent::Ended { .. }));
+                }
+            })
+            .await;
+            if superseded {
+                assert_eq!(accepted, 0);
+                assert_eq!(state.current_room_id.as_deref(), Some("new-room"));
+                assert_eq!(state.session, SessionStatus::Connecting);
+                assert_eq!(state.auto_approve_room.as_deref(), Some("new-room"));
+                assert!(state.control_tx.is_some());
+            } else {
+                assert_eq!(accepted, 1);
+                assert!(state.current_room_id.is_none());
+                assert_eq!(state.session, SessionStatus::Idle);
+                assert!(state.auto_approve_room.is_none());
+                assert!(state.control_tx.is_none());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_normal_runner_end_is_not_repeated_when_the_stream_closes() {
+        let (events, receiver) = unbounded_channel();
+        events
+            .send(SessionEvent::Ended {
+                reason: "disconnected".to_owned(),
+            })
+            .unwrap();
+        drop(events);
+        let mut forwarded = Vec::new();
+        forward_session_events(receiver, |event| forwarded.push(event)).await;
+        assert_eq!(forwarded.len(), 1);
+        assert!(
+            matches!(&forwarded[0], SessionEvent::Ended { reason } if reason == "disconnected")
+        );
     }
 }
 

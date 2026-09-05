@@ -76,9 +76,8 @@ pub fn connect(
             }
         },
     );
-    // Infallible today (`attach` creates the room when absent), and a failure
-    // to seat would be reported by the session runner timing out on approval
-    // rather than by this call.
+    // Only rooms authorized by connect_request may be seated. A failed
+    // attach must not leave an outbound handle able to route by role alone.
     let token = hub.attach(room_id, Role::Desktop, device_id.to_owned(), send);
 
     let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Envelope>();
@@ -86,7 +85,11 @@ pub fn connect(
     tokio::spawn(async move {
         while let Some(env) = out_rx.recv().await {
             match serde_json::to_string(&env) {
-                Ok(txt) => hub.handle(Role::Desktop, &txt),
+                Ok(txt) => {
+                    if let Ok(token) = &token {
+                        let _ = hub.handle_registered(&room, Role::Desktop, *token, &txt);
+                    }
+                }
                 Err(e) => {
                     log::warn!(target: "lilypad::lan", "loopback: unserializable envelope: {e}")
                 }

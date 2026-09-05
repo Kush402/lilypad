@@ -279,14 +279,13 @@ const setDisplay = z.object({
 /**
  * Desktop → mobile: the desktop's OS clipboard changed. Phone→desktop
  * clipboard sync already exists via the `clipboard` input event (carried on
- * the DataChannel, since it's naturally phone-initiated); this is the other
- * direction, and travels over signaling rather than the DataChannel since it
- * isn't part of the real-time input stream and a dropped update should
- * still arrive on the next poll rather than being silently lost like a
- * disposable pointer-move would be. See `docs/audit/m3/prior-art.md`
- * Finding 6.
+ * the DataChannel); this is the reverse direction on the same reliable,
+ * encrypted channel. See kanban L-211 for the retired signaling transport.
  */
-const clipboardUpdate = z.object({
+// The envelope is retained for wire compatibility, but v0.1.29 sends it only
+// on the encrypted reliable DataChannel. Cloud/LAN signaling discard legacy
+// clipboard frames; they are never a fallback for this private payload.
+export const ClipboardUpdateSchema = z.object({
   type: z.literal('clipboard-update'),
   ...envelope,
   payload: z.object({ text: z.string().max(MAX_CLIPBOARD_LEN) }),
@@ -426,7 +425,7 @@ export const SignalingMessageSchema = z.discriminatedUnion('type', [
   renegotiate,
   disconnect,
   frameSize,
-  clipboardUpdate,
+  ClipboardUpdateSchema,
   setCaptureMode,
   setDisplay,
   peerStatus,

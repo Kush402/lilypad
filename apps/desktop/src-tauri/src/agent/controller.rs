@@ -231,6 +231,14 @@ impl AgentController {
     }
 }
 
+impl Drop for AgentController {
+    fn drop(&mut self) {
+        // Dropping a Tokio JoinHandle detaches its task. Session cancellation
+        // and error unwinding must revoke the run's authority as well.
+        self.cancel_active();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -241,5 +249,27 @@ mod tests {
         assert_eq!(authorize_command(false, true), CommandGate::DenyNoControl);
         assert_eq!(authorize_command(true, false), CommandGate::DenyNoProvider);
         assert_eq!(authorize_command(true, true), CommandGate::Run);
+    }
+
+    #[tokio::test]
+    async fn dropping_the_controller_cancels_its_detached_run() {
+        let cancel = Cancel::new();
+        let observer = cancel.clone();
+        let (decisions_tx, _decisions_rx) = unbounded_channel();
+        let task_cancel = cancel.clone();
+        let task = tokio::spawn(async move { task_cancel.wait().await });
+        let mut controller = AgentController::new();
+        controller.active = Some(ActiveRun {
+            run_id: "drop-test".into(),
+            cancel,
+            decisions_tx,
+            _task: task,
+            _forwarder: tokio::spawn(async {}),
+        });
+        drop(controller);
+        assert!(
+            observer.is_cancelled(),
+            "the session's Ask run was detached alive"
+        );
     }
 }

@@ -41,6 +41,15 @@ interface CachedToken {
 
 let cached: CachedToken | null = null;
 let inFlight: Promise<DeviceSession> | null = null;
+// A response belongs to the sign-in state that started it. Clearing a promise
+// alone does not stop its eventual token or rejection from repopulating caches.
+let authGeneration = 0;
+
+function assertAuthGeneration(generation: number): void {
+  if (generation !== authGeneration) {
+    throw new UserFacingError('Your sign-in changed. Please try again.');
+  }
+}
 /**
  * Set once the backend says this phone has no account behind it, so every
  * later call fails immediately instead of re-running a two-request exchange it
@@ -267,18 +276,23 @@ export async function enrollDevice(
   apiBaseUrl: string,
   accountAccessToken: string,
 ): Promise<DeviceSession> {
+  const generation = authGeneration;
   const proof = await signedProof(apiBaseUrl);
+  assertAuthGeneration(generation);
+  const fingerprint = await initDeviceIdentity();
+  assertAuthGeneration(generation);
   const { status, text } = await postJson(
     endpoint(apiBaseUrl, '/devices/enroll'),
     {
       ...proof,
       kind: 'mobile',
-      fingerprint: await initDeviceIdentity(),
+      fingerprint,
       name: deviceLabel(),
       platform: Platform.OS === 'ios' ? 'ios' : 'android',
     },
     accountAccessToken,
   );
+  assertAuthGeneration(generation);
   // Not `throw new Error(\`... HTTP ${status}: ${text}\`)`. `SignInScreen`
   // renders `err.message` verbatim, so that put a raw status line and a JSON
   // body on the first screen of the product — and said nothing about the one
@@ -304,9 +318,13 @@ export async function enrollDevice(
  * authenticates after a restart, with no user interaction.
  */
 export async function signInDevice(apiBaseUrl: string): Promise<DeviceSession> {
+  const generation = authGeneration;
   await assertHomeBackend(apiBaseUrl);
+  assertAuthGeneration(generation);
   const proof = await signedProof(apiBaseUrl);
+  assertAuthGeneration(generation);
   const { status, text } = await postJson(endpoint(apiBaseUrl, '/devices/token'), proof);
+  assertAuthGeneration(generation);
   if (status === 403) {
     notEnrolled = new DeviceAuthError(
       text.includes('device_revoked') ? 'device_revoked' : 'device_not_enrolled',
@@ -331,16 +349,23 @@ export async function signInDevice(apiBaseUrl: string): Promise<DeviceSession> {
  * the cache with whichever finished last.
  */
 export async function accessToken(apiBaseUrl: string): Promise<string> {
+  const generation = authGeneration;
   const base = normalizeBase(apiBaseUrl);
   if (cached && cached.apiBaseUrl === base && Date.now() < cached.renewAfter) return cached.value;
   if (notEnrolled) throw notEnrolled;
   // Before the network, and before the shared exchange below: a foreign host
   // must not even be able to queue behind an in-flight one and take its token.
   await assertHomeBackend(base);
-  inFlight ??= signInDevice(base).finally(() => {
-    inFlight = null;
-  });
-  return (await inFlight).accessToken;
+  assertAuthGeneration(generation);
+  if (!inFlight) {
+    const exchange = signInDevice(base).finally(() => {
+      if (inFlight === exchange) inFlight = null;
+    });
+    inFlight = exchange;
+  }
+  const session = await inFlight;
+  assertAuthGeneration(generation);
+  return session.accessToken;
 }
 
 function cache(session: DeviceSession, apiBaseUrl: string): void {
@@ -394,7 +419,9 @@ export async function approveDesktopEnrollment(
 /** Drop the cached token so the next call re-authenticates. Called when the
  * backend answers 401 — the token may have been revoked under us. */
 export function invalidateAccessToken(): void {
+  authGeneration += 1;
   cached = null;
+  inFlight = null;
   notEnrolled = null;
 }
 
@@ -402,7 +429,5 @@ export function invalidateAccessToken(): void {
  * `resetDeviceIdentity` — a memoized `device_not_enrolled` from the old key
  * would otherwise reject the new one without asking. */
 export function resetAuthState(): void {
-  cached = null;
-  inFlight = null;
-  notEnrolled = null;
+  invalidateAccessToken();
 }

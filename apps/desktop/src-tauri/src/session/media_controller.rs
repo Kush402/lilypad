@@ -145,6 +145,7 @@ pub struct MediaController {
     display_id: Option<u32>,
     media_fail_tx: UnboundedSender<String>,
     media_fail_rx: UnboundedReceiver<String>,
+    sender_task: Option<tokio::task::JoinHandle<()>>,
     /// Set by `pause`/`resume` (phone backgrounded, or the user explicitly
     /// paused). Gates the send side only — capture/encode keep running, so
     /// resuming is instant with no re-negotiation. Stopping capture/encode
@@ -174,6 +175,7 @@ impl MediaController {
             display_id: None,
             media_fail_tx,
             media_fail_rx,
+            sender_task: None,
             paused: Arc::new(AtomicBool::new(false)),
             sleep_guard: None,
             seen_dropped_frames: 0,
@@ -185,6 +187,10 @@ impl MediaController {
     /// `pause`/`resume` messages (phone backgrounded / foregrounded).
     pub fn set_paused(&self, paused: bool) {
         self.paused.store(paused, Ordering::Relaxed);
+    }
+
+    pub(crate) fn is_paused(&self) -> bool {
+        self.paused.load(Ordering::Relaxed)
     }
 
     pub fn is_started(&self) -> bool {
@@ -277,7 +283,7 @@ impl MediaController {
         let media_fail_tx = self.media_fail_tx.clone();
         let paused = Arc::clone(&self.paused);
         let control = pipeline.control();
-        tokio::spawn(async move {
+        self.sender_task = Some(tokio::spawn(async move {
             // RTP timestamps advance by each sample's DURATION — stamping a
             // fixed 1/fps regardless of real inter-frame spacing makes the
             // RTP clock fall behind wall time whenever capture delivers
@@ -333,7 +339,7 @@ impl MediaController {
                     "media pipeline stopped unexpectedly (capture or encoder failure)".to_owned(),
                 );
             }
-        });
+        }));
 
         log::info!(target: "lilypad::media", "streaming started ({} mode)", mode.as_str());
         let initial_kbps = pipeline.metrics().snapshot().bitrate_kbps as u32;
@@ -404,6 +410,14 @@ impl MediaController {
     /// already run this off the async runtime worker's fast path (it
     /// internally uses `spawn_blocking`).
     pub(crate) async fn stop_pipeline(&mut self) {
+        // The old sender and failures belong to the pipeline being retired.
+        // Neither buffered frames nor an already-queued failure may affect the
+        // display/mode/peer that the caller starts next.
+        if let Some(task) = self.sender_task.take() {
+            task.abort();
+            let _ = task.await;
+        }
+        (self.media_fail_tx, self.media_fail_rx) = mpsc::unbounded_channel();
         if let Some(pl) = self.pipeline.take() {
             let _ = tokio::task::spawn_blocking(move || {
                 let mut pl = pl;
@@ -413,6 +427,7 @@ impl MediaController {
         }
         self.abr = None;
         self.frame_size = None;
+        self.seen_dropped_frames = 0;
         self.sleep_guard = None; // drop → releases the IOPM assertion
     }
 
@@ -429,9 +444,40 @@ impl Default for MediaController {
     }
 }
 
+impl Drop for MediaController {
+    fn drop(&mut self) {
+        self.set_paused(true);
+        if let Some(task) = self.sender_task.take() {
+            task.abort();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn stopping_a_pipeline_discards_queued_failures_and_sender_tasks() {
+        let mut media = MediaController::new();
+        let old_failures = media.media_fail_tx.clone();
+        old_failures.send("old pipeline failed".into()).unwrap();
+        let task = tokio::spawn(std::future::pending::<()>());
+        let task_abort = task.abort_handle();
+        media.sender_task = Some(task);
+        media.seen_dropped_frames = 100;
+        media.stop_pipeline().await;
+        assert!(task_abort.is_finished());
+        assert!(old_failures.send("late old failure".into()).is_err());
+        assert!(media.media_fail_rx.try_recv().is_err());
+        assert_eq!(media.seen_dropped_frames, 0);
+        media.media_fail_tx.send("current failure".into()).unwrap();
+        assert_eq!(
+            media.poll_failure().await.as_deref(),
+            Some("current failure")
+        );
+        media.stop_pipeline().await; // repeated teardown remains harmless
+    }
     use std::sync::Mutex;
 
     // `LILYPAD_CAPTURE_KIND` is process-global and `cargo test` runs lib

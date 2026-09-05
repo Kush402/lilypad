@@ -366,26 +366,15 @@ describe('MessageRouter — set-display', () => {
 });
 
 describe('MessageRouter — clipboard-update', () => {
-  it('relays desktop → mobile (the desktop-OS-clipboard-changed direction)', () => {
-    const router = new MessageRouter();
-    const room = connectedSeatsRoom();
-    const m = msg('clipboard-update', 'desktop', { text: 'copied from the Mac' });
-    expect(router.route(room, 'desktop', m)).toEqual([{ kind: 'relay', to: 'mobile', msg: m }]);
-  });
-
-  it('rejects a mobile sender (phone → desktop clipboard sync already travels over the DataChannel, not signaling)', () => {
-    const router = new MessageRouter();
-    const room = connectedSeatsRoom();
-    const actions = router.route(room, 'mobile', msg('clipboard-update', 'mobile', { text: 'x' }));
-    expect(actions).toEqual([
-      {
-        kind: 'reject',
-        to: 'mobile',
-        code: 'forbidden',
-        message: 'only the desktop may send this',
-      },
-    ]);
-  });
+  it.each(['desktop', 'mobile'] as const)(
+    'never relays private clipboard sent by %s over signaling',
+    (from) => {
+      const router = new MessageRouter();
+      const room = connectedSeatsRoom();
+      const m = msg('clipboard-update', from, { text: 'private clipboard fixture' });
+      expect(router.route(room, from, m)).toEqual([]);
+    },
+  );
 });
 
 describe('MessageRouter — renegotiate', () => {

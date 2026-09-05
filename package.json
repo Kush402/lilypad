@@ -11,7 +11,7 @@
   "scripts": {
     "bootstrap": "node scripts/bootstrap.mjs",
     "docs:check": "node scripts/docs-check.mjs",
-    "workflows:check": "node scripts/workflows-check.mjs",
+    "workflows:check": "node scripts/workflows-check.mjs && node --test scripts/release-safety.test.mjs",
     "apple:check": "node scripts/apple-preflight.mjs",
     "e2e:audit": "node scripts/e2e-audit.mjs",
     "audit:exceptions": "node scripts/audit-exceptions.mjs",

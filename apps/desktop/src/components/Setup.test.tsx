@@ -86,7 +86,7 @@ describe('Setup', () => {
    */
   it('puts the account step before the permissions step', async () => {
     render(<Setup />);
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith('get_permission_status'));
+    await screen.findByRole('heading', { level: 2, name: '1 · Create your account' });
 
     // The account card carries its own step number now (`AccountSignInProps.step`)
     // rather than sitting under a second heading that repeated the words — so

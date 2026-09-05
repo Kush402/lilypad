@@ -455,47 +455,16 @@ pub(crate) fn dispatch_connect_request(
 }
 
 fn on_connect_request(app: &AppHandle, signaling_url: &str, payload: ConnectRequestPayload) {
-    // Same-room resume must not teardown. A Ring mints a new room id and
-    // still supersedes; this is only the case where the phone was told the
-    // live room and something still notified (belt-and-suspenders — the
-    // resume HTTP path does not notify).
-    {
+    // Same-room detection, old-runner disconnect, consent and task publication
+    // belong to commands' single claim transaction. Dispatches run concurrently;
+    // taking a sender here could disconnect another dispatch's newly seated peer.
+    let (device_id, offered_scopes) = {
         let state = app.state::<SharedState>();
         let s = state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if s.current_room_id.as_deref() == Some(payload.session_room_id.as_str()) {
-            log::info!(
-                target: "lilypad::presence",
-                "connect_request names the current room {} — already seated, not a takeover",
-                payload.session_room_id
-            );
-            return;
-        }
-    }
-    // `auto_approve` is deliberately NOT recorded here. It used to be, one lock
-    // acquisition before the Disconnect below, and the superseded runner's
-    // `Ended` — applied while `current_room_id` still named the OLD room — then
-    // cleared it. `commands::claim_room` writes it together with the room it
-    // belongs to instead. Kanban L-186.
-    let (old_tx, device_id, offered_scopes) = {
-        let state = app.state::<SharedState>();
-        let mut s = state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        (
-            s.control_tx.take(),
-            s.device_id.clone(),
-            s.offered_scopes.clone(),
-        )
+        (s.device_id.clone(), s.offered_scopes.clone())
     };
-    if let Some(tx) = old_tx {
-        log::info!(
-            target: "lilypad::audit",
-            "superseding existing session — trusted device takeover"
-        );
-        let _ = tx.send(crate::session::Control::Disconnect);
-    }
     log::info!(
         target: "lilypad::audit",
         "connect_request — trusted device {} ringing (auto_approve={})",

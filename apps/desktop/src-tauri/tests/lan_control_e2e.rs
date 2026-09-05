@@ -275,6 +275,66 @@ async fn lan_connect_request_works_without_cloud() {
     let _ = std::fs::remove_dir_all(fx.dir);
 }
 
+#[tokio::test]
+async fn a_lan_socket_cannot_route_messages_into_another_authorized_room() {
+    let mut fx = boot_lan_fixture().await;
+    let (status, body) = post_connect(&fx).await;
+    assert_eq!(status, StatusCode::OK);
+    let response: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let room = response["roomId"].as_str().unwrap();
+    let (_desktop, mut desktop_inbound) = fx.seat_rx.recv().await.unwrap();
+    let other_room = "other-authorized-room";
+    fx.notifier
+        .hub
+        .authorize_room(other_room, fx.device_id.into(), "another-phone".into());
+    let (_other_desktop, mut other_inbound) =
+        loopback_connect(fx.notifier.hub.clone(), other_room, fx.device_id);
+    let mut phone = phone_socket(fx.port, &fx.server_cert).await;
+    send_frame(
+        &mut phone,
+        &serde_json::json!({
+            "type": "register", "roomId": room, "from": "mobile", "ts": 0,
+            "payload": {"role": "mobile", "deviceId": "mobile-12345678"}
+        }),
+    )
+    .await;
+    for kind in ["pause", "answer", "disconnect"] {
+        send_frame(
+            &mut phone,
+            &serde_json::json!({
+                "type": kind, "roomId": other_room, "from": "mobile", "ts": 1,
+                "payload": {}
+            }),
+        )
+        .await;
+        let refusal = expect_frame(&mut phone, "error").await;
+        assert_eq!(refusal["payload"]["code"], "room_mismatch");
+        assert!(
+            other_inbound.try_recv().is_err(),
+            "a frame crossed the room boundary"
+        );
+    }
+    // The rejected attempt did not break ordinary traffic in the socket's room.
+    send_frame(
+        &mut phone,
+        &serde_json::json!({
+            "type": "pause", "roomId": room, "from": "mobile", "ts": 2,
+            "payload": {}
+        }),
+    )
+    .await;
+    let own = tokio::time::timeout(std::time::Duration::from_secs(5), desktop_inbound.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(own.msg_type, "pause");
+    assert!(fx
+        .notifier
+        .hub
+        .has_seat(other_room, lilypad_desktop_lib::lan::LanRole::Desktop));
+    let _ = std::fs::remove_dir_all(fx.dir);
+}
+
 /// Kanban L-187: a SECOND consecutive ring must also mint a room, seat the
 /// desktop, and deliver `session-start`. One-shot e2e passed while customers
 /// only ever complained about ringing again.

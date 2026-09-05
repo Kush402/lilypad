@@ -1,7 +1,7 @@
 ---
 status: Implemented
 owner: @kushsharma024
-last-verified: 2026-08-26
+last-verified: 2026-09-04
 summary: The step-by-step Mac + iPhone test a human runs before launch, with the expected result for every step.
 ---
 
@@ -16,6 +16,45 @@ Run it end to end in one sitting. Steps depend on earlier steps, and a
 half-finished run tells you less than none.
 
 ## Before you start
+
+### v0.1.29 candidate: signed-device gate (NOT RUN)
+
+Do not run against an unsigned development build and mark the release tested.
+After publication, quit/remove the installed Mac app, download the v0.1.29
+DMG from the public website, install it in Applications, and update the phone
+to v0.1.29 in TestFlight. Confirm both displayed versions and sign in to the
+same account. Removing the app bundle does not erase saved account or pairing
+state; use the existing in-app unpair/sign-out flows for a fresh-pair test.
+
+1. Pair from scratch with explicit Mac approval. Test view-only first: screen
+   works, but gestures, typing, paste and Ask cannot control the Mac. End it,
+   then approve a control session and test those capabilities normally.
+2. On Wi-Fi, force-close the phone during an active session. Once the control
+   channel closes, the Mac must leave Active, stop screen capture, suspend
+   clipboard polling, and cancel Ask. Reopen promptly: trusted reconnect may
+   recover without a new trust grant. Old callbacks must not end the new session.
+3. Repeat on cellular, including Wi-Fi → cellular → Wi-Fi transitions and two
+   consecutive reconnects. A signaling-only interruption must not end a working
+   video/control path. If the OS delays reporting loss, record the observed
+   delay; do not assume swipe-kill is detected instantaneously.
+4. Repeat phone-close while dragging/holding a modifier and while Ask is waiting
+   for approval. No stuck keys/buttons or later unapproved Ask action should
+   remain. An action already executed cannot be undone by disconnecting.
+5. Briefly switch apps, return, then background longer and return. Check pause,
+   reconnect, display switching, and normal End Session on both devices. End
+   Session must stop capture and leave no active session indicator.
+6. Test trusted LAN access with the internet unavailable. Record that it uses
+   the LAN path; repeat phone-close/rejoin. With both apps updated, copy new
+   text on the Mac and verify phone clipboard sync. View-only and paused
+   sessions must not receive it; text copied before connect/resume must not
+   arrive afterward. Mixed old/new app versions do not support this direction
+   of automatic sync; phone → Mac paste still works.
+7. Test the built-in updater separately from an installed signed v0.1.28.
+
+Send PASS/FAIL for each step, both versions, LAN/cellular path, observed delay
+after phone-close, and timestamps/timezone for any failure. Never include copied
+clipboard contents, account credentials, or private screen contents in reports.
+These are instructions only; no v0.1.29 signed-device result is recorded yet.
 
 | You need                      | Notes                                                                                                                               |
 | ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |

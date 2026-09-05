@@ -225,16 +225,24 @@ Cost-control measures, in order of impact:
 
 ## 7. Privacy: what leaves the device
 
-| Data                                            | Leaves the device?                                                                                          |
-| ----------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| Screen video, input, clipboard, files           | **Never to the cloud** — direct, or DTLS-SRTP through TURN which relays _encrypted_ packets it cannot read. |
-| AI prompts and results                          | Stay on the laptop; go only to the model provider the user configured with their own key.                   |
-| Account identity, device public keys, ownership | Cloud (control plane).                                                                                      |
-| Presence ("laptop is online")                   | Cloud, **remote mode only**. A LAN session tells the cloud nothing.                                         |
-| Session metadata (start/end/duration)           | Cloud, remote mode only, minimal.                                                                           |
+| Data                                                  | Leaves the device?                                                                                                                                                |
+| ----------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Screen video and phone-to-Mac input (including paste) | WebRTC: direct, or encrypted through TURN. The signaling API does not carry these payloads.                                                                       |
+| Mac-to-phone clipboard text (v0.1.29 candidate)       | Encrypted reliable WebRTC DataChannel, only for the current control-authorized, unpaused viewer. Cloud and LAN signaling discard legacy clipboard frames (L-211). |
+| AI prompts and results                                | Stay on the laptop; go only to the model provider the user configured with their own key.                                                                         |
+| Account identity, device public keys, ownership       | Cloud (control plane).                                                                                                                                            |
+| Presence ("laptop is online")                         | Cloud, **remote mode only**. A LAN session tells the cloud nothing.                                                                                               |
+| Session metadata (start/end/duration)                 | Cloud, remote mode only, minimal.                                                                                                                                 |
 
 **A LAN session is invisible to the cloud.** That is a genuine privacy property,
 not a marketing line, and it follows directly from the architecture.
+
+The released v0.1.28 still sends Mac-to-phone clipboard through signaling;
+the table describes the unreleased v0.1.29 candidate. The approved migration
+requires both apps updated for automatic Mac-to-phone sync. An updated backend
+drops legacy clipboard frames, so older clients lose that direction of sync;
+there is no plaintext fallback. Phone-to-Mac paste is unchanged. Text already
+on the Mac clipboard at connect/resume is seeded locally instead of exported.
 
 ---
 

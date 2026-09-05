@@ -162,6 +162,66 @@ describe('ViewerScreen', () => {
     expect(lastConn().start).toHaveBeenCalled();
   });
 
+  it('ignores callbacks and an opening failure from the connection replaced by Reconnect', async () => {
+    const { ViewerConnection } = jest.requireMock('../lib/webrtc');
+    const normalConstructor = ViewerConnection.getMockImplementation();
+    let reject!: (error: Error) => void;
+    ViewerConnection.mockImplementationOnce((...args: unknown[]) => {
+      const instance = normalConstructor(...args);
+      instance.start.mockReturnValue(
+        new Promise((_yes, no) => {
+          reject = no;
+        }),
+      );
+      return instance;
+    });
+    renderViewer();
+    const previous = lastConn();
+    act(() => previous.cb.onState('failed'));
+    fireEvent.press(screen.getByText('Reconnect'));
+    act(() => lastConn().cb.onState('connected'));
+    const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => {});
+    (Clipboard.setString as jest.Mock).mockClear();
+    await act(async () => {
+      reject(new Error('old socket failed'));
+      previous.cb.onState('ended');
+      previous.cb.onError({ code: 'unknown', message: 'stale error' });
+      previous.cb.onClipboardUpdate('old clipboard');
+      previous.cb.onRevoked();
+    });
+    expect(screen.queryByText('Connection failed')).toBeNull();
+    expect(screen.queryByText('stale error')).toBeNull();
+    expect(screen.queryByText('Reconnect')).toBeNull();
+    expect(Clipboard.setString).not.toHaveBeenCalled();
+    expect(alert).not.toHaveBeenCalled();
+    alert.mockRestore();
+  });
+
+  it('clears old notices and disconnect confirmation when Reconnect replaces their timers', () => {
+    jest.useFakeTimers();
+    try {
+      const { navigation } = renderViewer();
+      act(() => lastConn().cb.onClipboardUpdate('copied text'));
+      fireEvent.press(screen.getByTestId('mode-toggle-text'));
+      fireEvent.press(screen.getByTestId('disconnect-button'));
+      expect(screen.getByTestId('clipboard-toast')).toBeTruthy();
+      expect(screen.getByTestId('mode-toast')).toBeTruthy();
+      expect(screen.getByText('Tap again to disconnect')).toBeTruthy();
+
+      act(() => lastConn().cb.onState('failed'));
+      fireEvent.press(screen.getByText('Reconnect'));
+      expect(screen.queryByTestId('clipboard-toast')).toBeNull();
+      expect(screen.queryByTestId('mode-toast')).toBeNull();
+      expect(screen.queryByText('Tap again to disconnect')).toBeNull();
+      fireEvent.press(screen.getByTestId('disconnect-button'));
+      expect(lastConn().close).not.toHaveBeenCalled();
+      expect(navigation.popToTop).not.toHaveBeenCalled();
+      expect(screen.getByText('Tap again to disconnect')).toBeTruthy();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('renders a color-coded quality dot and expands RTT/bitrate/fps on tap', async () => {
     renderViewer();
     await act(async () => {

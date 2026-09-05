@@ -1,4 +1,11 @@
-import { accessToken, signInDevice, enrollDevice, DeviceAuthError, resetAuthState } from '../auth';
+import {
+  accessToken,
+  signInDevice,
+  enrollDevice,
+  DeviceAuthError,
+  invalidateAccessToken,
+  resetAuthState,
+} from '../auth';
 import { resetDeviceKeyCache } from '../identity';
 import { saveSession, resetSessionCacheForTests } from '../session';
 
@@ -61,6 +68,43 @@ function mockBackend(options: { tokenStatus?: number; tokenBody?: string; ttl?: 
   });
   globalThis.fetch = fetchMock as unknown as typeof fetch;
   return counts;
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((yes) => {
+    resolve = yes;
+  });
+  return { promise, resolve };
+}
+
+/** Hold token responses across a local sign-out or identity reset. */
+function pendingBackend() {
+  const requests: Array<{
+    finish: (status: number, body: object) => void;
+  }> = [];
+  const waiting = [deferred<void>(), deferred<void>(), deferred<void>()];
+  globalThis.fetch = jest.fn((url: string) => {
+    if (url.endsWith('/devices/challenge')) {
+      return Promise.resolve({
+        status: 201,
+        text: () => Promise.resolve(JSON.stringify({ challenge: 'nonce' })),
+      });
+    }
+    const response = deferred<{ status: number; text: () => Promise<string> }>();
+    requests.push({
+      finish: (status, body) => {
+        response.resolve({ status, text: () => Promise.resolve(JSON.stringify(body)) });
+      },
+    });
+    waiting[requests.length - 1]?.resolve();
+    return response.promise;
+  }) as unknown as typeof fetch;
+  return { requests, waiting };
+}
+
+function tokenBody(accessToken: string) {
+  return { accessToken, expiresInSeconds: 600, deviceId: 'device-uuid', userId: 'user-uuid' };
 }
 
 beforeEach(async () => {
@@ -143,6 +187,58 @@ describe('device access tokens', () => {
   it('lets a later call retry after a failed exchange', async () => {
     mockBackend({ tokenStatus: 500, tokenBody: 'boom' });
     await expect(accessToken(API)).rejects.toThrow();
+    const counts = mockBackend();
+    await expect(accessToken(API)).resolves.toBe('token-1');
+    expect(counts.token).toBe(1);
+  });
+
+  it.each([resetAuthState, invalidateAccessToken])(
+    'does not return or cache a response that finishes after %p',
+    async (invalidate) => {
+      const { requests, waiting } = pendingBackend();
+      const old = accessToken(API);
+      const rejected = expect(old).rejects.toThrow(/sign-in changed/i);
+      await waiting[0].promise;
+      invalidate();
+      requests[0].finish(200, tokenBody('old-token'));
+      await rejected;
+      const counts = mockBackend();
+      await expect(accessToken(API)).resolves.toBe('token-1');
+      expect(counts.token).toBe(1);
+    },
+  );
+
+  it.each([200, 403])(
+    'an old %i response cannot replace the new exchange or its cached verdict',
+    async (status) => {
+      const { requests, waiting } = pendingBackend();
+      const old = accessToken(API);
+      const rejected = expect(old).rejects.toThrow(/sign-in changed/i);
+      await waiting[0].promise;
+      resetAuthState();
+      const current = accessToken(API);
+      await waiting[1].promise;
+      requests[0].finish(
+        status,
+        status === 200 ? tokenBody('old-token') : { error: 'device_revoked' },
+      );
+      await rejected;
+      const concurrent = accessToken(API);
+      requests[1].finish(200, tokenBody('new-token'));
+      await expect(Promise.all([current, concurrent])).resolves.toEqual(['new-token', 'new-token']);
+      await expect(accessToken(API)).resolves.toBe('new-token');
+      expect(requests).toHaveLength(2);
+    },
+  );
+
+  it('rejects an enrollment response from before the identity was reset', async () => {
+    const { requests, waiting } = pendingBackend();
+    const old = enrollDevice(API, 'account-token');
+    const rejected = expect(old).rejects.toThrow(/sign-in changed/i);
+    await waiting[0].promise;
+    resetAuthState();
+    requests[0].finish(200, tokenBody('old-enrollment-token'));
+    await rejected;
     const counts = mockBackend();
     await expect(accessToken(API)).resolves.toBe('token-1');
     expect(counts.token).toBe(1);

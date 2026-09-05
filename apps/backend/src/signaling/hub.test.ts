@@ -345,6 +345,33 @@ describe('SignalingHub — session-start replay for a rejoining seat (M5.4)', ()
     return { hub, desktop, mobile };
   }
 
+  it.each([false, true])(
+    'a repeated pair-request cannot expand a view-only grant on rejoin (established=%s)',
+    (established) => {
+      const { hub, desktop, mobile } = approvedNotEstablished();
+      if (established) {
+        hub.handleMessage(desktop, frame('offer', 'desktop', { type: 'offer', sdp: 'v=0' }));
+        hub.handleMessage(mobile, frame('answer', 'mobile', { type: 'answer', sdp: 'v=0' }));
+      }
+      hub.handleMessage(
+        mobile,
+        frame('pair-request', 'mobile', {
+          deviceId: 'mobile-01',
+          deviceName: 'phone',
+          requestedScopes: ['view', 'control'],
+        }),
+      );
+      desktop.sent = [];
+      const replacement = new FakePeer();
+      hub.handleMessage(replacement, {
+        ...reg('mobile', 'mobile-01'),
+        payload: { role: 'mobile', deviceId: 'mobile-01', rejoin: true },
+      });
+      expect(replacement.find('session-start')?.payload.grantedScopes).toEqual(['view']);
+      expect(desktop.find('session-start')?.payload.grantedScopes).toEqual(['view']);
+    },
+  );
+
   it('a mobile whose socket silently flaps and re-registers gets session-start again', () => {
     const { hub, mobile } = approvedNotEstablished();
     const first = mobile.find('session-start');

@@ -104,6 +104,9 @@ export class MobileSignaling {
       };
       ws.onerror = () => settle(() => reject(new Error('signaling connection failed')));
       ws.onmessage = (e: WebSocketMessageEvent) => {
+        // Native callbacks already queued when a socket drops can arrive
+        // after reconnect. They belong to that transport, not its successor.
+        if (this.closing || this.ws !== ws) return;
         try {
           this.onMessage(decodeSignal(String(e.data)));
         } catch {

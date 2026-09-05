@@ -80,6 +80,25 @@ jobs:
             exit 1
           fi
 
+          # Every public build preserves the established signed-install
+          # experience. Version tags fail immediately on missing inputs; a
+          # manual troubleshooting build may proceed but must remain draft.
+          missing=()
+          for name in APPLE_CERTIFICATE APPLE_SIGNING_IDENTITY APPLE_TEAM_ID \
+                      APPLE_API_ISSUER APPLE_API_KEY APPLE_API_KEY_P8; do
+            [ -n "${!name:-}" ] || missing+=("$name")
+          done
+          if [ ${#missing[@]} -gt 0 ]; then
+            if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+              echo "::error::signed release requires: ${missing[*]}"
+              exit 1
+            fi
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::manual build will remain a draft — missing: ${missing[*]}"
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
+
           export_if_set() {
             local name="$1"
             if [ -n "${!name:-}" ]; then
@@ -142,7 +161,7 @@ jobs:
             echo "  notarization: every input present"
           else
             echo "notarize=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::skipping notarization — missing: ${notarize_missing[*]}. The build will publish ad-hoc signed, and macOS will warn on first open."
+            echo "::warning::skipping notarization — missing: ${notarize_missing[*]}. The build will remain a draft; macOS may warn on first open."
           fi
 
       # The gate above proves the secrets EXIST. It cannot prove Apple accepts
@@ -183,6 +202,47 @@ jobs:
           echo "$APPLE_API_KEY_P8" | base64 --decode > "$RUNNER_TEMP/asc/AuthKey.p8"
           echo "APPLE_API_KEY_PATH=$RUNNER_TEMP/asc/AuthKey.p8" >> "$GITHUB_ENV"
 
+      # tauri-action reuses a release with the same tag, even when it is
+      # already public; releaseDraft does not make that existing release
+      # private. Refuse that target before the action can replace any assets.
+      - name: Verify the upload target is absent or draft
+        id: release_target
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_type == 'tag' && github.ref_name || format('v0.0.0-dispatch.{0}', github.run_number) }}
+        run: |
+          set -euo pipefail
+          if ! releases=$(gh api --method GET --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100"); then
+            echo "::error::could not verify the release upload target; refusing to upload"
+            exit 1
+          fi
+          printf '%s\n' "$releases" | node -e '
+            const fail = (reason) => {
+              console.error("::error::" + reason + "; refusing to upload");
+              process.exit(1);
+            };
+            let pages;
+            try {
+              pages = JSON.parse(require("fs").readFileSync(0, "utf8"));
+            } catch {
+              fail("invalid release-list response");
+            }
+            if (!Array.isArray(pages) || pages.length === 0 || !pages.every(Array.isArray)) {
+              fail("invalid release-list response");
+            }
+            const releases = pages.flat();
+            if (!releases.every((release) => release && typeof release.tag_name === "string" &&
+                release.tag_name.length > 0 && typeof release.draft === "boolean")) {
+              fail("invalid release publication state");
+            }
+            if (!process.env.TAG) fail("missing release tag");
+            const matches = releases.filter((release) => release.tag_name === process.env.TAG);
+            if (matches.length > 1) fail("ambiguous release tag");
+            if (matches.some((release) => release.draft !== true)) {
+              fail("release " + process.env.TAG + " is already public");
+            }
+          '
+
       - name: Build, sign, notarize & publish
         uses: tauri-apps/tauri-action@v0
         env:
@@ -206,7 +266,9 @@ jobs:
           tagName: ${{ github.ref_type == 'tag' && github.ref_name || format('v0.0.0-dispatch.{0}', github.run_number) }}
           releaseName: 'Lilypad __VERSION__'
           releaseBody: 'Download an installer below. Existing installs update automatically via the built-in updater.'
-          releaseDraft: false
+          # Keep artifacts private until the DMG ticket and Gatekeeper checks
+          # below pass. An updater must never discover an unverified build.
+          releaseDraft: true
           prerelease: false
           # Universal binary so one artifact covers Intel + Apple Silicon.
           args: --target universal-apple-darwin
@@ -333,6 +395,7 @@ jobs:
             *accepted*) ;;
             *) echo "::error::Gatekeeper does not accept this build: $verdict"; exit 1 ;;
           esac
+
           case "$verdict" in
             *"Notarized Developer ID"*) ;;
             *) echo "::error::accepted, but not as a notarized Developer ID build — that is what removes the warning for a stranger."; exit 1 ;;
@@ -347,3 +410,10 @@ jobs:
               exit 1
             }
           done
+
+      - name: Publish the verified release
+        if: steps.preflight.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_type == 'tag' && github.ref_name || format('v0.0.0-dispatch.{0}', github.run_number) }}
+        run: gh release edit "$TAG" --draft=false

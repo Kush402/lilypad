@@ -217,6 +217,30 @@ describe('ViewerConnection', () => {
     expect(sig.pairRequest).not.toHaveBeenCalled();
   });
 
+  it('does not reinstall timers or lifecycle when opening settles after close', async () => {
+    const cb = makeCallbacks();
+    const conn = new ViewerConnection('wss://x', 'room1', ['control'], cb);
+    const sig = lastSignaling();
+    let resolve!: () => void;
+    sig.connect.mockReturnValue(
+      new Promise<void>((yes) => {
+        resolve = yes;
+      }),
+    );
+    const starting = conn.start();
+    resolve();
+    conn.close();
+    cb.onState.mockClear();
+    await starting;
+    expect(cb.onState).not.toHaveBeenCalled();
+    expect(sig.register).not.toHaveBeenCalled();
+    expect(sig.pairRequest).not.toHaveBeenCalled();
+    expect(lastLifecycle()).toBeUndefined();
+    expect(jest.getTimerCount()).toBe(0);
+    await conn.start();
+    expect(sig.connect).toHaveBeenCalledTimes(1);
+  });
+
   it('reaching session-start builds a peer connection that reports negotiating then connected', async () => {
     const cb = makeCallbacks();
     const conn = new ViewerConnection('wss://x', 'room1', ['control'], cb);
@@ -292,6 +316,91 @@ describe('ViewerConnection', () => {
     );
     expect(lastPeer().setRemoteDescription).toHaveBeenCalled();
     expect(lastSignaling().answer).toHaveBeenCalled();
+  });
+
+  it.each(['resolve', 'reject'] as const)(
+    'ignores an old offer that settles after peer replacement (%s)',
+    async (settle) => {
+      const cb = makeCallbacks();
+      const { conn, sig, peer } = await startConnected(cb);
+      let resolve!: () => void;
+      let reject!: (error: Error) => void;
+      peer.setRemoteDescription.mockReturnValueOnce(
+        new Promise<void>((yes, no) => {
+          resolve = yes;
+          reject = no;
+        }),
+      );
+      sig.onMessage({ type: 'offer', payload: { sdp: 'old-offer' } });
+      sig.onMessage({
+        type: 'session-start',
+        payload: { sessionId: 's2', grantedScopes: ['control'], iceServers: [] },
+      });
+      const replacement = lastPeer();
+      if (settle === 'resolve') resolve();
+      else reject(new Error('superseded peer closed'));
+      for (let i = 0; i < 10; i += 1) await Promise.resolve();
+      expect(lastPeer()).toBe(replacement);
+      expect(replacement.setRemoteDescription).not.toHaveBeenCalled();
+      expect(replacement.createAnswer).not.toHaveBeenCalled();
+      expect(sig.answer).not.toHaveBeenCalled();
+      expect(cb.onError).not.toHaveBeenCalled();
+      conn.close();
+    },
+  );
+
+  it.each(['createAnswer', 'setLocalDescription'] as const)(
+    'ignores %s rejection after replacement or close while reporting a current failure',
+    async (method) => {
+      for (const transition of ['replace', 'close', 'none']) {
+        const cb = makeCallbacks();
+        const { conn, sig, peer } = await startConnected(cb);
+        let reject!: (error: Error) => void;
+        peer[method].mockReturnValueOnce(
+          new Promise((_yes, no) => {
+            reject = no;
+          }),
+        );
+        sig.onMessage({ type: 'offer', payload: { sdp: 'offer' } });
+        for (let i = 0; i < 10; i += 1) await Promise.resolve();
+        if (transition === 'replace') {
+          sig.onMessage({ type: 'session-start', payload: { iceServers: [] } });
+        } else if (transition === 'close') {
+          conn.close();
+        }
+        reject(new Error('native operation failed'));
+        for (let i = 0; i < 10; i += 1) await Promise.resolve();
+        expect(cb.onError).toHaveBeenCalledTimes(transition === 'none' ? 1 : 0);
+        expect(sig.answer).not.toHaveBeenCalled();
+        conn.close();
+      }
+    },
+  );
+
+  it('drops stats and agent frames from a superseded peer', async () => {
+    const cb = makeCallbacks();
+    const { conn, sig, peer } = await startConnected(cb);
+    const channel = peer.dispatchDataChannel(INPUT_CHANNEL_LABEL);
+    let resolve!: (report: Map<string, unknown>) => void;
+    peer.getStats.mockReturnValueOnce(
+      new Promise((yes) => {
+        resolve = yes;
+      }),
+    );
+    jest.advanceTimersByTime(QUALITY_POLL_MS);
+    sig.onMessage({
+      type: 'session-start',
+      payload: { sessionId: 's2', grantedScopes: ['control'], iceServers: [] },
+    });
+    cb.onStats.mockClear();
+    channel.emitMessage(
+      JSON.stringify({ kind: 'agent_run_end', runId: 'r', outcome: 'completed', ts: 2 }),
+    );
+    resolve(new Map());
+    for (let i = 0; i < 10; i += 1) await Promise.resolve();
+    expect(cb.onStats).not.toHaveBeenCalled();
+    expect(cb.onAgentRunEnd).not.toHaveBeenCalled();
+    conn.close();
   });
 
   it('forwards a frame-size signal to onFrameSize (for letterbox-aware touch mapping)', async () => {
@@ -393,21 +502,38 @@ describe('ViewerConnection', () => {
     expect(sig.setCaptureMode).toHaveBeenCalledWith('text');
   });
 
-  it('forwards a clipboard-update signal to onClipboardUpdate (Finding 6)', async () => {
+  it('ignores clipboard over signaling and accepts it only from the current encrypted channel', async () => {
     const cb = makeCallbacks();
-    const conn = new ViewerConnection('wss://x', 'room1', ['control'], cb);
-    await conn.start();
+    const { conn, peer } = await startConnected(cb);
     const sig = lastSignaling();
-
-    sig.onMessage({
+    const frame = {
       type: 'clipboard-update',
       roomId: 'room1',
       from: 'desktop',
       ts: 0,
       payload: { text: 'copied on the laptop' },
-    });
-
+    } as const;
+    sig.onMessage(frame);
+    expect(cb.onClipboardUpdate).not.toHaveBeenCalled();
+    const channel = peer.dispatchDataChannel(INPUT_CHANNEL_LABEL);
+    channel.emitMessage(JSON.stringify({ ...frame, roomId: 'another-room' }));
+    channel.emitMessage(JSON.stringify({ ...frame, from: 'mobile' }));
+    channel.emitMessage(JSON.stringify({ ...frame, payload: { text: 'x'.repeat(65537) } }));
+    expect(cb.onClipboardUpdate).not.toHaveBeenCalled();
+    channel.emitMessage(JSON.stringify(frame));
     expect(cb.onClipboardUpdate).toHaveBeenCalledWith('copied on the laptop');
+    cb.onClipboardUpdate.mockClear();
+    sig.onMessage({
+      type: 'session-start',
+      roomId: 'room1',
+      from: 'desktop',
+      ts: 1,
+      payload: { sessionId: 'replacement', grantedScopes: ['view'], iceServers: [] },
+    });
+    channel.emitMessage(JSON.stringify(frame));
+    lastPeer().dispatchDataChannel(INPUT_CHANNEL_LABEL).emitMessage(JSON.stringify(frame));
+    expect(cb.onClipboardUpdate).not.toHaveBeenCalled();
+    conn.close();
   });
 
   it('reports "denied" (not the generic "ended") on a pair-denied signal', async () => {

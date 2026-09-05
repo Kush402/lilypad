@@ -96,10 +96,22 @@ jobs:
           version=$(node -p "require('./apps/desktop/src-tauri/tauri.conf.json').version")
           echo "site will serve v$version"
 
-          if ! gh release view "v$version" --json tagName >/dev/null 2>&1; then
+          if ! release=$(gh release view "v$version" --json tagName,isDraft,isPrerelease); then
             echo "::error::the site advertises v$version but no release v$version exists. Cut it with 'pnpm release' + a tag push, or this page would offer a download that is not there."
             exit 1
           fi
+
+          # This authenticated token can read draft assets. A version-bump push
+          # or manual site run must not publish them while Release is still
+          # validating the app and stapling the DMG.
+          echo "$release" | RELEASE_VERSION="$version" node -e '
+            const release = JSON.parse(require("fs").readFileSync(0, "utf8"));
+            const expected = "v" + process.env.RELEASE_VERSION;
+            if (release.tagName !== expected || release.isDraft !== false || release.isPrerelease !== false) {
+              console.error("::error::the site requires the published stable release " + expected + "; draft or prerelease artifacts cannot be distributed");
+              process.exit(1);
+            }
+          '
 
           mkdir -p apps/site/dist/download
           gh release download "v$version" --dir "$RUNNER_TEMP/rel" \
