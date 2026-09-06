@@ -75,6 +75,21 @@ describe('AppLifecycleController', () => {
     expect(cb.onForeground).not.toHaveBeenCalled();
   });
 
+  it('recognizes a long suspension even when iOS never ran the debounce timer', () => {
+    const cb = makeCallbacks();
+    new AppLifecycleController(cb);
+    const handle = lastAppStateHandler();
+    handle('inactive');
+    handle('background');
+    // Move wall time WITHOUT running JS timers, as iOS suspension does.
+    jest.setSystemTime(Date.now() + 30_000);
+    handle('active');
+    expect(cb.onForeground).toHaveBeenCalledTimes(1);
+    jest.advanceTimersByTime(5_000);
+    expect(cb.onBackground).not.toHaveBeenCalled();
+    expect(cb.onForeground).toHaveBeenCalledTimes(1);
+  });
+
   it('fires onForeground when returning to active after a real (debounced) background', () => {
     const cb = makeCallbacks();
     new AppLifecycleController(cb);

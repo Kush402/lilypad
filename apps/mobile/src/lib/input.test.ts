@@ -1,6 +1,63 @@
 import { InputSender, MAX_BUFFERED_AMOUNT_BYTES } from './input';
 
 describe('InputSender', () => {
+  it('discards queued events and ignores retained senders after disposal', () => {
+    const send = jest.fn();
+    const sender = new InputSender(send);
+    const channel = { bufferedAmount: MAX_BUFFERED_AMOUNT_BYTES + 1 };
+    sender.setCriticalChannelRef(channel);
+    sender.text('must not replay');
+    sender.pointerMove(0.4, 0.5);
+    sender.dispose();
+    channel.bufferedAmount = 0;
+    sender.flush();
+    sender.keyPress('Enter');
+    sender.text('late callback');
+    jest.advanceTimersByTime(100);
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it('sends balanced down/up events for a software key press', () => {
+    const sent: string[] = [];
+    const sender = new InputSender((data) => sent.push(data));
+    sender.keyPress('Backspace');
+    expect(decode(sent).flatMap((b) => b.events.map((e) => e.kind))).toEqual([
+      'key_down',
+      'key_up',
+    ]);
+  });
+
+  it('drains a large backed-up paste in bounded frames, preserving all text in order', () => {
+    const sent: string[] = [];
+    const channel = { bufferedAmount: MAX_BUFFERED_AMOUNT_BYTES + 1 };
+    const sender = new InputSender((data) => sent.push(data));
+    sender.setCriticalChannelRef(channel);
+    const text = '界😀'.repeat(20_000);
+    sender.text(text);
+    expect(sent).toEqual([]);
+    channel.bufferedAmount = 0;
+    sender.flush();
+    expect(sent.every((s) => s.length < 8192)).toBe(true);
+    expect(
+      sent
+        .flatMap((s) => JSON.parse(s).events)
+        .map((e) => e.text)
+        .join(''),
+    ).toBe(text);
+  });
+
+  it('splits long Unicode text into bounded ordered events without losing or duplicating text', () => {
+    const sent: string[] = [];
+    const sender = new InputSender((data) => sent.push(data));
+    const text = 'hi😀你'.repeat(3000);
+    sender.text(text);
+    const events = sent.flatMap((raw) => JSON.parse(raw).events);
+    expect(events.map((e) => e.text).join('')).toBe(text);
+    expect(events.every((e) => e.text.length <= 1024)).toBe(true);
+    expect(events.every((e) => !/[\uD800-\uDBFF]$/.test(e.text))).toBe(true);
+    expect(events.map((e) => e.seq)).toEqual(events.map((_, i) => i + 1));
+  });
+
   beforeEach(() => {
     jest.useFakeTimers();
   });

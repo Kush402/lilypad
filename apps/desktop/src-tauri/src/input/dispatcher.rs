@@ -67,6 +67,7 @@ enum EventKey {
     Pointer,
     Button(&'static str, PointerButton),
     Key(&'static str, String),
+    Command(&'static str),
 }
 
 fn event_key(e: &InputEvent) -> Option<EventKey> {
@@ -77,8 +78,11 @@ fn event_key(e: &InputEvent) -> Option<EventKey> {
         InputEvent::Click { button, .. } => Some(EventKey::Button("click", *button)),
         InputEvent::KeyDown { code, .. } => Some(EventKey::Key("down", code.clone())),
         InputEvent::KeyUp { code, .. } => Some(EventKey::Key("up", code.clone())),
-        // Scroll/text/shortcut/clipboard have no natural held-state identity;
-        // dropping a legitimate repeat would be worse than an unlikely replay.
+        InputEvent::TextInput { seq: Some(_), .. } => Some(EventKey::Command("text")),
+        InputEvent::Shortcut { seq: Some(_), .. } => Some(EventKey::Command("shortcut")),
+        InputEvent::Clipboard { seq: Some(_), .. } => Some(EventKey::Command("clipboard")),
+        // Legacy text/commands can legitimately share a millisecond. Only
+        // modern sequence numbers distinguish their repeat from a replay.
         _ => None,
     }
 }
@@ -116,6 +120,7 @@ pub struct InputDispatcher {
     /// `InputEvent::order_key`. Named `last_seq` (not `last_ts`) since the
     /// discriminant is now the monotonic sequence, not wall-clock time.
     last_seq: HashMap<EventKey, u64>,
+    last_pointer_boundary: Option<u64>,
 }
 
 impl InputDispatcher {
@@ -130,6 +135,7 @@ impl InputDispatcher {
             last_pointer_pos: (0.5, 0.5),
             active_modifiers: Vec::new(),
             last_seq: HashMap::new(),
+            last_pointer_boundary: None,
         }
     }
 
@@ -144,6 +150,14 @@ impl InputDispatcher {
             self.release_all();
         }
         self.enabled = enabled;
+    }
+
+    /// A new peer has a new sender sequence. A pause of the same peer does
+    /// not: reset ordering only at the actual transport replacement boundary.
+    pub fn reset_peer(&mut self) {
+        self.set_enabled(false);
+        self.last_seq.clear();
+        self.last_pointer_boundary = None;
     }
 
     pub fn is_enabled(&self) -> bool {
@@ -232,6 +246,23 @@ impl InputDispatcher {
             return;
         }
 
+        let order = event.order_key();
+        if event.seq().is_some()
+            && matches!(event, InputEvent::PointerMove { .. })
+            && self.last_pointer_boundary.is_some_and(|last| order <= last)
+        {
+            self.metrics
+                .events_dropped_stale
+                .fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+        let pointer_boundary = event.seq().is_some()
+            && matches!(
+                event,
+                InputEvent::PointerDown { .. }
+                    | InputEvent::PointerUp { .. }
+                    | InputEvent::Click { .. }
+            );
         let t0 = Instant::now();
         let result = self.apply(event);
         self.metrics
@@ -240,6 +271,12 @@ impl InputDispatcher {
 
         match result {
             Ok(()) => {
+                if pointer_boundary {
+                    self.last_pointer_boundary = Some(
+                        self.last_pointer_boundary
+                            .map_or(order, |last| last.max(order)),
+                    );
+                }
                 self.metrics.events_injected.fetch_add(1, Ordering::Relaxed);
             }
             Err(e) => {
@@ -533,6 +570,82 @@ mod tests {
             kind: "input_batch".into(),
             events,
         }
+    }
+
+    #[test]
+    fn peer_replacement_resets_ordering_but_pause_keeps_replay_protection() {
+        let (mut d, mock, _) = setup();
+        d.set_enabled(true);
+        let key = |seq| InputEvent::KeyDown {
+            code: "Backspace".into(),
+            modifiers: vec![],
+            repeat: false,
+            ts: 1,
+            seq: Some(seq),
+        };
+        d.process_event(key(100));
+        d.set_enabled(false);
+        d.set_enabled(true);
+        let before = mock.calls().len();
+        d.process_event(key(1));
+        assert_eq!(
+            mock.calls().len(),
+            before,
+            "pause must retain the replay watermark"
+        );
+        d.reset_peer();
+        d.set_enabled(true);
+        d.process_event(key(1));
+        assert_eq!(
+            mock.calls().len(),
+            before + 1,
+            "a new peer starts its counter at one"
+        );
+    }
+
+    #[test]
+    fn numbered_text_is_exactly_once_but_legacy_same_millisecond_text_is_preserved() {
+        let (mut d, mock, _) = setup();
+        d.set_enabled(true);
+        let text = |seq| InputEvent::TextInput {
+            text: "hi".into(),
+            ts: 1,
+            seq,
+        };
+        d.process_event(text(Some(1)));
+        d.process_event(text(Some(1)));
+        d.process_event(text(Some(2)));
+        d.process_event(text(None));
+        d.process_event(text(None));
+        assert_eq!(mock.calls().len(), 4);
+    }
+
+    #[test]
+    fn late_disposable_move_cannot_undo_a_reliable_pointer_release() {
+        let (mut d, mock, _) = setup();
+        d.set_enabled(true);
+        d.process_event(InputEvent::PointerUp {
+            x: 0.9,
+            y: 0.7,
+            button: PointerButton::Left,
+            modifiers: vec![],
+            ts: 1,
+            seq: Some(3),
+        });
+        d.process_event(InputEvent::PointerMove {
+            x: 0.5,
+            y: 0.5,
+            ts: 1,
+            seq: Some(2),
+        });
+        assert_eq!(mock.calls().len(), 1);
+        d.process_event(InputEvent::PointerMove {
+            x: 0.8,
+            y: 0.7,
+            ts: 1,
+            seq: Some(4),
+        });
+        assert_eq!(mock.calls().len(), 2);
     }
 
     /// Returns a dispatcher plus the mock handle (for call inspection) and the

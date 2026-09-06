@@ -110,6 +110,21 @@ describe('TouchInterpreter — drag', () => {
     expect(out[1]).toEqual({ kind: 'pointer_move', x: 0.7, y: 0.5 });
   });
 
+  it.each(['end', 'cancel', 'second finger'])('releases at the last drag position on %s', (how) => {
+    const i = identityInterp();
+    i.begin([P(10, 10)], 0);
+    i.move([P(50, 50)], 100);
+    i.move([P(90, 70)], 200);
+    const out =
+      how === 'end'
+        ? i.end([], 250)
+        : how === 'cancel'
+          ? i.cancel()
+          : i.move([P(90, 70), P(95, 75)], 250);
+    expect(out[0]).toEqual({ kind: 'pointer_up', x: 0.9, y: 0.7 });
+    expect(out.some((e) => e.kind === 'click')).toBe(false);
+  });
+
   it('emits pointer_up on release after a drag', () => {
     const i = identityInterp();
     i.begin([P(50, 50)], 0);

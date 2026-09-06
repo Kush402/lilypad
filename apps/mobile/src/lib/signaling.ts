@@ -283,6 +283,11 @@ export class MobileSignaling {
     });
   }
 
+  /** A reply proves the room transport is alive after OS suspension. */
+  ping(): void {
+    this.emit({ type: 'ping', roomId: this.roomId, from: 'mobile', ts: Date.now(), payload: {} });
+  }
+
   heartbeat(): void {
     this.emit({
       type: 'heartbeat',

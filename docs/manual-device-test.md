@@ -41,7 +41,14 @@ state; use the existing in-app unpair/sign-out flows for a fresh-pair test.
    for approval. No stuck keys/buttons or later unapproved Ask action should
    remain. An action already executed cannot be undone by disconnecting.
 5. Briefly switch apps, return, then background longer and return. Check pause,
-   reconnect, display switching, and normal End Session on both devices. End
+   reconnect, display switching, and normal End Session on both devices. After
+   the Mac ends its 15-second no-peer-traffic grace, returning to the phone must
+   show the session ended as soon as the room rejects re-registration. If the
+   transport never replies, the foreground check ends within 10 seconds.
+   Reconnect must obtain an authorized room using the existing pairing, without
+   looping on the expired room or asking for a new QR scan. Repeat over LAN and
+   cloud, including returning before grace expires and quickly switching apps
+   again while recovery is pending. End
    Session must stop capture and leave no active session indicator.
 6. Test trusted LAN access with the internet unavailable. Record that it uses
    the LAN path; repeat phone-close/rejoin. With both apps updated, copy new
@@ -408,17 +415,37 @@ An operation that half-works is worse than one that fails.
 > After 7.13 the account is gone and cannot be recovered. Do §7.10–7.18 last,
 > or use a throwaway account for them and re-create the real one afterwards.
 
+### v0.1.30 keyboard and control regressions
+
+On the signed website DMG and TestFlight build, use a disposable text document:
+
+1. Type `hello`, hide/reopen the phone keyboard, then type `!`. The Mac must
+   contain `hello!` exactly once. Repeat rapid hide/show and fast typing.
+2. Delete within the phone buffer and keep deleting after it becomes empty.
+   Each action deletes once, with no held Backspace. Return inserts one return
+   and keeps the keyboard usable. Test dictation/IME replacement and accented
+   text, emoji, pasted paragraphs and a long Unicode paste in an appropriate editor.
+3. Use Tab, arrows and a click to choose another text field, then type. Old
+   native text must not appear there. Repeat while a native edit is pending.
+4. Drag to a new location and release, cancel, or add a second finger. Release
+   must stay at the last drag position. Interrupt a tap with an OS gesture;
+   no click should fire. Background while holding an arrow; repeat must stop.
+5. Rejoin an existing room and type/click immediately. New-peer sequence
+   numbers must work from their first event; old queued text must never replay.
+
+These checks are pending until recorded against the signed v0.1.30 artifacts.
+
 ## 8. Recovery
 
-| #   | Do                                                              | Expect                                                                                              |
-| --- | --------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
-| 8.1 | Mid-session, turn the iPhone's Wi-Fi off and on                 | Reconnects on its own within ~30 seconds.                                                           |
-| 8.2 | Mid-session, background the phone app for 10 seconds, come back | Reconnects. (iOS suspends backgrounded apps — the drop itself is the OS.)                           |
-| 8.3 | Background it for 2 minutes, come back                          | It may need re-pairing. That is the documented boundary, not a bug.                                 |
-| 8.4 | Mid-session, close the Mac's lid for 30 seconds, reopen         | Session resumes or ends cleanly. It must never be "connected" on the phone while the Mac is asleep. |
-| 8.5 | Restart the Mac, reopen Lilypad                                 | Bubble and tray return. Permissions still granted. Still linked. Pairing works.                     |
-| 8.6 | Restart the iPhone, reopen Lilypad                              | Still signed in. Still enrolled. Connects without re-pairing.                                       |
-| 8.7 | Quit Lilypad mid-session from the tray                          | The phone is told the session ended — it does not sit on a frozen frame.                            |
+| #   | Do                                                              | Expect                                                                                                                                                       |
+| --- | --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 8.1 | Mid-session, turn the iPhone's Wi-Fi off and on                 | Reconnects on its own within ~30 seconds.                                                                                                                    |
+| 8.2 | Mid-session, background the phone app for 10 seconds, come back | Reconnects. (iOS suspends backgrounded apps — the drop itself is the OS.)                                                                                    |
+| 8.3 | Background it for 2 minutes, come back                          | Shows the session ended promptly if its room expired. Reconnect uses the saved pairing to authorize a new room; no new QR scan and no stale-room retry loop. |
+| 8.4 | Mid-session, close the Mac's lid for 30 seconds, reopen         | Session resumes or ends cleanly. It must never be "connected" on the phone while the Mac is asleep.                                                          |
+| 8.5 | Restart the Mac, reopen Lilypad                                 | Bubble and tray return. Permissions still granted. Still linked. Pairing works.                                                                              |
+| 8.6 | Restart the iPhone, reopen Lilypad                              | Still signed in. Still enrolled. Connects without re-pairing.                                                                                                |
+| 8.7 | Quit Lilypad mid-session from the tray                          | The phone is told the session ended — it does not sit on a frozen frame.                                                                                     |
 
 ## 9. After signing — re-run these
 

@@ -1,6 +1,6 @@
 {
   "name": "@lilypad/mobile",
-  "version": "0.1.29",
+  "version": "0.1.30",
   "description": "Lilypad mobile (bare React Native): QR scanner, viewer, dev input toolbar",
   "private": true,
   "scripts": {
@@ -34,7 +34,8 @@
     "react-native-safe-area-context": "^5.0.0",
     "react-native-screens": "4.4.0",
     "react-native-vision-camera": "^4.6.3",
-    "react-native-webrtc": "^124.0.5"
+    "react-native-webrtc": "^124.0.5",
+    "unicode-segmenter": "0.17.3"
   },
   "devDependencies": {
     "@babel/core": "^7.26.0",

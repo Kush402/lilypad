@@ -45,6 +45,12 @@ impl InputGate {
         self.recompute();
     }
 
+    pub fn reset_peer(&mut self) {
+        self.connected = false;
+        self.channel_open = false;
+        self.worker.reset_peer();
+    }
+
     fn recompute(&mut self) {
         self.worker.set_enabled(self.connected && self.channel_open);
     }

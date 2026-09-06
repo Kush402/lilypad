@@ -27,6 +27,7 @@ export interface AppLifecycleCallbacks {
  */
 export class AppLifecycleController {
   private appState: AppStateStatus = AppState.currentState;
+  private backgroundStartedAt: number | null = null;
   private wasConnected: boolean | null = null;
   private backgroundTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly appSub: { remove: () => void };
@@ -44,19 +45,23 @@ export class AppLifecycleController {
     const nowActive = next === 'active';
 
     if (wasActive && nowBackground) {
+      this.backgroundStartedAt = Date.now();
       this.backgroundTimer = setTimeout(() => {
         this.backgroundTimer = null;
         this.cb.onBackground();
       }, BACKGROUND_DEBOUNCE_MS);
     } else if (wasBackground && nowActive) {
-      if (this.backgroundTimer) {
-        // Bounced back before the debounce fired — we never told the
-        // session to pause, so there's nothing to resume either.
-        clearTimeout(this.backgroundTimer);
-        this.backgroundTimer = null;
-      } else {
-        this.cb.onForeground();
-      }
+      // iOS can suspend JS before the debounce callback runs. Timer presence
+      // does not prove a brief bounce: elapsed wall time still counts.
+      const elapsed =
+        this.backgroundStartedAt === null
+          ? BACKGROUND_DEBOUNCE_MS
+          : Date.now() - this.backgroundStartedAt;
+      const notified = this.backgroundTimer === null;
+      if (this.backgroundTimer) clearTimeout(this.backgroundTimer);
+      this.backgroundTimer = null;
+      this.backgroundStartedAt = null;
+      if (notified || elapsed >= BACKGROUND_DEBOUNCE_MS) this.cb.onForeground();
     }
     this.appState = next;
   };

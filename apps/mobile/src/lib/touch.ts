@@ -189,6 +189,7 @@ export class TouchInterpreter {
   private startNow = 0;
   /** Re-anchored to the latest position during the settle window, then frozen
    * — the "settled" point a click/drag commits at, not the jittery first pixel. */
+  private lastDragPosition = { x: 0, y: 0 };
   private anchor: TouchSample = { x: 0, y: 0 };
   private lastCentroid: TouchSample = { x: 0, y: 0 };
   private longPressDeadline: number | null = null;
@@ -331,6 +332,7 @@ export class TouchInterpreter {
         const at = toContentNormClamped(p, rect);
         const out: TouchIntent[] = [];
         if (down) out.push({ kind: 'pointer_down', x: down.x, y: down.y });
+        this.lastDragPosition = at;
         out.push({ kind: 'pointer_move', x: at.x, y: at.y });
         return out;
       }
@@ -339,6 +341,7 @@ export class TouchInterpreter {
 
     // Dragging.
     const at = toContentNormClamped(p, this.effectiveRect());
+    this.lastDragPosition = at;
     return [{ kind: 'pointer_move', x: at.x, y: at.y }];
   }
 
@@ -403,7 +406,7 @@ export class TouchInterpreter {
   cancel(): TouchIntent[] {
     const out: TouchIntent[] = [];
     if (this.phase === 'dragging') {
-      const at = toContentNormClamped(this.anchor, this.effectiveRect());
+      const at = this.lastDragPosition;
       out.push({ kind: 'pointer_up', x: at.x, y: at.y });
     }
     this.reset();
@@ -412,10 +415,9 @@ export class TouchInterpreter {
 
   private finishSingleFinger(now: number): TouchIntent[] {
     if (this.phase === 'dragging') {
-      const at = toContentNormClamped(this.anchor, this.effectiveRect());
-      // The anchor is stale (last press point) but a real drag sends its final
-      // position via `move`; the up just releases the button at wherever the
-      // last move left it — use the anchor's mapping only as a safe fallback.
+      const at = this.lastDragPosition;
+      // Mouse-up carries a position too. Release at the last injected move,
+      // not at the gesture origin (which would move/drop the item back).
       return [{ kind: 'pointer_up', x: at.x, y: at.y }];
     }
     if (this.phase === 'pressing') {
@@ -446,7 +448,7 @@ export class TouchInterpreter {
     // If a drag had already pressed the button, release it before the
     // two-finger gesture so we don't scroll/zoom with a button held.
     if (this.phase === 'dragging') {
-      const at = toContentNormClamped(this.anchor, this.effectiveRect());
+      const at = this.lastDragPosition;
       out.push({ kind: 'pointer_up', x: at.x, y: at.y });
     }
     this.phase = 'two_finger';

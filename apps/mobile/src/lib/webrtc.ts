@@ -10,6 +10,7 @@ import {
   INPUT_MOVE_CHANNEL_LABEL,
   APP_HEARTBEAT_INTERVAL_MS,
   MAX_ICE_RESTARTS,
+  SIGNALING_OPEN_TIMEOUT_MS,
   iceRecoveryTimeoutMs,
   AgentOutboundSchema,
   ClipboardUpdateSchema,
@@ -214,6 +215,8 @@ export class ViewerConnection {
   private peerConnected = false;
   private iceRestartAttempts = 0;
   private recoveryDeadline: ReturnType<typeof setTimeout> | null = null;
+  private foregroundDeadline: ReturnType<typeof setTimeout> | null = null;
+  private resumePending = false;
   /** Pacing timer between signaling-reconnect cycles after a `lost` verdict
    * while media is still healthy (see `onSignalingLifecycle`). */
   private lostRetryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -285,6 +288,8 @@ export class ViewerConnection {
     this.heartbeat = setInterval(() => this.sig.heartbeat(), APP_HEARTBEAT_INTERVAL_MS);
     this.lifecycle = new AppLifecycleController({
       onBackground: () => {
+        if (this.isClosed) return;
+        this.clearForegroundDeadline();
         // Pause the stream; keep the signaling socket. Dropping it made a
         // normal app-switch look like process death (peer-status → 15s
         // counterpart_gone). A freeze or swipe-kill still ends the session
@@ -293,12 +298,39 @@ export class ViewerConnection {
         this.sig.pause('backgrounded');
       },
       onForeground: () => {
+        if (this.isClosed) return;
+        this.clearForegroundDeadline();
+        this.resumePending = true;
+        const resumedAt = Date.now();
+        // OPEN and peerConnected can both be stale after iOS freezes JS.
+        // Require a room reply; a dead native socket must not spin forever.
+        recordState('reconnecting signaling');
+        this.cb.onState('reconnecting_signaling');
+        this.foregroundDeadline = setTimeout(() => {
+          this.foregroundDeadline = null;
+          this.resumePending = false;
+          if (this.isClosed) return;
+          if (
+            this.lastVideoAdvanceAt !== null &&
+            this.lastVideoAdvanceAt > resumedAt &&
+            this.isReceivingVideo()
+          ) {
+            this.sig.dropTransport();
+            this.sig.beginReconnect(getDeviceId());
+            return;
+          }
+          this.cb.onError(appError('signaling_lost'));
+          recordState('ended');
+          this.cb.onState('ended');
+          this.close();
+        }, SIGNALING_OPEN_TIMEOUT_MS);
         if (!this.sig.isOpen() && !this.sig.isReconnecting()) {
-          recordState('reconnecting signaling');
-          this.cb.onState('reconnecting_signaling');
           this.sig.beginReconnect(getDeviceId());
         }
-        this.sig.resume();
+        if (this.sig.isOpen()) {
+          this.sig.resume();
+          this.sig.ping();
+        }
       },
       // A new network path is available — ask for a fresh ICE-restart offer
       // proactively rather than waiting for the peer connection to notice
@@ -431,6 +463,21 @@ export class ViewerConnection {
     // race conditions where signaling events arrive while we're tearing down
     if (this.isClosed) return;
     switch (m.type) {
+      case 'pong':
+        if (this.resumePending) {
+          this.clearForegroundDeadline();
+          if (this.peerConnected) {
+            recordState('connected');
+            this.cb.onState('connected');
+          } else if (!this.pc) {
+            recordState('awaiting_approval');
+            this.cb.onState('awaiting_approval');
+          } else if (!this.recoveryDeadline) {
+            recordState('negotiating');
+            this.cb.onState('negotiating');
+          }
+        }
+        break;
       case 'session-start':
         this.grantedScopes = m.payload.grantedScopes;
         // Approval already happened and ICE servers are assigned — the peer
@@ -521,6 +568,13 @@ export class ViewerConnection {
         // "this device is not authorized to join this room": alarming, and
         // about the wrong thing.
         this.cb.onError(classifyHubError(m.payload.code, m.payload.message));
+        if (m.payload.code === 'unauthorized_room') {
+          // An authoritative rejection is terminal even if native ICE still
+          // says connected. Only a new connect request can authorize a room.
+          recordState('ended');
+          this.cb.onState('ended');
+          this.close();
+        }
         break;
       default:
         break;
@@ -550,6 +604,13 @@ export class ViewerConnection {
         }
         break;
       case 'reconnected':
+        if (this.resumePending) {
+          // The foreground send may have happened before the socket opened.
+          // Send after re-registration, and wait for the room's pong.
+          this.sig.resume();
+          this.sig.ping();
+          break;
+        }
         // Only overwrite the badge if the peer itself is still healthy —
         // don't stomp a more urgent 'recovering_ice'/'failed' state just
         // because signaling came back while the peer connection is still
@@ -603,6 +664,7 @@ export class ViewerConnection {
       clearTimeout(this.lostRetryTimer);
       this.lostRetryTimer = null;
     }
+    this.input?.dispose();
     const oldPc = this.pc;
     const oldDataChannel = this.dataChannel;
     const oldMoveDataChannel = this.moveDataChannel;
@@ -690,6 +752,7 @@ export class ViewerConnection {
           this.peerConnected = false;
           recordState('ended');
           this.cb.onState('ended');
+          this.close();
         }
       } else {
         this.clearDegradedGraceTimer();
@@ -705,7 +768,10 @@ export class ViewerConnection {
         const channel = e.channel as DataChannelLike;
         this.dataChannel = channel;
         this.configureBackpressureFlush(channel);
-        this.input = new InputSender(this.sendWhenOpen(() => this.dataChannel));
+        this.input?.dispose();
+        this.input = new InputSender(
+          this.sendWhenOpen(() => (this.dataChannel === channel ? channel : null)),
+        );
         this.input.setCriticalChannelRef(channel);
         // The desktop sends the AI agent's step feed back on this same
         // reliable channel — listen for it (input, by contrast, is send-only
@@ -865,6 +931,7 @@ export class ViewerConnection {
       }
       this.cb.onState('failed');
       this.cb.onError(appError('ice_failed'));
+      this.close();
       return;
     }
     this.iceRestartAttempts += 1;
@@ -895,6 +962,7 @@ export class ViewerConnection {
       }
       this.cb.onState('failed');
       this.cb.onError(appError('ice_failed'));
+      this.close();
     }, iceRecoveryTimeoutMs(this.iceRestartAttempts));
   }
 
@@ -1064,9 +1132,16 @@ export class ViewerConnection {
     }
   }
 
+  private clearForegroundDeadline(): void {
+    if (this.foregroundDeadline) clearTimeout(this.foregroundDeadline);
+    this.foregroundDeadline = null;
+    this.resumePending = false;
+  }
+
   close(): void {
     // Set the closed guard FIRST so any mid-close callbacks exit early.
     this.isClosed = true;
+    this.clearForegroundDeadline();
     // Clear pending timers BEFORE closing resources to prevent race fires.
     this.clearRecoveryDeadline();
     this.clearDegradedGraceTimer();
@@ -1081,7 +1156,7 @@ export class ViewerConnection {
       clearInterval(this.heartbeat);
       this.heartbeat = null;
     }
-    this.input?.flush();
+    this.input?.dispose();
     try {
       this.dataChannel?.close();
     } catch {

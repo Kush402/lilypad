@@ -90,6 +90,23 @@ describe('MobileSignaling', () => {
     jest.useRealTimers();
   });
 
+  it('sends a protocol ping to validate the room after suspension', async () => {
+    const sig = new MobileSignaling('wss://x', 'room1', jest.fn());
+    const opening = sig.connect();
+    lastSocket().open();
+    await opening;
+    sig.ping();
+    expect(lastSocket().sentType('ping')).toEqual(
+      expect.objectContaining({
+        type: 'ping',
+        roomId: 'room1',
+        from: 'mobile',
+        payload: {},
+      }),
+    );
+    sig.close();
+  });
+
   it('ignores messages from a dropped or replaced transport', async () => {
     const received = jest.fn();
     const sig = new MobileSignaling('wss://x', 'room1', received);

@@ -1,6 +1,7 @@
 import {
   iceRecoveryTimeoutMs,
   MAX_ICE_RESTARTS,
+  SIGNALING_OPEN_TIMEOUT_MS,
   INPUT_CHANNEL_LABEL,
   INPUT_MOVE_CHANNEL_LABEL,
 } from '@lilypad/protocol';
@@ -102,6 +103,7 @@ jest.mock('./signaling', () => {
           setCaptureMode: jest.fn(),
           setDisplay: jest.fn(),
           heartbeat: jest.fn(),
+          ping: jest.fn(),
           disconnect: jest.fn(),
           dropTransport: jest.fn(),
           close: jest.fn(),
@@ -889,6 +891,11 @@ describe('ViewerConnection', () => {
       expect(sig.renegotiate).toHaveBeenCalledTimes(2);
       expect(cb.onState).toHaveBeenLastCalledWith('failed');
       expect(cb.onError).toHaveBeenCalledWith(expect.objectContaining({ code: 'ice_failed' }));
+      expect(sig.close).toHaveBeenCalledTimes(1);
+      const states = cb.onState.mock.calls.length;
+      peer.setState('connected');
+      sig.onLifecycle({ kind: 'reconnected' });
+      expect(cb.onState).toHaveBeenCalledTimes(states);
     });
 
     it('resets the restart budget once the connection recovers', async () => {
@@ -1104,7 +1111,7 @@ describe('ViewerConnection', () => {
       expect(sig.close).not.toHaveBeenCalled();
     });
 
-    it('onForeground resumes, and reconnects only if the socket is not open', async () => {
+    it('foreground verifies an open socket and defers resume until a dropped socket reconnects', async () => {
       const cb = makeCallbacks();
       const { sig } = await startConnected(cb);
 
@@ -1117,6 +1124,8 @@ describe('ViewerConnection', () => {
       sig.isReconnecting.mockReturnValue(false);
       lastLifecycle().cb.onForeground();
       expect(sig.beginReconnect).toHaveBeenCalledWith(expect.any(String));
+      expect(sig.resume).toHaveBeenCalledTimes(1);
+      sig.onLifecycle({ kind: 'reconnected' });
       expect(sig.resume).toHaveBeenCalledTimes(2);
     });
 
@@ -1129,10 +1138,83 @@ describe('ViewerConnection', () => {
       lastLifecycle().cb.onForeground();
 
       expect(sig.beginReconnect).toHaveBeenCalledWith(expect.any(String));
+      expect(sig.resume).not.toHaveBeenCalled();
+      sig.onLifecycle({ kind: 'reconnected' });
       expect(sig.resume).toHaveBeenCalled();
+      expect(sig.ping).toHaveBeenCalled();
       expect(sig.disconnect).not.toHaveBeenCalled();
       expect(sig.close).not.toHaveBeenCalled();
       expect(peer.close).not.toHaveBeenCalled();
+    });
+
+    it('ends an expired room immediately and cancels every stale reconnect callback', async () => {
+      const cb = makeCallbacks();
+      const { sig, peer } = await startConnected(cb);
+      const lifecycle = lastLifecycle();
+      lifecycle.cb.onBackground();
+      jest.setSystemTime(Date.now() + 30_000);
+      lifecycle.cb.onForeground();
+      sig.onLifecycle({ kind: 'lost', error: new Error('offline') });
+      sig.onMessage({ type: 'error', payload: { code: 'unauthorized_room', message: 'gone' } });
+      expect(cb.onError).toHaveBeenLastCalledWith(
+        expect.objectContaining({ code: 'session_gone' }),
+      );
+      expect(cb.onState).toHaveBeenLastCalledWith('ended');
+      expect(peer.close).toHaveBeenCalledTimes(1);
+      expect(sig.close).toHaveBeenCalledTimes(1);
+      const retries = sig.beginReconnect.mock.calls.length;
+      const states = cb.onState.mock.calls.length;
+      sig.onLifecycle({ kind: 'reconnected' });
+      lifecycle.cb.onForeground();
+      jest.advanceTimersByTime(60_000);
+      expect(sig.beginReconnect).toHaveBeenCalledTimes(retries);
+      expect(cb.onState).toHaveBeenCalledTimes(states);
+    });
+
+    it('bounds foreground validation when the native socket and ICE still claim to be open', async () => {
+      const cb = makeCallbacks();
+      const { sig, peer } = await startConnected(cb);
+      lastLifecycle().cb.onForeground();
+      expect(sig.ping).toHaveBeenCalled();
+      jest.advanceTimersByTime(SIGNALING_OPEN_TIMEOUT_MS);
+      expect(cb.onState).toHaveBeenLastCalledWith('ended');
+      expect(cb.onError).toHaveBeenLastCalledWith(
+        expect.objectContaining({ code: 'signaling_lost' }),
+      );
+      expect(peer.close).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps actual live video when foreground signaling validation times out', async () => {
+      const cb = makeCallbacks();
+      const { conn, sig, peer } = await startConnected(cb);
+      let bytes = 0;
+      peer.getStats.mockImplementation(
+        async () =>
+          new Map([['in', { type: 'inbound-rtp', kind: 'video', bytesReceived: (bytes += 1000) }]]),
+      );
+      lastLifecycle().cb.onForeground();
+      await jest.advanceTimersByTimeAsync(SIGNALING_OPEN_TIMEOUT_MS);
+      expect(peer.close).not.toHaveBeenCalled();
+      expect(cb.onState).not.toHaveBeenCalledWith('ended');
+      expect(sig.dropTransport).toHaveBeenCalledTimes(1);
+      expect(sig.beginReconnect).toHaveBeenCalledTimes(1);
+      conn.close();
+    });
+
+    it('waits for a room reply after reconnect and cancels the foreground deadline on pong', async () => {
+      const cb = makeCallbacks();
+      const { conn, sig, peer } = await startConnected(cb);
+      sig.isOpen.mockReturnValue(false);
+      lastLifecycle().cb.onForeground();
+      sig.onLifecycle({ kind: 'reconnected' });
+      expect(cb.onState).toHaveBeenLastCalledWith('reconnecting_signaling');
+      expect(sig.resume).toHaveBeenCalledTimes(1);
+      expect(sig.ping).toHaveBeenCalledTimes(1);
+      sig.onMessage({ type: 'pong', payload: {} });
+      expect(cb.onState).toHaveBeenLastCalledWith('connected');
+      jest.advanceTimersByTime(SIGNALING_OPEN_TIMEOUT_MS);
+      expect(peer.close).not.toHaveBeenCalled();
+      conn.close();
     });
 
     it('onNetworkRestored renegotiates only once a peer connection exists', async () => {
@@ -1178,6 +1260,34 @@ describe('ViewerConnection', () => {
 
       expect(sig.renegotiate).toHaveBeenCalledTimes(2);
     });
+  });
+
+  it('retired input cannot replay queued or late actions into a replacement peer', async () => {
+    const { conn, sig, peer } = await startConnected(makeCallbacks());
+    const oldChannel = peer.dispatchDataChannel(INPUT_CHANNEL_LABEL);
+    oldChannel.bufferedAmount = 100_000;
+    const oldInput = conn.inputSender!;
+    oldInput.text('queued old text');
+    sig.onMessage({
+      type: 'session-start',
+      payload: { grantedScopes: ['control'], iceServers: [] },
+    });
+    const newChannel = lastPeer().dispatchDataChannel(INPUT_CHANNEL_LABEL);
+    oldChannel.bufferedAmount = 0;
+    oldInput.flush();
+    oldInput.text('late old text');
+    oldChannel.emitBufferedAmountLow();
+    expect(oldChannel.send).not.toHaveBeenCalled();
+    expect(newChannel.send).not.toHaveBeenCalled();
+    conn.inputSender!.text('new text');
+    expect(JSON.parse(newChannel.send.mock.calls[0][0]).events[0].text).toBe('new text');
+    newChannel.bufferedAmount = 100_000;
+    const currentInput = conn.inputSender!;
+    currentInput.text('queued at close');
+    conn.close();
+    newChannel.bufferedAmount = 0;
+    currentInput.flush();
+    expect(newChannel.send).toHaveBeenCalledTimes(1);
   });
 
   describe('close', () => {

@@ -523,11 +523,10 @@ impl SessionRunner {
         let next = replace_peer_events(&self.event_gate, peer_ev_rx);
         self.agent.cancel_active();
         self.media.set_paused(true);
-        self.gate.set_peer_connected(false);
+        self.gate.reset_peer();
         self.input_channel_open = false;
         self.input_channel_closed = false;
         self.peer_suspension = false;
-        self.gate.set_channel_open(false);
         self.connected_without_dc_since = None;
         self.peer_connected = false;
         self.ever_connected = false;

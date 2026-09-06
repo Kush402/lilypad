@@ -1,9 +1,10 @@
 import React from 'react';
 import { render, screen, fireEvent, act, waitFor } from '@testing-library/react-native';
-import { Alert } from 'react-native';
+import { Alert, AppState } from 'react-native';
 import { SafeAreaProvider, type Metrics } from 'react-native-safe-area-context';
 import Clipboard from '@react-native-clipboard/clipboard';
 import { ViewerScreen } from './ViewerScreen';
+import { appError, ClassifiedError } from '../lib/errors';
 import { forgetPair } from '../lib/pairs';
 
 // useSafeAreaInsets() (Finding 15) needs a SafeAreaProvider ancestor;
@@ -25,6 +26,7 @@ jest.mock('../lib/webrtc', () => {
         const inputSender = {
           text: jest.fn(),
           keyDown: jest.fn(),
+          keyPress: jest.fn(),
           keyUp: jest.fn(),
           shortcut: jest.fn(),
           pointerDown: jest.fn(),
@@ -259,7 +261,71 @@ describe('ViewerScreen', () => {
 
     fireEvent(input, 'keyPress', { nativeEvent: { key: 'Backspace' } });
 
-    expect(conn.inputSender.keyDown).toHaveBeenCalledWith('Backspace');
+    expect(conn.inputSender.keyPress).toHaveBeenCalledWith('Backspace');
+  });
+
+  it('does not resend native text after hiding and reopening the keyboard', () => {
+    renderViewer();
+    const input = screen.getByTestId('hidden-keyboard-input');
+    const sender = lastConn().inputSender;
+    fireEvent.changeText(input, 'hello');
+    fireEvent(input, 'blur');
+    fireEvent(input, 'focus');
+    fireEvent.changeText(input, 'hello!');
+    fireEvent.changeText(input, 'hello!'); // duplicate native notification
+    expect(sender.text.mock.calls).toEqual([['hello'], ['!']]);
+  });
+
+  it('applies deletion once when RN sends both keyPress and changeText', () => {
+    renderViewer();
+    const input = screen.getByTestId('hidden-keyboard-input');
+    const sender = lastConn().inputSender;
+    fireEvent.changeText(input, 'ab');
+    fireEvent(input, 'keyPress', { nativeEvent: { key: 'Backspace' } });
+    fireEvent.changeText(input, 'a');
+    expect(sender.keyPress.mock.calls).toEqual([['Backspace']]);
+    fireEvent.changeText(input, '');
+    fireEvent(input, 'keyPress', { nativeEvent: { key: 'Backspace' } });
+    expect(sender.keyPress).toHaveBeenCalledTimes(3);
+  });
+
+  it('forwards Return once, keeps the keyboard open, and starts a fresh text context', () => {
+    renderViewer();
+    const input = screen.getByTestId('hidden-keyboard-input');
+    const sender = lastConn().inputSender;
+    fireEvent.changeText(input, 'hello');
+    fireEvent(input, 'keyPress', { nativeEvent: { key: 'Enter' } });
+    fireEvent(input, 'submitEditing', { nativeEvent: { text: 'hello' } });
+    expect(sender.shortcut.mock.calls).toEqual([['enter']]);
+    expect(screen.getByTestId('hidden-keyboard-input').props.blurOnSubmit).toBe(false);
+    fireEvent.changeText(screen.getByTestId('hidden-keyboard-input'), 'next');
+    expect(sender.text.mock.calls).toEqual([['hello'], ['next']]);
+    expect(sender.keyPress).not.toHaveBeenCalled();
+  });
+
+  it('ignores text callbacks from a native input retired by a cursor-moving control', () => {
+    renderViewer();
+    const input = screen.getByTestId('hidden-keyboard-input');
+    const staleChange = input.props.onChangeText;
+    const sender = lastConn().inputSender;
+    fireEvent.changeText(input, 'old');
+    fireEvent.press(screen.getByText('Tab'));
+    // Repeatable toolbar actions fire on pressIn, not press.
+    fireEvent(screen.getByText('Tab'), 'pressIn');
+    fireEvent(screen.getByText('Tab'), 'pressOut');
+    act(() => staleChange('old queued native text'));
+    fireEvent.changeText(screen.getByTestId('hidden-keyboard-input'), 'new');
+    expect(sender.text.mock.calls).toEqual([['old'], ['new']]);
+  });
+
+  it('replaces composed text without leaving a duplicate prefix', () => {
+    renderViewer();
+    const input = screen.getByTestId('hidden-keyboard-input');
+    const sender = lastConn().inputSender;
+    fireEvent.changeText(input, 'teh');
+    fireEvent.changeText(input, 'the');
+    expect(sender.keyPress.mock.calls).toEqual([['Backspace'], ['Backspace']]);
+    expect(sender.text.mock.calls).toEqual([['teh'], ['he']]);
   });
 
   it('does not render the keyboard toggle or hidden input for a view-only scope', () => {
@@ -382,6 +448,26 @@ describe('ViewerScreen', () => {
         });
         expect(conn.inputSender.shortcut).toHaveBeenCalledTimes(callsAtRelease);
       } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('stops held keys when the app becomes inactive without receiving pressOut', () => {
+      jest.useFakeTimers();
+      let onState: Parameters<typeof AppState.addEventListener>[1] | undefined;
+      const spy = jest.spyOn(AppState, 'addEventListener').mockImplementation((_, cb) => {
+        onState = cb;
+        return { remove: jest.fn() };
+      });
+      try {
+        renderViewer();
+        const sender = lastConn().inputSender;
+        fireEvent(screen.getByText('→'), 'pressIn');
+        act(() => onState?.('inactive'));
+        act(() => jest.advanceTimersByTime(2000));
+        expect(sender.shortcut).toHaveBeenCalledTimes(1);
+      } finally {
+        spy.mockRestore();
         jest.useRealTimers();
       }
     });
@@ -652,6 +738,40 @@ describe('reconnecting after the laptop drops', () => {
    * seconds, then nothing. Reconnect has to ring the laptop again, not retry
    * a room that cannot come back.
    */
+  it('leaves Reconnecting after room expiry and reconnects through a newly authorized room', async () => {
+    loadPairs.mockResolvedValue([
+      {
+        desktopDeviceId: 'desktop-1',
+        name: 'MacBook',
+        apiBaseUrl: 'https://api.example',
+        connectSecret: 'secret',
+      },
+    ]);
+    requestConnectForPair
+      .mockRejectedValueOnce(new ClassifiedError(appError('session_gone')))
+      .mockResolvedValueOnce({
+        roomId: 'new-room',
+        signalingUrl: 'wss://api.example/ws',
+        scopes: ['view'],
+      });
+    const { navigation } = renderViewer(['view'], TEST_SAFE_AREA_METRICS, 'desktop-1');
+    act(() => {
+      lastConn().cb.onState('reconnecting_signaling');
+      lastConn().cb.onError(appError('session_gone'));
+      lastConn().cb.onState('ended');
+    });
+    expect(screen.queryByText('Reconnecting…')).toBeNull();
+    fireEvent.press(await screen.findByText('Reconnect'));
+    await waitFor(() =>
+      expect(navigation.replace).toHaveBeenCalledWith(
+        'Viewer',
+        expect.objectContaining({ roomId: 'new-room', rejoin: false }),
+      ),
+    );
+    expect(requestConnectForPair).toHaveBeenNthCalledWith(1, expect.anything(), { resume: true });
+    expect(requestConnectForPair).toHaveBeenNthCalledWith(2, expect.anything());
+  });
+
   it('rings the laptop again and moves to the new room', async () => {
     loadPairs.mockResolvedValue([
       {

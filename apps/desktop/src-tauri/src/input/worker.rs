@@ -17,6 +17,7 @@ use super::{
 enum Msg {
     Bytes { generation: u64, bytes: Vec<u8> },
     SetEnabled(bool),
+    ResetPeer,
     SetScopes(HashSet<Scope>),
     SetTargetDisplay(Option<u32>),
     Shutdown,
@@ -98,6 +99,7 @@ impl InputWorker {
                             }
                         }
                         Msg::SetEnabled(enabled) => dispatcher.set_enabled(enabled),
+                        Msg::ResetPeer => dispatcher.reset_peer(),
                         Msg::SetScopes(scopes) => dispatcher.set_scopes(scopes),
                         Msg::SetTargetDisplay(id) => dispatcher.set_target_display(id),
                         Msg::Shutdown => break,
@@ -142,6 +144,13 @@ impl InputWorker {
                 ((generation % 2 == 1) != enabled).then(|| generation.wrapping_add(1))
             });
         let _ = self.tx.send(Msg::SetEnabled(enabled));
+    }
+
+    pub fn reset_peer(&self) {
+        // Invalidate old queued bytes immediately; reset the dispatcher before
+        // any enable/new-peer frame subsequently enters this ordered queue.
+        self.set_enabled(false);
+        let _ = self.tx.send(Msg::ResetPeer);
     }
 
     /// Update the granted-scope set for the current session (from
@@ -228,6 +237,41 @@ mod tests {
             })).collect::<Vec<_>>()
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn peer_replacement_discards_queued_input_and_accepts_the_new_sequence() {
+        let (injected_tx, injected_rx) = channel();
+        let (resume_tx, resume_rx) = channel();
+        let worker = InputWorker::spawn_with_backend(move || {
+            Box::new(BlockingBackend {
+                injected: injected_tx,
+                resume: resume_rx,
+            })
+        });
+        let input = |text: &str, seq: u64| {
+            serde_json::to_vec(&serde_json::json!({
+            "kind": "input_batch", "events": [{"kind": "text_input", "text": text, "ts": 1, "seq": seq}]
+        })).unwrap()
+        };
+        worker.set_scopes(HashSet::from([Scope::Control]));
+        worker.set_enabled(true);
+        worker.handle_message(input("in-flight", 100));
+        assert_eq!(
+            injected_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+            "in-flight"
+        );
+        worker.handle_message(input("stale", 101));
+        worker.reset_peer();
+        worker.set_enabled(true);
+        worker.handle_message(input("new-peer", 1));
+        resume_tx.send(()).unwrap();
+        assert_eq!(
+            injected_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+            "new-peer"
+        );
+        drop(worker);
+        assert!(injected_rx.try_recv().is_err());
     }
 
     #[test]

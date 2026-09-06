@@ -11,6 +11,7 @@ import {
   PanResponder,
   ActivityIndicator,
   TextInput,
+  AppState,
   useWindowDimensions,
   Alert,
   type LayoutChangeEvent,
@@ -28,6 +29,7 @@ import type { Modifier, CaptureMode, DisplayInfo } from '@lilypad/protocol';
 import type { RootStackParamList } from '../types';
 import { theme } from '../theme';
 import { ViewerConnection, type ViewerState, type RecoveryDetail } from '../lib/webrtc';
+import { KeyboardComposer } from '../lib/keyboard';
 import type { InputSender } from '../lib/input';
 import { appError, toAppError, type AppError } from '../lib/errors';
 import { QUALITY_COLOR, type ConnectionQuality } from '../lib/quality';
@@ -193,8 +195,27 @@ export function ViewerScreen({ route, navigation }: Props) {
   // capture a stale `stickyMods`.
   const stickyModsRef = useRef<Modifier[]>([]);
   stickyModsRef.current = stickyMods;
-  const hiddenInputRef = useRef<TextInput>(null);
-  const composedTextRef = useRef('');
+  const hiddenInputRef = useRef<TextInput | null>(null);
+  const composer = useRef(new KeyboardComposer());
+  const keyboardGenerationRef = useRef(0);
+  const [keyboardGeneration, setKeyboardGeneration] = useState(0);
+  const restoreKeyboardFocus = useRef(false);
+  const bindKeyboard = useCallback((node: TextInput | null) => {
+    hiddenInputRef.current = node;
+    if (node && restoreKeyboardFocus.current) {
+      restoreKeyboardFocus.current = false;
+      node.focus();
+    }
+  }, []);
+  const resetKeyboard = useCallback(() => {
+    // A new native input resets both sides atomically. clear() can be ignored
+    // by RN when a newer native edit is pending; old callbacks must not type
+    // their retained buffer into the new remote field.
+    restoreKeyboardFocus.current = hiddenInputRef.current?.isFocused() ?? false;
+    composer.current.reset();
+    keyboardGenerationRef.current += 1;
+    setKeyboardGeneration(keyboardGenerationRef.current);
+  }, []);
   // One PressRepeater per repeatable toolbar action, created lazily on
   // first press. See docs/audit/m3/input-touch.md Finding 14.
   const toolbarRepeatersRef = useRef(new Map<ShortcutAction, PressRepeater>());
@@ -220,6 +241,7 @@ export function ViewerScreen({ route, navigation }: Props) {
 
   useEffect(() => {
     let active = true;
+    resetKeyboard();
     setStream(null);
     setError(null);
     setRecovery(null);
@@ -240,6 +262,27 @@ export function ViewerScreen({ route, navigation }: Props) {
         },
         onState: (next, detail) => {
           if (!active) return;
+          if (
+            next === 'negotiating' ||
+            next === 'ended' ||
+            next === 'failed' ||
+            next === 'denied'
+          ) {
+            resetKeyboard();
+            for (const repeater of toolbarRepeatersRef.current.values()) repeater.stop();
+            if (longPressTimer.current) clearTimeout(longPressTimer.current);
+            longPressTimer.current = null;
+            for (const intent of interp.current.cancel()) {
+              if (intent.kind === 'pointer_up')
+                connRef.current?.inputSender?.pointerUp(intent.x, intent.y);
+            }
+          }
+          if (next === 'ended' || next === 'failed' || next === 'denied') {
+            restoreKeyboardFocus.current = false;
+            hiddenInputRef.current?.blur();
+            Keyboard.dismiss();
+            setKeyboardOpen(false);
+          }
           setState(next);
           setRecovery(next === 'recovering_ice' ? (detail ?? null) : null);
           if (next === 'connected' && desktopDeviceId) {
@@ -348,6 +391,7 @@ export function ViewerScreen({ route, navigation }: Props) {
     signalingUrl,
     roomId,
     scopes,
+    resetKeyboard,
     reconnectAttempt,
     syncGeometry,
     desktopDeviceId,
@@ -357,14 +401,25 @@ export function ViewerScreen({ route, navigation }: Props) {
 
   // Lazily create (once per action) and start/stop the toolbar's held-repeat
   // timer. See docs/audit/m3/input-touch.md Finding 14.
-  const onToolbarPressIn = useCallback((action: ShortcutAction) => {
-    let repeater = toolbarRepeatersRef.current.get(action);
-    if (!repeater) {
-      repeater = new PressRepeater(() => connRef.current?.inputSender?.shortcut(action));
-      toolbarRepeatersRef.current.set(action, repeater);
-    }
-    repeater.start();
-  }, []);
+  const sendShortcut = useCallback(
+    (action: ShortcutAction) => {
+      resetKeyboard();
+      connRef.current?.inputSender?.shortcut(action);
+    },
+    [resetKeyboard],
+  );
+
+  const onToolbarPressIn = useCallback(
+    (action: ShortcutAction) => {
+      let repeater = toolbarRepeatersRef.current.get(action);
+      if (!repeater) {
+        repeater = new PressRepeater(() => sendShortcut(action));
+        toolbarRepeatersRef.current.set(action, repeater);
+      }
+      repeater.start();
+    },
+    [sendShortcut],
+  );
 
   const onToolbarPressOut = useCallback((action: ShortcutAction) => {
     toolbarRepeatersRef.current.get(action)?.stop();
@@ -449,6 +504,7 @@ export function ViewerScreen({ route, navigation }: Props) {
             updateViewport(IDENTITY_VIEWPORT);
             break;
           case 'pointer_down':
+            resetKeyboard();
             inp?.pointerDown(it.x, it.y, 'left', consumeSticky(stickyModsRef, setStickyMods));
             break;
           case 'pointer_move':
@@ -458,6 +514,7 @@ export function ViewerScreen({ route, navigation }: Props) {
             inp?.pointerUp(it.x, it.y);
             break;
           case 'click':
+            resetKeyboard();
             inp?.click(
               it.x,
               it.y,
@@ -472,7 +529,7 @@ export function ViewerScreen({ route, navigation }: Props) {
         }
       }
     },
-    [updateViewport],
+    [updateViewport, resetKeyboard],
   );
 
   // A single timer tracks the interpreter's pending long-press deadline; it
@@ -510,8 +567,8 @@ export function ViewerScreen({ route, navigation }: Props) {
           applyIntents(interp.current.end(samplesFrom(e), Date.now()));
           armDeadline();
         },
-        onPanResponderTerminate: (e) => {
-          applyIntents(interp.current.end(samplesFrom(e), Date.now()));
+        onPanResponderTerminate: () => {
+          applyIntents(interp.current.cancel());
           armDeadline();
         },
       }),
@@ -591,12 +648,8 @@ export function ViewerScreen({ route, navigation }: Props) {
     })();
   }, [desktopDeviceId, navigation]);
 
-  // Types into the remote session via a hidden, off-screen TextInput — this
-  // preserves the OS keyboard's autocorrect/IME/predictive-text instead of
-  // building a custom on-screen QWERTY layout. Only the newly-typed
-  // increment is sent each keystroke; Backspace is forwarded as a key event
-  // since it deletes rather than appends. See
-  // docs/audit/m3/mobile-ux.md Finding 3.
+  // One native text buffer, one edit stream. Hiding the keyboard does not
+  // erase native text, so blur must not reset only the JS history.
   const toggleKeyboard = useCallback(() => {
     if (keyboardOpen) {
       hiddenInputRef.current?.blur();
@@ -617,19 +670,35 @@ export function ViewerScreen({ route, navigation }: Props) {
   }, []);
 
   const onComposedChangeText = useCallback((next: string) => {
+    const edit = composer.current.change(next);
     const inp = connRef.current?.inputSender;
-    const prev = composedTextRef.current;
-    if (inp && next.length > prev.length && next.startsWith(prev)) {
-      inp.text(next.slice(prev.length));
-    }
-    composedTextRef.current = next;
+    for (let n = 0; n < edit.backspaces; n++) inp?.keyPress('Backspace');
+    if (edit.text) inp?.text(edit.text);
   }, []);
 
   const onComposedKeyPress = useCallback((e: NativeSyntheticEvent<TextInputKeyPressEventData>) => {
-    if (e.nativeEvent.key === 'Backspace') {
-      connRef.current?.inputSender?.keyDown('Backspace');
+    // RN emits keyPress before changeText. A nonempty buffer's deletion is
+    // handled by the edit diff once; at empty, only keyPress can report it.
+    if (e.nativeEvent.key === 'Backspace' && composer.current.isEmpty) {
+      connRef.current?.inputSender?.keyPress('Backspace');
     }
   }, []);
+
+  useEffect(() => {
+    const stopControls = () => {
+      for (const repeater of toolbarRepeatersRef.current.values()) repeater.stop();
+      if (longPressTimer.current) clearTimeout(longPressTimer.current);
+      longPressTimer.current = null;
+      applyIntents(interp.current.cancel());
+    };
+    const sub = AppState.addEventListener('change', (next) => {
+      if (next !== 'active') stopControls();
+    });
+    return () => {
+      sub.remove();
+      stopControls();
+    };
+  }, [applyIntents]);
 
   const zoomLockRef = useRef(false);
   const toggleZoomLock = useCallback(() => {
@@ -829,11 +898,7 @@ export function ViewerScreen({ route, navigation }: Props) {
                 <Text style={styles.keyText}>{k.label}</Text>
               </Pressable>
             ) : (
-              <Pressable
-                key={k.label}
-                style={styles.key}
-                onPress={() => connRef.current?.inputSender?.shortcut(k.action)}
-              >
+              <Pressable key={k.label} style={styles.key} onPress={() => sendShortcut(k.action)}>
                 <Text style={styles.keyText}>{k.label}</Text>
               </Pressable>
             ),
@@ -1042,15 +1107,25 @@ export function ViewerScreen({ route, navigation }: Props) {
 
       {canControl ? (
         <TextInput
-          ref={hiddenInputRef}
+          key={keyboardGeneration}
+          ref={bindKeyboard}
           style={styles.hiddenInput}
-          onFocus={() => setKeyboardOpen(true)}
-          onBlur={() => {
-            setKeyboardOpen(false);
-            composedTextRef.current = '';
+          onFocus={() => {
+            if (keyboardGenerationRef.current === keyboardGeneration) setKeyboardOpen(true);
           }}
-          onChangeText={onComposedChangeText}
-          onKeyPress={onComposedKeyPress}
+          onBlur={() => {
+            if (keyboardGenerationRef.current === keyboardGeneration) setKeyboardOpen(false);
+          }}
+          onChangeText={(next) => {
+            if (keyboardGenerationRef.current === keyboardGeneration) onComposedChangeText(next);
+          }}
+          onKeyPress={(event) => {
+            if (keyboardGenerationRef.current === keyboardGeneration) onComposedKeyPress(event);
+          }}
+          onSubmitEditing={() => {
+            if (keyboardGenerationRef.current === keyboardGeneration) sendShortcut('enter');
+          }}
+          blurOnSubmit={false}
           autoCorrect={false}
           autoCapitalize="none"
           inputAccessoryViewID="lilypad-kb-done"

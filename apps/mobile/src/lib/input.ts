@@ -31,6 +31,7 @@ export type DataChannelBackpressureRef = { bufferedAmount?: number | null };
  * `docs/audit/m3/input-touch.md` Finding 2.
  */
 export class InputSender {
+  private disposed = false;
   private criticalQueue: InputEvent[] = [];
   private moveQueue: InputEvent[] = [];
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
@@ -75,6 +76,7 @@ export class InputSender {
   }
 
   private enqueue(ev: InputEvent, immediate: boolean, disposable: boolean): void {
+    if (this.disposed) return;
     if (disposable) {
       this.moveQueue.push(ev);
     } else {
@@ -88,6 +90,7 @@ export class InputSender {
   }
 
   flush(): void {
+    if (this.disposed) return;
     if (this.flushTimer) {
       clearTimeout(this.flushTimer);
       this.flushTimer = null;
@@ -106,13 +109,29 @@ export class InputSender {
         this.moveQueue = [];
       }
     }
-    if (this.criticalQueue.length > 0) {
-      if (this.isBackedUp(this.criticalChannelRef)) {
-        return;
-      }
-      this.sendCritical(encodeInputBatch(this.criticalQueue));
-      this.criticalQueue = [];
+    // Drain bounded frames. A backlog (for example a large paste) must not
+    // become one oversized SCTP message when backpressure clears.
+    while (this.criticalQueue.length > 0 && !this.isBackedUp(this.criticalChannelRef)) {
+      const event = this.criticalQueue.shift()!;
+      this.sendCritical(encodeInputBatch([event]));
     }
+  }
+
+  /** A retired peer must never flush queued input into its successor. */
+  dispose(): void {
+    this.disposed = true;
+    if (this.flushTimer) clearTimeout(this.flushTimer);
+    this.flushTimer = null;
+    this.criticalQueue = [];
+    this.moveQueue = [];
+    this.moveSend = null;
+    this.moveChannelRef = null;
+    this.criticalChannelRef = null;
+  }
+
+  keyPress(code: string, modifiers: Modifier[] = []): void {
+    this.keyDown(code, modifiers);
+    this.keyUp(code, modifiers);
   }
 
   pointerMove(x: number, y: number): void {
@@ -161,7 +180,18 @@ export class InputSender {
     this.enqueue({ kind: 'key_up', code, modifiers, ...this.stamp() }, true, false);
   }
   text(text: string): void {
-    this.enqueue({ kind: 'text_input', text, ...this.stamp() }, true, false);
+    if (this.disposed) return;
+    // Bound each event below both the UTF-16 (TS) and UTF-8 (Rust) limits.
+    // Iterating code points never splits an emoji's surrogate pair.
+    let chunk = '';
+    for (const point of text) {
+      if (chunk.length + point.length > 1024) {
+        this.enqueue({ kind: 'text_input', text: chunk, ...this.stamp() }, true, false);
+        chunk = '';
+      }
+      chunk += point;
+    }
+    if (chunk) this.enqueue({ kind: 'text_input', text: chunk, ...this.stamp() }, true, false);
   }
   shortcut(action: ShortcutAction): void {
     this.enqueue({ kind: 'shortcut', action, ...this.stamp() }, true, false);
