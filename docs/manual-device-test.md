@@ -415,6 +415,27 @@ An operation that half-works is worse than one that fails.
 > After 7.13 the account is gone and cannot be recovered. Do §7.10–7.18 last,
 > or use a throwaway account for them and re-create the real one afterwards.
 
+### Post-v0.1.30 network handoff checks
+
+Pending signed-build validation:
+
+- Start on LAN, turn Wi-Fi off while viewing, and keep the phone app active.
+  After video stops, expect a cloud connection attempt without manually tapping
+  Reconnect. Existing pairing and approval rules still apply; record recovery
+  time and the resulting Direct/Relayed path.
+- Switch Wi-Fi off and back on quickly. A working stream should remain intact,
+  without repeated connection requests. Repeat with a VPN if available.
+- Switch to cellular while backgrounded: no new session should start until
+  returning to the app. Tap Disconnect during a handoff: a late response must
+  not reopen the viewer.
+- Leave the phone backgrounded until the LAN room expires, then reopen it.
+  Expect an ended session with a usable Reconnect action, without repeated
+  registration attempts against the expired room.
+- On cellular, compare scrolling and static text in both Motion and Text mode.
+  Record visible blockiness separately from the quality badge. Collect the
+  Mac's receiver-loss/bandwidth-estimate bitrate messages around degradation.
+  Mild blockiness reported on v0.1.30 has not yet been proved fixed.
+
 ### v0.1.30 keyboard and control regressions
 
 On the signed website DMG and TestFlight build, use a disposable text document:

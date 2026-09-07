@@ -687,6 +687,83 @@ describe('ViewerConnection', () => {
     });
   });
 
+  it('hands an unreachable LAN room to cloud once after WiFi-to-cellular change', async () => {
+    const cb = { ...makeCallbacks(), onNetworkHandoff: jest.fn() };
+    const conn = new ViewerConnection('wss://192.168.1.2:8787/ws/signal', 'room1', ['view'], cb);
+    await conn.start();
+    lastSignaling().onMessage({
+      type: 'session-start',
+      payload: { grantedScopes: ['view'], iceServers: [] },
+    });
+    lastPeer().setState('connected');
+    lastLifecycle().cb.onNetworkRestored('cellular');
+    expect(cb.onNetworkHandoff).not.toHaveBeenCalled();
+    await jest.advanceTimersByTimeAsync(5_000);
+    expect(cb.onNetworkHandoff).toHaveBeenCalledTimes(1);
+    expect(lastSignaling().close).toHaveBeenCalled();
+    await jest.advanceTimersByTimeAsync(30_000);
+    expect(cb.onNetworkHandoff).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps a LAN stream that still receives video after the cellular notification', async () => {
+    const cb = { ...makeCallbacks(), onNetworkHandoff: jest.fn() };
+    const conn = new ViewerConnection('wss://192.168.1.2:8787/ws/signal', 'room1', ['view'], cb);
+    await conn.start();
+    lastSignaling().onMessage({
+      type: 'session-start',
+      payload: { grantedScopes: ['view'], iceServers: [] },
+    });
+    const peer = lastPeer();
+    peer.setState('connected');
+    let bytes = 0;
+    peer.getStats.mockImplementation(
+      async () =>
+        new Map([
+          ['video', { type: 'inbound-rtp', kind: 'video', bytesReceived: (bytes += 1000) }],
+        ]),
+    );
+    lastLifecycle().cb.onNetworkRestored('cellular');
+    await jest.advanceTimersByTimeAsync(20_000);
+    expect(cb.onNetworkHandoff).not.toHaveBeenCalled();
+    conn.close();
+    await jest.advanceTimersByTimeAsync(10_000);
+    expect(cb.onNetworkHandoff).not.toHaveBeenCalled();
+  });
+
+  it('does not start a new cloud session while backgrounded', async () => {
+    const cb = { ...makeCallbacks(), onNetworkHandoff: jest.fn() };
+    const conn = new ViewerConnection('wss://192.168.1.2/ws', 'room1', ['view'], cb);
+    await conn.start();
+    lastLifecycle().cb.onNetworkRestored('cellular');
+    lastLifecycle().cb.onBackground();
+    await jest.advanceTimersByTimeAsync(10_000);
+    expect(cb.onNetworkHandoff).not.toHaveBeenCalled();
+    lastLifecycle().cb.onForeground();
+    await jest.advanceTimersByTimeAsync(5_000);
+    expect(cb.onNetworkHandoff).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not replace a cloud room just because cellular becomes available', async () => {
+    const cb = { ...makeCallbacks(), onNetworkHandoff: jest.fn() };
+    const conn = new ViewerConnection('wss://api.example/ws', 'room1', ['view'], cb);
+    await conn.start();
+    lastLifecycle().cb.onNetworkRestored('cellular');
+    await jest.advanceTimersByTimeAsync(10_000);
+    expect(cb.onNetworkHandoff).not.toHaveBeenCalled();
+    conn.close();
+  });
+
+  it('cancels a pending cellular handoff when WiFi comes back', async () => {
+    const cb = { ...makeCallbacks(), onNetworkHandoff: jest.fn() };
+    const conn = new ViewerConnection('wss://192.168.1.2/ws', 'room1', ['view'], cb);
+    await conn.start();
+    lastLifecycle().cb.onNetworkRestored('cellular');
+    lastLifecycle().cb.onNetworkRestored('wifi');
+    await jest.advanceTimersByTimeAsync(10_000);
+    expect(cb.onNetworkHandoff).not.toHaveBeenCalled();
+    conn.close();
+  });
+
   it('polls getStats once a peer connection exists and reports classified quality', async () => {
     const cb = makeCallbacks();
     const { peer } = await startConnected(cb);
@@ -712,6 +789,54 @@ describe('ViewerConnection', () => {
 
     expect(cb.onStats).toHaveBeenCalledWith(
       expect.objectContaining({ level: 'good', rttMs: 50, fps: 30, packetLossPct: 0 }),
+    );
+  });
+
+  it('reports current cellular quality instead of an older stream and historical packet loss', async () => {
+    const cb = makeCallbacks();
+    const { peer } = await startConnected(cb);
+    const old = {
+      type: 'inbound-rtp',
+      kind: 'video',
+      bytesReceived: 1_000_000,
+      framesPerSecond: 0,
+      packetsLost: 500,
+      packetsReceived: 500,
+    };
+    const live = {
+      type: 'inbound-rtp',
+      kind: 'video',
+      bytesReceived: 10_000,
+      framesPerSecond: 30,
+      packetsLost: 10,
+      packetsReceived: 100,
+    };
+    peer.getStats.mockResolvedValue(
+      new Map([
+        ['old', old],
+        ['live', live],
+      ]),
+    );
+    await jest.advanceTimersByTimeAsync(QUALITY_POLL_MS);
+    live.bytesReceived += 50_000;
+    live.packetsReceived += 50;
+    await jest.advanceTimersByTimeAsync(QUALITY_POLL_MS);
+    expect(cb.onStats).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        fps: 30,
+        packetLossPct: 0,
+        level: 'good',
+      }),
+    );
+    live.packetsLost += 10;
+    live.packetsReceived += 90;
+    live.bytesReceived += 50_000;
+    await jest.advanceTimersByTimeAsync(QUALITY_POLL_MS);
+    expect(cb.onStats).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        packetLossPct: 10,
+        level: 'poor',
+      }),
     );
   });
 

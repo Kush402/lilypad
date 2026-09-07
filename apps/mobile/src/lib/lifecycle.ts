@@ -16,7 +16,7 @@ export interface AppLifecycleCallbacks {
   onForeground: () => void;
   /** Network connectivity just transitioned from disconnected to connected —
    * a new path may be available (e.g. WiFi → cellular handoff completed). */
-  onNetworkRestored: () => void;
+  onNetworkRestored: (networkType?: NetInfoState['type']) => void;
 }
 
 /**
@@ -29,6 +29,7 @@ export class AppLifecycleController {
   private appState: AppStateStatus = AppState.currentState;
   private backgroundStartedAt: number | null = null;
   private wasConnected: boolean | null = null;
+  private networkType: NetInfoState['type'] | undefined;
   private backgroundTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly appSub: { remove: () => void };
   private readonly netUnsubscribe: () => void;
@@ -68,10 +69,17 @@ export class AppLifecycleController {
 
   private handleNetInfo = (state: NetInfoState): void => {
     const connected = !!state.isConnected;
-    if (this.wasConnected === false && connected) {
-      this.cb.onNetworkRestored();
+    if (
+      connected &&
+      (this.wasConnected === false ||
+        (this.wasConnected === true &&
+          this.networkType !== undefined &&
+          state.type !== this.networkType))
+    ) {
+      this.cb.onNetworkRestored(state.type);
     }
     this.wasConnected = connected;
+    this.networkType = state.type;
   };
 
   dispose(): void {

@@ -16,7 +16,7 @@ function lastAppStateHandler(): (next: string) => void {
   return calls[calls.length - 1][1];
 }
 
-function lastNetInfoHandler(): (state: { isConnected: boolean }) => void {
+function lastNetInfoHandler(): (state: { isConnected: boolean; type?: string }) => void {
   const calls = (NetInfo.addEventListener as jest.Mock).mock.calls;
   return calls[calls.length - 1][0];
 }
@@ -127,6 +127,17 @@ describe('AppLifecycleController', () => {
     // Staying connected must not re-fire.
     handleNetInfo({ isConnected: true });
     expect(cb.onNetworkRestored).toHaveBeenCalledTimes(1);
+  });
+
+  it('detects WiFi to cellular without an intermediate offline notification', () => {
+    const cb = makeCallbacks();
+    new AppLifecycleController(cb);
+    const net = lastNetInfoHandler();
+    net({ isConnected: true, type: 'wifi' });
+    net({ isConnected: true, type: 'cellular' });
+    net({ isConnected: true, type: 'cellular' });
+    expect(cb.onNetworkRestored).toHaveBeenCalledTimes(1);
+    expect(cb.onNetworkRestored).toHaveBeenCalledWith('cellular');
   });
 
   it('dispose() unsubscribes from both sources and cancels a pending debounce', () => {

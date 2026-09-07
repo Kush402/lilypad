@@ -361,6 +361,8 @@ impl MediaController {
     pub fn on_loss_report(&mut self, fraction_lost: f64) {
         if let (Some(pl), Some(ctl)) = (&self.pipeline, &mut self.abr) {
             if let Some(kbps) = ctl.on_loss_report(fraction_lost, Instant::now()) {
+                log::info!(target: "lilypad::media",
+                    "receiver loss {:.1}% — bitrate target {kbps} kbps", fraction_lost * 100.0);
                 pl.control().set_target_bitrate(kbps);
             }
         }
@@ -384,6 +386,8 @@ impl MediaController {
                 }
             }
             if let Some(kbps) = ctl.on_remb(bitrate_bps) {
+                log::info!(target: "lilypad::media",
+                    "receiver bandwidth estimate {} kbps — bitrate target {kbps} kbps", bitrate_bps / 1000);
                 pl.control().set_target_bitrate(kbps);
             }
         }

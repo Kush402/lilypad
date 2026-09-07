@@ -200,6 +200,9 @@ export function ViewerScreen({ route, navigation }: Props) {
   const keyboardGenerationRef = useRef(0);
   const [keyboardGeneration, setKeyboardGeneration] = useState(0);
   const restoreKeyboardFocus = useRef(false);
+  const reconnectRequest = useRef(0);
+  const reconnectPending = useRef(false);
+  const reconnectRef = useRef<(preferCloud?: boolean) => void>(() => {});
   const bindKeyboard = useCallback((node: TextInput | null) => {
     hiddenInputRef.current = node;
     if (node && restoreKeyboardFocus.current) {
@@ -257,6 +260,11 @@ export function ViewerScreen({ route, navigation }: Props) {
       roomId,
       scopes,
       {
+        onNetworkHandoff: desktopDeviceId
+          ? () => {
+              if (active) reconnectRef.current(true);
+            }
+          : undefined,
         onStream: (next) => {
           if (active) setStream(next);
         },
@@ -380,6 +388,8 @@ export function ViewerScreen({ route, navigation }: Props) {
       // Invalidate callbacks before close: queued native events and the
       // opening promise can settle while the next connection is taking over.
       active = false;
+      reconnectRequest.current += 1;
+      reconnectPending.current = false;
       if (longPressTimer.current) clearTimeout(longPressTimer.current);
       if (clipboardToastTimer.current) clearTimeout(clipboardToastTimer.current);
       if (switchNoticeTimer.current) clearTimeout(switchNoticeTimer.current);
@@ -576,6 +586,8 @@ export function ViewerScreen({ route, navigation }: Props) {
   );
 
   const disconnect = useCallback(() => {
+    reconnectRequest.current += 1;
+    reconnectPending.current = false;
     if (desktopDeviceId) void clearResumeHandle(desktopDeviceId).catch(() => {});
     connRef.current?.close();
     // Return to the EXISTING "Your laptops" screen at the stack root, not a
@@ -612,41 +624,65 @@ export function ViewerScreen({ route, navigation }: Props) {
    * hub has already torn that room down, ring a new one — the old room's
    * authorization record is gone and retrying it earns `unauthorized_room`.
    */
-  const reconnect = useCallback(() => {
-    void (async () => {
-      if (!desktopDeviceId) {
-        setReconnectAttempt((n) => n + 1);
-        return;
-      }
-      const pair = (await loadPairs()).find((p) => p.desktopDeviceId === desktopDeviceId);
-      if (!pair?.connectSecret) {
-        setReconnectAttempt((n) => n + 1);
-        return;
-      }
-      try {
-        let res;
-        let joinExisting = false;
+  const reconnect = useCallback(
+    (preferCloud = false) => {
+      if (reconnectPending.current) return;
+      reconnectPending.current = true;
+      const request = ++reconnectRequest.current;
+      const current = () => request === reconnectRequest.current;
+      void (async () => {
         try {
-          res = await requestConnectForPair(pair, { resume: true });
-          joinExisting = res.resumed === true;
+          const pair = desktopDeviceId
+            ? (await loadPairs()).find((p) => p.desktopDeviceId === desktopDeviceId)
+            : undefined;
+          if (!current()) return;
+          if (!pair?.connectSecret) {
+            if (preferCloud) {
+              setError(appError('session_gone'));
+              setState('failed');
+            } else {
+              setReconnectAttempt((n) => n + 1);
+            }
+            return;
+          }
+          let res;
+          let joinExisting = false;
+          try {
+            res = await requestConnectForPair(pair, {
+              resume: true,
+              ...(preferCloud ? { preferCloud: true } : {}),
+            });
+            joinExisting = res.resumed === true;
+          } catch (e) {
+            if (!current()) return;
+            if (toAppError(e).code !== 'session_gone') throw e;
+            res = preferCloud
+              ? await requestConnectForPair(pair, { preferCloud: true })
+              : await requestConnectForPair(pair);
+          }
+          if (!current()) return;
+          navigation.replace('Viewer', {
+            roomId: res.roomId,
+            signalingUrl: res.signalingUrl,
+            scopes: res.scopes,
+            desktopDeviceName: res.desktopDeviceName ?? pair.name,
+            desktopDeviceId: pair.desktopDeviceId,
+            signalingTlsPin: res.signalingTlsPin,
+            rejoin: joinExisting,
+          });
         } catch (e) {
-          if (toAppError(e).code !== 'session_gone') throw e;
-          res = await requestConnectForPair(pair);
+          if (current()) {
+            setError(toAppError(e));
+            setState('failed');
+          }
+        } finally {
+          if (current()) reconnectPending.current = false;
         }
-        navigation.replace('Viewer', {
-          roomId: res.roomId,
-          signalingUrl: res.signalingUrl,
-          scopes: res.scopes,
-          desktopDeviceName: res.desktopDeviceName ?? pair.name,
-          desktopDeviceId: pair.desktopDeviceId,
-          signalingTlsPin: res.signalingTlsPin,
-          rejoin: joinExisting,
-        });
-      } catch (e) {
-        setError(toAppError(e));
-      }
-    })();
-  }, [desktopDeviceId, navigation]);
+      })();
+    },
+    [desktopDeviceId, navigation],
+  );
+  reconnectRef.current = reconnect;
 
   // One native text buffer, one edit stream. Hiding the keyboard does not
   // erase native text, so blur must not reset only the JS history.

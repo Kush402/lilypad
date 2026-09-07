@@ -282,12 +282,13 @@ async fn handle_ws(socket: WebSocket, state: Arc<LanServerState>) {
     let (mut sink, mut stream) = socket.split();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
 
-    let writer = tokio::spawn(async move {
+    let mut writer = tokio::spawn(async move {
         while let Some(txt) = rx.recv().await {
             if sink.send(Message::Text(txt)).await.is_err() {
                 break;
             }
         }
+        let _ = sink.close().await;
     });
 
     // The seat token is carried alongside the room and role so this socket's
@@ -375,5 +376,16 @@ async fn handle_ws(socket: WebSocket, state: Arc<LanServerState>) {
     if let Some((room_id, role, token)) = registered {
         state.hub.detach(&room_id, role, token);
     }
-    writer.abort();
+    // A refused registration queues the terminal error immediately before
+    // reaching here. Aborting the writer loses that frame, so the phone sees
+    // only a transport failure and retries the expired room. Detach first,
+    // then drain pending output with a bound for an unresponsive peer.
+    drop(tx);
+    if tokio::time::timeout(std::time::Duration::from_secs(1), &mut writer)
+        .await
+        .is_err()
+    {
+        writer.abort();
+        let _ = writer.await;
+    }
 }

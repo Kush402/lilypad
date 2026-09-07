@@ -144,10 +144,10 @@ export type ConnectForPairResult = ConnectResponse & {
 
 export async function requestConnectForPair(
   pair: PairedDesktop,
-  opts?: { resume?: boolean },
+  opts?: { resume?: boolean; preferCloud?: boolean },
 ): Promise<ConnectForPairResult> {
   const cloud = pair.apiBaseUrl.replace(/\/$/, '');
-  const target = await resolveConnectTarget(pair);
+  const target = opts?.preferCloud ? { apiBaseUrl: cloud } : await resolveConnectTarget(pair);
 
   const tryConnect = (t: typeof target) =>
     requestConnect(

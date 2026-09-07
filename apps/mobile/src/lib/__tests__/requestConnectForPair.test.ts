@@ -35,6 +35,40 @@ describe('requestConnectForPair', () => {
     );
   });
 
+  it('uses the authenticated cloud endpoint without a LAN pin or probe for cellular handoff', async () => {
+    globalThis.fetch = jest.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          roomId: 'cloud-room',
+          signalingUrl: 'wss://api.example/ws',
+          scopes: ['view'],
+        }),
+        { status: 200 },
+      ),
+    );
+    const result = await requestConnectForPair(
+      {
+        desktopDeviceId: 'desktop-abcdefgh',
+        name: 'Mac',
+        apiBaseUrl: 'https://api.example',
+        lanApiBaseUrl: 'https://192.168.1.2:8787',
+        lanTlsCertSha256: 'a'.repeat(64),
+        connectSecret: 'secret',
+        addedAt: 0,
+        lastConnectedAt: null,
+      },
+      { preferCloud: true, resume: true },
+    );
+    expect(resolveMock).not.toHaveBeenCalled();
+    expect(lanFetchMock).not.toHaveBeenCalled();
+    expect(result.signalingTlsPin).toBeUndefined();
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      'https://api.example/connect/request',
+      expect.objectContaining({ body: expect.stringContaining('"resume":true') }),
+    );
+    expect(accessToken).toHaveBeenCalled();
+  });
+
   it('falls back to cloud when LAN connect/request fails', async () => {
     resolveMock.mockResolvedValue({
       apiBaseUrl: 'https://192.168.1.10:8787',

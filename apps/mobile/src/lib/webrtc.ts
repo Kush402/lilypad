@@ -24,6 +24,7 @@ import {
   type AgentRunEnd,
 } from '@lilypad/protocol';
 import { MobileSignaling, type SignalingLifecycleEvent } from './signaling';
+import { isLanPinTarget } from './lanTls';
 import { AppLifecycleController } from './lifecycle';
 import { InputSender, MAX_BUFFERED_AMOUNT_BYTES } from './input';
 import { getDeviceId } from './device';
@@ -50,6 +51,9 @@ export interface RecoveryDetail {
 }
 
 export interface ViewerCallbacks {
+  /** A LAN room cannot be reached from cellular. Request a new authenticated
+   * cloud room after the old video path has stopped. */
+  onNetworkHandoff?: () => void;
   onStream: (stream: MediaStream) => void;
   onState: (state: ViewerState, detail?: RecoveryDetail) => void;
   onError: (err: AppError) => void;
@@ -225,6 +229,7 @@ export class ViewerConnection {
   private lastQualityLevel: string | null = null;
   private lastInboundBytes: number | null = null;
   private lastStatsAt: number | null = null;
+  private previousVideoStats = new Map<string, { bytes: number; lost: number; received: number }>();
   /** Wall-clock of the last poll where inbound video bytes actually advanced —
    * the receiver's proof the forward path is alive. Drives the video-liveness
    * outvote of a false `disconnected` (see `VIDEO_LIVENESS_WINDOW_MS`). */
@@ -238,9 +243,12 @@ export class ViewerConnection {
   private lastNetworkRestoreRenegotiate: number = Number.NEGATIVE_INFINITY;
   private iceServers: IceServer[] = [];
   private grantedScopes: SessionScope[] = [];
+  private networkType: string | undefined;
+  private handoffTimer: ReturnType<typeof setTimeout> | null = null;
+  private backgrounded = false;
 
   constructor(
-    signalingUrl: string,
+    private readonly signalingUrl: string,
     private readonly roomId: string,
     private readonly scopes: SessionScope[],
     private readonly cb: ViewerCallbacks,
@@ -289,6 +297,9 @@ export class ViewerConnection {
     this.lifecycle = new AppLifecycleController({
       onBackground: () => {
         if (this.isClosed) return;
+        this.backgrounded = true;
+        if (this.handoffTimer) clearTimeout(this.handoffTimer);
+        this.handoffTimer = null;
         this.clearForegroundDeadline();
         // Pause the stream; keep the signaling socket. Dropping it made a
         // normal app-switch look like process death (peer-status → 15s
@@ -299,6 +310,8 @@ export class ViewerConnection {
       },
       onForeground: () => {
         if (this.isClosed) return;
+        this.backgrounded = false;
+        this.scheduleNetworkHandoff();
         this.clearForegroundDeadline();
         this.resumePending = true;
         const resumedAt = Date.now();
@@ -340,7 +353,9 @@ export class ViewerConnection {
       // connection each time was the lag itself — candidate regathering,
       // keyframe storms, bitrate pinned to the floor. A working path keeps
       // working; the ICE-failure handler still owns the broken case.
-      onNetworkRestored: () => {
+      onNetworkRestored: (networkType) => {
+        this.networkType = networkType;
+        this.scheduleNetworkHandoff();
         // Only renegotiate if there's an unhealthy peer connection
         if (!this.pc || this.peerConnected) return;
         if (this.degradedGraceTimer) return;
@@ -357,6 +372,34 @@ export class ViewerConnection {
 
   get inputSender(): InputSender | null {
     return this.input;
+  }
+
+  private scheduleNetworkHandoff(): void {
+    if (this.handoffTimer) clearTimeout(this.handoffTimer);
+    this.handoffTimer = null;
+    if (
+      this.isClosed ||
+      this.backgrounded ||
+      this.networkType !== 'cellular' ||
+      !isLanPinTarget(this.signalingUrl) ||
+      !this.cb.onNetworkHandoff
+    )
+      return;
+    const observedAt = Date.now();
+    this.handoffTimer = setTimeout(() => {
+      this.handoffTimer = null;
+      if (this.isClosed) return;
+      // Actual arriving video wins over the OS network label (VPNs and
+      // multipath can keep a LAN transport usable). Recheck while it flows.
+      if (this.lastVideoAdvanceAt !== null && this.lastVideoAdvanceAt > observedAt) {
+        this.scheduleNetworkHandoff();
+        return;
+      }
+      record('network handoff', 'LAN unavailable on cellular; requesting cloud room');
+      this.cb.onState('reconnecting_signaling');
+      this.close();
+      this.cb.onNetworkHandoff?.();
+    }, DISCONNECTED_GRACE_MS);
   }
 
   /** Private desktop payloads use the current encrypted reliable channel;
@@ -979,6 +1022,7 @@ export class ViewerConnection {
   private startStatsPolling(): void {
     this.stopStatsPolling();
     this.lastInboundBytes = null;
+    this.previousVideoStats.clear();
     this.lastStatsAt = null;
     this.lastVideoAdvanceAt = null;
     this.statsPoll = setInterval(() => void this.pollStats(), QUALITY_POLL_MS);
@@ -1024,12 +1068,15 @@ export class ViewerConnection {
     // The sum over all streams is monotonic while any stream advances, which
     // is exactly the "is video arriving at all" question this must answer.
     let videoBytes: number | null = null;
-    // fps/loss come from the stream that has actually received the most —
-    // the live one. A frozen leftover otherwise reports 0 fps and drags the
-    // quality classification down while the picture is fine.
-    let liveStreamBytes = -1;
+    // Quality describes this polling interval, not losses accumulated on a
+    // previous network. A retired SSRC may have more lifetime bytes than the
+    // current stream, so choose FPS by newly received bytes.
+    let liveStreamDelta = -1;
+    let intervalLost = 0;
+    let intervalReceived = 0;
+    const nextVideoStats = new Map<string, { bytes: number; lost: number; received: number }>();
 
-    for (const stat of report.values()) {
+    for (const [id, stat] of report.entries()) {
       if (stat.type === 'candidate-pair' && (stat.nominated || stat.selected)) {
         if (typeof stat.currentRoundTripTime === 'number') {
           rttMs = Math.round(stat.currentRoundTripTime * 1000);
@@ -1037,21 +1084,26 @@ export class ViewerConnection {
       }
       if (stat.type === 'inbound-rtp' && stat.kind === 'video') {
         const bytes = typeof stat.bytesReceived === 'number' ? stat.bytesReceived : 0;
-        if (typeof stat.bytesReceived === 'number') {
-          videoBytes = (videoBytes ?? 0) + bytes;
+        if (typeof stat.bytesReceived === 'number') videoBytes = (videoBytes ?? 0) + bytes;
+        const before = this.previousVideoStats.get(id);
+        const deltaBytes = Math.max(0, bytes - (before?.bytes ?? 0));
+        if (deltaBytes > liveStreamDelta) {
+          liveStreamDelta = deltaBytes;
+          fps = typeof stat.framesPerSecond === 'number' ? Math.round(stat.framesPerSecond) : null;
         }
-        if (bytes > liveStreamBytes) {
-          liveStreamBytes = bytes;
-          if (typeof stat.framesPerSecond === 'number') {
-            fps = Math.round(stat.framesPerSecond);
-          }
-          if (typeof stat.packetsLost === 'number' && typeof stat.packetsReceived === 'number') {
-            const total = stat.packetsLost + stat.packetsReceived;
-            packetLossPct = total > 0 ? (stat.packetsLost / total) * 100 : 0;
-          }
-        }
+        const lost = typeof stat.packetsLost === 'number' ? stat.packetsLost : 0;
+        const received = typeof stat.packetsReceived === 'number' ? stat.packetsReceived : 0;
+        // Counter resets start a new baseline; late recovered packets may
+        // reduce packetsLost and must not manufacture negative loss.
+        const reset = before !== undefined && received < before.received;
+        intervalLost += Math.max(0, lost - (reset ? 0 : (before?.lost ?? 0)));
+        intervalReceived += Math.max(0, received - (reset ? 0 : (before?.received ?? 0)));
+        nextVideoStats.set(id, { bytes, lost, received });
       }
     }
+    this.previousVideoStats = nextVideoStats;
+    const intervalPackets = intervalLost + intervalReceived;
+    if (intervalPackets > 0) packetLossPct = (intervalLost / intervalPackets) * 100;
 
     if (videoBytes !== null) {
       const now = Date.now();
@@ -1141,6 +1193,8 @@ export class ViewerConnection {
   close(): void {
     // Set the closed guard FIRST so any mid-close callbacks exit early.
     this.isClosed = true;
+    if (this.handoffTimer) clearTimeout(this.handoffTimer);
+    this.handoffTimer = null;
     this.clearForegroundDeadline();
     // Clear pending timers BEFORE closing resources to prevent race fires.
     this.clearRecoveryDeadline();

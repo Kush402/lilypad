@@ -772,6 +772,69 @@ describe('reconnecting after the laptop drops', () => {
     expect(requestConnectForPair).toHaveBeenNthCalledWith(2, expect.anything());
   });
 
+  it('automatically requests an authenticated cloud room on LAN handoff, without duplicate requests', async () => {
+    loadPairs.mockResolvedValue([
+      {
+        desktopDeviceId: 'desktop-1',
+        name: 'Mac',
+        apiBaseUrl: 'https://api.example',
+        connectSecret: 'secret',
+      },
+    ]);
+    requestConnectForPair
+      .mockRejectedValueOnce(new ClassifiedError(appError('session_gone')))
+      .mockResolvedValueOnce({
+        roomId: 'cloud-room',
+        signalingUrl: 'wss://api.example/ws',
+        scopes: ['view'],
+      });
+    const { navigation } = renderViewer(['view'], TEST_SAFE_AREA_METRICS, 'desktop-1');
+    act(() => {
+      lastConn().cb.onNetworkHandoff();
+      lastConn().cb.onNetworkHandoff();
+    });
+    await waitFor(() =>
+      expect(navigation.replace).toHaveBeenCalledWith(
+        'Viewer',
+        expect.objectContaining({ roomId: 'cloud-room', signalingTlsPin: undefined }),
+      ),
+    );
+    expect(requestConnectForPair).toHaveBeenCalledTimes(2);
+    expect(requestConnectForPair).toHaveBeenNthCalledWith(1, expect.anything(), {
+      resume: true,
+      preferCloud: true,
+    });
+    expect(requestConnectForPair).toHaveBeenNthCalledWith(2, expect.anything(), {
+      preferCloud: true,
+    });
+  });
+
+  it('does not navigate into a late handoff response after Disconnect', async () => {
+    loadPairs.mockResolvedValue([
+      {
+        desktopDeviceId: 'desktop-1',
+        name: 'Mac',
+        apiBaseUrl: 'https://api.example',
+        connectSecret: 'secret',
+      },
+    ]);
+    let finish!: (value: unknown) => void;
+    requestConnectForPair.mockReturnValue(
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    );
+    const { navigation } = renderViewer(['view'], TEST_SAFE_AREA_METRICS, 'desktop-1');
+    act(() => lastConn().cb.onNetworkHandoff());
+    await waitFor(() => expect(requestConnectForPair).toHaveBeenCalledTimes(1));
+    fireEvent.press(screen.getByTestId('disconnect-button'));
+    fireEvent.press(screen.getByTestId('disconnect-button'));
+    await act(async () =>
+      finish({ roomId: 'late', signalingUrl: 'wss://api.example/ws', scopes: ['view'] }),
+    );
+    expect(navigation.replace).not.toHaveBeenCalled();
+  });
+
   it('rings the laptop again and moves to the new room', async () => {
     loadPairs.mockResolvedValue([
       {

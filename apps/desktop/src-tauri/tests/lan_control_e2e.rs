@@ -276,6 +276,26 @@ async fn lan_connect_request_works_without_cloud() {
 }
 
 #[tokio::test]
+async fn rejected_lan_registration_delivers_terminal_error_before_closing() {
+    let fx = boot_lan_fixture().await;
+    // The phone wakes after the desktop has expired its room. Exercise the
+    // actual TLS writer teardown, not just the hub's refusal-frame builder.
+    let mut phone = phone_socket(fx.port, &fx.server_cert).await;
+    send_frame(
+        &mut phone,
+        &serde_json::json!({
+            "type": "register", "roomId": "expired-room", "from": "mobile", "ts": 0,
+            "payload": {"role": "mobile", "deviceId": "mobile-12345678"}
+        }),
+    )
+    .await;
+    let refusal = expect_frame(&mut phone, "error").await;
+    assert_eq!(refusal["payload"]["code"], "unauthorized_room");
+    assert_eq!(refusal["roomId"], "expired-room");
+    let _ = std::fs::remove_dir_all(fx.dir);
+}
+
+#[tokio::test]
 async fn a_lan_socket_cannot_route_messages_into_another_authorized_room() {
     let mut fx = boot_lan_fixture().await;
     let (status, body) = post_connect(&fx).await;
