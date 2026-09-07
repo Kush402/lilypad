@@ -20,13 +20,29 @@ earlier record was compacted away, which is the argument for the file.
 the code · 4 deliberately unchanged · 4 not a bug · 1 unrecoverable (L-20).
 219 rows.
 
-**v0.1.30 authorized (2026-09-06):** The user approved completing the
-control audit and publishing v0.1.30 after validation. The keyboard duplicate
-is reproducible from the blur/native-buffer mismatch (L-217). Related control
-review proved L-218 through L-220 below. The L-216 foreground/reconnect patch
-is included. Before publication, run full verification, exact-commit CI,
-Apple preflight and the established signed release/TestFlight workflows.
-No signed v0.1.30 device test has happened yet.
+**v0.1.30 published (2026-09-06):** Release commit
+`c4cd6765f853d3d5f1797f458132e65a8d1f2dfa` is on main and tagged
+`v0.1.30` / `mobile-v0.1.30`. L-216 through L-220 are included. Full
+`pnpm verify` passed on the exact committed tree in `/tmp/lilypad-v30-verify`:
+619 mobile tests (11 intentional skips), 409 Rust unit tests and all native
+integration/soak tests, plus the other workspace tests, typecheck, lint,
+formatting, docs and workflow gates. Two unrelated mobile screen tests timed
+out on the first resource-constrained run; the complete rerun passed without
+source or timeout changes. Dependency audits and suppression validation passed
+with the established exceptions unchanged.
+
+Exact-SHA CI `34048622509`, Apple preflight `34047987604`, signed desktop
+release `34048924588`, TestFlight `34048926415`, Android workflow
+`34048926420`, backend deploy `34048924755`, and final site deployment
+`34049951359` all passed. The earlier site run `34048622681` correctly stopped
+before the installer existed. Production health reports this release SHA with
+Postgres/Redis up. The public updater feed reports `0.1.30`. An anonymous
+website DMG download completed in 1.45 seconds (24,414,159 bytes); SHA-256
+`327e2e9d143328c43c5dbddb36ee925b848931314bf07360a302605b9eeeea54`
+matches the published GitHub artifact. Gatekeeper accepted the downloaded DMG
+as Notarized Developer ID, and `stapler validate` passed. Signed physical-device testing of the
+keyboard and background/rejoin behavior remains outstanding; the checklist is
+in [manual-device-test.md](manual-device-test.md).
 
 **v0.1.29 hardware follow-up (2026-09-05):** The user tested the signed
 website DMG and TestFlight app. LAN room `65443640-641d-45ab-9329-3d9d7e1a216c`
@@ -39,16 +55,15 @@ Production at release SHA `50d4531` reports healthy Postgres/Redis/mail and
 zero backend/database/cache container restarts. The inspected test-window
 backend log has no warning/error entries or HTTP 5xx; one `/connect/request`
 returned 409. This session used the local LAN hub. No production backend
-fault was proved. Mobile fixes below are local and not yet in TestFlight;
-signed hardware validation remains required for the patched behavior.
+fault was proved. The fixes below subsequently shipped in v0.1.30; signed hardware validation
+remains required for the patched behavior.
 
 Validation: 592 mobile tests pass (11 intentional skips), plus mobile
 TypeScript/lint, changed-file formatting, and `pnpm docs:check`. Source-file
 reads stalled in the Desktop workspace, so the full mobile suite ran from
 `/tmp/lilypad-mobile-validation` with the frozen lockfile and offline dependency
 store. Every changed mobile file was checked byte-for-byte against the working
-tree. Test log: `/tmp/lilypad-mobile-validation-tests.log`. No version bump,
-commit, deployment, or TestFlight publication was performed for L-216.
+tree. Test log: `/tmp/lilypad-mobile-validation-tests.log`. This initial L-216-only check preceded the v0.1.30 release recorded above.
 
 **v0.1.29 published (2026-09-05):** Release SHA
 `50d453154ca70a6b6e3f785d3d051b2918f12613` is on main and tagged
@@ -355,11 +370,11 @@ what it is tallying is the failure this file was created to stop.
 | L-214 | **ICE disconnection with stale peer traffic could leave capture and Ask running while SCTP remained open. A resumed transport could also undo an explicit viewer pause.** | Fixed locally, NOT RELEASED — stale disconnected peers stop capture, revoke queued input, cancel Ask and show Connecting within the existing bounded recovery path. Fresh actual traffic still outvotes a bad ICE state. Viewer pause is tracked independently from signaling/transport loss; clipboard is reseeded on recovery. Regressions cover fresh-versus-stale traffic, a non-extending deadline, pause during suspension, RTCP recovery and closed-channel refusal. Signed physical-device network-loss timing remains NOT VERIFIED. |
 
 | L-215 | **The setup ordering regression could read an empty DOM under concurrent full verification.** It waited for the permission RPC to be invoked, which does not establish that asynchronous UI rendering completed. The 2026-09-05 full run failed with no accessible headings. | Fixed locally — wait for the actual account heading before asserting the displayed order. No product behavior change or timeout increase. |
-| L-216 | **After iOS background suspension outlasted the desktop's 15-second grace, the phone repeatedly registered into the expired room and remained Reconnecting.** `unauthorized_room` only changed the error copy, not the connection lifecycle. Resume could be dropped before socket reopening, and a suspended debounce timer could suppress foreground recovery. | Fixed locally, NOT RELEASED — room rejection now ends and disposes the viewer immediately; terminal ICE failures also dispose retries. Foreground uses wall-clock suspension duration, resends resume after re-registration, and checks room liveness with protocol ping/pong under a bounded deadline while preserving actual live video. Regression coverage includes OS-frozen timers, expired-room rejection with stale callbacks, unresponsive native-open transport, successful foreground recovery, live media, and UI reconnect into a newly authorized room. |
-| L-217 | **The mobile keyboard could resend all prior text after blur/refocus, omit IME/correction replacements and Return, and leave Backspace held.** The native buffer survived blur while its JS history was erased; only append changes were forwarded. | Fixed locally for v0.1.30 — one grapheme-aware edit stream owns text and nonempty-buffer deletion; empty-buffer Backspace is a balanced down/up; Return uses the existing shortcut once. Blur keeps both buffers. Cursor/room changes replace the native input and reject old-generation callbacks. Unicode segmentation uses the Hermes-compatible zero-dependency `unicode-segmenter` package. Regression coverage includes blur/focus duplicates, replacements, emoji/combining marks, deletion callbacks, Return and stale native text. |
-| L-218 | **Retired mobile input senders could flush buffered/late input into a replacement peer; long pasted text or a drained backlog could form oversized input frames.** | Fixed locally for v0.1.30 — dispose clears queues/timers and makes old senders inert; sends are bound to their channel; peer replacement and close discard pending input. Text is split without breaking surrogate pairs, and critical backlog drains in bounded ordered frames. Tests cover old-to-new peer isolation, close, backpressure and long Unicode paste. |
-| L-219 | **An interrupted touch could click, held toolbar repeat could survive backgrounding, and drag release returned to the start position. Late unreliable moves could then undo the reliable release position.** | Fixed locally for v0.1.30 — termination cancels the gesture; app inactivity/terminal state stops holds and releases a drag. Drag completion/cancellation/two-finger takeover use the last injected position. The desktop rejects numbered moves older than an accepted pointer boundary. Regressions cover cancellation, last-position release, background-held keys and cross-channel late moves. |
-| L-220 | **A replacement peer's input sequence restarted at 1 while the desktop retained the previous peer's dedup history, suppressing new keys/clicks. Numbered text and commands had no replay filtering.** | Fixed locally for v0.1.30 — explicit peer replacement revokes queued input and resets ordering in the worker before re-enable; ordinary pause keeps replay protection. Modern numbered text/commands are deduplicated without dropping legacy same-millisecond text. Worker and dispatcher regressions cover old queued bytes, sequence restart, pause protection and duplicate text. |
+| L-216 | **After iOS background suspension outlasted the desktop's 15-second grace, the phone repeatedly registered into the expired room and remained Reconnecting.** `unauthorized_room` only changed the error copy, not the connection lifecycle. Resume could be dropped before socket reopening, and a suspended debounce timer could suppress foreground recovery. | Fixed in v0.1.30 — room rejection now ends and disposes the viewer immediately; terminal ICE failures also dispose retries. Foreground uses wall-clock suspension duration, resends resume after re-registration, and checks room liveness with protocol ping/pong under a bounded deadline while preserving actual live video. Regression coverage includes OS-frozen timers, expired-room rejection with stale callbacks, unresponsive native-open transport, successful foreground recovery, live media, and UI reconnect into a newly authorized room. |
+| L-217 | **The mobile keyboard could resend all prior text after blur/refocus, omit IME/correction replacements and Return, and leave Backspace held.** The native buffer survived blur while its JS history was erased; only append changes were forwarded. | Fixed in v0.1.30 — one grapheme-aware edit stream owns text and nonempty-buffer deletion; empty-buffer Backspace is a balanced down/up; Return uses the existing shortcut once. Blur keeps both buffers. Cursor/room changes replace the native input and reject old-generation callbacks. Unicode segmentation uses the Hermes-compatible zero-dependency `unicode-segmenter` package. Regression coverage includes blur/focus duplicates, replacements, emoji/combining marks, deletion callbacks, Return and stale native text. |
+| L-218 | **Retired mobile input senders could flush buffered/late input into a replacement peer; long pasted text or a drained backlog could form oversized input frames.** | Fixed in v0.1.30 — dispose clears queues/timers and makes old senders inert; sends are bound to their channel; peer replacement and close discard pending input. Text is split without breaking surrogate pairs, and critical backlog drains in bounded ordered frames. Tests cover old-to-new peer isolation, close, backpressure and long Unicode paste. |
+| L-219 | **An interrupted touch could click, held toolbar repeat could survive backgrounding, and drag release returned to the start position. Late unreliable moves could then undo the reliable release position.** | Fixed in v0.1.30 — termination cancels the gesture; app inactivity/terminal state stops holds and releases a drag. Drag completion/cancellation/two-finger takeover use the last injected position. The desktop rejects numbered moves older than an accepted pointer boundary. Regressions cover cancellation, last-position release, background-held keys and cross-channel late moves. |
+| L-220 | **A replacement peer's input sequence restarted at 1 while the desktop retained the previous peer's dedup history, suppressing new keys/clicks. Numbered text and commands had no replay filtering.** | Fixed in v0.1.30 — explicit peer replacement revokes queued input and resets ordering in the worker before re-enable; ordinary pause keeps replay protection. Modern numbered text/commands are deduplicated without dropping legacy same-millisecond text. Worker and dispatcher regressions cover old queued bytes, sequence restart, pause protection and duplicate text. |
 
 ## What is left, and who it needs
 
