@@ -16,15 +16,28 @@ This file exists because the list used to live only in a conversation. Six rows
 (L-20, L-38 through L-42) were reconstructed from later summaries after the
 earlier record was compacted away, which is the argument for the file.
 
-**Status counts:** 207 fixed · 5 shipped · 0 open · 1 blocked on something outside
+**Status counts:** 208 fixed · 5 shipped · 0 open · 1 blocked on something outside
 the code · 4 deliberately unchanged · 4 not a bug · 1 unrecoverable (L-20).
-222 rows.
+223 rows.
 
-**v0.1.31 release candidate:** L-221 through L-223 address the signed-device
-follow-up. Focused validation passed: 629 mobile tests (11 intentional skips),
-409 Rust unit tests, five real LAN integration tests, mobile typecheck/lint,
-Rust formatting/Clippy and documentation checks. Full release verification and
-exact-commit CI are required before publishing the signed artifacts.
+**v0.1.31 publication (2026-09-07):** Commit
+`afa147de6faf817cf8a52cc29f00808f94961bf8` passed full `pnpm verify` on the
+committed tree (629 mobile tests, 409 Rust unit tests, native integration/soak,
+all workspace and release gates), exact-main CI `34080366730`, and Apple
+preflight `34079783875`. Desktop release `34081134971`, backend deploy
+`34081135048`, Android workflow `34081136693`, and release-triggered site
+`34082077856` passed. The earlier main-push site run correctly stopped before
+the installer existed. Production health reports this SHA; the updater says
+0.1.31. The full anonymous DMG download completed in 1.07 seconds (24,386,641
+bytes), passed Gatekeeper and stapler validation, and has SHA-256
+`ae2ac2fe2efe07326b90a0fd3f1c841db33e1ea022fe05f8025845dc84998bae`.
+
+TestFlight run `34081136689` failed before archiving: the workflow correctly
+restored matching Pods, but Fastlane checked relative paths from `ios/fastlane`
+and unnecessarily reinstalled them, hitting CocoaPods' known null-byte path
+failure. L-224 fixes the path anchor and tests missing/matching/stale sandboxes
+from the Fastlane directory. iOS will be dispatched from the build-fix commit;
+released tags and the already-published desktop artifact are unchanged.
 
 **v0.1.30 hardware follow-up (2026-09-07 UTC):** The installed Mac app reports
 0.1.30. The user reported LAN-to-cellular disconnection and mild visible
@@ -32,7 +45,7 @@ blockiness during a later cellular session. Logs show LAN room
 `da805097-3b46-4a66-8a2a-7feafb5d68a5` losing ICE at 01:10:11, followed by a
 new direct-internet room at 01:10:20. A later LAN room expired at 02:18:46;
 six refused registrations followed at 02:20:58–02:21:00. L-221 through L-223
-below are fixed locally, not released.
+below are included in v0.1.31; TestFlight publication is tracked above.
 
 A real pinned-TLS regression reproduced the lost refusal (`socket closed
 before 'error'; saw []`) and passes after draining the writer before closure.
@@ -405,9 +418,11 @@ what it is tallying is the failure this file was created to stop.
 | L-219 | **An interrupted touch could click, held toolbar repeat could survive backgrounding, and drag release returned to the start position. Late unreliable moves could then undo the reliable release position.** | Fixed in v0.1.30 — termination cancels the gesture; app inactivity/terminal state stops holds and releases a drag. Drag completion/cancellation/two-finger takeover use the last injected position. The desktop rejects numbered moves older than an accepted pointer boundary. Regressions cover cancellation, last-position release, background-held keys and cross-channel late moves. |
 | L-220 | **A replacement peer's input sequence restarted at 1 while the desktop retained the previous peer's dedup history, suppressing new keys/clicks. Numbered text and commands had no replay filtering.** | Fixed in v0.1.30 — explicit peer replacement revokes queued input and resets ordering in the worker before re-enable; ordinary pause keeps replay protection. Modern numbered text/commands are deduplicated without dropping legacy same-millisecond text. Worker and dispatcher regressions cover old queued bytes, sequence restart, pause protection and duplicate text. |
 
-| L-221 | **The LAN server aborted its socket writer immediately after queuing a registration refusal, losing the terminal error and making the phone retry an expired room.** Reproduced over real pinned TLS. | Fixed locally — detach, close the output queue and drain the writer under a one-second bound before aborting; deliver the error before orderly socket closure. The five LAN integration tests pass, including the regression that failed on v0.1.30. |
+| L-221 | **The LAN server aborted its socket writer immediately after queuing a registration refusal, losing the terminal error and making the phone retry an expired room.** Reproduced over real pinned TLS. | Fixed in v0.1.31 (macOS) — detach, close the output queue and drain the writer under a one-second bound before aborting; deliver the error before orderly socket closure. The five LAN integration tests pass, including the regression that failed on v0.1.30. |
 | L-222 | **WiFi-to-cellular transitions could remain “connected” in NetInfo and never trigger recovery; a LAN room's signaling endpoint cannot be reached from cellular to perform an ICE restart.** Hardware handoff broke and required a new connect request. | Fixed locally — detect connected network-type changes; after five seconds without newly arriving video on cellular, request an authenticated cloud room through the existing resume/new-room flow. Keep working media, avoid cloud-room churn, suppress duplicate requests, defer handoff while backgrounded and reject late navigation after disconnect. No LAN certificate pin is applied to the cloud endpoint. Signed device handoff validation remains outstanding. |
 | L-223 | **The mobile quality HUD used lifetime packet loss and selected FPS from the stream with the most historical bytes, so an old damaged or retired stream could keep a recovered path looking poor.** | Fixed locally — use packet deltas for the current polling interval and choose FPS by newly received bytes. Regression covers a large frozen stream, a clean new stream and fresh loss. This corrects telemetry, not the separate hardware report of slight cellular blockiness. |
+
+| L-224 | **Fastlane checked the CocoaPods sandbox relative to its lane working directory (`ios/fastlane`) instead of `ios`, re-running installation even after the workflow restored a matching cache.** v0.1.31 TestFlight then failed with CocoaPods' null-byte pathname error. | Fixed locally — anchor Podfile and Manifest.lock to the helper's directory, with regression checks for matching, stale and missing sandboxes executed before CI signing. A manual v0.1.31 iOS rebuild will preserve the released tags and desktop artifact. |
 
 ## What is left, and who it needs
 

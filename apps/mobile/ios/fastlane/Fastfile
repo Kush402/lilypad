@@ -11,6 +11,7 @@
 require 'base64'
 require 'shellwords'
 require 'tmpdir'
+require_relative 'pods_sandbox'
 
 default_platform(:ios)
 
@@ -113,10 +114,9 @@ platform :ios do
     # happened on 2026-08-25 — the workflow's own install succeeded on its
     # retry, this call then ran it again, hit the bug, and took the archive
     # down with it.
-    manifest = "Pods/Manifest.lock"
-    if !File.exist?(manifest) || File.read(manifest) != File.read("Podfile.lock")
+    if !LilypadPodsSandbox.current?
       cocoapods(
-        podfile: "Podfile",
+        podfile: File.join(LilypadPodsSandbox::IOS_ROOT, "Podfile"),
         try_repo_update_on_error: true
       )
     else

@@ -123,6 +123,9 @@ jobs:
           bundler-cache: true
           working-directory: apps/mobile
 
+      - name: Verify CocoaPods sandbox detection
+        run: bundle exec ruby ios/fastlane/pods_sandbox_test.rb
+
       - name: Write App Store Connect API key (.p8)
         env:
           ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
