@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -203,5 +203,109 @@ for (const [label, release, expectedStatus] of [
     );
     assert.equal(result.status, expectedStatus, result.stdout + result.stderr);
     if (expectedStatus) assert.match(result.stderr, /requires the published stable release/);
+  });
+}
+
+// --- mobile iOS: the lane's own pod-install guard ---------------------------
+//
+// fastlane runs a LANE BODY with the working directory set to the `fastlane/`
+// folder and only its ACTIONS one level up, in the project folder. A guard
+// written against bare `Pods/Manifest.lock` therefore names a path that cannot
+// exist, is always false, and re-runs the `pod install` that loses to
+// CocoaPods #12798/#12866 at roughly one run in two. That is what took
+// mobile-v0.1.31 down: the workflow's own step reported the sandbox already
+// current, the lane installed anyway, and the build never reached TestFlight.
+//
+// The guard is lifted from the shipped Fastfile and evaluated the way fastlane
+// evaluates it, so this cannot pass on a Fastfile that has drifted back.
+const fastfile = readFileSync('apps/mobile/ios/fastlane/Fastfile', 'utf8');
+const podGuard = fastfile.slice(
+  fastfile.indexOf('    pods_match_lockfile = '),
+  fastfile.indexOf('    if pods_match_lockfile'),
+);
+// `codegen` is the third input, and the one that made the first version of
+// this fix a worse bug than the one it fixed: `pod install` also writes React
+// Native's generated sources under `ios/build/generated`, which `Pods.xcodeproj`
+// references and git ignores. A guard that skipped on `Manifest.lock` alone
+// would hand the archive a Pods tree whose generated sources do not exist.
+for (const [label, manifest, codegen, expected] of [
+  ['a sandbox that already matches Podfile.lock', 'LOCK', true, 'true'],
+  ['a sandbox built from a different lockfile', 'STALE', true, 'false'],
+  ['no sandbox at all', null, false, 'false'],
+  ['a Pods tree restored without its generated sources', 'LOCK', false, 'false'],
+]) {
+  test(`the iOS beta lane detects ${label}`, () => {
+    assert.ok(podGuard.includes('Dir.chdir'), 'the pod guard was not found in the Fastfile');
+    const dir = mkdtempSync(join(tmpdir(), 'lilypad-pod-guard-'));
+    try {
+      mkdirSync(join(dir, 'fastlane'));
+      writeFileSync(join(dir, 'Podfile.lock'), 'LOCK');
+      if (manifest !== null) {
+        mkdirSync(join(dir, 'Pods'));
+        writeFileSync(join(dir, 'Pods', 'Manifest.lock'), manifest);
+      }
+      if (codegen) {
+        mkdirSync(join(dir, 'build', 'generated', 'ios'), { recursive: true });
+        writeFileSync(join(dir, 'build', 'generated', 'ios', 'ReactCodegen.podspec.json'), '{}');
+      }
+      const result = spawnSync('ruby', ['-e', `${podGuard}\nputs pods_match_lockfile`], {
+        cwd: join(dir, 'fastlane'),
+        encoding: 'utf8',
+      });
+      assert.equal(result.status, 0, result.error?.message ?? result.stderr);
+      assert.equal(result.stdout.trim(), expected);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+}
+
+// The workflow asks the same question in bash before the lane asks it in Ruby.
+// They drifted once already (the workflow skipped, the lane installed anyway),
+// and that drift cost mobile-v0.1.31 — so the two conditions are checked
+// against the same fixtures, from the shipped workflow, not a copy of it.
+const iosWorkflow = parse(readFileSync('.github/workflows/mobile-ios.yml', 'utf8'));
+const iosSteps = iosWorkflow.jobs.ios.steps;
+const podCache = iosSteps.find((step) => step.name === 'Cache the CocoaPods sandbox');
+const podInstall = iosSteps.find((step) => step.name === 'Install CocoaPods');
+
+test('the pod cache carries the generated sources, under a key that can still be written', () => {
+  const paths = String(podCache.with.path)
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+  assert.ok(paths.includes('apps/mobile/ios/Pods'), paths.join(','));
+  assert.ok(paths.includes('apps/mobile/ios/build/generated'), paths.join(','));
+  // A cache entry is immutable: widening `path` under the old key would restore
+  // the old half-contents forever and never save the new ones.
+  assert.ok(!podCache.with.key.startsWith('pods-$'), podCache.with.key);
+});
+
+for (const [label, manifest, codegen, skips] of [
+  ['a sandbox that already matches Podfile.lock', 'LOCK', true, true],
+  ['a sandbox built from a different lockfile', 'STALE', true, false],
+  ['no sandbox at all', null, false, false],
+  ['a Pods tree restored without its generated sources', 'LOCK', false, false],
+]) {
+  test(`the iOS workflow ${skips ? 'skips' : 'installs'} for ${label}`, () => {
+    const dir = mkdtempSync(join(tmpdir(), 'lilypad-pod-step-'));
+    try {
+      writeFileSync(join(dir, 'Podfile.lock'), 'LOCK');
+      if (manifest !== null) {
+        mkdirSync(join(dir, 'Pods'));
+        writeFileSync(join(dir, 'Pods', 'Manifest.lock'), manifest);
+      }
+      if (codegen) {
+        mkdirSync(join(dir, 'build', 'generated', 'ios'), { recursive: true });
+        writeFileSync(join(dir, 'build', 'generated', 'ios', 'ReactCodegen.podspec.json'), '{}');
+      }
+      // Stop before the retry loop: running `pod install` here is neither
+      // possible nor the thing under test.
+      const gate = podInstall.run.slice(0, podInstall.run.indexOf('for attempt in'));
+      const result = spawnSync('/bin/bash', ['-c', gate], { cwd: dir, encoding: 'utf8' });
+      assert.equal(/skipping install/.test(result.stdout), skips, result.stdout + result.stderr);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 }

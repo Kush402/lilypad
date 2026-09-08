@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import { SoftwareUpdate } from './SoftwareUpdate';
 import { updater } from '../lib/tauri';
+import { AUTO_CHECK_INTERVAL_MS } from '../lib/useUpdater';
 
 vi.mock('../lib/tauri', () => ({
   updater: {
@@ -31,6 +32,42 @@ function fakeUpdate(version = '0.2.0', body: string | null = null) {
     ),
   };
 }
+
+describe('SoftwareUpdate — the automatic check', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(updater.currentVersion).mockResolvedValue('0.1.0');
+  });
+
+  it('keeps asking, because an app that never restarts never gets a launch check', async () => {
+    // Measured 2026-09-08: this Mac last launched Lilypad three hours BEFORE
+    // v0.1.31 published and was still on 0.1.30 a day later. A launch-only
+    // check had nothing to fire on.
+    vi.useFakeTimers();
+    try {
+      vi.mocked(updater.check).mockResolvedValue(null);
+      render(<SoftwareUpdate variant="banner" />);
+      await vi.waitFor(() => expect(updater.check).toHaveBeenCalledTimes(1));
+      await vi.advanceTimersByTimeAsync(AUTO_CHECK_INTERVAL_MS + 1);
+      expect(updater.check).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('stops asking once it has something, so a finished download is not discarded', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(updater.check).mockResolvedValue(fakeUpdate('0.2.0') as never);
+      render(<SoftwareUpdate variant="banner" />);
+      await vi.waitFor(() => expect(updater.check).toHaveBeenCalledTimes(1));
+      await vi.advanceTimersByTimeAsync(AUTO_CHECK_INTERVAL_MS * 3);
+      expect(updater.check).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
 
 describe('SoftwareUpdate — panel (Diagnostics)', () => {
   beforeEach(() => {

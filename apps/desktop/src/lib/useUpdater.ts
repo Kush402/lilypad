@@ -34,6 +34,21 @@ export interface UpdaterState {
   failedStep: 'check' | 'download' | null;
 }
 
+/**
+ * How often an `auto` updater re-asks after its launch check.
+ *
+ * A launch-only check is not a check for an app that installs a login item and
+ * then runs for weeks. Measured on 2026-09-08: this Mac last launched Lilypad
+ * at 01:08 UTC on 2026-09-07, v0.1.31 published at 04:09 the same morning, and
+ * the app was still serving sessions a day later on 0.1.30 — there was simply
+ * never another launch for a launch-time check to happen at.
+ *
+ * Six hours means a release reaches a machine that never restarts within a day,
+ * at the cost of four requests for a small JSON manifest. `RUNBOOK.md` §4
+ * documents this cadence.
+ */
+export const AUTO_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
+
 const INITIAL: UpdaterState = {
   phase: 'idle',
   newVersion: null,
@@ -144,7 +159,17 @@ export function useUpdater(options: { auto?: boolean } = {}) {
   }, [check, downloadAndInstall]);
 
   useEffect(() => {
-    if (auto) void check();
+    if (!auto) return;
+    void check();
+    const timer = setInterval(() => {
+      // Never re-check once something is pending. A repeat check replaces
+      // `pending` and drops the phase back to `available`, which would throw
+      // away a download that had already finished and leave the user staring
+      // at a button they already pressed.
+      if (pending.current) return;
+      void check();
+    }, AUTO_CHECK_INTERVAL_MS);
+    return () => clearInterval(timer);
   }, [auto, check]);
 
   return { state, check, downloadAndInstall, relaunch, retry };

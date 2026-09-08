@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { api } from '../lib/tauri';
 import { useAppState } from '../lib/useAppState';
+import { useUpdater } from '../lib/useUpdater';
 import { STATUS_COLOR, STATUS_ARIA_LABEL } from '../lib/status';
 
 /** Bring an already-open window forward, if it exists. Never creates one —
@@ -41,6 +42,22 @@ export function Bubble() {
   const state = useAppState();
   const status = state?.session ?? 'idle';
   const [busy, setBusy] = useState(false);
+  // The app's ONLY automatic update check used to live in `Control`, and
+  // `tauri.conf.json` opens exactly one window at launch: this one. A Mac whose
+  // owner never opens the dashboard therefore never checked, while RUNBOOK §4
+  // said it did. Measured on 2026-09-08: a Mac sat on 0.1.30 for 28 hours after
+  // 0.1.31 published, with no updater line in 13 days of desktop logs.
+  //
+  // The check belongs on the surface that is always there — and it repeats, see
+  // `AUTO_CHECK_INTERVAL_MS`, because that Mac's last launch was three hours
+  // BEFORE the release it never got. The dashboard's banner still owns the
+  // download/restart flow; this only makes sure the question gets asked, and
+  // shows the answer somewhere the user will actually see it.
+  const { state: update } = useUpdater({ auto: true });
+  const updateWaiting = update.phase === 'available' || update.phase === 'ready';
+  const label = updateWaiting
+    ? `${STATUS_ARIA_LABEL[status]} · Lilypad ${update.newVersion ?? 'update'} available`
+    : STATUS_ARIA_LABEL[status];
 
   const onClick = async () => {
     switch (status) {
@@ -90,8 +107,8 @@ export function Bubble() {
       <button
         className={`bubble ${busy ? 'bubble--busy' : ''}`}
         onClick={() => void onClick()}
-        title={STATUS_ARIA_LABEL[status]}
-        aria-label={STATUS_ARIA_LABEL[status]}
+        title={label}
+        aria-label={label}
       >
         {/* The mark, not the 🪷 emoji this used to render. An emoji is drawn
          * by whichever font the OS ships, so it changed shape between macOS
@@ -102,10 +119,15 @@ export function Bubble() {
           <path d="M12 12 L20.25 7.71 A9.3 9.3 0 1 1 18.16 5.04 Z" />
         </svg>
         <span className="bubble__dot" style={{ backgroundColor: STATUS_COLOR[status] }} />
+        {/* Opposite corner from the session dot, because it answers a
+         * different question and must not be mistaken for a session state.
+         * Clicking the bubble already opens the dashboard, which is where the
+         * existing banner offers Download & install. */}
+        {updateWaiting ? <span className="bubble__update" data-testid="bubble-update" /> : null}
         {/* Color-only status fails WCAG 1.4.1 for colorblind/screen-reader
          * users — this text alternative isn't visible but is announced.
          * See docs/audit/m3/desktop-ux.md Finding 14. */}
-        <span className="sr-only">{STATUS_ARIA_LABEL[status]}</span>
+        <span className="sr-only">{label}</span>
       </button>
     </div>
   );

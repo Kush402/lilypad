@@ -207,11 +207,25 @@ jobs:
       # one run in two, and retrying is not a cure — run 32808340942 lost all
       # three of its attempts to it. A cache hit means the command that flakes
       # does not run at all, which is the only reliable way to stop losing.
+      #
+      # BOTH artifacts, not just `Pods`. `pod install` also writes React
+      # Native's codegen output under `ios/build/generated`, `Pods.xcodeproj`
+      # references that path, and `apps/mobile/ios/build/` is gitignored — so a
+      # cache that restores `Pods` alone hands the archive a sandbox whose
+      # generated sources do not exist. It never showed because the lane
+      # reinstalled unconditionally (L-224) and regenerated them every run; the
+      # moment that stopped, this became the next failure.
+      #
+      # The key is salted (`pods-v2-`) deliberately: a cache entry is immutable,
+      # so widening `path` under the old key would restore the old, half
+      # contents and — being an exact key hit — never save the new ones.
       - name: Cache the CocoaPods sandbox
         uses: actions/cache@v4
         with:
-          path: apps/mobile/ios/Pods
-          key: pods-${{ runner.os }}-${{ hashFiles('apps/mobile/ios/Podfile.lock') }}
+          path: |
+            apps/mobile/ios/Pods
+            apps/mobile/ios/build/generated
+          key: pods-v2-${{ runner.os }}-${{ hashFiles('apps/mobile/ios/Podfile.lock') }}
 
       # Five attempts on a cache miss. At ~50% each that is ~3% rather than the
       # ~12% three attempts left, and a genuinely broken Podfile still fails
@@ -223,7 +237,11 @@ jobs:
           # The same question Xcode's own "[CP] Check Pods Manifest.lock" phase
           # asks, and the same one the beta lane asks: is the sandbox already
           # the one this lockfile describes?
-          if [ -f Pods/Manifest.lock ] && cmp -s Pods/Manifest.lock Podfile.lock; then
+          # The codegen podspec is half of "the sandbox is current" — see the
+          # cache step above and the same condition in `fastlane/Fastfile`.
+          if [ -f Pods/Manifest.lock ] \
+            && [ -f build/generated/ios/ReactCodegen.podspec.json ] \
+            && cmp -s Pods/Manifest.lock Podfile.lock; then
             echo "Pods restored from cache and match Podfile.lock — skipping install"
             exit 0
           fi

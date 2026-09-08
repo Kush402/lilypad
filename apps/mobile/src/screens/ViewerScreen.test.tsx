@@ -303,6 +303,24 @@ describe('ViewerScreen', () => {
     expect(sender.keyPress).not.toHaveBeenCalled();
   });
 
+  it('keeps the focused native input alive so aiming the caret cannot close the keyboard', () => {
+    // 0.1.30 retired the hidden input on every `pointer_down`, every `click`
+    // and every toolbar key — twice for one tap on the Mac's screen, which is
+    // the gesture that precedes typing. Retiring it destroys the field the
+    // software keyboard belongs to. While it is focused the composer already
+    // mirrors the native buffer, so the field stays and the next edit is still
+    // a diff rather than a resend.
+    renderViewer();
+    const input = screen.getByTestId('hidden-keyboard-input');
+    const sender = lastConn().inputSender;
+    fireEvent(input, 'focus');
+    fireEvent.changeText(input, 'hello');
+    fireEvent.press(screen.getByText('Copy'));
+    fireEvent.changeText(input, 'hello!');
+    expect(sender.shortcut.mock.calls).toEqual([['copy']]);
+    expect(sender.text.mock.calls).toEqual([['hello'], ['!']]);
+  });
+
   it('ignores text callbacks from a native input retired by a cursor-moving control', () => {
     renderViewer();
     const input = screen.getByTestId('hidden-keyboard-input');

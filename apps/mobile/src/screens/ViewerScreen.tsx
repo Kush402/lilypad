@@ -148,7 +148,15 @@ export function ViewerScreen({ route, navigation }: Props) {
   // stands up a fresh one against the same room/scopes without a new QR
   // scan. See docs/audit/m3/mobile-ux.md Finding 5.
   const [reconnectAttempt, setReconnectAttempt] = useState(0);
-  const [keyboardOpen, setKeyboardOpen] = useState(false);
+  const [keyboardOpen, setKeyboardOpenState] = useState(false);
+  // Read by `resetKeyboard`, which runs from touch handlers and signaling
+  // callbacks — a state read there would be a render behind, and being one
+  // render behind is exactly the moment that costs the keyboard.
+  const keyboardOpenRef = useRef(false);
+  const setKeyboardOpen = useCallback((open: boolean) => {
+    keyboardOpenRef.current = open;
+    setKeyboardOpenState(open);
+  }, []);
   const [stickyMods, setStickyMods] = useState<Modifier[]>([]);
   const [clipboardToast, setClipboardToast] = useState(false);
   const [logCopied, setLogCopied] = useState(false);
@@ -199,22 +207,45 @@ export function ViewerScreen({ route, navigation }: Props) {
   const composer = useRef(new KeyboardComposer());
   const keyboardGenerationRef = useRef(0);
   const [keyboardGeneration, setKeyboardGeneration] = useState(0);
-  const restoreKeyboardFocus = useRef(false);
   const reconnectRequest = useRef(0);
   const reconnectPending = useRef(false);
   const reconnectRef = useRef<(preferCloud?: boolean) => void>(() => {});
   const bindKeyboard = useCallback((node: TextInput | null) => {
     hiddenInputRef.current = node;
-    if (node && restoreKeyboardFocus.current) {
-      restoreKeyboardFocus.current = false;
-      node.focus();
-    }
   }, []);
   const resetKeyboard = useCallback(() => {
-    // A new native input resets both sides atomically. clear() can be ignored
-    // by RN when a newer native edit is pending; old callbacks must not type
-    // their retained buffer into the new remote field.
-    restoreKeyboardFocus.current = hiddenInputRef.current?.isFocused() ?? false;
+    // Retiring the native input is how the buffer gets cleared reliably —
+    // clear() can be ignored by RN when a newer native edit is pending, and
+    // old callbacks must not type their retained buffer into the new remote
+    // field. But the field being replaced is the one that OWNS the keyboard,
+    // so doing this while the user is typing takes the keyboard down with it.
+    //
+    // That is what shipped in 0.1.30. `resetKeyboard` runs on `pointer_down`
+    // AND on `click` — twice for a single tap on the Mac's screen, which is
+    // the gesture that necessarily PRECEDES typing (you tap into a text field
+    // first) — and again every 70 ms of held toolbar auto-repeat. Opening the
+    // keyboard and then aiming it was not a supported sequence.
+    //
+    // While the field is focused, replacing it buys nothing anyway: the
+    // composer already mirrors the native buffer, so leaving both untouched is
+    // correct for every keystroke that follows a caret move. More typing diffs
+    // to the new suffix and is sent once; a deletion still emits exactly one
+    // Backspace, at the caret the click just moved. Only the clearing is
+    // deferred — to the next reset that lands while the keyboard is down,
+    // where it costs nothing.
+    //
+    // Either measure counts. `keyboardOpenRef` is what the app itself calls
+    // "the keyboard is up" (it drives the ⌨ toggle); `isFocused` is what the
+    // native layer says. They can disagree for one render around a focus
+    // event, and the field must survive both readings.
+    if (keyboardOpenRef.current || hiddenInputRef.current?.isFocused()) return;
+    // Nothing typed, nothing to clear. The composer mirrors the native buffer,
+    // so an empty composer means an empty field and the replacement would
+    // achieve nothing — while still costing a re-render of this whole screen,
+    // on `pointer_down`, for every touch. That is the one thing the viewport
+    // code above goes out of its way not to do, and held toolbar repeat fires
+    // it every 70 ms.
+    if (composer.current.isEmpty) return;
     composer.current.reset();
     keyboardGenerationRef.current += 1;
     setKeyboardGeneration(keyboardGenerationRef.current);
@@ -270,6 +301,14 @@ export function ViewerScreen({ route, navigation }: Props) {
         },
         onState: (next, detail) => {
           if (!active) return;
+          // Blur BEFORE the reset below, not after: `resetKeyboard` declines to
+          // retire a focused field, so a terminal state has to give the field
+          // up first or the buffer would survive the session that produced it.
+          if (next === 'ended' || next === 'failed' || next === 'denied') {
+            hiddenInputRef.current?.blur();
+            Keyboard.dismiss();
+            setKeyboardOpen(false);
+          }
           if (
             next === 'negotiating' ||
             next === 'ended' ||
@@ -284,12 +323,6 @@ export function ViewerScreen({ route, navigation }: Props) {
               if (intent.kind === 'pointer_up')
                 connRef.current?.inputSender?.pointerUp(intent.x, intent.y);
             }
-          }
-          if (next === 'ended' || next === 'failed' || next === 'denied') {
-            restoreKeyboardFocus.current = false;
-            hiddenInputRef.current?.blur();
-            Keyboard.dismiss();
-            setKeyboardOpen(false);
           }
           setState(next);
           setRecovery(next === 'recovering_ice' ? (detail ?? null) : null);

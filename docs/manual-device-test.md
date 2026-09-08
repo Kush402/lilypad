@@ -456,6 +456,25 @@ On the signed website DMG and TestFlight build, use a disposable text document:
 
 These checks are pending until recorded against the signed v0.1.30 artifacts.
 
+### Post-v0.1.31 keyboard and updater regressions
+
+1. **The keyboard survives aiming (L-225).** Open ⌨, then tap into a text field
+   on the Mac's screen, then type. The keyboard must still be up after the tap,
+   and the typed text must land in the field you tapped. Repeat with several
+   taps between sentences, with a toolbar key (Tab, an arrow, Enter) pressed
+   mid-sentence, and with an arrow held long enough to auto-repeat. The keyboard
+   must not blink, close, or need a second ⌨ tap at any point. Then check what
+   item 3 above checks — no old native text in the new field.
+2. **The Mac asks for updates on its own (L-226).** From a signed build one
+   version behind, launch Lilypad and do NOT open the dashboard. Within a few
+   seconds the bubble must show a second dot at its lower-left, and hovering it
+   must name the available version. Clicking through to the dashboard must show
+   the existing banner, and Download & install → Restart must land on the new
+   version. Confirm `~/Library/Logs/Lilypad/lilypad.log` and the Diagnostics
+   panel agree on the version afterwards.
+
+These two are pending until recorded against signed artifacts that contain them.
+
 ## 8. Recovery
 
 | #   | Do                                                              | Expect                                                                                                                                                       |

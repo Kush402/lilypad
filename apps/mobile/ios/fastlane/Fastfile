@@ -113,14 +113,42 @@ platform :ios do
     # happened on 2026-08-25 — the workflow's own install succeeded on its
     # retry, this call then ran it again, hit the bug, and took the archive
     # down with it.
-    manifest = "Pods/Manifest.lock"
-    if !File.exist?(manifest) || File.read(manifest) != File.read("Podfile.lock")
+    #
+    # The paths have to be resolved against `..`, and for two releases they were
+    # not. fastlane's Runner wraps a lane body in `Dir.chdir` to the FASTLANE
+    # FOLDER; only actions are run one level up, in the project folder
+    # (`Runner#execute_action` defaults `custom_dir` to ".."). So bare
+    # `Pods/Manifest.lock` named `ios/fastlane/Pods/Manifest.lock`, which cannot
+    # exist — the guard was always false and this lane always installed. Nothing
+    # said so, because `pod install` still worked: the action ran in `ios/`, and
+    # CocoaPods walks up from the working directory to find a Podfile anyway.
+    #
+    # mobile-v0.1.31 is what it cost. The workflow's own step reported "Pods
+    # restored from cache and match Podfile.lock — skipping install", this lane
+    # then ran `pod install` regardless, hit the null-byte bug on both the first
+    # attempt and the `--repo-update` retry, and the release never reached
+    # TestFlight while the desktop half of v0.1.31 shipped.
+    #
+    # "The sandbox is current" is TWO artifacts, not one. `pod install` writes
+    # the Pods tree AND React Native's codegen output under
+    # `build/generated/ios` — `Pods.xcodeproj` references that path, and
+    # `apps/mobile/ios/build/` is gitignored. A Pods tree without it is an
+    # unbuildable sandbox, so the presence of the codegen podspec is part of
+    # the question. Checking only `Manifest.lock` would let a restored-from-
+    # cache Pods tree skip the install that generates the sources the archive
+    # then cannot find.
+    pods_match_lockfile = Dir.chdir("..") do
+      File.exist?("Pods/Manifest.lock") &&
+        File.exist?("build/generated/ios/ReactCodegen.podspec.json") &&
+        File.read("Pods/Manifest.lock") == File.read("Podfile.lock")
+    end
+    if pods_match_lockfile
+      UI.message("Pods match Podfile.lock — skipping pod install")
+    else
       cocoapods(
         podfile: "Podfile",
         try_repo_update_on_error: true
       )
-    else
-      UI.message("Pods match Podfile.lock — skipping pod install")
     end
 
     # Bump the build number to something unique per CI run so TestFlight never

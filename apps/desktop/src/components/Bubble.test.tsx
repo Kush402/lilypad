@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { Bubble } from './Bubble';
 import { useAppState } from '../lib/useAppState';
-import { api } from '../lib/tauri';
+import { api, updater } from '../lib/tauri';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 
 vi.mock('../lib/useAppState', () => ({
@@ -14,6 +14,11 @@ vi.mock('../lib/tauri', () => ({
     createPairing: vi.fn().mockResolvedValue(undefined),
     showQrWindow: vi.fn().mockResolvedValue(undefined),
     showControl: vi.fn().mockResolvedValue(undefined),
+  },
+  updater: {
+    currentVersion: vi.fn().mockResolvedValue('0.1.31'),
+    check: vi.fn().mockResolvedValue(null),
+    relaunch: vi.fn().mockResolvedValue(undefined),
   },
 }));
 
@@ -168,6 +173,28 @@ describe('Bubble', () => {
     const button = screen.getByRole('button');
     expect(button).toHaveAccessibleName(expect.stringContaining('dashboard'));
     expect(button).not.toHaveAccessibleName(expect.stringContaining('pairing QR'));
+  });
+
+  it('asks about updates at launch, from the one window that exists then', async () => {
+    // The dashboard's banner was the app's only automatic check, and the
+    // dashboard is not open at launch — so a Mac whose owner never opened it
+    // never checked. Measured: 0.1.30 for 28 hours after 0.1.31 published.
+    mockState('idle');
+    render(<Bubble />);
+    await waitFor(() => expect(vi.mocked(updater.check)).toHaveBeenCalled());
+    // Nothing available: the bubble stays exactly as it was.
+    expect(screen.queryByTestId('bubble-update')).toBeNull();
+  });
+
+  it('shows a waiting update on the bubble, and names it', async () => {
+    vi.mocked(updater.check).mockResolvedValueOnce({
+      version: '0.1.31',
+      body: null,
+    } as never);
+    mockState('idle');
+    render(<Bubble />);
+    expect(await screen.findByTestId('bubble-update')).toBeTruthy();
+    expect(screen.getByRole('button')).toHaveAccessibleName(expect.stringContaining('0.1.31'));
   });
 
   it('gives every state a label of its own', () => {

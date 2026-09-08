@@ -224,8 +224,17 @@ mobile release. Push the specific mobile tag only for the verified commit.
 ## 4. How automatic updates work
 
 **Desktop:** the app embeds the updater's public key and polls
-`https://lilypadhome.takedia.com/download/latest.json`. On launch it checks
-silently; a manual "Check for updates" affordance also exists in Diagnostics.
+`https://lilypadhome.takedia.com/download/latest.json`. It checks silently at
+launch and every six hours after that, from the floating bubble — the one window
+that exists at launch; a manual "Check for updates" affordance also exists in
+Diagnostics.
+
+The check used to live only in the dashboard window, which is created on demand,
+so a Mac whose owner works from the bubble never asked at all. And a launch-only
+check would not have been enough either: the app installs a login item and runs
+for weeks, and on 2026-09-08 this machine was found still on 0.1.30 a day after
+0.1.31 published, its last launch having been three hours BEFORE that release.
+Both halves are why the cadence is what it is. See L-226.
 
 It used to poll `github.com/Kush402/lilypad/releases/latest/download/latest.json`.
 That repository is **private**, so the manifest answered 404 to every installed

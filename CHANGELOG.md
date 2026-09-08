@@ -6,7 +6,116 @@ All notable changes to Lilypad are documented here. The format follows
 
 ## [Unreleased]
 
-No changes recorded after v0.1.28.
+No changes recorded after v0.1.32.
+
+## [0.1.32] — 2026-09-08
+
+### Fixed
+
+- The iOS release lane no longer re-runs `pod install` on a sandbox that is
+  already current. Its guard resolved `Pods/Manifest.lock` against the
+  `fastlane/` folder rather than the project folder, so it never matched and
+  every release re-ran the command that fails intermittently in pnpm
+  monorepos — which is why the `mobile-v0.1.31` build never reached
+  TestFlight.
+- The phone's software keyboard survives tapping the Mac's screen. Clearing
+  the typing buffer was implemented by replacing the hidden text field, which
+  destroys the field the keyboard belongs to, and it ran twice for every tap,
+  on every toolbar key, and on every held-key repeat. A focused field is now
+  left alone; the buffer is cleared the next time the keyboard is down.
+- The Mac actually asks for updates. The only automatic check lived in the
+  dashboard window, which is not open at launch, so a Mac whose owner works
+  from the floating bubble never checked and stayed on an old version
+  indefinitely. The check now runs from the bubble at launch and every six
+  hours — a launch-only check was not enough either, for an app that starts at
+  login and then runs for weeks. A waiting update shows on the bubble itself;
+  installing it is still a deliberate click in the dashboard.
+- The phone build carries the v0.1.31 mobile fixes that never reached
+  TestFlight: WiFi-to-cellular handoff recovery, and a quality indicator that
+  reads the current interval rather than the whole session.
+
+## [0.1.31] — 2026-09-07
+
+Published on the Mac only. The iOS build for this version failed to upload and
+is not on TestFlight, so phones remain on the 0.1.30 build; the mobile fixes
+below are in the tag and not yet on a device.
+
+### Fixed
+
+- The desktop's LAN server delivers its registration refusal before closing the
+  socket, instead of aborting the writer with the terminal error still queued
+  and leaving the phone to retry an expired room.
+- WiFi-to-cellular handoff recovers. A connected-to-connected network change is
+  detected, and when no new video arrives over cellular for five seconds the
+  phone requests an authenticated cloud room through the existing resume flow —
+  a LAN room's signaling endpoint is not reachable from cellular. Working media
+  is kept, duplicate requests are suppressed, and handoff is deferred while the
+  app is backgrounded.
+- The mobile quality indicator reads packet loss per polling interval and picks
+  frame rate from newly arriving bytes, so a retired or damaged stream can no
+  longer keep a recovered connection looking poor. This corrects the reading,
+  not picture quality.
+
+### Verification
+
+- Five real LAN integration tests, including the refusal-delivery regression
+  that fails on 0.1.30. 629 mobile tests (11 intentional skips) and 409 Rust
+  unit tests.
+
+## [0.1.30] — 2026-09-06
+
+### Fixed
+
+- A phone whose iOS background suspension outlasted the desktop's 15-second
+  grace no longer sits in Reconnecting forever. A rejected room ends and
+  disposes the viewer immediately, foreground recovery measures suspension by
+  wall clock rather than by timers the OS froze, and resume is re-sent after
+  re-registration.
+- Typing is one grapheme-aware edit stream: no resend of earlier text after
+  hiding and reopening the keyboard, IME and autocorrect replacements are
+  forwarded, Return is sent once, and Backspace is never left held.
+- A retired input sender cannot flush buffered or late input into the peer that
+  replaced it, and long pasted text is split without breaking surrogate pairs.
+- An interrupted touch no longer registers as a click, held toolbar repeat stops
+  when the app leaves the foreground, and releasing a drag releases where the
+  drag ended rather than where it started.
+- A replacement peer's input is no longer suppressed by the previous peer's
+  deduplication history; ordering is reset in the worker before input is
+  re-enabled, while an ordinary pause keeps replay protection.
+
+## [0.1.29] — 2026-09-05
+
+### Fixed
+
+- Force-closing the phone no longer leaves the Mac showing Active and
+  capturing. A closed input DataChannel immediately gates input, marks the peer
+  unavailable, stops capture and encode, stops clipboard polling and cancels a
+  running Ask, while preserving the same trusted phone's bounded rejoin.
+- Callbacks from a replaced peer cannot act on its replacement, on either side.
+- Teardown no longer leaves detached Ask or media tasks alive, and one
+  pipeline's failure cannot end the pipeline that replaced it.
+- A registered LAN socket cannot send into another authorized room, and a
+  superseded seat cannot still route.
+- A repeated cloud pair-request can no longer widen an approved view-only grant
+  during a trusted rejoin.
+- Input revocation takes effect immediately instead of waiting behind input
+  already queued.
+- Mac-to-phone clipboard text travels on the encrypted DataChannel rather than
+  through cloud signaling, matching the documented privacy boundary. Automatic
+  sync requires both apps at this version or later.
+- A device-token or enrollment response can no longer repopulate mobile
+  credentials after sign-out or reset.
+- Concurrent desktop rings can no longer split room ownership, consent, control
+  sender and task between them.
+- ICE disconnection with only stale peer traffic stops capture and Ask instead
+  of leaving them running, and a resumed transport no longer undoes an explicit
+  viewer pause.
+
+### Security
+
+- Tagged desktop releases require signing, notarization and updater credentials.
+  Artifacts stay draft until notarization and Gatekeeper validation succeed, so
+  a release can no longer become public before it has been validated.
 
 ## [0.1.28] — 2026-09-04
 

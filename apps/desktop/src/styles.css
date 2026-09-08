@@ -143,6 +143,22 @@ body {
   border: 2px solid rgba(255, 255, 255, 0.92);
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
 }
+
+/* "An update is waiting" — bottom-left, mirroring the session dot's rim so it
+ * reads as part of the same widget, in `--pending` so it never collides with a
+ * session colour. Clicking the bubble opens the dashboard, where the update
+ * banner offers Download & install. */
+.bubble__update {
+  position: absolute;
+  left: 7px;
+  bottom: 7px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--pending);
+  border: 2px solid rgba(255, 255, 255, 0.92);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+}
 @keyframes pulse {
   50% {
     box-shadow: 0 0 0 8px rgba(62, 207, 142, 0.15);
