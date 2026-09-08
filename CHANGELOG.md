@@ -6,7 +6,18 @@ All notable changes to Lilypad are documented here. The format follows
 
 ## [Unreleased]
 
-No changes recorded after v0.1.32.
+### Fixed
+
+- Video quality no longer collapses to the minimum bitrate and stays there. One
+  bandwidth estimate from the phone — sometimes as low as 5 kbps, on links that
+  had just carried 2.9 Mbps with no packet loss at all — was enough to cap the
+  Mac's encoder at its floor for the rest of the session, because the adaptive
+  bitrate loop could never probe back above a cap it had accepted. Those
+  estimates are not measurements of the network: they are what the phone's
+  estimator reports when its measurement window opens on a gap in the video,
+  which is exactly what switching displays or capture modes creates. An
+  estimate below the encoder's own floor is now discarded rather than believed;
+  packet loss and send-queue congestion still lower the bitrate as before.
 
 ## [0.1.32] — 2026-09-08
 

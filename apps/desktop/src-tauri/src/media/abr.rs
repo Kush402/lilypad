@@ -192,7 +192,28 @@ impl BitrateController {
     /// pulls the current target down immediately if it exceeds the estimate.
     pub fn on_remb(&mut self, bitrate_bps: u64) -> Option<u32> {
         let cap = ((bitrate_bps as f64 * self.cfg.remb_headroom) / 1000.0) as u32;
-        self.remb_cap_kbps = Some(cap.max(self.cfg.min_kbps));
+        // An estimate below our own floor is not a capacity measurement, it is
+        // a measurement of a *gap*. REMB reports what the receiver observed in
+        // its last window, so a window that opens on a pipeline restart
+        // (display or mode switch), a renegotiation, or a backgrounded viewer
+        // reads near zero. Observed live 2026-09-08: eleven consecutive
+        // sessions each reported 5-46 kbps within seconds of a restart, on
+        // links that had just carried 2.9 Mbps at 0% loss.
+        //
+        // Believing one is all cost and no benefit. `min_kbps` is a hard floor
+        // on what we send, so every estimate under it clamps to the same cap
+        // and changes nothing about the current rate — while permanently
+        // costing the session its probe range: the cap pins `current` at
+        // `min_kbps * probe_margin`, and AIMD cannot probe past its own
+        // ceiling, so only a *higher* REMB can unlock it (see
+        // `remb_cap_is_a_ladder_not_a_deadlock`) — and the receiver's next
+        // estimate is derived from the rate we just floored. With no credible
+        // estimate the controller falls back to plain AIMD, whose safety nets
+        // (loss backoff, send-queue congestion) are untouched by this.
+        if cap < self.cfg.min_kbps {
+            return None;
+        }
+        self.remb_cap_kbps = Some(cap);
         if self.current_kbps > self.ceiling() {
             let target = self.ceiling();
             return self.retarget(target);
@@ -280,23 +301,64 @@ mod tests {
     #[test]
     fn remb_cap_is_a_ladder_not_a_deadlock() {
         let mut c = ctl();
-        // Receiver estimates 1 Mbps → cap 1000 (floor-clamped). The probe
-        // ceiling is cap × 1.25 = 1250, so the current 2500 pulls down to
-        // the ceiling — not all the way to the estimate.
-        assert_eq!(c.on_remb(1_000_000), Some(1250));
+        // Receiver estimates 1.5 Mbps → cap 1425. The probe ceiling is
+        // cap × 1.25 = 1781, so the current 2500 pulls down to the ceiling —
+        // not all the way to the estimate.
+        assert_eq!(c.on_remb(1_500_000), Some(1781));
         // Clean-link probing stalls at the ceiling…
         let mut t = Instant::now();
         for _ in 0..20 {
             t += Duration::from_secs(3);
             c.on_loss_report(0.0, t);
         }
-        assert_eq!(c.current_kbps(), 1250);
+        assert_eq!(c.current_kbps(), 1781);
         // …until the receiver observes the higher send rate and its estimate
         // rises — each rise unlocks the next rung (this is the ladder that
         // was previously a deadlock: REMB ≈ send rate could never grow).
-        assert_eq!(c.on_remb(1_250_000), None); // current below new ceiling
+        assert_eq!(c.on_remb(1_781_000), None); // current below new ceiling
         t += Duration::from_secs(3);
-        assert_eq!(c.on_loss_report(0.0, t), Some(1350)); // 1250 * 1.08
+        assert_eq!(c.on_loss_report(0.0, t), Some(1923)); // 1781 * 1.08
+    }
+
+    #[test]
+    fn an_estimate_below_the_floor_is_ignored_rather_than_pinning_the_session() {
+        // The live failure of 2026-09-08 (L-227), replayed: a session probing
+        // happily upward on a clean link receives one absurd estimate a second
+        // after a pipeline restart. Before the guard this pinned the session at
+        // `min_kbps * probe_margin` = 1250 for good — AIMD cannot probe past
+        // its own ceiling, so nothing could raise the cap again.
+        let mut c = ctl();
+        let mut t = Instant::now();
+        assert_eq!(c.on_loss_report(0.0, t), Some(2700));
+
+        // 46 kbps — one of the eleven values observed on links that had just
+        // carried 2.9 Mbps at 0% loss.
+        assert_eq!(
+            c.on_remb(46_000),
+            None,
+            "no retarget from a gap measurement"
+        );
+        assert_eq!(c.current_kbps(), 2700, "the rate is left where it was");
+
+        // And the probe range survives: the link keeps climbing.
+        t += Duration::from_secs(3);
+        assert_eq!(c.on_loss_report(0.0, t), Some(2916));
+
+        // A credible estimate still caps, exactly as before.
+        assert_eq!(c.on_remb(1_500_000), Some(1781));
+    }
+
+    #[test]
+    fn a_below_floor_estimate_does_not_erase_a_credible_one() {
+        // The cap already in force is the last *credible* reading, not the
+        // last reading — otherwise a single gap sample would silently widen
+        // the ceiling back to `max_kbps`.
+        let mut c = ctl();
+        assert_eq!(c.on_remb(1_500_000), Some(1781));
+        assert_eq!(c.on_remb(5_000), None);
+        let t = Instant::now() + Duration::from_secs(3);
+        assert_eq!(c.on_loss_report(0.0, t), None, "still capped at 1781");
+        assert_eq!(c.current_kbps(), 1781);
     }
 
     #[test]

@@ -475,6 +475,41 @@ These checks are pending until recorded against the signed v0.1.30 artifacts.
 
 These two are pending until recorded against signed artifacts that contain them.
 
+### Post-v0.1.32 bitrate regression
+
+3. **Quality does not collapse and stay collapsed (L-227).** Start a session on
+   a link with real headroom (LAN is easiest) and put motion on the shared
+   screen — scroll a long page, or play a video. Watch
+   `~/Library/Logs/Lilypad/lilypad.log`: `bitrate retargeted` must climb and
+   keep climbing while `receiver loss` reads 0.0%. Now switch displays or
+   capture modes several times, which is what creates the gap in the video the
+   phone's estimator used to read as a dead link. After each switch the rate
+   must climb again. A run that drops to **1250 kbps and never moves after**,
+   with no loss reported and no further log lines, is the defect returning.
+   The one legitimate cap still applies: a genuinely narrow link should settle
+   somewhere sensible under its capacity, not at the floor.
+
+This one is pending until recorded against a signed artifact that contains it.
+
+### v0.1.32 hardware result — 2026-09-08
+
+Kush installed the signed 0.1.32 DMG by hand and took TestFlight build
+0.1.32 (34). The session ran 20:10:36-20:14:01 UTC.
+
+Working: pairing and trusted auto-approve, LAN and direct-internet paths,
+capture on both displays, live display switching, control gating, the
+suspend-on-DataChannel-close path, and the display-sleep assertion — all with
+zero dropped frames across 11 pipeline starts and no error-level line.
+
+Found: **L-227.** Every one of those 11 starts climbed cleanly and then
+collapsed to the 1250 kbps floor within seconds, and eleven reconnects in three
+and a half minutes is what that looks like from the user's side. Fixed after
+this session; not yet released, so it has no hardware credit.
+
+Still not run: L-225 and L-226 were not exercised — no typing reached the Mac
+in this session (`events_received: 0`), and the updater cannot be checked from
+the newest build. Both remain pending as written above.
+
 ## 8. Recovery
 
 | #   | Do                                                              | Expect                                                                                                                                                       |
