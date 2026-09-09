@@ -83,10 +83,23 @@ export class RoomStore {
     await this.store.del(redisKeys.room(id));
   }
 
-  /** Bounded cursor recovery. Invalid/expired keys consume work budget, not
+  /**
+   * Bounded cursor recovery. Invalid/expired keys consume work budget, not
    * valid room capacity. No KEYS call or whole-keyspace array is allocated.
    * SCAN count is a hint: oversized batches are truncated to the work budget.
-   * Redis command-level timeouts remain a client configuration responsibility. */
+   *
+   * **Every wait is bounded, not just the loop.** `MAX_SCAN_MS` is checked
+   * between commands, which bounds a *slow* Redis but not an unresponsive one:
+   * a single `await` that never settles hangs recovery, and recovery is awaited
+   * during boot, so the whole backend would come up never — with a healthy
+   * Redis TCP connection and no error to log. Each command therefore races a
+   * deadline of its own, and a command that misses it ends recovery with
+   * whatever was already read.
+   *
+   * Degrading is the right failure here: rooms that are not resurrected are
+   * rooms whose peers reconnect, whereas a backend that does not start serves
+   * nobody. Live P2P media never touches Redis at all.
+   */
   async loadAll(limit = DEFAULT_MAX_RECORDS): Promise<RoomRecord[]> {
     const cap = Math.min(DEFAULT_MAX_RECORDS, Math.max(0, Math.floor(limit)));
     if (!Number.isFinite(cap) || cap === 0) return [];
@@ -98,13 +111,12 @@ export class RoomStore {
     const started = performance.now();
     do {
       scans++;
-      const [next, batch] = await this.store.scan(
-        cursor,
-        'MATCH',
-        `${redisKeys.room('')}*`,
-        'COUNT',
-        MGET_CHUNK,
+      const scanned_batch = await settleWithin(
+        this.store.scan(cursor, 'MATCH', `${redisKeys.room('')}*`, 'COUNT', MGET_CHUNK),
+        remaining(started),
       );
+      if (!scanned_batch) break; // Redis stopped answering — keep what we have
+      const [next, batch] = scanned_batch;
       cursor = next;
       const keys = batch.slice(0, MAX_SCAN_KEYS - scanned).filter((key) => {
         if (seen.has(key)) return false;
@@ -117,7 +129,8 @@ export class RoomStore {
         i < keys.length && records.length < cap && performance.now() - started < MAX_SCAN_MS;
       ) {
         const chunk = keys.slice(i, i + Math.min(MGET_CHUNK, cap - records.length));
-        const values = await this.store.mget(...chunk);
+        const values = await settleWithin(this.store.mget(...chunk), remaining(started));
+        if (!values) return records; // stopped answering mid-read
         i += chunk.length;
         for (let j = 0; j < values.length; j++) {
           const raw = values[j];
@@ -135,6 +148,40 @@ export class RoomStore {
       seen.size < MAX_SCAN_KEYS
     );
     return records;
+  }
+}
+
+/**
+ * How long is left of the recovery budget, never negative.
+ *
+ * One budget covers the whole of recovery rather than each command separately:
+ * thirty commands that each take just under a per-command limit is still an
+ * unbounded boot.
+ */
+function remaining(started: number): number {
+  return Math.max(0, MAX_SCAN_MS - (performance.now() - started));
+}
+
+/**
+ * Resolve `work`, or `null` if it has not settled within `ms`.
+ *
+ * The pending command is abandoned, not cancelled — Redis may still answer,
+ * and its reply is simply ignored. That is deliberate: there is no way to
+ * un-send a command, and pretending otherwise would be the same class of
+ * claim this ledger keeps correcting.
+ */
+async function settleWithin<T>(work: Promise<T>, ms: number): Promise<T | null> {
+  if (ms <= 0) return null;
+  let timer: NodeJS.Timeout | undefined;
+  const expiry = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), ms);
+    // Do not keep the process alive just to time out a read.
+    timer.unref?.();
+  });
+  try {
+    return await Promise.race([work.catch(() => null), expiry]);
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 

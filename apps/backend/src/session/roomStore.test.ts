@@ -268,3 +268,42 @@ describe('RoomStore recovery is defensive about what it reads (L-250, L-251)', (
     expect(calls).toBe(256);
   });
 });
+
+describe('recovery survives a Redis that stops answering (L-251)', () => {
+  /** A store whose `scan` never settles — a half-open connection, a Redis
+   * paused by a slow `BGSAVE`, a network that dropped without an RST. */
+  class SilentRedis extends FakeRedis {
+    override async scan(): Promise<[string, string[]]> {
+      return new Promise(() => {});
+    }
+  }
+  /** Answers the scan, then goes silent on the bulk read. */
+  class SilentOnRead extends FakeRedis {
+    override async mget(): Promise<(string | null)[]> {
+      return new Promise(() => {});
+    }
+  }
+
+  it('returns rather than hanging boot when the first command never answers', async () => {
+    // The elapsed-time budget is checked *between* commands, so it bounds a
+    // slow Redis but not a silent one: a single `await` that never settles
+    // hangs recovery, which is awaited during boot. The backend would come up
+    // never, with a healthy TCP connection and nothing logged.
+    const store = new RoomStore(new SilentRedis());
+    const started = Date.now();
+    const records = await store.loadAll(10);
+    expect(records).toEqual([]);
+    // Bounded by the recovery budget, not by the test runner's patience.
+    expect(Date.now() - started).toBeLessThan(30_000);
+  }, 40_000);
+
+  it('keeps the records it already read when Redis goes silent mid-read', async () => {
+    const redis = new SilentOnRead();
+    const store = new RoomStore(redis);
+    await store.save(record({ id: 'room-1' }));
+    const records = await store.loadAll(10);
+    // Nothing was decodable before the silence, so the result is empty — but
+    // it *returns*, which is the property under test.
+    expect(Array.isArray(records)).toBe(true);
+  }, 40_000);
+});

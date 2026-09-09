@@ -15,7 +15,9 @@
 //!      app/URL launch verification is exit-code-only until the tier-2 AX
 //!      executor can read the running-app / window state (documented gap).
 
-use std::ffi::OsString;
+use std::ffi::{CString, OsStr, OsString};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
@@ -175,6 +177,230 @@ fn deepest_existing(path: &Path) -> (PathBuf, Vec<OsString>) {
             }
         }
     }
+}
+
+// ── the anchored jail (L-243) ────────────────────────────────────────────
+//
+// `resolve_user_path` decides where a path *points*; `open`/`mkdir` then
+// resolve the same text again, and between those two resolutions the meaning
+// of a component can change. Re-checking afterwards ([`check`]) reports the
+// escape, which is better than silence, but it cannot un-create a directory or
+// un-launch a file.
+//
+// The fix for anything we perform ourselves is to stop naming the target by
+// text at all: walk the path one component at a time, refusing to traverse a
+// symbolic link at any step, and keep the *descriptor* of the directory we
+// arrived at. A descriptor refers to the directory object, not to its name, so
+// renaming or replacing that name afterwards cannot redirect the operation.
+// `mkdirat` on that descriptor either creates the folder in the directory we
+// verified or fails; there is no window in between.
+//
+// This only works for operations that take a descriptor. `open(1)` takes a
+// path, so `open_file` cannot be anchored and is refused instead — see
+// `skills::plan_command`.
+
+/// A directory this module opened itself, component by component, without
+/// following a symbolic link.
+#[derive(Debug)]
+pub struct JailedDir {
+    fd: OwnedFd,
+    path: PathBuf,
+}
+
+impl JailedDir {
+    /// The path walked to get here — for messages only. The *operation* uses
+    /// the descriptor; this text is never re-resolved.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+/// Identity of a filesystem object: the same object under any name.
+///
+/// A path can be made to mean something else between two calls; a `(dev, ino)`
+/// pair cannot. Used to bind a grant to the object the person approved, so a
+/// target swapped after approval is refused rather than acted on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FileId {
+    dev: i64,
+    ino: u64,
+}
+
+fn cstr(name: &OsStr) -> Result<CString> {
+    CString::new(name.as_bytes()).map_err(|_| anyhow::anyhow!("path component contains a NUL"))
+}
+
+/// Is `name` inside `dirfd` a symbolic link? Used only to explain a failure,
+/// so an unanswerable question is "no" rather than an error.
+fn is_symlink_at(dirfd: i32, name: &CString) -> bool {
+    let mut st: libc::stat = unsafe { std::mem::zeroed() };
+    // SAFETY: valid descriptor and C string; `st` is ours to fill.
+    let rc = unsafe { libc::fstatat(dirfd, name.as_ptr(), &mut st, libc::AT_SYMLINK_NOFOLLOW) };
+    rc == 0 && st.st_mode & libc::S_IFMT == libc::S_IFLNK
+}
+
+/// Open `name` inside `parent` as a directory, refusing a symbolic link.
+fn open_dir_at(parent: Option<&OwnedFd>, name: &OsStr, nofollow: bool) -> Result<OwnedFd> {
+    let c = cstr(name)?;
+    let mut flags = libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC;
+    if nofollow {
+        flags |= libc::O_NOFOLLOW;
+    }
+    let dirfd = parent.map(|p| p.as_raw_fd()).unwrap_or(libc::AT_FDCWD);
+    // SAFETY: `c` is a valid NUL-terminated C string that outlives the call,
+    // and `dirfd` is either AT_FDCWD or a descriptor we own.
+    let fd = unsafe { libc::openat(dirfd, c.as_ptr(), flags) };
+    if fd < 0 {
+        let err = std::io::Error::last_os_error();
+        // Which errno means "that was a symlink" depends on the flags and the
+        // platform: `O_NOFOLLOW` alone gives ELOOP, but combined with
+        // `O_DIRECTORY` macOS gives ENOTDIR, which is also what a plain file
+        // gives. Guessing from errno gets one of those two cases wrong, so ask
+        // the filesystem what the name actually is.
+        if nofollow && is_symlink_at(dirfd, &c) {
+            bail!(
+                "{} is a symbolic link — the jail will not follow one",
+                name.to_string_lossy()
+            );
+        }
+        return Err(
+            anyhow::Error::new(err).context(format!("cannot open {}", name.to_string_lossy()))
+        );
+    }
+    // SAFETY: `openat` returned a fresh, owned descriptor.
+    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+}
+
+/// Walk `target` from `home`, component by component, following no symbolic
+/// link, and return the descriptor of its **parent** directory plus the final
+/// component's name.
+///
+/// `target` must already have passed [`resolve_in`], so it is lexically inside
+/// home; this walk is what makes that true of the real objects as well.
+pub fn walk_to_parent(home: &Path, target: &Path) -> Result<(JailedDir, OsString)> {
+    let rest = target
+        .strip_prefix(home)
+        .map_err(|_| anyhow::anyhow!("{} is not under the home directory", target.display()))?;
+    let mut components: Vec<&OsStr> = rest.iter().collect();
+    let Some(last) = components.pop() else {
+        bail!("cannot operate on the home directory itself");
+    };
+
+    // Home is opened *following* links: the user may legitimately have their
+    // home directory behind one, and it is the root of the jail rather than
+    // something inside it. Everything below it is walked no-follow.
+    let mut dir = open_dir_at(None, home.as_os_str(), false)
+        .with_context(|| format!("cannot open the home directory {}", home.display()))?;
+    let mut walked = home.to_path_buf();
+    for comp in components {
+        dir = open_dir_at(Some(&dir), comp, true)?;
+        walked.push(comp);
+    }
+    Ok((
+        JailedDir {
+            fd: dir,
+            path: walked,
+        },
+        last.to_os_string(),
+    ))
+}
+
+/// The identity of `name` inside `dir`, or `None` if it does not exist.
+/// A symbolic link is an error, not an identity — the jail never resolves one.
+pub fn identify_at(dir: &JailedDir, name: &OsStr) -> Result<Option<FileId>> {
+    let c = cstr(name)?;
+    let mut st: libc::stat = unsafe { std::mem::zeroed() };
+    // SAFETY: valid descriptor, valid C string, and `st` is ours to fill.
+    let rc = unsafe {
+        libc::fstatat(
+            dir.fd.as_raw_fd(),
+            c.as_ptr(),
+            &mut st,
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    };
+    if rc < 0 {
+        let err = std::io::Error::last_os_error();
+        if err.kind() == std::io::ErrorKind::NotFound {
+            return Ok(None);
+        }
+        return Err(anyhow::Error::new(err)
+            .context(format!("cannot inspect {}", dir.path.join(name).display())));
+    }
+    if st.st_mode & libc::S_IFMT == libc::S_IFLNK {
+        bail!(
+            "{} is a symbolic link — the jail will not follow one",
+            dir.path.join(name).display()
+        );
+    }
+    Ok(Some(FileId {
+        dev: st.st_dev as i64,
+        ino: st.st_ino,
+    }))
+}
+
+/// Create a directory named `name` inside the already-verified `dir`.
+///
+/// Race-free where the old `mkdir -p` was not: the directory is created
+/// *relative to a descriptor* we walked ourselves, so replacing any name along
+/// the way afterwards cannot redirect it. Idempotent, like `mkdir -p`, but an
+/// existing symbolic link is a failure rather than a silent success.
+pub fn create_dir_at(dir: &JailedDir, name: &OsStr) -> Result<()> {
+    let c = cstr(name)?;
+    // SAFETY: valid descriptor and C string; 0o755 is a plain mode.
+    let rc = unsafe { libc::mkdirat(dir.fd.as_raw_fd(), c.as_ptr(), 0o755) };
+    if rc == 0 {
+        return Ok(());
+    }
+    let err = std::io::Error::last_os_error();
+    if err.kind() != std::io::ErrorKind::AlreadyExists {
+        return Err(anyhow::Error::new(err)
+            .context(format!("cannot create {}", dir.path.join(name).display())));
+    }
+    // Already there. `mkdir -p` treats that as success; so do we, but only for
+    // a real directory. A symlink sitting in the target's place is exactly the
+    // case this whole walk exists to refuse.
+    match identify_at(dir, name)? {
+        Some(_) => {
+            let c2 = cstr(name)?;
+            let mut st: libc::stat = unsafe { std::mem::zeroed() };
+            // SAFETY: as in `identify_at`.
+            let rc = unsafe {
+                libc::fstatat(
+                    dir.fd.as_raw_fd(),
+                    c2.as_ptr(),
+                    &mut st,
+                    libc::AT_SYMLINK_NOFOLLOW,
+                )
+            };
+            if rc == 0 && st.st_mode & libc::S_IFMT == libc::S_IFDIR {
+                Ok(())
+            } else {
+                bail!(
+                    "{} already exists and is not a directory",
+                    dir.path.join(name).display()
+                )
+            }
+        }
+        None => bail!(
+            "{} vanished while it was being created",
+            dir.path.join(name).display()
+        ),
+    }
+}
+
+/// Create a home-jailed folder, anchored to a descriptor rather than to text.
+/// The whole of `new_folder`'s effect, so the tier-1 executor spawns nothing.
+pub fn new_folder(raw: &str) -> Result<PathBuf> {
+    let home = home_dir()?;
+    let jailed = resolve_in(&home, raw)?;
+    // `resolve_in` already returns the canonicalised location, so this is the
+    // same root it checked against — walking from anywhere else would be
+    // checking one thing and creating in another.
+    let real_home = home.canonicalize().unwrap_or(home);
+    let (dir, name) = walk_to_parent(&real_home, &jailed)?;
+    create_dir_at(&dir, &name)?;
+    Ok(dir.path().join(&name))
 }
 
 /// What must be true after an action for it to count as succeeded.
@@ -381,6 +607,97 @@ mod tests {
             assert!(check(&Postcondition::PathIsDir(missing)).is_err());
             assert!(check(&Postcondition::None).is_ok());
         });
+    }
+
+    #[test]
+    fn creating_a_folder_refuses_to_traverse_a_symlink_instead_of_following_it() {
+        // L-243, the prevention half. `mkdir -p ~/Reports/Q3` with `~/Reports`
+        // a link to somewhere outside home used to create `Q3` out there and
+        // exit 0. The walk refuses the link itself, so nothing is created —
+        // and the outside directory must still be empty afterwards, which is
+        // the only assertion that distinguishes "prevented" from "detected".
+        let j = jail();
+        std::os::unix::fs::symlink(&j.outside, j.home.join("Reports")).unwrap();
+        with_home(&j, || {
+            new_folder("~/Reports/Q3").expect_err("a symlinked parent must be refused")
+        });
+        // Two layers refuse this — `resolve_in` canonicalises and sees the
+        // destination is outside home, and the walk refuses the link itself —
+        // so the message depends on which fires first. The assertion is about
+        // the *effect*: with `mkdir -p` this directory used to be created out
+        // here and the command exited 0.
+        assert!(
+            !j.outside.join("Q3").exists(),
+            "the folder was created outside the jail — this is detection, not prevention"
+        );
+    }
+
+    #[test]
+    fn creating_a_folder_works_for_an_ordinary_nested_path_and_is_idempotent() {
+        let j = jail();
+        std::fs::create_dir_all(j.home.join("Research")).unwrap();
+        let made = with_home(&j, || new_folder("~/Research/2026").unwrap());
+        assert!(made.is_dir());
+        // `mkdir -p` semantics: asking twice is not an error.
+        let again = with_home(&j, || new_folder("~/Research/2026").unwrap());
+        assert_eq!(made, again);
+    }
+
+    #[test]
+    fn a_symlink_standing_where_the_folder_should_go_is_an_error_not_a_silent_success() {
+        // `mkdirat` returns EEXIST for a symlink just as it does for a real
+        // directory. Treating EEXIST as success — which is what `mkdir -p`
+        // does — would accept exactly the case the walk exists to refuse.
+        let j = jail();
+        std::os::unix::fs::symlink(&j.outside, j.home.join("Q3")).unwrap();
+        with_home(&j, || {
+            new_folder("~/Q3").expect_err("a symlink in the target's place must fail")
+        });
+        // The link is still a link: nothing was created through it, and it was
+        // not silently accepted as "the folder already exists".
+        assert!(std::fs::symlink_metadata(j.home.join("Q3"))
+            .unwrap()
+            .file_type()
+            .is_symlink());
+    }
+
+    #[test]
+    fn identity_distinguishes_the_same_name_from_the_same_object() {
+        // What a grant has to be bound to. Two names for one object share an
+        // identity; one name that has been replaced does not.
+        let j = jail();
+        std::fs::create_dir_all(j.home.join("Docs")).unwrap();
+        std::fs::write(j.home.join("Docs/a.txt"), "x").unwrap();
+        let (dir, name) = walk_to_parent(&j.home, &j.home.join("Docs/a.txt")).unwrap();
+        let first = identify_at(&dir, &name).unwrap().expect("the file exists");
+
+        std::fs::remove_file(j.home.join("Docs/a.txt")).unwrap();
+        std::fs::write(j.home.join("Docs/a.txt"), "y").unwrap();
+        let second = identify_at(&dir, &name)
+            .unwrap()
+            .expect("the new file exists");
+        assert_ne!(
+            first, second,
+            "a replaced file kept its identity — a grant bound to it would follow the swap"
+        );
+
+        // And a missing name has no identity at all, rather than a stale one.
+        std::fs::remove_file(j.home.join("Docs/a.txt")).unwrap();
+        assert_eq!(identify_at(&dir, &name).unwrap(), None);
+    }
+
+    #[test]
+    fn the_walk_refuses_a_symlinked_component_even_when_it_stays_inside_home() {
+        // Inside-home is not the test; *not following a link* is. A link
+        // between two home folders is still a name whose meaning can change
+        // after it is checked.
+        let j = jail();
+        std::fs::create_dir_all(j.home.join("Real")).unwrap();
+        std::os::unix::fs::symlink(j.home.join("Real"), j.home.join("Alias")).unwrap();
+        let err = walk_to_parent(&j.home, &j.home.join("Alias/file.txt"))
+            .expect_err("a symlinked component must be refused")
+            .to_string();
+        assert!(err.contains("symbolic link"), "unexpected error: {err}");
     }
 
     #[test]

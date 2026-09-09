@@ -337,16 +337,12 @@ fn base_tools() -> Vec<ToolSpec> {
                 "required": ["url"],
             }),
         },
-        ToolSpec {
-            name: "open_file",
-            description: "Open a file in its default application. The path must be inside the \
-                          user's home folder (use ~/ or a path under it).",
-            input_schema: json!({
-                "type": "object",
-                "properties": { "path": { "type": "string", "description": "File path under the home folder" } },
-                "required": ["path"],
-            }),
-        },
+        // `open_file` is deliberately **not offered** (L-243). Its effect is a
+        // launch through `/usr/bin/open`, which re-resolves the path it is
+        // given, so nothing this process checks beforehand can be tied to the
+        // file that actually opens. Withdrawing the tool is the disclosure;
+        // `skills::plan_command` refuses it as well, so a model that remembers
+        // the name from an earlier conversation gets a reason, not a crash.
         ToolSpec {
             name: "new_folder",
             description: "Create a folder (and any missing parents). The path must be inside the \
@@ -499,12 +495,13 @@ pub fn decision_from_tool_call(call: &ToolCall) -> Result<Decision> {
             })
         }
         "open_file" => {
-            let path = field("path")?;
-            Ok(Decision::Act {
-                summary: format!("Open file {path}"),
-                tier: AgentTier::Skill,
-                action: Action::OpenFile { path },
-            })
+            // Not in the tool list any more; a model may still remember it.
+            // The refusal names the reason so it can choose something else.
+            bail!(
+                "open_file is unavailable in this build: the launcher re-resolves the path \
+                 it is given, so the approval cannot be tied to the file that opens. Use \
+                 open_app, or new_folder for filesystem work."
+            )
         }
         "new_folder" => {
             let path = field("path")?;

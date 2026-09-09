@@ -48,24 +48,35 @@ pub fn plan_command(action: &Action) -> Result<CommandSpec> {
             reject_control_chars(url, "url")?;
             Ok(CommandSpec::new("open", &[url]))
         }
-        Action::RevealInFinder { path } => {
-            // Jail to the user's home so the model can't probe arbitrary
-            // filesystem locations by "revealing" them.
-            let jailed = resolve_user_path(path)?;
-            Ok(CommandSpec::new("open", &["-R", &jailed.to_string_lossy()]))
-        }
-        Action::OpenFile { path } => {
-            let jailed = resolve_user_path(path)?;
-            Ok(CommandSpec::new("open", &[&jailed.to_string_lossy()]))
-        }
-        Action::NewFolder { path } => {
-            let jailed = resolve_user_path(path)?;
-            // `mkdir -p`: idempotent, argv-only (no shell). Verification
-            // (below) confirms the directory actually exists afterward.
-            Ok(CommandSpec::new(
-                "mkdir",
-                &["-p", &jailed.to_string_lossy()],
-            ))
+        // `open_file` and `reveal_in_finder` are **disabled**, not merely
+        // jailed (L-243).
+        //
+        // Both hand a path to `/usr/bin/open`, which resolves that text a
+        // second time. Everything this tier can do about that happens before
+        // the launch, and a check that runs before an effect is a check the
+        // effect can outrun: a component of the path can change meaning in
+        // between, and a launch cannot be un-launched. The re-check in
+        // `verify::check` reports such an escape but cannot undo it.
+        //
+        // That window is not theoretical here. A sandboxed script granted a
+        // writable folder can create a symbolic link inside it, and can leave
+        // a background process doing so repeatedly — so the model itself can
+        // race this, which is what separates it from "an attacker who already
+        // has local code execution".
+        //
+        // `new_folder` below keeps working because `mkdirat` takes a
+        // *descriptor*: there is nothing to re-resolve, so nothing to race.
+        // These two take a path by definition, so the honest thing is to
+        // refuse them until they are anchored, and to say why.
+        Action::OpenFile { .. } | Action::RevealInFinder { .. } => bail!(
+            "opening or revealing a file is unavailable in this build: the launcher \
+             takes a path and re-resolves it, so the check cannot be tied to the file \
+             that ends up being opened. Creating folders and opening apps still work."
+        ),
+        // Handled in-process by `verify::new_folder`, anchored to a directory
+        // descriptor rather than to a path. There is no command to plan.
+        Action::NewFolder { .. } => {
+            bail!("new_folder is performed in-process, not by spawning a command")
         }
         Action::RunShortcut { name } => {
             reject_control_chars(name, "shortcut name")?;
@@ -94,6 +105,15 @@ pub struct SkillsExecutor;
 
 impl Executor for SkillsExecutor {
     async fn execute(&mut self, action: &Action) -> Result<Observation> {
+        // Creating a folder is the one tier-1 effect that can be anchored to
+        // the directory it was checked against, so it is performed here rather
+        // than spawned. See `verify::new_folder`.
+        if let Action::NewFolder { path } = action {
+            return Ok(match verify::new_folder(path) {
+                Ok(made) => Observation::ok(format!("created {}", made.display())),
+                Err(e) => Observation::fail(format!("could not create the folder: {e}")),
+            });
+        }
         let spec = plan_command(action)?;
         let status = tokio::process::Command::new(&spec.program)
             .args(&spec.args)
@@ -160,28 +180,7 @@ mod tests {
     }
 
     #[test]
-    fn plans_reveal_and_shortcut() {
-        let _g = crate::agent::executor::verify::HOME_TEST_LOCK
-            .lock()
-            .unwrap();
-        let prev = std::env::var("HOME").ok();
-        std::env::set_var("HOME", "/Users/x");
-        assert_eq!(
-            plan_command(&Action::RevealInFinder {
-                path: "~/Downloads/a.pdf".into()
-            })
-            .unwrap(),
-            CommandSpec::new("open", &["-R", "/Users/x/Downloads/a.pdf"])
-        );
-        // Reveal is jailed too — no probing outside home.
-        assert!(plan_command(&Action::RevealInFinder {
-            path: "/etc/hosts".into()
-        })
-        .is_err());
-        match prev {
-            Some(v) => std::env::set_var("HOME", v),
-            None => std::env::remove_var("HOME"),
-        }
+    fn plans_the_shortcut_skill() {
         assert_eq!(
             plan_command(&Action::RunShortcut {
                 name: "New Note".into()
@@ -189,6 +188,36 @@ mod tests {
             .unwrap(),
             CommandSpec::new("shortcuts", &["run", "New Note"])
         );
+    }
+
+    #[test]
+    fn the_two_launch_verbs_are_refused_rather_than_jailed() {
+        // L-243. These used to plan `open <path>` / `open -R <path>` after
+        // jailing the text. `open` resolves that text again, so the jail was
+        // checking one thing and the launcher could act on another — and a
+        // sandboxed script with a writable folder can create the symlink that
+        // makes them differ. A launch cannot be undone by a later check, so
+        // the tier refuses to construct the command at all.
+        //
+        // The refusal has to *say so*: a bare error would read as a bug, and
+        // the model would retry.
+        for action in [
+            Action::OpenFile {
+                path: "~/Downloads/a.pdf".into(),
+            },
+            Action::RevealInFinder {
+                path: "~/Downloads/a.pdf".into(),
+            },
+        ] {
+            let err = plan_command(&action)
+                .expect_err("must be refused")
+                .to_string();
+            assert!(err.contains("unavailable"), "unhelpful refusal: {err}");
+            assert!(
+                err.contains("re-resolves"),
+                "refusal without a reason: {err}"
+            );
+        }
     }
 
     #[test]
@@ -200,39 +229,16 @@ mod tests {
     }
 
     #[test]
-    fn plans_jailed_file_and_folder_skills() {
-        let _g = crate::agent::executor::verify::HOME_TEST_LOCK
-            .lock()
-            .unwrap();
-        let prev = std::env::var("HOME").ok();
-        std::env::set_var("HOME", "/Users/kush");
-        assert_eq!(
-            plan_command(&Action::NewFolder {
-                path: "~/Research".into()
-            })
-            .unwrap(),
-            CommandSpec::new("mkdir", &["-p", "/Users/kush/Research"])
-        );
-        assert_eq!(
-            plan_command(&Action::OpenFile {
-                path: "Downloads/a.pdf".into()
-            })
-            .unwrap(),
-            CommandSpec::new("open", &["/Users/kush/Downloads/a.pdf"])
-        );
-        // Escaping paths are refused before any command is constructed.
-        assert!(plan_command(&Action::NewFolder {
-            path: "/etc/evil".into()
+    fn new_folder_is_performed_in_process_not_spawned() {
+        // It is anchored to a directory descriptor now, so there is no command
+        // to plan. Planning one would mean a second path resolution — the very
+        // thing the anchoring removes.
+        let err = plan_command(&Action::NewFolder {
+            path: "~/Research".into(),
         })
-        .is_err());
-        assert!(plan_command(&Action::OpenFile {
-            path: "~/../../etc/passwd".into()
-        })
-        .is_err());
-        match prev {
-            Some(v) => std::env::set_var("HOME", v),
-            None => std::env::remove_var("HOME"),
-        }
+        .expect_err("no command is planned for new_folder")
+        .to_string();
+        assert!(err.contains("in-process"), "unexpected error: {err}");
     }
 
     #[test]
