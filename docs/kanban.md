@@ -827,8 +827,9 @@ intentional skips; backend recovery/signaling passes 99 tests; protocol passes
 19 tests. Native library verification passes 485 tests. The regression run using
 Claude's original runtime roots and UTF-8 truncator failed on the synthetic
 ungranted-file read and non-ASCII truncation cases. Formatting and docs-check pass;
-mobile/backend typechecks and lint pass. Final native sandbox checks and full PR CI
-must be read on the final commit, not inferred from the baseline's green run.
+mobile/backend typechecks and lint pass. Final native sandbox checks pass 21 tests, including Python startup and the
+Data-volume alias probe; clippy passes with warnings denied. Full PR CI must be
+read on the final commit, not inferred from the baseline's green run.
 Tests use synthetic fixtures; no production private files were read for the
 sandbox probes. No device, release, deployment or replica change is claimed.
 

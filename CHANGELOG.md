@@ -21,34 +21,29 @@ All notable changes to Lilypad are documented here. The format follows
 
 ### Security
 
-- A sandboxed Ask script can no longer read your files. The sandbox allowed
-  reads everywhere except a list of known secret locations, on the reasoning
-  that nothing could leave anyway because the network was off. Stdout is the
-  network: a script's output goes straight back to the AI provider, so
-  `cat ~/Documents/taxes.pdf` never needed a socket, and a list of known
-  secrets was never going to cover a person's own documents. Reads now start
-  denied. A script must name the files it needs, they appear on the approval
-  card before you approve, and the secret locations stay unreadable even if
-  a script asks for one and you say yes.
-- Opening a link is now something you approve, whatever the address. `https://`
-  links used to open on the assistant's own initiative, because visiting a page
-  reads like looking rather than doing. The address is the message: anything
-  the assistant has just read off your screen fits in a link, and your browser
-  sends it with your cookies attached. The card names the site that will
-  receive the request separately from the rest of the link — `bank.example@
-evil.test` goes to evil.test — and says outright when the link carries data.
-- Two assistant tasks can no longer run at the same time. Starting a new task
-  asked the previous one to stop and then began immediately, but stopping is
-  not instant: a task in the middle of a click or a screenshot finishes it.
-  The new task now waits for the old one to actually stop, and says "the
-  previous task is still stopping" rather than sharing your Mac with it.
-- A file the assistant creates or opens is re-checked after the fact. Between
-  deciding a path was inside your home folder and acting on it, the last piece
-  of that path could be swapped for a link pointing elsewhere. That now fails
-  the step visibly instead of quietly succeeding outside the folder.
+- Ask scripts now request explicit file-read grants on their approval cards.
+  Runtime permissions exclude broad temporary and application-data directories.
+  Remaining filesystem grant-identity and IPC boundary work still blocks release;
+  this is not a promise that every form of private-data access is contained.
+- Model-chosen links require approval. The card includes the full URL and a
+  normalized origin using standard URL parsing, including backslash and encoded
+  host handling. Browser redirects can still change the final destination.
+- Ask protocol version 2 requires both peers to support the same read/navigation
+  disclosures. Older peers retain manual control but cannot start Ask work.
+- Ask execution ownership now persists across task replacement, drain timeouts
+  and reconnect-created controllers. A new runner waits for the old owner's
+  lease; an already-issued OS effect cannot be recalled by this mechanism.
+- File operations are checked again before reporting success. This can detect
+  path changes, but it does not prevent an external command from acting on a
+  concurrently replaced path. The remaining capability boundary is a release
+  blocker.
 
-### Fixed
+### Reliability
 
+- Recovery uses bounded cursor scanning and validates stored scope, identity,
+  timestamp and schema version before admitting a room. Raw Redis reply bounds
+  and command deadlines remain follow-up work.
+- Non-ASCII script output is truncated without splitting a UTF-8 character.
 - A single unreadable record in the backend's session store no longer stops the
   server from starting. Recovery trusted whatever was stored; a `null` left
   behind by a bad write crashed the boot sequence, and stayed crashed on every
