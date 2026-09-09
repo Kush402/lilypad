@@ -16,9 +16,9 @@ This file exists because the list used to live only in a conversation. Six rows
 (L-20, L-38 through L-42) were reconstructed from later summaries after the
 earlier record was compacted away, which is the argument for the file.
 
-**Status counts:** 229 fixed · 5 shipped · 2 open · 1 blocked on something outside
+**Status counts:** 229 fixed · 5 shipped · 8 open · 1 blocked on something outside
 the code · 4 deliberately unchanged · 4 not a bug · 1 unrecoverable (L-20).
-246 rows.
+252 rows.
 
 **v0.1.32 published on BOTH halves (2026-09-08):** Release commit
 `4d34b271d0eec5353406c9b6bb78d05feaa5ab41` is on main and tagged `v0.1.32` /
@@ -552,7 +552,7 @@ supplies the interaction principle, not a native conformance claim.
 Release discipline: Claude should fix and verify coherent groups, update these
 same rows with commit/test evidence, and retain separate statuses for source
 fixed, released and device-verified. Keep L-227 in scope without duplicating its
-existing implementation. This review does not authorize a new release tag.
+existing implementation. That review did not authorize a new release tag; the later v0.1.33 brief below records the updated user direction.
 
 ## Independent release-readiness review — Codex after Claude (2026-09-09)
 
@@ -605,7 +605,128 @@ filesystem design with negative tests. Verify focus changes, localized controls,
 background/pause, display changes and mixed app versions on signed hardware.
 Keep L-227's constrained-cellular and selected-TURN validation separate from its
 unit-test proof. L-225 keyboard and L-226 updater still need physical validation.
-Do not publish v0.1.33 or label these changes device-verified based on CI alone.
+Do not publish v0.1.33 or label these changes device-verified based on CI alone. The release-intent brief below supersedes the earlier blanket no-release instruction.
+
+## v0.1.33 decision brief — further independent findings (2026-09-09)
+
+**User direction:** prepare to cut v0.1.33. Codex owns review, product direction
+and proposed solutions; Claude owns implementation. This pass changes documentation
+only and creates no tag. Readiness is conditional on the gates below, not on the
+number of fixes or features. Review source: `53b6d2e` in draft PR #7; all four
+CI gates passed in [run 34329207482](https://github.com/Kush402/lilypad/actions/runs/34329207482).
+Remote main was still `0fd0916` when checked. The local root contains copies of
+the PR's source changes as uncommitted edits; avoid blindly cherry-picking over
+them. Preserve unrelated edits and the private vault.
+
+The following are code-level findings, not claims of observed production
+incidents. Implementation and adversarial tests remain Claude's work. Prior rows
+remain canonical; do not create replacement IDs for L-243 or L-247.
+
+| ID    | Finding and evidence                                                                                                                                                                                                                                                                                                                                                                                                                 | Proposed solution and acceptance evidence                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| L-248 | **P2 — Approval decisions have an unbounded application queue.** `agent/controller.rs::handle_inbound` forwards every `AgentDecision` into an `unbounded_channel`; stale run/step filtering happens later in the runner. During model/execution waits the receiver is not draining decisions. The 128-run ledger does not bound this queue.                                                                                          | Open — Admit only a decision for the current held run/step and allow one answer per hold; use a bounded mailbox and nonblocking admission. Keep cancellation independent of queue capacity. Test a flood of stale and duplicate answers during a blocked provider call: bounded queue, no accidental approval, Stop still works. Do not silently discard a legitimate decision while reporting it accepted.                                                                                                                                                                                                                                                                                                                                  |
+| L-249 | **P2 — Bounded provider image history does not bound retained observation images.** `runner.rs::run` pushes each image-bearing observation into `history` for up to 40 steps. `llm/mod.rs::next` clones its image into the provider history; `retain_recent_images` prunes only that second copy.                                                                                                                                    | Open — Store image data in one byte-budgeted owner; discard or remove older image payloads from runner observations after consumption, preserving text and tool/result identity. Retain the two recent images only within an explicit byte cap. Test 40 synthetic large-image steps and assert retained bytes, not just the number of outbound images. Profile RSS before claiming a measured improvement.                                                                                                                                                                                                                                                                                                                                   |
+| L-250 | **P1 — Recovery accepts syntactically valid but structurally invalid room records.** `session/roomStore.ts::loadAll` casts `JSON.parse(raw) as RoomRecord`; `signaling/hub.ts::resurrectRoomsFromStore` immediately reads `record.fsmState`. A stored JSON `null` is accepted by the loader and throws in the recovery loop; missing fields and invalid scopes also bypass validation.                                               | Open — Add a versioned persistence schema; validate identity, scopes, FSM, timestamp and key/record ID agreement before resurrection. Skip invalid records independently and count them without logging their contents. Test `null`, arrays, empty objects, invalid enum/scope, missing IDs, oversized records and one valid record in the same batch: valid recovery must still complete. This is a storage robustness issue; no remote write exploit is asserted.                                                                                                                                                                                                                                                                          |
+| L-251 | **P2 — Recovery's claimed room bound is applied after an unbounded bulk read.** `RoomStore.loadAll` uses `KEYS`, then one `MGET` and builds the full decoded array before `RoomRegistry.resurrect` applies `maxRooms`. The comment claiming the startup read is bounded by `maxRooms` is unsupported by this path.                                                                                                                   | Open — Use cursor scanning, bounded batches, per-record size limits and a total recovery work/time budget; stream validated records into capped admission. Account for duplicate scan results and keys expiring during recovery. Test a keyspace larger than the room limit and prove bounded batch size and predictable readiness behavior. Keep live P2P media independent of Redis recovery.                                                                                                                                                                                                                                                                                                                                              |
+| L-252 | **P1 — Supersession requests cancellation but does not establish exclusive action ownership.** `AgentController::start_command` calls `cancel_active_if_any`, immediately spawns the next runner and replaces `active`. It never waits for the prior task to drain; synchronous native operations and process cleanup can still be in progress. Cancellation is a signal, not evidence that the old action finished.                 | Open — Give effectful execution a session-owned exclusive lease/generation. A replacement cannot acquire it before the old executor has finished or been contained; invalidate old approvals and queued effects on takeover. Keep the session loop responsive while cleanup runs and expose stopping/busy truthfully. Test with an old executor deliberately held in cleanup: new effects must not start, stale approvals must not cross generations, and failed cleanup must not falsely report stopped. Include approved subprocesses that attempt to leave their process group when evaluating L-241's limits.                                                                                                                            |
+| L-253 | **P1 — Browser navigation bypasses the network approval boundary.** `security.rs::classify_url` makes arbitrary HTTP(S) URLs `Sensitive`, which `runner.rs::gate` executes without a hold. `executor/skills.rs::plan_command` invokes the ordinary browser via `open`. A model-generated URL can carry observed text in its path/query to an unapproved destination; Seatbelt's script network setting does not govern that browser. | Open — Treat a model-chosen navigation destination and transmitted URL data as an explicit capability. Default to a held, exact URL disclosure with normalized origin and a separate indication of data being sent; do not trust a model-supplied label or a hostname substring. A narrowly defined user-requested navigation skill can reuse an exact user-approved intent, never inferred unlimited browsing authority. Add synthetic-secret tests for path/query transmission, deceptive hosts and redirects; document what an external browser prevents Lilypad from enforcing. Audit `open_file`, `open_app` and local handlers as sibling launch surfaces; their exploitability is an investigation, not an additional proven finding. |
+
+### Release scope: make v0.1.33 dependable
+
+1. **Integrate and revalidate PR #7.** Do not release only main's earlier fixes.
+   Verify the final commit through CI after Claude's changes; code from both
+   halves is required for the new Ask compatibility protocol.
+2. **Close effect and data boundaries first:** L-243, L-247, L-252 and L-253.
+   Audit all comment-level containment claims too: the opening documentation in
+   `sandbox/profile.rs` still says non-secret data cannot leave despite the
+   corrected inline comment. If a complete boundary cannot be finished and
+   tested for this release, explicitly disable the affected Ask capabilities in
+   the desktop admission/executor path and disclose the limitation in the UI.
+   Hiding a phone button is not containment. Reliable manual control can ship
+   while an unsafe Ask capability remains unavailable.
+3. **Fix recovery and bound resource use:** L-250, then L-248/L-249. Include
+   L-251 if it can be completed with bounded recovery tests; otherwise retain
+   the single-instance deployment and document the recovery limitation.
+4. **Reproduce the user's real failures on signed artifacts:** keyboard L-225,
+   updater L-226, cellular readability L-227; Wi-Fi → cellular → Wi-Fi, an
+   actually selected TURN pair, temporary offline, phone background/foreground,
+   Mac sleep/wake, and two displays. Cover Unicode/IME, paste, backspace and
+   held-key release. Assert no duplicated committed text, no stuck modifiers,
+   no replayed stale input, and truthful reconnect/Ask status. A mocked ICE
+   state or an advertised TURN URL is not selected-relay evidence.
+5. **Release the artifacts that were verified.** Build both halves from the
+   recorded final revision; check desktop signature, notarization/stapling,
+   updater manifest/signature and upgrade from 0.1.32. After publishing, download
+   the DMG through the actual website in Safari and by a full HTTP transfer,
+   verify byte count/hash against the release asset, mount and launch it. Verify
+   the expected TestFlight build is available. Check a clean install and an
+   update retaining pairing/settings. Have a tested rollback path for the
+   backend and website assets; do not assume every client can be auto-downgraded.
+
+**Release evidence:** Claude records each gate's commit, command or device/build,
+expected result, actual result and remaining limitations in this canonical state.
+Device access that is unavailable stays explicitly unverified. Do not label the
+whole release ready while a required gate is missing or a shipped capability has
+an open P1 boundary. No new second backend replica or entitlement-enforcement flip.
+
+### Product direction: control that survives interruptions, with work you can verify
+
+Lilypad's strongest direction is a dependable extension of the user's Mac:
+move smoothly between direct control and Ask, understand what is about to happen,
+and see evidence of what actually changed. This is a proposed differentiation,
+not a claim that competitors lack these features. Use the existing M5/M5.4 plans
+as the scope; avoid making v0.1.33 carry every roadmap upgrade.
+
+| Next investment                                                 | Concrete experience and architecture                                                                                                                                                                                                                                                                                                           | How Claude should demonstrate value                                                                                                                                                                                                                      |
+| --------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Verified task results** — existing M5 planner/actor/validator | A compact intent, target and expected result before acting; a result card with what changed, what was checked and what remains uncertain. An explicit model `finish` is still only the model's assertion in `runner.rs`; independent task validation is not implemented. Start with a few deterministic skills with meaningful postconditions. | A corpus containing successful work, action failure followed by model-declared success, wrong target and incomplete tasks. Success needs the requested postcondition, not just exit code or persuasive prose. Measure completion and intervention rates. |
+| **Seamless takeover and recovery** — M5 hybrid control          | One action owner, immediate retirement of pending automation on manual takeover, preserved local drafts, fresh context after reconnect, and explicit re-approval where authority changed. Do not automatically resume side effects from an old session.                                                                                        | Repeated network/lifecycle transitions under typing and held approvals; measure recovery time, input-to-visible latency and duplicate effects separately.                                                                                                |
+| **Readable cellular sessions** — M5.2 and L-227                 | Tune against measured text legibility and input latency, with hysteresis when adapting to bandwidth. Keep diagnostics understandable and distinguish recovery, congestion and selected relay transport.                                                                                                                                        | Same text/scroll workload across controlled bandwidth, latency and loss profiles; compare readability, response delay, freezes, battery/thermal behavior and relay bytes. Proposed targets must be labeled targets until measured.                       |
+| **Low-friction trust and accessibility** — M5 approval UX/M5.5  | Exact destination/data grants, safe deterministic navigation skills to avoid an approval for every trivial click, reachable Stop, VoiceOver announcements that do not steal focus, and clear failure recovery. No blanket permission inferred from accepting one action.                                                                       | VoiceOver walkthrough and repeated-task tests: fewer unnecessary approvals without expanding authority; no color-only state, lost drafts or false success.                                                                                               |
+| **Predictable resource cost** — existing M5/M15                 | Per-task time, image-byte and provider-usage accounting; stop before a configured budget is exceeded. Keep diagnostics metadata-only by default, with explicit consent for content.                                                                                                                                                            | Stress runs establish bounded memory and queues. Record actual provider usage where supplied; do not label an estimate as billed cost. No screen text, prompts, secrets or full URLs in routine telemetry.                                               |
+
+### Scaling direction: prove ownership and capacity before adding replicas
+
+**Standing user requirement (2026-09-09): Lilypad must remain scalable.** Apply
+this to every feature and fix, not only an eventual infrastructure milestone.
+Before calling a change complete, name its resource bounds (memory, queues,
+connections, storage, provider calls and relay traffic where relevant), state
+ownership and isolation rules, overload behavior, observable capacity signals,
+and a testable growth path. Avoid new unbounded work or process-local correctness
+assumptions that silently break at more users or replicas. Scale-ready design is
+a requirement now; current measured capacity and multi-replica readiness must
+still be reported honestly. Larger operational changes remain gated on M11 proof.
+
+M11 remains future work in `docs/milestones.md`; ADR-0004's accepted design is
+not implementation evidence. Preserve accepted ADRs; write a superseding ADR if
+Claude discovers that cross-instance ownership requires changing that design.
+
+- **Measure first:** signaling connection/room occupancy, event-loop delay,
+  reconnect success and latency, auth/rate-limit behavior, recovery duration,
+  selected relay fraction, TURN allocation failures and bandwidth. Establish
+  sustainable capacity with soak/load evidence and reserve headroom; the room
+  cap is a protective limit, not a demonstrated customer capacity.
+- **M11 proof before rollout:** shared rate limits, routing ownership leases
+  with generations/fencing, stale-owner rejection, graceful drain and readiness.
+  Test both peers on different instances, reconnect to another instance, owner
+  crash, Redis loss and recovery, delayed/duplicate messages, lost pub/sub frames,
+  and account/device revocation. Specify which control messages need receipt or
+  replay protection; do not assume every pub/sub message is harmless to lose.
+  Established P2P media should continue through signaling/Redis interruption.
+- **TURN is part of capacity:** validate allocation headroom, credential expiry
+  and refresh, UDP-blocked fallback, region failure and measured relay cost under
+  the existing ADR-0005/M13 plan. Do not infer production TURN configuration
+  from an old ADR or advertise a concurrency number without load evidence.
+- **Keep telemetry bounded:** aggregate metrics must avoid per-room/device labels;
+  use privacy-preserving diagnostic correlation with bounded retention. Resilience
+  and actionable user diagnostics come before a dashboard full of nominal FPS.
+
+**Short Claude prompt:** Continue from PR #7 (`53b6d2e`) and this v0.1.33 brief.
+Independently verify L-248–L-253; implement the release sequence, starting with
+L-243/L-247/L-252/L-253. Disable unsafe Ask capabilities explicitly if their
+boundaries cannot be completed. Preserve local changes, update this ledger with
+commit/test/device evidence, and cut both v0.1.33 artifacts only after the required
+release gates pass. Keep larger M5/M11 upgrades separate; do not add a replica.
 
 ## What is left, and who it needs
 
