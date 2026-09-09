@@ -19,10 +19,52 @@ pub use skills::{plan_command, CommandSpec, SkillsExecutor};
 pub use verify::{check, postcondition, resolve_user_path, Postcondition};
 pub use vision::VisionExecutor;
 
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+
 use anyhow::Result;
 
 use crate::agent::runner::{Executor, Observation};
 use crate::agent::Action;
+
+/// Sentinel for "whatever macOS calls the main display".
+const MAIN_DISPLAY: u64 = u64::MAX;
+
+/// The display the phone is currently watching, shared with a running agent.
+///
+/// Ask's perception has to follow the session: a screenshot of a monitor the
+/// phone is not sharing shows the model — and the configured provider — a
+/// screen the person did not choose to share. Cheap to read (one atomic) and
+/// cloneable into the run's task, so a mid-run display switch is visible to
+/// the next capture without restarting the run.
+#[derive(Clone)]
+pub struct SharedDisplay(Arc<AtomicU64>);
+
+impl Default for SharedDisplay {
+    fn default() -> Self {
+        SharedDisplay(Arc::new(AtomicU64::new(MAIN_DISPLAY)))
+    }
+}
+
+impl SharedDisplay {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Point perception at the display the session is now sharing.
+    pub fn set(&self, display_id: Option<u32>) {
+        self.0
+            .store(display_id.map_or(MAIN_DISPLAY, u64::from), Ordering::SeqCst);
+    }
+
+    /// The current target; `None` means the main display.
+    pub fn get(&self) -> Option<u32> {
+        match self.0.load(Ordering::SeqCst) {
+            MAIN_DISPLAY => None,
+            id => Some(id as u32),
+        }
+    }
+}
 
 /// Routes each [`Action`] to the executor that owns its tier — the single
 /// `Executor` the runner drives:
@@ -38,12 +80,14 @@ pub struct TieredExecutor {
 }
 
 impl TieredExecutor {
-    pub fn from_env() -> Result<Self> {
+    /// Build the executor bound to the display the session is sharing, so the
+    /// vision tier can never look at a screen the phone is not watching.
+    pub fn from_env(display: SharedDisplay) -> Result<Self> {
         Ok(TieredExecutor {
             skills: SkillsExecutor,
             sandbox: SandboxExecutor::from_env()?,
             ax: AxExecutor::default(),
-            vision: VisionExecutor,
+            vision: VisionExecutor::new(display),
         })
     }
 }
@@ -56,5 +100,10 @@ impl Executor for TieredExecutor {
             Action::RunScript { .. } => self.sandbox.execute(action).await,
             _ => self.skills.execute(action).await,
         }
+    }
+
+    fn resolve(&self, action: Action) -> Action {
+        // Only the accessibility tier holds state an action's class depends on.
+        self.ax.resolve(action)
     }
 }

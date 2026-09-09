@@ -88,6 +88,17 @@ impl AxSnapshot {
     pub fn handle(&self, id: usize) -> Option<&AxHandle> {
         self.handles.get(id)
     }
+
+    /// Test-only: a snapshot of nodes with no live handles, so the pure
+    /// id→meaning resolution can be exercised in a process that is not
+    /// Accessibility-trusted.
+    #[cfg(test)]
+    pub fn for_test(nodes: Vec<AxNode>) -> Self {
+        AxSnapshot {
+            nodes,
+            handles: Vec::new(),
+        }
+    }
 }
 
 /// Copy an AX attribute as an owned CFType, or `None` if absent/error.
@@ -227,6 +238,20 @@ pub fn read_focused_tree() -> Result<AxSnapshot> {
         }
     }
     Ok(AxSnapshot { nodes, handles })
+}
+
+/// Re-read a live element's role and label, for confirming that the control
+/// about to be pressed is still the one that was classified and approved.
+///
+/// The snapshot cannot answer this: it is a copy taken at read time, so
+/// comparing it against itself always agrees. Only the live element knows that
+/// the dialog re-laid itself out and this button now says something else.
+pub fn describe_live(handle: &AxHandle) -> Option<(String, String)> {
+    let role = copy_string_attribute(handle.raw, "AXRole")?;
+    let label = copy_string_attribute(handle.raw, "AXTitle")
+        .or_else(|| copy_string_attribute(handle.raw, "AXDescription"))
+        .unwrap_or_default();
+    Some((role, label))
 }
 
 /// Perform `AXPress` on a handle.

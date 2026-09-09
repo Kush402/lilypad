@@ -74,10 +74,15 @@ pub struct AnthropicProvider {
 
 impl AnthropicProvider {
     pub fn new(config: AnthropicConfig) -> Self {
-        AnthropicProvider {
-            client: reqwest::Client::new(),
-            config,
-        }
+        // Bounded on purpose: an unbounded client lets a stalled provider hold
+        // a step open forever (L-236).
+        Self::with_client(config, super::provider_client())
+    }
+
+    /// Construct with an explicit client — the seam tests use to apply short
+    /// deadlines against a stalling endpoint.
+    pub fn with_client(config: AnthropicConfig, client: reqwest::Client) -> Self {
+        AnthropicProvider { client, config }
     }
 }
 

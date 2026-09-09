@@ -20,7 +20,7 @@ pub mod store;
 use anyhow::{anyhow, bail, Result};
 use serde_json::json;
 
-use crate::agent::runner::{Brain, Decision, Observation};
+use crate::agent::runner::{Brain, Decision, FinishReason, Observation};
 use crate::agent::security::ScriptLanguage;
 use crate::agent::{Action, AgentTier};
 
@@ -408,14 +408,57 @@ fn base_tools() -> Vec<ToolSpec> {
         ToolSpec {
             name: "finish",
             description:
-                "Call when the task is complete. Provide a one-line summary of what was done.",
+                "Call when you are done. `status` says how: `completed` when the task is \
+                 actually done, `cannot` when you are unable to do it, `needs_input` when you \
+                 need something from the person first. Provide a one-line summary either way. \
+                 Never answer in prose instead of calling a tool.",
             input_schema: json!({
                 "type": "object",
-                "properties": { "summary": { "type": "string" } },
+                "properties": {
+                    "summary": { "type": "string" },
+                    "status": {
+                        "type": "string",
+                        "enum": ["completed", "cannot", "needs_input"],
+                    },
+                },
                 "required": ["summary"],
             }),
         },
     ]
+}
+
+/// How long to wait for a provider to accept a TCP/TLS connection.
+pub const PROVIDER_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Whole-request deadline, **including reading the response body**.
+///
+/// This is the bound that was missing. `RunnerConfig` caps the number of steps,
+/// but `brain.next` was bounded only by cancellation, so a provider that
+/// accepted the connection and then stalled — before headers, or part-way
+/// through the body — held one step open forever. A retry counter never fires
+/// on a request that never finishes (L-236).
+pub const PROVIDER_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// The HTTP client both provider adapters use, with both deadlines applied.
+pub fn provider_client() -> reqwest::Client {
+    client_with(PROVIDER_CONNECT_TIMEOUT, PROVIDER_REQUEST_TIMEOUT)
+}
+
+/// A bounded client with explicit deadlines — the seam tests use to drive the
+/// same code path against a deliberately stalling endpoint without waiting two
+/// minutes for it.
+pub fn client_with(
+    connect: std::time::Duration,
+    whole_request: std::time::Duration,
+) -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(connect)
+        .timeout(whole_request)
+        .build()
+        // Only fails if the TLS backend cannot initialize, in which case no
+        // provider would work at all. Falling back to a default client would
+        // silently restore the unbounded behaviour this exists to prevent.
+        .expect("provider HTTP client")
 }
 
 /// Translate one tool call into a [`Decision`]. Pure — unit-tested against the
@@ -483,6 +526,10 @@ pub fn decision_from_tool_call(call: &ToolCall) -> Result<Decision> {
                 tier: AgentTier::Ax,
                 action: Action::AxPress {
                     element_id: id as usize,
+                    // The model names an index; only the executor knows what
+                    // that index points at. Filled in by `Executor::resolve`
+                    // before the gate sees it.
+                    target: None,
                 },
             })
         }
@@ -519,9 +566,22 @@ pub fn decision_from_tool_call(call: &ToolCall) -> Result<Decision> {
                 },
             })
         }
-        "finish" => Ok(Decision::Finish {
-            summary: field("summary").unwrap_or_else(|_| "Task complete".to_string()),
-        }),
+        "finish" => {
+            // The model declared an outcome; take it at its word, and treat an
+            // absent status as completion only because calling `finish` at all
+            // is the supported way to say "done". A *missing* tool call is the
+            // case that must never read as success — handled in `next`.
+            let reason = match call.input.get("status").and_then(|v| v.as_str()) {
+                Some("cannot") => FinishReason::Incomplete,
+                Some("needs_input") => FinishReason::NeedsInput,
+                Some("completed") | None => FinishReason::Completed,
+                Some(other) => bail!("finish: unknown status `{other}`"),
+            };
+            Ok(Decision::Finish {
+                summary: field("summary").unwrap_or_else(|_| "Task complete".to_string()),
+                reason,
+            })
+        }
         other => Err(anyhow!("model called unknown tool `{other}`")),
     }
 }
@@ -624,10 +684,21 @@ impl<P: LlmProvider + Send> Brain for LlmBrain<P> {
                 }
                 Ok(decision)
             }
-            // A model that answers with prose instead of a tool call is treated
-            // as finished — better than looping forever.
+            // A model that answers with prose instead of a tool call has not
+            // used the supported terminal decision. It may be refusing, asking
+            // a question, or returning nothing at all — none of which is the
+            // task being done. Ending the run is still right (better than
+            // looping forever), but ending it as a *success* is what turned a
+            // refusal into a green "Done." (L-235). The reason is taken from
+            // what the model did, not from matching words in what it said.
             None => Ok(Decision::Finish {
-                summary: reply.text.unwrap_or_else(|| "Task complete".to_string()),
+                summary: reply
+                    .text
+                    .filter(|t| !t.trim().is_empty())
+                    .unwrap_or_else(|| {
+                        "the assistant stopped without saying what happened".to_string()
+                    }),
+                reason: FinishReason::Incomplete,
             }),
         }
     }
@@ -901,13 +972,157 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn prose_only_reply_is_treated_as_finished() {
+    async fn prose_only_reply_ends_the_run_but_not_as_success() {
+        // Was `prose_only_reply_is_treated_as_finished`, asserting only that
+        // the run ends. Ending is still right — looping forever is worse — but
+        // the run used to end `Completed`, which is how a refusal earned a
+        // green "Done." (L-235). Flipped rather than deleted so the policy
+        // change is visible at the assertion that pinned the old one.
         let provider = MockProvider::new(vec![AssistantReply {
             text: Some("I think we're done here.".into()),
             tool_call: None,
         }]);
         let mut brain = LlmBrain::new(provider);
         let d = brain.next("task", &[]).await.unwrap();
-        assert!(matches!(d, Decision::Finish { .. }));
+        match d {
+            Decision::Finish { reason, summary } => {
+                assert_eq!(reason, FinishReason::Incomplete);
+                assert_eq!(summary, "I think we're done here.");
+            }
+            other => panic!("expected Finish, got {other:?}"),
+        }
+    }
+
+    // ── L-235: refusal, question and empty response are not completion ──
+
+    fn finish_call(input: serde_json::Value) -> ToolCall {
+        ToolCall {
+            id: "t1".into(),
+            name: "finish".into(),
+            input,
+            extra: None,
+        }
+    }
+
+    #[test]
+    fn finish_reports_the_status_the_model_declared() {
+        for (status, want) in [
+            ("completed", FinishReason::Completed),
+            ("cannot", FinishReason::Incomplete),
+            ("needs_input", FinishReason::NeedsInput),
+        ] {
+            let d = decision_from_tool_call(&finish_call(
+                json!({ "summary": "s", "status": status }),
+            ))
+            .unwrap();
+            match d {
+                Decision::Finish { reason, .. } => assert_eq!(reason, want, "status {status}"),
+                other => panic!("expected Finish, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn finish_without_a_status_is_completion_because_calling_it_is_the_declaration() {
+        let d = decision_from_tool_call(&finish_call(json!({ "summary": "did it" }))).unwrap();
+        assert!(matches!(
+            d,
+            Decision::Finish {
+                reason: FinishReason::Completed,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn finish_with_an_unrecognised_status_is_an_error_not_a_guess() {
+        assert!(decision_from_tool_call(&finish_call(
+            json!({ "summary": "s", "status": "probably?" })
+        ))
+        .is_err());
+    }
+
+    #[tokio::test]
+    async fn an_empty_response_is_not_success() {
+        // The case the old code turned into `Task complete`.
+        let provider = MockProvider::new(vec![AssistantReply {
+            text: None,
+            tool_call: None,
+        }]);
+        let mut brain = LlmBrain::new(provider);
+        match brain.next("task", &[]).await.unwrap() {
+            Decision::Finish { reason, summary } => {
+                assert_eq!(reason, FinishReason::Incomplete);
+                assert!(
+                    summary.contains("without saying what happened"),
+                    "an empty reply must say so: {summary}"
+                );
+            }
+            other => panic!("expected Finish, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_refusal_is_classified_by_what_the_model_did_not_by_its_words() {
+        // Deliberately worded to look like success to a keyword matcher: the
+        // classification must come from the absence of a terminal tool call.
+        let provider = MockProvider::new(vec![AssistantReply {
+            text: Some("Done! Everything is complete and successful.".into()),
+            tool_call: None,
+        }]);
+        let mut brain = LlmBrain::new(provider);
+        assert!(matches!(
+            brain.next("task", &[]).await.unwrap(),
+            Decision::Finish {
+                reason: FinishReason::Incomplete,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn a_finish_reason_maps_to_an_honest_run_outcome() {
+        use crate::agent::protocol::RunOutcome;
+        assert_eq!(FinishReason::Completed.outcome(), RunOutcome::Completed);
+        assert_eq!(FinishReason::Incomplete.outcome(), RunOutcome::Failed);
+        assert_eq!(FinishReason::NeedsInput.outcome(), RunOutcome::NeedsInput);
+    }
+
+    // ── L-236: provider waiting is bounded ──
+
+    #[test]
+    fn provider_deadlines_are_set_and_ordered() {
+        assert!(PROVIDER_CONNECT_TIMEOUT > std::time::Duration::ZERO);
+        assert!(PROVIDER_REQUEST_TIMEOUT > PROVIDER_CONNECT_TIMEOUT);
+    }
+
+    #[tokio::test]
+    async fn a_provider_that_accepts_then_stalls_does_not_hold_a_step_forever() {
+        // A local endpoint that completes the TCP handshake and then says
+        // nothing at all — the exact shape the retry counter cannot bound,
+        // because the request never finishes.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let accepted = tokio::spawn(async move {
+            // Hold the connection open, read nothing, answer nothing.
+            let (stream, _) = listener.accept().await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            drop(stream);
+        });
+
+        let client = client_with(
+            std::time::Duration::from_millis(500),
+            std::time::Duration::from_millis(300),
+        );
+        let started = std::time::Instant::now();
+        let result = client.get(format!("http://{addr}/v1/x")).send().await;
+        let elapsed = started.elapsed();
+
+        assert!(result.is_err(), "a stalled provider must not hang forever");
+        assert!(
+            elapsed < std::time::Duration::from_secs(5),
+            "must give up on its own deadline, took {elapsed:?}"
+        );
+        accepted.abort();
     }
 }

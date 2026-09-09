@@ -900,6 +900,7 @@ impl SessionRunner {
                 self.media.start(Arc::clone(peer)).await?;
                 self.refresh_displays();
                 self.gate.set_target_display(self.media.display_id());
+                self.agent.set_display(self.media.display_id());
                 self.send_frame_size(sig);
                 self.emit_shared_display();
             }
@@ -959,6 +960,7 @@ impl SessionRunner {
                             // until something else changed.
                             self.refresh_displays();
                             self.gate.set_target_display(self.media.display_id());
+                            self.agent.set_display(self.media.display_id());
                             self.send_frame_size(sig);
                             self.emit_shared_display();
                         }
@@ -1313,6 +1315,7 @@ impl SessionRunner {
                 // Taps have to follow the picture: normalized coordinates mean
                 // nothing without knowing which screen they are normalized to.
                 self.gate.set_target_display(self.media.display_id());
+                self.agent.set_display(self.media.display_id());
                 self.send_frame_size(sig);
                 self.emit_shared_display();
             }

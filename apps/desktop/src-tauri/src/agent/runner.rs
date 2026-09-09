@@ -38,8 +38,41 @@ pub enum Decision {
         tier: AgentTier,
         action: Action,
     },
-    /// The task is complete.
-    Finish { summary: String },
+    /// The run is over. `reason` says *how* — a model that declines a task,
+    /// asks a question, or answers with prose instead of a tool call is not
+    /// the same as one that finished the work (L-235).
+    Finish {
+        summary: String,
+        reason: FinishReason,
+    },
+}
+
+/// Why a run ended without another action.
+///
+/// Inferred from what the model actually did — whether it used the supported
+/// terminal decision — never from keyword-matching its prose. "I cannot help
+/// with that" and "Done!" are the same shape to a string matcher, and the
+/// model may be answering in any language.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FinishReason {
+    /// The model called `finish` and declared the task done.
+    Completed,
+    /// The model stopped without declaring completion — a refusal, a
+    /// clarifying question answered as prose, or an empty response.
+    Incomplete,
+    /// The model explicitly needs something from the person to continue.
+    NeedsInput,
+}
+
+impl FinishReason {
+    /// How this reason is reported on the wire.
+    pub fn outcome(self) -> RunOutcome {
+        match self {
+            FinishReason::Completed => RunOutcome::Completed,
+            FinishReason::Incomplete => RunOutcome::Failed,
+            FinishReason::NeedsInput => RunOutcome::NeedsInput,
+        }
+    }
 }
 
 /// The outcome of executing one action, fed back to the brain as context for
@@ -97,6 +130,19 @@ pub trait Executor {
         &mut self,
         action: &Action,
     ) -> impl std::future::Future<Output = Result<Observation>> + Send;
+
+    /// Attach the live context an action needs before it can be classified.
+    ///
+    /// [`classify`] is pure over `Action`, which is what makes the safety
+    /// decision reproducible and table-testable. An action whose risk depends
+    /// on live state — which accessibility element an `id` currently names —
+    /// therefore has to carry that state with it. Resolution happens here,
+    /// once, **before** [`gate`]: doing it inside the executor instead would
+    /// let the thing approved and the thing performed differ. Executors that
+    /// need no context leave the action untouched.
+    fn resolve(&self, action: Action) -> Action {
+        action
+    }
 }
 
 /// The pure gating verdict for a proposed action.
@@ -162,11 +208,21 @@ pub struct RunnerConfig {
     /// Hard cap on decision iterations — a runaway-loop backstop. A real task
     /// finishes well under this; hitting it ends the run `Failed`.
     pub max_steps: usize,
+    /// Wall-clock budget for the whole run, in milliseconds.
+    ///
+    /// A step cap is not a time cap: forty steps that each wait near the
+    /// provider's request deadline is over an hour with the phone showing
+    /// "running". Bounds the run itself, on top of the per-request deadlines
+    /// in `llm` (L-236).
+    pub max_run_ms: u64,
 }
 
 impl Default for RunnerConfig {
     fn default() -> Self {
-        RunnerConfig { max_steps: 40 }
+        RunnerConfig {
+            max_steps: 40,
+            max_run_ms: 15 * 60 * 1000,
+        }
     }
 }
 
@@ -258,10 +314,26 @@ where
         cancel: &Cancel,
     ) -> RunOutcome {
         let mut history: Vec<Observation> = Vec::new();
+        let started_ms = (self.now_ms)();
 
         for _ in 0..self.config.max_steps {
             if cancel.is_cancelled() {
                 return self.end(run_id, RunOutcome::Stopped);
+            }
+            // Cancellation is checked first on purpose: a stopped run reports
+            // Stopped, never a timeout.
+            if (self.now_ms)().saturating_sub(started_ms) >= self.config.max_run_ms {
+                let sid = self.next_step_id(run_id);
+                self.emit(
+                    run_id,
+                    &sid,
+                    StepKind::Error,
+                    "the task ran out of time before finishing",
+                    None,
+                    None,
+                    StepState::Failed,
+                );
+                return self.end(run_id, RunOutcome::Failed);
             }
 
             // ── decide ──
@@ -291,18 +363,17 @@ where
             };
 
             let (summary, tier, action) = match decision {
-                Decision::Finish { summary } => {
+                Decision::Finish { summary, reason } => {
                     let sid = self.next_step_id(run_id);
-                    self.emit(
-                        run_id,
-                        &sid,
-                        StepKind::Result,
-                        summary,
-                        None,
-                        None,
-                        StepState::Done,
-                    );
-                    return self.end(run_id, RunOutcome::Completed);
+                    // Only a declared completion is rendered as a result; the
+                    // other reasons are not successes and must not wear a
+                    // success badge.
+                    let (kind, state) = match reason {
+                        FinishReason::Completed => (StepKind::Result, StepState::Done),
+                        _ => (StepKind::Result, StepState::Failed),
+                    };
+                    self.emit(run_id, &sid, kind, summary, None, None, state);
+                    return self.end(run_id, reason.outcome());
                 }
                 Decision::Act {
                     summary,
@@ -310,6 +381,12 @@ where
                     action,
                 } => (summary, tier, action),
             };
+
+            // ── resolve ──
+            // Give the gate the context it needs to judge this action. Must
+            // precede classification: an `ax_press` carries only an index
+            // until the executor says what that index currently points at.
+            let action = self.executor.resolve(action);
 
             let step_id = self.next_step_id(run_id);
 
@@ -331,15 +408,19 @@ where
                     continue;
                 }
                 Gate::Hold(class) => {
-                    self.emit(
+                    // The card must show what is actually being granted, not a
+                    // generic label: "Run shell script" is the same sentence
+                    // for a script that lists a directory and one that uploads
+                    // it. Derived from the very action that will run.
+                    let _ = self.steps_tx.send(AgentOutbound::held_step(
                         run_id,
                         &step_id,
-                        StepKind::Action,
                         summary.clone(),
                         Some(tier),
                         Some(class),
-                        StepState::Held,
-                    );
+                        crate::agent::security::approval_for(&action),
+                        (self.now_ms)(),
+                    ));
                     let approved = tokio::select! {
                         biased;
                         _ = cancel.wait() => {
@@ -486,6 +567,7 @@ mod tests {
             self.seen_history_lens.push(history.len());
             Ok(self.script.pop_front().unwrap_or(Decision::Finish {
                 summary: "done".into(),
+                reason: FinishReason::Completed,
             }))
         }
     }
@@ -741,5 +823,119 @@ mod tests {
         let msgs = drain(&mut rx);
         assert!(states(&msgs).contains(&StepState::Held));
         assert!(states(&msgs).contains(&StepState::Denied));
+    }
+
+    // ── L-235: a run that did not finish must not report success ──
+
+    #[tokio::test]
+    async fn an_incomplete_finish_ends_the_run_failed_not_completed() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let brain = ScriptedBrain::new(vec![Decision::Finish {
+            summary: "I cannot do that".into(),
+            reason: FinishReason::Incomplete,
+        }]);
+        let mut runner = AgentRunner::new(brain, RecordingExecutor::default(), tx, || 1);
+        let (_dtx, mut drx) = mpsc::unbounded_channel();
+        let outcome = runner.run("r1", "task", &mut drx, &Cancel::new()).await;
+        assert_eq!(outcome, RunOutcome::Failed);
+
+        // …and the step itself must not wear a success state.
+        let mut states = Vec::new();
+        while let Ok(msg) = rx.try_recv() {
+            if let AgentOutbound::AgentStep { state, .. } = msg {
+                states.push(state);
+            }
+        }
+        assert_eq!(states, vec![StepState::Failed]);
+    }
+
+    #[tokio::test]
+    async fn a_needs_input_finish_is_reported_as_needing_input() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let brain = ScriptedBrain::new(vec![Decision::Finish {
+            summary: "Which file did you mean?".into(),
+            reason: FinishReason::NeedsInput,
+        }]);
+        let mut runner = AgentRunner::new(brain, RecordingExecutor::default(), tx, || 1);
+        let (_dtx, mut drx) = mpsc::unbounded_channel();
+        assert_eq!(
+            runner.run("r1", "task", &mut drx, &Cancel::new()).await,
+            RunOutcome::NeedsInput
+        );
+    }
+
+    #[tokio::test]
+    async fn a_completed_finish_still_completes() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let brain = ScriptedBrain::new(vec![Decision::Finish {
+            summary: "done".into(),
+            reason: FinishReason::Completed,
+        }]);
+        let mut runner = AgentRunner::new(brain, RecordingExecutor::default(), tx, || 1);
+        let (_dtx, mut drx) = mpsc::unbounded_channel();
+        assert_eq!(
+            runner.run("r1", "task", &mut drx, &Cancel::new()).await,
+            RunOutcome::Completed
+        );
+    }
+
+    // ── L-236: a run is bounded in time, not only in steps ──
+
+    #[tokio::test]
+    async fn a_run_that_outlives_its_time_budget_ends_failed() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        // A brain that keeps proposing work; without a time bound, forty steps
+        // of it run for however long each one happens to take.
+        let brain = ScriptedBrain::new(
+            (0..40)
+                .map(|_| Decision::Act {
+                    summary: "look".into(),
+                    tier: AgentTier::Ax,
+                    action: Action::ReadAxTree,
+                })
+                .collect(),
+        );
+        let clock = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let c = clock.clone();
+        let mut runner = AgentRunner::with_config(
+            brain,
+            RecordingExecutor::default(),
+            tx,
+            move || c.fetch_add(1_000, std::sync::atomic::Ordering::SeqCst),
+            RunnerConfig {
+                max_steps: 40,
+                max_run_ms: 2_000,
+            },
+        );
+        let (_dtx, mut drx) = mpsc::unbounded_channel();
+        assert_eq!(
+            runner.run("r1", "task", &mut drx, &Cancel::new()).await,
+            RunOutcome::Failed
+        );
+    }
+
+    #[tokio::test]
+    async fn cancellation_beats_the_time_budget_so_stop_still_reports_stopped() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let brain = ScriptedBrain::new(vec![]);
+        let clock = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let c = clock.clone();
+        let mut runner = AgentRunner::with_config(
+            brain,
+            RecordingExecutor::default(),
+            tx,
+            move || c.fetch_add(1_000_000, std::sync::atomic::Ordering::SeqCst),
+            RunnerConfig {
+                max_steps: 40,
+                max_run_ms: 1,
+            },
+        );
+        let cancel = Cancel::new();
+        cancel.cancel();
+        let (_dtx, mut drx) = mpsc::unbounded_channel();
+        assert_eq!(
+            runner.run("r1", "task", &mut drx, &cancel).await,
+            RunOutcome::Stopped
+        );
     }
 }

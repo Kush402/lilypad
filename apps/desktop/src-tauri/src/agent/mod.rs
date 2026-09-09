@@ -26,13 +26,15 @@ pub mod sandbox;
 pub mod security;
 
 pub use controller::{authorize_command, AgentController, CommandGate};
-pub use executor::{SandboxExecutor, SkillsExecutor, TieredExecutor};
+pub use executor::{SandboxExecutor, SharedDisplay, SkillsExecutor, TieredExecutor};
 pub use llm::{LlmBrain, LlmProvider};
 pub use protocol::{
     parse_inbound, AgentInbound, AgentOutbound, AgentTier, RunOutcome, StepKind, StepState,
     ToolClass,
 };
-pub use runner::{gate, AgentRunner, Brain, Cancel, Decision, Executor, Gate, Observation};
+pub use runner::{
+    gate, AgentRunner, Brain, Cancel, Decision, Executor, FinishReason, Gate, Observation,
+};
 pub use security::{classify, is_forbidden, requires_hold, Action};
 
 #[cfg(test)]

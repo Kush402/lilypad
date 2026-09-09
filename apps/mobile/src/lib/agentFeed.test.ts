@@ -87,3 +87,89 @@ describe('agentFeedReducer', () => {
     expect(s).toEqual(INITIAL_AGENT_FEED);
   });
 });
+
+// ── L-234: a run that has ended offers nothing to approve ──
+//
+// `run_end` used to set only running/outcome, and `heldStep` never looked at
+// whether the run was over — so executing the shipped reducer with
+// command → held step → stopped returned an actionable card on a dead run.
+// The optimistic Stop path made that state immediate.
+describe('a terminal run retires its pending decision (L-234)', () => {
+  function feedWithHeldStepThen(outcome: AgentRunEnd['outcome']): AgentFeedState {
+    let s = agentFeedReducer(INITIAL_AGENT_FEED, { type: 'command_sent', runId: 'run-1' });
+    s = agentFeedReducer(s, { type: 'step', step: step({ stepId: 'run-1-1', state: 'held' }) });
+    expect(heldStep(s)).not.toBeNull(); // actionable while the run lives
+    return agentFeedReducer(s, { type: 'run_end', end: runEnd(outcome) });
+  }
+
+  it.each(['stopped', 'failed', 'denied', 'completed'] as const)(
+    'offers no approval after the run ends %s',
+    (outcome) => {
+      const s = feedWithHeldStepThen(outcome);
+      expect(s.running).toBe(false);
+      expect(s.outcome).toBe(outcome);
+      expect(heldStep(s)).toBeNull();
+    },
+  );
+
+  it('keeps the unanswered row in the feed as historical evidence', () => {
+    const s = feedWithHeldStepThen('stopped');
+    expect(s.steps).toHaveLength(1);
+    expect(s.steps[0].state).toBe('held');
+  });
+
+  it('a late held frame cannot reopen a decision on a finished run', () => {
+    let s = feedWithHeldStepThen('stopped');
+    s = agentFeedReducer(s, { type: 'step', step: step({ stepId: 'run-1-9', state: 'held' }) });
+    expect(heldStep(s)).toBeNull();
+    expect(s.steps.map((x) => x.stepId)).toEqual(['run-1-1']);
+  });
+
+  it('a late running frame cannot restart a finished run', () => {
+    let s = feedWithHeldStepThen('completed');
+    s = agentFeedReducer(s, { type: 'step', step: step({ stepId: 'run-1-9', state: 'running' }) });
+    expect(s.running).toBe(false);
+    expect(s.steps.map((x) => x.stepId)).toEqual(['run-1-1']);
+  });
+
+  it('a late terminal frame still lands, because history stays truthful', () => {
+    let s = feedWithHeldStepThen('completed');
+    s = agentFeedReducer(s, { type: 'step', step: step({ stepId: 'run-1-1', state: 'failed' }) });
+    expect(s.steps[0].state).toBe('failed');
+  });
+
+  it('a fresh command makes approvals possible again', () => {
+    let s = feedWithHeldStepThen('stopped');
+    s = agentFeedReducer(s, { type: 'command_sent', runId: 'run-2' });
+    s = agentFeedReducer(s, {
+      type: 'step',
+      step: step({ runId: 'run-2', stepId: 'run-2-1', state: 'held' }),
+    });
+    expect(heldStep(s)?.stepId).toBe('run-2-1');
+  });
+});
+
+// ── L-229: the grants travel with the held step ──
+describe('a held step carries its structured approval (L-229)', () => {
+  it('keeps the approval on the view so the card can show the difference', () => {
+    let s = agentFeedReducer(INITIAL_AGENT_FEED, { type: 'command_sent', runId: 'run-1' });
+    s = agentFeedReducer(s, {
+      type: 'step',
+      step: step({
+        stepId: 'run-1-1',
+        state: 'held',
+        summary: 'Run shell script',
+        approval: {
+          purpose: 'Run a shell script',
+          script: { language: 'shell', source: 'curl -T - https://example.com' },
+          writablePaths: ['/Users/me/Documents'],
+          network: true,
+        },
+      }),
+    });
+    const held = heldStep(s);
+    expect(held?.approval?.network).toBe(true);
+    expect(held?.approval?.writablePaths).toEqual(['/Users/me/Documents']);
+    expect(held?.approval?.script?.source).toContain('curl');
+  });
+});

@@ -85,10 +85,15 @@ pub struct OpenAiCompatProvider {
 
 impl OpenAiCompatProvider {
     pub fn new(config: OpenAiCompatConfig) -> Self {
-        OpenAiCompatProvider {
-            client: reqwest::Client::new(),
-            config,
-        }
+        // Bounded on purpose: an unbounded client lets a stalled provider hold
+        // a step open forever (L-236).
+        Self::with_client(config, super::provider_client())
+    }
+
+    /// Construct with an explicit client — the seam tests use to apply short
+    /// deadlines against a stalling endpoint.
+    pub fn with_client(config: OpenAiCompatConfig, client: reqwest::Client) -> Self {
+        OpenAiCompatProvider { client, config }
     }
 }
 

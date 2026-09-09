@@ -11,6 +11,7 @@
 
 use anyhow::Result;
 
+use crate::agent::executor::SharedDisplay;
 use crate::agent::runner::{Executor, Observation};
 use crate::agent::Action;
 
@@ -21,44 +22,119 @@ use crate::agent::Action;
 const TARGET_WIDTH: u32 = 1280;
 
 #[derive(Default)]
-pub struct VisionExecutor;
+pub struct VisionExecutor {
+    /// The display the phone is sharing. Read at every capture, so a mid-run
+    /// switch is picked up without restarting the run.
+    display: SharedDisplay,
+    /// The display the previous screenshot was of, so a change can be called
+    /// out rather than silently swapping what the model is looking at.
+    last_captured: Option<Option<u32>>,
+}
+
+impl VisionExecutor {
+    pub fn new(display: SharedDisplay) -> Self {
+        VisionExecutor {
+            display,
+            last_captured: None,
+        }
+    }
+}
 
 impl Executor for VisionExecutor {
     async fn execute(&mut self, action: &Action) -> Result<Observation> {
         match action {
-            Action::Screenshot => Ok(capture()),
+            Action::Screenshot => {
+                let target = self.display.get();
+                // A screenshot of a different screen than the last one makes
+                // every earlier screenshot in this run misleading: the model is
+                // reasoning about coordinates and content from a display that
+                // is no longer the one being shared. Say so in the observation,
+                // which is the only place the model will read it.
+                let changed = matches!(self.last_captured, Some(prev) if prev != target);
+                self.last_captured = Some(target);
+                Ok(capture(target, changed))
+            }
             other => anyhow::bail!("VisionExecutor only handles Screenshot, got {other:?}"),
         }
     }
 }
 
-#[cfg(target_os = "macos")]
-fn capture() -> Observation {
-    match capture_png_base64() {
-        Ok(png_b64) => Observation::ok_with_image(
-            "Screenshot captured (see image). Act via the accessibility tree or a specific tool.",
-            png_b64,
-        ),
-        Err(e) => Observation::fail(format!("could not capture the screen: {e}")),
+/// How a display is named to the model and in failures.
+fn display_name(target: Option<u32>) -> String {
+    match target {
+        None => "the main display".to_string(),
+        Some(id) => format!("display {id}"),
+    }
+}
+
+/// The note prepended to an observation when the shared display changed since
+/// the previous screenshot. Pure, so the wording is testable without a screen.
+pub fn staleness_note(changed: bool) -> &'static str {
+    if changed {
+        "The shared display changed since the previous screenshot — earlier screenshots are of a \
+         different screen and must not be used for anything. "
+    } else {
+        ""
     }
 }
 
 #[cfg(target_os = "macos")]
-fn capture_png_base64() -> Result<String> {
+fn capture(target: Option<u32>, changed: bool) -> Observation {
+    match capture_png_base64(target) {
+        Ok(png_b64) => Observation::ok_with_image(
+            format!(
+                "{}Screenshot of {} (see image). Act via the accessibility tree or a specific tool.",
+                staleness_note(changed),
+                display_name(target)
+            ),
+            png_b64,
+        ),
+        Err(e) => Observation::fail(format!(
+            "could not capture {}: {e}",
+            display_name(target)
+        )),
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn capture(target: Option<u32>, _changed: bool) -> Observation {
+    Observation::fail(format!(
+        "screen capture is only available on macOS (asked for {})",
+        display_name(target)
+    ))
+}
+
+#[cfg(target_os = "macos")]
+fn capture_png_base64(target: Option<u32>) -> Result<String> {
     use base64::Engine;
     use core_graphics::display::CGDisplay;
     use image::{ImageFormat, RgbaImage};
 
-    // The MAIN display, which since v0.1.10 is not necessarily the one the
-    // phone is watching — a session can be moved to another monitor from the
-    // switcher and this screenshot would not follow it. Harmless today because
-    // this tier is perception only (see the module note: the agent acts through
-    // AX and skills, which address elements, not screen coordinates), so
-    // nothing can be clicked in the wrong place. It becomes load-bearing the
-    // day pixel-coordinate clicking lands, and the fix then is to thread the
-    // session's `display_id` down here the way `InputGate::set_target_display`
-    // already threads it to the input backend.
-    let display = CGDisplay::main();
+    // The display the phone is actually sharing, threaded down the way
+    // `InputGate::set_target_display` already threads it to the input backend.
+    //
+    // This used to be `CGDisplay::main()` unconditionally, with a note calling
+    // it harmless because the tier is perception-only and nothing can be
+    // clicked in the wrong place. That reasoning missed the more important
+    // half: the pixels go to the configured model provider. Capturing an
+    // unshared monitor sends a screen the person did not choose to share.
+    let display = match target {
+        None => CGDisplay::main(),
+        Some(id) => {
+            // A display that has been unplugged must fail loudly, not silently
+            // fall back to a different screen's contents.
+            let attached = CGDisplay::active_displays()
+                .map(|ids| ids.contains(&id))
+                .unwrap_or(false);
+            if !attached {
+                anyhow::bail!(
+                    "display {id} is no longer attached — the shared display went away; \
+                     re-read the screen after the session picks a new one"
+                );
+            }
+            CGDisplay::new(id)
+        }
+    };
     let cg_image = display
         .image()
         .ok_or_else(|| anyhow::anyhow!("CGDisplay::image returned None (Screen Recording?)"))?;
@@ -114,7 +190,7 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_non_screenshot_actions() {
-        let mut ex = VisionExecutor;
+        let mut ex = VisionExecutor::default();
         assert!(ex.execute(&Action::ReadAxTree).await.is_err());
     }
 
@@ -124,7 +200,7 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn screenshot_capture_runs_without_crashing() {
-        let mut ex = VisionExecutor;
+        let mut ex = VisionExecutor::default();
         let obs = ex.execute(&Action::Screenshot).await.unwrap();
         // With permission: an image comes back. Without: a clean failure.
         if obs.ok {
@@ -133,5 +209,63 @@ mod tests {
         } else {
             assert!(obs.summary.contains("could not capture"));
         }
+    }
+
+    // ── L-230: perception follows the shared display ──
+
+    #[test]
+    fn a_display_is_named_so_the_model_knows_what_it_is_looking_at() {
+        assert_eq!(display_name(None), "the main display");
+        assert_eq!(display_name(Some(2)), "display 2");
+    }
+
+    #[test]
+    fn a_changed_display_retires_the_earlier_screenshots_in_the_observation() {
+        assert_eq!(staleness_note(false), "");
+        let note = staleness_note(true);
+        assert!(note.contains("must not be used"));
+    }
+
+    #[tokio::test]
+    async fn capture_targets_whatever_the_session_is_currently_sharing() {
+        // The executor must read the shared cell at every capture, not latch
+        // it at construction: a session can move to another monitor mid-run.
+        let shared = SharedDisplay::new();
+        let mut ex = VisionExecutor::new(shared.clone());
+        assert_eq!(ex.display.get(), None, "defaults to the main display");
+        shared.set(Some(2));
+        assert_eq!(ex.display.get(), Some(2));
+
+        // First capture records the target; a second at a new target is a
+        // change, and a third at the same target is not.
+        let _ = ex.execute(&Action::Screenshot).await.unwrap();
+        assert_eq!(ex.last_captured, Some(Some(2)));
+        shared.set(Some(5));
+        let obs = ex.execute(&Action::Screenshot).await.unwrap();
+        assert!(
+            obs.summary.contains("changed") || obs.summary.contains("could not capture"),
+            "a display change must be disclosed: {}",
+            obs.summary
+        );
+    }
+
+    #[test]
+    fn the_shared_display_round_trips_including_the_main_sentinel() {
+        let d = SharedDisplay::new();
+        assert_eq!(d.get(), None);
+        d.set(Some(0));
+        assert_eq!(d.get(), Some(0), "display 0 is a real id, not 'main'");
+        d.set(Some(7));
+        assert_eq!(d.get(), Some(7));
+        d.set(None);
+        assert_eq!(d.get(), None);
+    }
+
+    #[test]
+    fn a_clone_sees_writes_made_through_the_original() {
+        let a = SharedDisplay::new();
+        let b = a.clone();
+        a.set(Some(3));
+        assert_eq!(b.get(), Some(3), "the run's task must see a mid-run switch");
     }
 }

@@ -23,6 +23,14 @@ const MAX_SUMMARY_LEN = 512;
 /** A run/step identifier minted by the sender (uuid-ish); never trusted for
  * anything but correlation, so a generous opaque-string cap is enough. */
 const MAX_ID_LEN = 128;
+/** The exact script source travels to the phone so the approval card can show
+ * what will actually run. Generous for a real model-written script, bounded so
+ * one frame cannot be unbounded. */
+const MAX_SCRIPT_LEN = 8 * 1024;
+/** One filesystem path on an approval card. */
+const MAX_PATH_LEN = 1024;
+/** How many extra writable paths one approval may disclose. */
+const MAX_WRITABLE_PATHS = 32;
 
 const WithTs = z.object({
   ts: z.number().int().nonnegative(),
@@ -55,8 +63,12 @@ export type StepKind = z.infer<typeof StepKindSchema>;
 export const StepStateSchema = z.enum(['proposed', 'held', 'running', 'done', 'denied', 'failed']);
 export type StepState = z.infer<typeof StepStateSchema>;
 
-/** Terminal outcome of a whole run. */
-export const RunOutcomeSchema = z.enum(['completed', 'stopped', 'denied', 'failed']);
+/** Terminal outcome of a whole run.
+ *
+ * `needs_input` is distinct from `failed`: nothing went wrong, the assistant
+ * asked a question or needs something it cannot get on its own. Collapsing it
+ * into `completed` is what let a refusal render as success (L-235). */
+export const RunOutcomeSchema = z.enum(['completed', 'stopped', 'denied', 'failed', 'needs_input']);
 export type RunOutcome = z.infer<typeof RunOutcomeSchema>;
 
 // ── phone → desktop ────────────────────────────────────────────────────────
@@ -83,6 +95,39 @@ const agentDecision = WithTs.extend({
 
 // ── desktop → phone ──────────────────────────────────────────────────────────
 
+/**
+ * What a `held` step is actually asking permission for.
+ *
+ * The summary alone ("Run shell script") is the same sentence for a script
+ * that lists a directory and one that uploads it, so a card built from it is
+ * not an informed decision. Everything the desktop is about to *grant* travels
+ * with the hold instead: the source, the extra writable paths, network access,
+ * and for an accessibility press the exact control.
+ */
+export const AgentApprovalSchema = z.object({
+  /** One line naming the effect, e.g. "Run a shell script". */
+  purpose: z.string().max(MAX_SUMMARY_LEN),
+  /** Present for script steps: exactly what will run. */
+  script: z
+    .object({
+      language: z.string().max(32),
+      source: z.string().max(MAX_SCRIPT_LEN),
+    })
+    .optional(),
+  /** Locations the action may write to beyond its own scratch directory. */
+  writablePaths: z.array(z.string().max(MAX_PATH_LEN)).max(MAX_WRITABLE_PATHS),
+  /** Whether outbound network access is granted. */
+  network: z.boolean(),
+  /** Present for accessibility presses: the control that will be pressed. */
+  target: z
+    .object({
+      role: z.string().max(MAX_PATH_LEN),
+      label: z.string().max(MAX_PATH_LEN),
+    })
+    .optional(),
+});
+export type AgentApproval = z.infer<typeof AgentApprovalSchema>;
+
 const agentStep = WithTs.extend({
   kind: z.literal('agent_step'),
   runId: RunId,
@@ -95,6 +140,9 @@ const agentStep = WithTs.extend({
   /** The gate's classification; present for `action` steps. */
   class: ToolClassSchema.optional(),
   state: StepStateSchema,
+  /** Present only on a `held` step: the structured disclosure the approval
+   * card renders. Optional so an older desktop still parses. */
+  approval: AgentApprovalSchema.optional(),
 });
 
 const agentRunEnd = WithTs.extend({

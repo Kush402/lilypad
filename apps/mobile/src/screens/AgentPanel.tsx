@@ -21,6 +21,30 @@ export interface AgentPanelProps {
   onDecide: (stepId: string, approve: boolean) => void;
 }
 
+/**
+ * What VoiceOver reads out on the Approve/Deny buttons.
+ *
+ * "Approve" alone is a consent prompt with the subject removed, and the
+ * summary alone omits the grants that distinguish two otherwise identical
+ * scripts. A screen-reader user has to be able to hear the same difference a
+ * sighted user can see (L-229).
+ */
+export function describeForScreenReader(view: AgentStepView): string {
+  const parts = [view.approval?.purpose || view.summary];
+  const a = view.approval;
+  if (a) {
+    if (a.target?.label) parts.push(`control ${a.target.label}`);
+    parts.push(a.network ? 'network allowed' : 'network blocked');
+    parts.push(
+      a.writablePaths.length > 0
+        ? `can write to ${a.writablePaths.join(', ')}`
+        : 'can write to its scratch folder only',
+    );
+    if (a.script) parts.push(`${a.script.language} script of ${a.script.source.length} characters`);
+  }
+  return parts.join('. ');
+}
+
 function stateColor(view: AgentStepView): string {
   if (view.toolClass === 'forbidden') return theme.danger;
   switch (view.state) {
@@ -217,6 +241,56 @@ export function AgentPanel({
             Your Mac won’t do this on its own. Lilypad asks before anything it can’t confirm is
             routine.
           </Text>
+          {/* What is actually being granted (L-229).
+           *
+           * "Run shell script" is the same sentence for a script that lists a
+           * folder and one that uploads it, so the summary above cannot carry
+           * this decision. The grants below come from the very action the Mac
+           * will run, not from the model's description of it. */}
+          {held.approval ? (
+            <View style={styles.grants} testID="agent-approval">
+              {held.approval.target ? (
+                <Text style={styles.grantLine}>
+                  Control:{' '}
+                  <Text style={styles.grantValue}>
+                    {held.approval.target.label || '(unlabelled)'}
+                  </Text>
+                  {`  ·  ${held.approval.target.role}`}
+                </Text>
+              ) : null}
+              <Text style={styles.grantLine}>
+                Network:{' '}
+                <Text style={held.approval.network ? styles.grantDanger : styles.grantValue}>
+                  {held.approval.network ? 'allowed' : 'blocked'}
+                </Text>
+              </Text>
+              <Text style={styles.grantLine}>
+                Can write to:{' '}
+                <Text
+                  style={
+                    held.approval.writablePaths.length > 0 ? styles.grantDanger : styles.grantValue
+                  }
+                >
+                  {held.approval.writablePaths.length > 0
+                    ? held.approval.writablePaths.join(', ')
+                    : 'its scratch folder only'}
+                </Text>
+              </Text>
+              {held.approval.script ? (
+                <View style={styles.scriptBox}>
+                  <Text style={styles.grantLine}>{held.approval.script.language}</Text>
+                  <ScrollView
+                    style={styles.scriptScroll}
+                    testID="agent-approval-script"
+                    accessible
+                    accessibilityLabel={`Script that will run: ${held.approval.script.source}`}
+                  >
+                    <Text style={styles.scriptText}>{held.approval.script.source}</Text>
+                  </ScrollView>
+                </View>
+              ) : null}
+            </View>
+          ) : null}
           <View style={styles.holdBtns}>
             <Pressable
               testID="agent-deny"
@@ -228,7 +302,7 @@ export function AgentPanel({
               // the buttons, and nowhere in what a screen reader hears when it
               // reaches them. "Approve" alone is a consent prompt with the
               // subject removed.
-              accessibilityLabel={`Deny: ${held.summary}`}
+              accessibilityLabel={`Deny: ${describeForScreenReader(held)}`}
             >
               <Text style={styles.btnText}>Deny</Text>
             </Pressable>
@@ -237,7 +311,7 @@ export function AgentPanel({
               style={[styles.btn, styles.approveBtn]}
               onPress={() => onDecide(held.stepId, true)}
               accessibilityRole="button"
-              accessibilityLabel={`Allow: ${held.summary}`}
+              accessibilityLabel={`Allow: ${describeForScreenReader(held)}`}
             >
               <Text style={styles.btnText}>Approve</Text>
             </Pressable>
@@ -270,7 +344,9 @@ export function AgentPanel({
                 ? 'Stopped.'
                 : feed.outcome === 'denied'
                   ? 'Not allowed.'
-                  : 'Failed.'}
+                  : feed.outcome === 'needs_input'
+                    ? 'Needs your input.'
+                    : 'Failed.'}
           </Text>
         ) : null}
       </ScrollView>
@@ -338,6 +414,19 @@ const styles = StyleSheet.create({
   holdTitle: { color: theme.pending, fontWeight: '700', fontSize: 14 },
   holdSummary: { color: theme.ink, fontSize: 14 },
   holdWhy: { color: theme.muted, fontSize: 13, marginTop: 6 },
+  grants: {
+    marginTop: 10,
+    paddingTop: 8,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: theme.line,
+    gap: 3,
+  },
+  grantLine: { color: theme.muted, fontSize: 12 },
+  grantValue: { color: theme.ink },
+  grantDanger: { color: theme.danger },
+  scriptBox: { marginTop: 8 },
+  scriptScroll: { maxHeight: 132, backgroundColor: theme.bg, borderRadius: 6, padding: 8 },
+  scriptText: { color: theme.ink, fontSize: 11, fontFamily: 'Menlo' },
   holdBtns: { flexDirection: 'row', gap: 8 },
   consentTitle: { color: theme.ink, fontWeight: '700', fontSize: 15 },
   consentBody: { color: theme.muted, fontSize: 13, lineHeight: 18 },

@@ -12,7 +12,7 @@ pub mod tree;
 pub mod macos;
 
 #[cfg(target_os = "macos")]
-pub use macos::{read_focused_tree, AxSnapshot};
+pub use macos::{describe_live, read_focused_tree, AxSnapshot};
 
 // Non-macOS stub so the crate builds everywhere; the AX tier is macOS-only.
 #[cfg(not(target_os = "macos"))]
@@ -27,6 +27,13 @@ mod stub {
         pub fn handle(&self, _id: usize) -> Option<&()> {
             None
         }
+        #[cfg(test)]
+        pub fn for_test(nodes: Vec<AxNode>) -> Self {
+            AxSnapshot { nodes }
+        }
+    }
+    pub fn describe_live(_handle: &()) -> Option<(String, String)> {
+        None
     }
     pub fn read_focused_tree() -> Result<AxSnapshot> {
         bail!("the accessibility tier is only available on macOS")
@@ -34,4 +41,4 @@ mod stub {
 }
 
 #[cfg(not(target_os = "macos"))]
-pub use stub::{read_focused_tree, AxSnapshot};
+pub use stub::{describe_live, read_focused_tree, AxSnapshot};

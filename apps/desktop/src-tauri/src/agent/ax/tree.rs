@@ -80,6 +80,18 @@ pub fn serialize(nodes: &[AxNode]) -> String {
     out
 }
 
+/// The role and label of `id` in this snapshot, for the security gate to
+/// classify a press against. `None` when the id names no element here.
+///
+/// Returned as a plain tuple rather than a `security::AxTarget` so this module
+/// stays what its header promises: pure tree logic with no policy in it.
+pub fn describe_by_id(nodes: &[AxNode], id: usize) -> Option<(String, String)> {
+    nodes
+        .iter()
+        .find(|n| n.id == id)
+        .map(|n| (n.role.clone(), n.label.clone().unwrap_or_default()))
+}
+
 /// Is `id` a real element in this snapshot, and is it pressable? Used by the
 /// executor to reject an `ax_press` for a bad or non-actionable id before it
 /// ever touches the FFI.

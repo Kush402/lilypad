@@ -21,7 +21,7 @@ use tokio::task::JoinHandle;
 use crate::agent::llm::{AnyProvider, ProviderChoice, NOT_CONFIGURED_MESSAGE};
 use crate::agent::protocol::{AgentInbound, AgentOutbound, RunOutcome, StepKind, StepState};
 use crate::agent::runner::{AgentRunner, Cancel};
-use crate::agent::{LlmBrain, TieredExecutor};
+use crate::agent::{LlmBrain, SharedDisplay, TieredExecutor};
 use crate::rtc::WebRtcPeer;
 
 /// Real epoch millis for wire timestamps.
@@ -67,11 +67,23 @@ struct ActiveRun {
 #[derive(Default)]
 pub struct AgentController {
     active: Option<ActiveRun>,
+    /// The display the session is sharing, handed to every run's executor so
+    /// Ask can only ever look at the screen the phone is watching (L-230).
+    /// Held here rather than passed per-run so a mid-run switch reaches the
+    /// running executor.
+    display: SharedDisplay,
 }
 
 impl AgentController {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Point Ask's perception at the display the session now shares. Called
+    /// from the same places that retarget input, for the same reason: a
+    /// screenshot of an unshared monitor would go to the model provider.
+    pub fn set_display(&self, display_id: Option<u32>) {
+        self.display.set(display_id);
     }
 
     /// True while a run is in flight.
@@ -172,13 +184,14 @@ impl AgentController {
             }
         });
 
+        let display = self.display.clone();
         let (decisions_tx, mut decisions_rx) = unbounded_channel::<AgentInbound>();
         let cancel = Cancel::new();
         let run_cancel = cancel.clone();
         let run_id_task = run_id.clone();
         let task = tokio::spawn(async move {
             let brain = LlmBrain::new(AnyProvider::new(choice));
-            let executor = match TieredExecutor::from_env() {
+            let executor = match TieredExecutor::from_env(display) {
                 Ok(e) => e,
                 Err(e) => {
                     // Can only fail if HOME is unset — the sandbox tier needs a

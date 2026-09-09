@@ -15,7 +15,7 @@
 //! safe/sensitive is treated as at least `Consequential`, and any match against
 //! the forbidden-pattern set wins outright.
 
-use crate::agent::protocol::ToolClass;
+use crate::agent::protocol::{Approval, ApprovalScript, ApprovalTarget, ToolClass};
 
 /// A structured, tier-independent representation of one thing the agent wants
 /// to do. Tiers 1–3 all lower their output into this enum, so the classifier
@@ -38,7 +38,16 @@ pub enum Action {
     Click { x: f64, y: f64, count: u8 },
     /// Press an accessibility element by the `id` it was given in the most
     /// recent `read_ax_tree` snapshot.
-    AxPress { element_id: usize },
+    ///
+    /// `target` is the element's resolved meaning, filled in by
+    /// [`Executor::resolve`](crate::agent::runner::Executor::resolve) **before**
+    /// classification. The gate needs it because `element_id` alone carries no
+    /// meaning at all: id 7 is "Cancel" in one tree and "Delete Account" in the
+    /// next, and a classifier that cannot tell them apart auto-runs both.
+    AxPress {
+        element_id: usize,
+        target: Option<AxTarget>,
+    },
     /// Type literal text.
     TypeText { text: String },
     /// A key chord, e.g. `["meta","KeyS"]` for ⌘S.
@@ -77,6 +86,27 @@ pub enum Action {
     Done { summary: String },
 }
 
+/// What an accessibility element actually is, resolved from the live tree at
+/// the moment the action was proposed. Carried on [`Action::AxPress`] so the
+/// pure classifier can judge the *effect* rather than an opaque index.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AxTarget {
+    /// AX role, e.g. "AXButton".
+    pub role: String,
+    /// The element's human label (AXTitle, else AXDescription). Empty when the
+    /// control advertises none — which the gate treats as unknown, not benign.
+    pub label: String,
+}
+
+impl AxTarget {
+    pub fn new(role: impl Into<String>, label: impl Into<String>) -> Self {
+        AxTarget {
+            role: role.into(),
+            label: label.into(),
+        }
+    }
+}
+
 /// Interpreter for a sandboxed script (P2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScriptLanguage {
@@ -93,6 +123,62 @@ const DANGEROUS_CHORDS: &[&[&str]] = &[
     &["meta", "shift", "delete"], // empty Trash-ish
     &["meta", "keyq"],            // ⌘Q — quit (may drop unsaved work)
     &["ctrl", "keyc"],            // ^C in a terminal — interrupt/kill
+];
+
+/// Whole words on a control's label that make pressing it consequential: it
+/// sends, spends or destroys something, and no undo is promised. Matched as
+/// **whole tokens**, never substrings, so "Sender" and "Reformatted" do not
+/// trip the words "send" and "format".
+const CONSEQUENTIAL_LABEL_WORDS: &[&str] = &[
+    // Leaves the machine — irreversible the moment it is pressed.
+    "send",
+    "sends",
+    "sending",
+    "resend",
+    "submit",
+    "publish",
+    "post",
+    "share",
+    // Spends money or commits to an agreement.
+    "buy",
+    "purchase",
+    "pay",
+    "order",
+    "checkout",
+    "subscribe",
+    "donate",
+    // Destroys or revokes.
+    "delete",
+    "remove",
+    "trash",
+    "erase",
+    "discard",
+    "destroy",
+    "wipe",
+    "uninstall",
+    "revoke",
+    "clear",
+    "reset",
+    "format",
+    // Drops session or unsaved state.
+    "quit",
+    "logout",
+    "signout",
+    "shutdown",
+    "restart",
+];
+
+/// Consequential labels whose words are individually innocent ("sign", "out").
+/// Compared as substrings of the lower-cased label.
+const CONSEQUENTIAL_LABEL_PHRASES: &[&str] = &[
+    "move to trash",
+    "empty trash",
+    "log out",
+    "sign out",
+    "shut down",
+    "delete all",
+    "erase all",
+    "remove all",
 ];
 
 /// Substrings that mark a script/command as touching security-critical
@@ -154,13 +240,15 @@ pub fn classify(action: &Action) -> ToolClass {
 
         // Ordinary UI manipulation — real effect, but reversible and visible.
         Action::Click { .. }
-        | Action::AxPress { .. }
         | Action::TypeText { .. }
         | Action::OpenApp { .. }
         | Action::RevealInFinder { .. }
         | Action::OpenFile { .. }
         | Action::NewFolder { .. }
         | Action::RunShortcut { .. } => ToolClass::Sensitive,
+
+        // An accessibility press is only as safe as the control it lands on.
+        Action::AxPress { target, .. } => classify_ax_press(target.as_ref()),
 
         // A URL is sensitive unless it smells like a scheme that can execute or
         // exfiltrate; unknown schemes are held.
@@ -203,6 +291,118 @@ pub fn classify(action: &Action) -> ToolClass {
             }
         }
     }
+}
+
+/// Does this control's label announce a consequential effect?
+///
+/// Deliberately conservative in the direction that costs the user nothing: a
+/// false positive asks a question, a false negative sends the email.
+pub fn label_is_consequential(label: &str) -> bool {
+    let lower = label.to_ascii_lowercase();
+    if CONSEQUENTIAL_LABEL_PHRASES
+        .iter()
+        .any(|p| lower.contains(p))
+    {
+        return true;
+    }
+    lower
+        .split(|c: char| !c.is_alphanumeric())
+        .any(|word| CONSEQUENTIAL_LABEL_WORDS.contains(&word))
+}
+
+/// Classify an accessibility press from its resolved target.
+///
+/// The `None` and empty-label cases are the whole point of the change: an
+/// unresolvable id and an unlabeled control are *unknown* effects, and the
+/// gate's standing rule is that anything it cannot positively recognize is at
+/// least `Consequential`. Auto-running them was how a Send button reached the
+/// same path as benign navigation.
+fn classify_ax_press(target: Option<&AxTarget>) -> ToolClass {
+    match target {
+        // The id named nothing in the current snapshot (or there was none).
+        None => ToolClass::Consequential,
+        // A control that advertises no label tells us nothing about its effect.
+        Some(t) if t.label.trim().is_empty() => ToolClass::Consequential,
+        Some(t) if label_is_consequential(&t.label) => ToolClass::Consequential,
+        // A labeled control with no consequential word: ordinary navigation.
+        Some(_) => ToolClass::Sensitive,
+    }
+}
+
+/// Describe what a held action is asking permission for.
+///
+/// Pure and total, and deliberately built from the same `Action` the executor
+/// will run — the card cannot describe grants the action does not carry,
+/// because it reads them off the action itself.
+pub fn approval_for(action: &Action) -> Approval {
+    let mut approval = Approval {
+        purpose: String::new(),
+        script: None,
+        writable_paths: Vec::new(),
+        network: false,
+        target: None,
+    };
+    match action {
+        Action::RunScript {
+            language,
+            script,
+            writable_paths,
+            needs_network,
+        } => {
+            approval.purpose = match language {
+                ScriptLanguage::Shell => "Run a shell script".into(),
+                ScriptLanguage::Python => "Run a Python script".into(),
+            };
+            approval.script = Some(ApprovalScript {
+                language: match language {
+                    ScriptLanguage::Shell => "shell",
+                    ScriptLanguage::Python => "python",
+                },
+                source: script.clone(),
+            });
+            approval.writable_paths = writable_paths.clone();
+            approval.network = *needs_network;
+        }
+        Action::AxPress { element_id, target } => {
+            approval.purpose = match target {
+                Some(t) if !t.label.trim().is_empty() => {
+                    format!("Press \u{201c}{}\u{201d}", t.label)
+                }
+                // The gate held this precisely because it could not tell what
+                // the control is; say so rather than inventing a name.
+                _ => format!("Press an unidentified control [{element_id}]"),
+            };
+            approval.target = target.as_ref().map(|t| ApprovalTarget {
+                role: t.role.clone(),
+                label: t.label.clone(),
+            });
+        }
+        Action::Key { chord } => {
+            approval.purpose = format!("Press {}", chord.join("+"));
+        }
+        Action::OpenUrl { url } => {
+            approval.purpose = format!("Open {url}");
+            approval.network = true;
+        }
+        Action::AppleScript { script } => {
+            approval.purpose = "Run AppleScript".into();
+            approval.script = Some(ApprovalScript {
+                language: "applescript",
+                source: script.clone(),
+            });
+        }
+        Action::Shell { command } => {
+            approval.purpose = "Run a shell command".into();
+            approval.script = Some(ApprovalScript {
+                language: "shell",
+                source: command.clone(),
+            });
+        }
+        other => {
+            approval.purpose = format!("{other:?}");
+        }
+    }
+    approval
 }
 
 fn classify_url(url: &str) -> ToolClass {
@@ -283,8 +483,15 @@ mod tests {
             }),
             ToolClass::Sensitive
         );
+        // An accessibility press is only auto-run once its target is known to
+        // be ordinary. This assertion used to pass an unresolved `AxPress`,
+        // which is exactly the hole L-227… L-228 closed; flipped rather than
+        // deleted so the change of policy is visible here.
         assert_eq!(
-            classify(&Action::AxPress { element_id: 7 }),
+            classify(&Action::AxPress {
+                element_id: 7,
+                target: Some(AxTarget::new("AXButton", "Back")),
+            }),
             ToolClass::Sensitive
         );
         assert_eq!(
@@ -458,5 +665,183 @@ mod tests {
         assert!(!requires_hold(ToolClass::Forbidden)); // forbidden is refused, not held
         assert!(is_forbidden(ToolClass::Forbidden));
         assert!(!is_forbidden(ToolClass::Consequential));
+    }
+
+    // ── L-228: an accessibility press is classified by its target ──
+    //
+    // The provider exposes `ax_press` and the gate used to auto-run every one
+    // of them, so a Send, Buy or Delete button followed the same path as
+    // benign navigation. These fixtures are the distinction the gate now makes.
+
+    fn press(label: &str) -> Action {
+        Action::AxPress {
+            element_id: 7,
+            target: Some(AxTarget::new("AXButton", label)),
+        }
+    }
+
+    #[test]
+    fn benign_navigation_still_runs_without_asking() {
+        for label in [
+            "Back",
+            "Next",
+            "Open",
+            "Show Details",
+            "Cancel",
+            "Close",
+            "Refresh",
+            "Sender",
+        ] {
+            assert_eq!(
+                classify(&press(label)),
+                ToolClass::Sensitive,
+                "{label:?} should not need approval"
+            );
+        }
+    }
+
+    #[test]
+    fn sending_purchasing_and_deleting_are_held() {
+        for label in [
+            "Send",
+            "Send Message",
+            "Resend invitation",
+            "Submit",
+            "Post",
+            "Publish",
+            "Share",
+            "Buy now",
+            "Purchase",
+            "Pay $42.00",
+            "Place order",
+            "Checkout",
+            "Subscribe",
+            "Delete",
+            "Delete Account",
+            "Remove",
+            "Move to Trash",
+            "Empty Trash",
+            "Erase All Content",
+            "Uninstall",
+            "Revoke access",
+            "Reset",
+            "Sign Out",
+            "Log Out",
+            "Shut Down",
+            "Quit",
+        ] {
+            assert_eq!(
+                classify(&press(label)),
+                ToolClass::Consequential,
+                "{label:?} must be held for approval"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unresolved_target_is_held_rather_than_assumed_harmless() {
+        // No read yet, or an id that names nothing in the current tree. The
+        // gate's standing rule is that what it cannot recognize is at least
+        // Consequential; this is that rule reaching `ax_press` at last.
+        assert_eq!(
+            classify(&Action::AxPress {
+                element_id: 7,
+                target: None,
+            }),
+            ToolClass::Consequential
+        );
+    }
+
+    #[test]
+    fn an_unlabeled_control_is_held() {
+        assert_eq!(
+            classify(&Action::AxPress {
+                element_id: 7,
+                target: Some(AxTarget::new("AXButton", "   ")),
+            }),
+            ToolClass::Consequential
+        );
+    }
+
+    #[test]
+    fn consequential_words_match_whole_tokens_not_substrings() {
+        // The cost of a substring match is a gate that holds everything and
+        // trains the user to tap Approve without reading.
+        assert!(!label_is_consequential("Sender"));
+        assert!(!label_is_consequential("Resender column"));
+        assert!(!label_is_consequential("Reformatted view"));
+        assert!(!label_is_consequential("Ordering options"));
+        assert!(label_is_consequential("Send"));
+        assert!(label_is_consequential("SEND NOW"));
+        assert!(label_is_consequential("Delete\u{2026}"));
+    }
+
+    #[test]
+    fn approval_is_bound_to_the_target_so_a_changed_button_is_a_different_action() {
+        // Two presses of the same id are not the same action once the label
+        // differs — which is what lets the executor detect substitution
+        // between approval and press.
+        let approved = press("Save Draft");
+        let substituted = press("Send");
+        assert_ne!(approved, substituted);
+        assert_eq!(classify(&approved), ToolClass::Sensitive);
+        assert_eq!(classify(&substituted), ToolClass::Consequential);
+    }
+
+    // ── L-229: the approval derived from the action ──
+
+    #[test]
+    fn a_script_approval_carries_source_paths_and_network() {
+        let a = approval_for(&Action::RunScript {
+            language: ScriptLanguage::Python,
+            script: "import os".into(),
+            writable_paths: vec!["/tmp/work".into()],
+            needs_network: true,
+        });
+        assert_eq!(a.purpose, "Run a Python script");
+        let script = a.script.expect("source must travel with the approval");
+        assert_eq!(script.language, "python");
+        assert_eq!(script.source, "import os");
+        assert_eq!(a.writable_paths, vec!["/tmp/work".to_string()]);
+        assert!(a.network);
+    }
+
+    #[test]
+    fn identical_summaries_still_produce_different_approvals() {
+        let quiet = approval_for(&Action::RunScript {
+            language: ScriptLanguage::Shell,
+            script: "echo hi".into(),
+            writable_paths: vec![],
+            needs_network: false,
+        });
+        let loud = approval_for(&Action::RunScript {
+            language: ScriptLanguage::Shell,
+            script: "echo hi".into(),
+            writable_paths: vec!["/Users/me".into()],
+            needs_network: true,
+        });
+        assert_eq!(quiet.purpose, loud.purpose);
+        assert_ne!(quiet, loud);
+    }
+
+    #[test]
+    fn an_ax_approval_names_the_control_it_will_press() {
+        let a = approval_for(&Action::AxPress {
+            element_id: 7,
+            target: Some(AxTarget::new("AXButton", "Delete Account")),
+        });
+        assert!(a.purpose.contains("Delete Account"));
+        let t = a.target.expect("the control must travel with the approval");
+        assert_eq!(t.label, "Delete Account");
+    }
+
+    #[test]
+    fn an_unidentified_control_says_so_instead_of_inventing_a_name() {
+        let a = approval_for(&Action::AxPress {
+            element_id: 7,
+            target: None,
+        });
+        assert!(a.purpose.contains("unidentified"));
+        assert!(a.target.is_none());
     }
 }

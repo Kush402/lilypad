@@ -16,6 +16,10 @@ export interface AgentStepView {
   tier?: AgentStep['tier'];
   toolClass?: AgentStep['class'];
   state: AgentStep['state'];
+  /** Present on a `held` step: the structured disclosure the approval card
+   * renders. The summary alone cannot distinguish two scripts with different
+   * grants (L-229). */
+  approval?: AgentStep['approval'];
 }
 
 export interface AgentFeedState {
@@ -57,6 +61,13 @@ export function agentFeedReducer(state: AgentFeedState, action: AgentFeedAction)
       // Ignore steps for a run we're not tracking (a stale/late frame from a
       // superseded run).
       if (state.runId !== null && s.runId !== state.runId) return state;
+      // A run that has already ended cannot go back to waiting on somebody, or
+      // back to running. Late frames of that shape are state regression: they
+      // would re-open a decision the person can no longer meaningfully answer,
+      // on a run that is over (L-234). History still keeps every terminal
+      // frame; only the reanimating ones are dropped.
+      const ended = !state.running && state.outcome !== null;
+      if (ended && (s.state === 'held' || s.state === 'running')) return state;
       const view: AgentStepView = {
         stepId: s.stepId,
         step: s.step,
@@ -64,6 +75,7 @@ export function agentFeedReducer(state: AgentFeedState, action: AgentFeedAction)
         tier: s.tier,
         toolClass: s.class,
         state: s.state,
+        approval: s.approval,
       };
       const idx = state.steps.findIndex((x) => x.stepId === s.stepId);
       let steps: AgentStepView[];
@@ -91,7 +103,14 @@ export function agentFeedReducer(state: AgentFeedState, action: AgentFeedAction)
 }
 
 /** The single step currently awaiting the user's approve/deny, if any. The
- * desktop blocks on exactly one held step at a time, so this is unambiguous. */
+ * desktop blocks on exactly one held step at a time, so this is unambiguous.
+ *
+ * A finished run holds nothing. The desktop stops listening for a decision the
+ * moment the run ends, so an approval card left on screen afterwards is an
+ * offer nobody is waiting for — and the optimistic Stop path made that state
+ * immediate (L-234). The held row stays in the feed as historical evidence
+ * that it was never answered; only its controls go away. */
 export function heldStep(state: AgentFeedState): AgentStepView | null {
+  if (!state.running) return null;
   return state.steps.find((s) => s.state === 'held') ?? null;
 }
