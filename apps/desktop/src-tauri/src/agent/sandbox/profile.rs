@@ -186,6 +186,15 @@ fn sbpl_quote(path: &Path) -> String {
 /// Build the Seatbelt profile for `policy`, with the user's `home` injected so
 /// the sensitive-deny anchors are testable without reading the environment.
 pub fn build_profile(policy: &SandboxPolicy, home: &Path) -> String {
+    build_profile_with_runtime_roots(policy, home, &[])
+}
+
+/// Extra roots are resolved and constrained by the runner, never model input.
+pub(super) fn build_profile_with_runtime_roots(
+    policy: &SandboxPolicy,
+    home: &Path,
+    runtime_roots: &[PathBuf],
+) -> String {
     let mut p = String::new();
     p.push_str("(version 1)\n");
     p.push_str("(deny default)\n");
@@ -228,10 +237,14 @@ pub fn build_profile(policy: &SandboxPolicy, home: &Path) -> String {
     // paths, so a macOS update that moves the shared cache does not break the
     // sandbox. None of these is where a person keeps their own files.
     p.push_str("(allow file-read* (literal \"/\"))\n");
-    for root in SYSTEM_READ_ROOTS {
+    for root in SYSTEM_READ_ROOTS
+        .iter()
+        .map(Path::new)
+        .chain(runtime_roots.iter().map(PathBuf::as_path))
+    {
         p.push_str(&format!(
             "(allow file-read* (subpath {}))\n",
-            sbpl_quote(Path::new(root))
+            sbpl_quote(root)
         ));
     }
     // Python's hash seed needs entropy, not blanket access to device nodes.

@@ -833,6 +833,17 @@ read on the final commit, not inferred from the baseline's green run.
 Tests use synthetic fixtures; no production private files were read for the
 sandbox probes. No device, release, deployment or replica change is claimed.
 
+**CI follow-up:** run `34376389291` passed TypeScript and both security jobs,
+but native tests exposed a versioned Xcode layout: `Xcode.app` resolves to
+`Xcode_26.6.app`, and Seatbelt denied Python's library at its real path. The
+runner now resolves only the Developer/Frameworks/SharedFrameworks roots of
+`/Applications/Xcode.app`, accepts a canonical Xcode or numeric-versioned Xcode
+bundle directly under `/Applications`, and rejects redirected runtime roots.
+No broad Applications or temporary-directory read grant was restored. The real
+interpreter startup test remains mandatory in CI; the new alias validator also
+rejects user-directory and unrelated-app targets. CLT-only hardware remains
+unverified. Read the newest PR check result before declaring this follow-up green.
+
 **Directions for Claude's next pass (in order):**
 
 1. Finish **L-243** with operations anchored to authorized filesystem objects

@@ -76,6 +76,50 @@ fn apply_rlimit(resource: libc::c_int, limit: u64) {
     }
 }
 
+// Seatbelt compares real paths. CI and some Macs install Xcode.app as a
+// symlink to Xcode_<version>.app. Accept only that layout directly under
+// /Applications, never a symlink into a user's data or an arbitrary app.
+fn supported_xcode_bundle(path: &Path) -> bool {
+    if path.parent() != Some(Path::new("/Applications")) {
+        return false;
+    }
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    name == "Xcode.app"
+        || name
+            .strip_prefix("Xcode_")
+            .and_then(|name| name.strip_suffix(".app"))
+            .is_some_and(|version| {
+                !version.is_empty()
+                    && version
+                        .split('.')
+                        .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
+            })
+}
+
+fn resolved_xcode_runtime_roots() -> Vec<PathBuf> {
+    let Ok(bundle) = std::fs::canonicalize("/Applications/Xcode.app") else {
+        return Vec::new();
+    };
+    if !supported_xcode_bundle(&bundle) {
+        return Vec::new();
+    }
+    [
+        "Contents/Developer",
+        "Contents/SharedFrameworks",
+        "Contents/Frameworks",
+    ]
+    .into_iter()
+    .filter_map(|suffix| {
+        let expected = bundle.join(suffix);
+        let resolved = std::fs::canonicalize(&expected).ok()?;
+        // Do not grant a runtime directory redirected outside its bundle.
+        (resolved == expected).then_some(resolved)
+    })
+    .collect()
+}
+
 /// Run `program args…` inside the Seatbelt sandbox described by `policy`, under
 /// `limits`. `home` anchors the profile's sensitive-path denies. The profile is
 /// written into the policy's scratch dir (which the caller owns and cleans up).
@@ -115,7 +159,8 @@ pub async fn run(
         allow_network: policy.allow_network,
     };
 
-    let profile_text = profile::build_profile(&policy, home);
+    let profile_text =
+        profile::build_profile_with_runtime_roots(&policy, home, &resolved_xcode_runtime_roots());
     let profile_path: PathBuf = policy.scratch_dir.join("sandbox.sb");
     tokio::fs::write(&profile_path, &profile_text)
         .await
@@ -237,6 +282,29 @@ async fn read_capped<R: AsyncReadExt + Unpin>(reader: &mut R) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn xcode_runtime_aliases_only_accept_explicit_versioned_bundles() {
+        use super::supported_xcode_bundle;
+        use std::path::Path;
+        for path in [
+            "/Applications/Xcode.app",
+            "/Applications/Xcode_26.6.app",
+            "/Applications/Xcode_16.app",
+        ] {
+            assert!(supported_xcode_bundle(Path::new(path)), "{path}");
+        }
+        for path in [
+            "/Users/test/Xcode_26.6.app",
+            "/Applications/Other.app",
+            "/Applications/Xcode_.app",
+            "/Applications/Xcode_26..6.app",
+            "/Applications/Xcode_26.6.app/Contents",
+            "/Applications/Xcode_secrets.app",
+        ] {
+            assert!(!supported_xcode_bundle(Path::new(path)), "{path}");
+        }
+    }
+
     use super::*;
 
     fn scratch(name: &str) -> PathBuf {
