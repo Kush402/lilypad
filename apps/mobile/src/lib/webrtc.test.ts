@@ -1529,9 +1529,13 @@ describe('ViewerConnection', () => {
       const { conn, peer } = await startConnected(cb);
       const critical = peer.dispatchDataChannel(INPUT_CHANNEL_LABEL);
 
-      const runId = conn.sendAgentCommand('open Safari');
+      const { runId, sent } = conn.sendAgentCommand('open Safari');
 
+      // The result carries whether the frame actually left, not just an id
+      // (L-233). Asserting only the id is what let a dropped command look
+      // like a dispatched one.
       expect(typeof runId).toBe('string');
+      expect(sent).toBe(true);
       expect(critical.send).toHaveBeenCalledTimes(1);
       const sent = JSON.parse(critical.send.mock.calls[0][0]);
       expect(sent).toMatchObject({ kind: 'agent_command', runId, text: 'open Safari' });

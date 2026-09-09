@@ -69,7 +69,11 @@ describe('agentFeedReducer', () => {
     });
     expect(s.steps).toHaveLength(0);
     const after = agentFeedReducer(s, { type: 'run_end', end: runEnd('completed', 'run-1') });
-    expect(after.running).toBe(true); // unchanged — wrong run
+    // Unchanged — wrong run. Asserted as "nothing moved" rather than
+    // `running === true`, which only held because `command_sent` used to claim
+    // a run was running the instant it was dispatched (L-233).
+    expect(after.phase).toBe(s.phase);
+    expect(after.outcome).toBeNull();
   });
 
   it('run_end stops the feed and records the outcome', () => {

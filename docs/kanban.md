@@ -510,6 +510,39 @@ Ask's action surface.
 | 3        | **Readable, responsive remote control** — M5.2 / streaming recommendations | Validate L-227 first, then prioritize static-text refresh and the planned cursor overlay where profiling justifies them. Couple network recovery with clear status and preservation of local unsent text; retire stale remote input queues. Prefer measured readability and input latency over a nominal FPS claim.                                        | A signed-device matrix covering LAN, cellular, selected TURN, packet loss, network handoff, foreground/background, two displays, Unicode/IME editing and held-key release. Measure text legibility, input-to-visible-response latency and recovery duration separately. |
 | 4        | **Understandable, accessible feedback** — existing approval UX and M5.5    | Give each state an honest label; keep Stop reachable, announce important transitions to VoiceOver without moving focus, and use restrained haptics. For the existing voice roadmap, show an editable transcript/intent before dispatch.                                                                                                                    | VoiceOver walkthrough of approval, denial, provider timeout, withdrawal and reconnection; no color-only status, inaccessible changing state or lost command after a failed send.                                                                                        |
 
+#### Progress against this sequence — 2026-09-09
+
+**The P1 boundaries this table says to complete first are now complete at
+source** (L-228 … L-233, plus L-234 … L-236), so upgrade 2's "expand Ask's
+action surface" is unblocked in the order the table asks for. None of the four
+upgrades is started; what follows is what the boundary work established about
+them, so the next pass does not re-derive it.
+
+- **Upgrade 1 (watch, guide, take over).** Two of its parts already exist and
+  are now trustworthy: human input cancels a run (`AgentController::on_human_input`),
+  and a display change re-points Ask's perception and retires the earlier
+  observations (L-230). What is missing is showing the intended target _before_
+  acting — the approval card carries that target now (L-229), but only for
+  actions that are held.
+- **Upgrade 2 (tasks finish with proof).** Two prerequisites are done: a
+  terminal decision is now explicit rather than inferred (L-235), and script
+  grants are disclosed (L-229). The _validator_ is untouched. Note for whoever
+  picks it up: the table's "add native text/key/scroll actions" is **not
+  wiring**. `Action::TypeText`, `Key`, `Scroll` and `Click` exist in the
+  security enum and are classified, but **no executor performs them** —
+  `skills::plan_command` returns an error for each, and a test pins that. Adding
+  the tools means routing the agent into the input backend (`InputGate`/CGEvent)
+  with the focused-target checks the row asks for; exposing the tools without
+  that would advertise capabilities the agent does not have.
+- **Upgrade 3 (readable, responsive remote control).** Blocked on validating
+  L-227 first, exactly as the row says; L-227 is fixed at source and has never
+  been exercised on hardware.
+- **Upgrade 4 (understandable, accessible feedback).** Partly advanced as a
+  side effect: the approval buttons now name the grants to VoiceOver, the run
+  phase is announced through a polite live region, and every phase has an
+  honest label including "not sent" (L-229, L-233). The VoiceOver walkthrough
+  the row requires as evidence has not been run.
+
 Design references for feedback, not evidence that Lilypad already complies:
 [Apple feedback guidance](https://developer.apple.com/design/human-interface-guidelines/feedback)
 and [W3C status-message guidance](https://www.w3.org/WAI/WCAG21/Understanding/status-messages).

@@ -45,7 +45,7 @@ function feed(over: Partial<AgentFeedState> = {}): AgentFeedState {
   // `phase` and `running` are two views of the same fact (L-233), so a fixture
   // that sets one and not the other would render a state the reducer cannot
   // produce. Default to a live run and derive `running` unless overridden.
-  const phase = over.phase ?? 'running';
+  const phase = over.phase ?? (over.running ? 'running' : 'idle');
   return {
     runId: 'r1',
     phase,
