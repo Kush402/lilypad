@@ -16,7 +16,7 @@ use std::time::Duration;
 use anyhow::{anyhow, Context, Result};
 use tokio::io::AsyncReadExt;
 
-pub use profile::SandboxPolicy;
+pub use profile::{is_denied_read, SandboxPolicy};
 
 /// Per-run resource ceilings, enforced via `setrlimit` in the child before it
 /// execs (plus a wall-clock timeout the parent enforces).
@@ -99,6 +99,7 @@ pub async fn run(
     let policy = SandboxPolicy {
         scratch_dir: real_scratch,
         writable_paths: policy.writable_paths.clone(),
+        readable_paths: policy.readable_paths.clone(),
         allow_network: policy.allow_network,
     };
 
@@ -284,6 +285,169 @@ mod tests {
             "the file must not have been created"
         );
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// L-247. The real boundary, exercised against a real `sandbox-exec`: a
+    /// file the person owns is unreadable unless it was granted, and granting
+    /// it opens exactly that path and nothing beside it.
+    ///
+    /// Written as one test because the two halves are one claim — a denial
+    /// that also denies the granted case proves only that the sandbox is
+    /// broken.
+    #[tokio::test]
+    async fn a_home_file_is_unreadable_until_it_is_granted() {
+        if !sandbox_available() {
+            return;
+        }
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+        let home = PathBuf::from(home);
+        let dir = scratch("read_grant");
+        let doc_dir = home.join(format!("lilypad_read_test_{}", std::process::id()));
+        let doc = doc_dir.join("private.txt");
+        let neighbour = doc_dir.join("other.txt");
+        std::fs::create_dir_all(&doc_dir).unwrap();
+        std::fs::write(&doc, "canary-42").unwrap();
+        std::fs::write(&neighbour, "canary-99").unwrap();
+
+        let read =
+            |target: &std::path::Path| vec!["-c".to_string(), format!("cat {}", target.display())];
+
+        // 1. No grant: denied. This is the case that used to succeed and hand
+        //    the contents to the model provider through stdout.
+        let denied = run(
+            &SandboxPolicy::read_only(dir.clone()),
+            &SandboxLimits::default(),
+            "/bin/sh",
+            &read(&doc),
+            &home,
+        )
+        .await
+        .unwrap();
+        assert!(!denied.succeeded(), "an ungranted home file was readable");
+        assert!(
+            !denied.stdout.contains("canary-42"),
+            "the file's contents reached stdout: {}",
+            denied.stdout
+        );
+
+        // 2. Granted: readable.
+        let mut policy = SandboxPolicy::read_only(dir.clone());
+        policy.readable_paths = vec![doc.clone()];
+        let allowed = run(
+            &policy,
+            &SandboxLimits::default(),
+            "/bin/sh",
+            &read(&doc),
+            &home,
+        )
+        .await
+        .unwrap();
+        assert!(
+            allowed.succeeded(),
+            "a granted read failed: {}",
+            allowed.stderr
+        );
+        assert!(allowed.stdout.contains("canary-42"));
+
+        // 3. The grant is the path, not its folder: the sibling stays denied.
+        let sibling = run(
+            &policy,
+            &SandboxLimits::default(),
+            "/bin/sh",
+            &read(&neighbour),
+            &home,
+        )
+        .await
+        .unwrap();
+        assert!(
+            !sibling.stdout.contains("canary-99"),
+            "the grant widened past its own path: {}",
+            sibling.stdout
+        );
+
+        std::fs::remove_dir_all(&doc_dir).ok();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A grant can never re-open a secret path: SBPL denies win over allows
+    /// regardless of order, so even an approved `~/.ssh` stays unreadable.
+    #[tokio::test]
+    async fn an_approved_grant_cannot_reopen_a_secret_path() {
+        if !sandbox_available() {
+            return;
+        }
+        let home = PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/tmp".into()));
+        let dir = scratch("grant_vs_secret");
+        let secret_dir = home.join(".config");
+        let secret = secret_dir.join(format!("lilypad_grant_test_{}", std::process::id()));
+        std::fs::create_dir_all(&secret_dir).ok();
+        if std::fs::write(&secret, "canary-secret").is_err() {
+            std::fs::remove_dir_all(&dir).ok();
+            return; // cannot stage the fixture on this machine
+        }
+        let mut policy = SandboxPolicy::read_only(dir.clone());
+        policy.readable_paths = vec![secret.clone()];
+        let outcome = run(
+            &policy,
+            &SandboxLimits::default(),
+            "/bin/sh",
+            &["-c".into(), format!("cat {}", secret.display())],
+            &home,
+        )
+        .await
+        .unwrap();
+        assert!(
+            !outcome.stdout.contains("canary-secret"),
+            "an approval card re-opened a secret path: {}",
+            outcome.stdout
+        );
+        std::fs::remove_file(&secret).ok();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The interpreters really do start under the allow-list. A read boundary
+    /// that also breaks `python3` would be reported as "the script failed",
+    /// not as a security property.
+    #[tokio::test]
+    async fn the_supported_interpreters_still_start() {
+        if !sandbox_available() {
+            return;
+        }
+        let home = PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/tmp".into()));
+        for (program, args) in [
+            (
+                "/bin/sh",
+                vec!["-c".to_string(), "echo started".to_string()],
+            ),
+            (
+                "/usr/bin/python3",
+                vec![
+                    "-c".to_string(),
+                    "import json,os,re;print('started')".to_string(),
+                ],
+            ),
+        ] {
+            if !Path::new(program).exists() {
+                continue;
+            }
+            let dir = scratch(&format!("boot_{}", program.replace('/', "_")));
+            let outcome = run(
+                &SandboxPolicy::read_only(dir.clone()),
+                &SandboxLimits::default(),
+                program,
+                &args,
+                &home,
+            )
+            .await
+            .unwrap();
+            assert!(
+                outcome.stdout.contains("started"),
+                "{program} could not start under the read allow-list: {} / {}",
+                outcome.stdout,
+                outcome.stderr
+            );
+            std::fs::remove_dir_all(&dir).ok();
+        }
     }
 
     #[tokio::test]

@@ -1,6 +1,6 @@
 import React from 'react';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react-native';
-import { AgentPanel } from './AgentPanel';
+import { AgentPanel, describeForScreenReader, readsLabel } from './AgentPanel';
 import type { AgentFeedState, AgentStepView } from '../lib/agentFeed';
 
 /**
@@ -115,6 +115,73 @@ describe('the approval card', () => {
     expect(onDecide).toHaveBeenCalledWith('s1', false);
     fireEvent.press(screen.getByTestId('agent-approve'));
     expect(onDecide).toHaveBeenLastCalledWith('s1', true);
+  });
+});
+
+describe('what the card says about reading (L-247)', () => {
+  const withApproval = (readablePaths: string[] | undefined) =>
+    feed({
+      running: true,
+      steps: [
+        step({
+          state: 'held',
+          toolClass: 'consequential',
+          summary: 'Run a script',
+          approval: {
+            purpose: 'Run a shell script',
+            script: { language: 'shell', source: 'cat notes.txt' },
+            writablePaths: [],
+            readablePaths,
+            network: false,
+          },
+        }),
+      ],
+    });
+
+  it('names the files a script may read, because reading is disclosure', async () => {
+    // A sandboxed script's stdout is folded back into the model prompt and
+    // sent to the provider, so a read grant leaves the Mac just as surely as a
+    // write does. The card has to name it before the tap, not after.
+    render(
+      <AgentPanel
+        feed={withApproval(['/Users/me/Documents/notes.txt'])}
+        onSend={noop}
+        onStop={noop}
+        onDecide={noop}
+      />,
+    );
+    await shown('agent-panel');
+    expect(screen.getByText('/Users/me/Documents/notes.txt')).toBeTruthy();
+  });
+
+  it('distinguishes "reads nothing" from "this Mac did not say"', async () => {
+    // An older desktop has no `readablePaths` field and grants broad read
+    // access. Rendering absent as "none of your files" would state the exact
+    // opposite of the truth, which is the defect this list exists to fix.
+    expect(readsLabel([])).toBe('reads none of your files');
+    expect(readsLabel(undefined)).toBe('reads not disclosed by this Mac');
+    expect(readsLabel(['/Users/me/a.txt'])).toBe('can read /Users/me/a.txt');
+
+    render(
+      <AgentPanel feed={withApproval(undefined)} onSend={noop} onStop={noop} onDecide={noop} />,
+    );
+    await shown('agent-panel');
+    expect(screen.getByText('not disclosed by this Mac')).toBeTruthy();
+  });
+
+  it('says the same thing to a screen reader as it shows on the card', () => {
+    const spoken = describeForScreenReader(
+      step({
+        state: 'held',
+        approval: {
+          purpose: 'Run a shell script',
+          writablePaths: [],
+          readablePaths: ['/Users/me/Documents/notes.txt'],
+          network: false,
+        },
+      }),
+    );
+    expect(spoken).toContain('can read /Users/me/Documents/notes.txt');
   });
 });
 

@@ -16,12 +16,12 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
+use tokio::sync::mpsc::{channel, unbounded_channel, Sender};
 use tokio::task::JoinHandle;
 
 use crate::agent::llm::{AnyProvider, ProviderChoice, NOT_CONFIGURED_MESSAGE};
 use crate::agent::protocol::{AgentInbound, AgentOutbound, RunOutcome, StepKind, StepState};
-use crate::agent::runner::{AgentRunner, Cancel};
+use crate::agent::runner::{AgentRunner, Cancel, DECISION_QUEUE_CAPACITY};
 use crate::agent::{LlmBrain, SharedDisplay, TieredExecutor};
 use crate::rtc::WebRtcPeer;
 
@@ -60,10 +60,27 @@ pub fn authorize_command(control_scoped: bool, provider_configured: bool) -> Com
 struct ActiveRun {
     run_id: String,
     cancel: Cancel,
-    decisions_tx: UnboundedSender<AgentInbound>,
-    _task: JoinHandle<()>,
+    decisions_tx: Sender<AgentInbound>,
+    task: JoinHandle<()>,
     _forwarder: JoinHandle<()>,
 }
+
+/// A superseded run, handed to its successor so the successor can wait for it
+/// to actually stop before touching the Mac (L-252).
+struct PriorRun {
+    run_id: String,
+    task: JoinHandle<()>,
+}
+
+/// How long a superseded run may take to stop before the new one refuses to
+/// start.
+///
+/// Cancellation is cooperative and the runner checks it at every await point,
+/// so the normal case is milliseconds. It cannot be instant: a synchronous
+/// native call — an `AXUIElement` press, a display capture — runs to completion
+/// inside the OS, and no async deadline can preempt it. Waiting is therefore
+/// the only way to know the old run has stopped clicking.
+const PRIOR_RUN_DRAIN_MS: u64 = 20_000;
 
 #[derive(Default)]
 pub struct AgentController {
@@ -96,7 +113,7 @@ impl AgentController {
 
     /// True while a run is in flight.
     pub fn is_running(&self) -> bool {
-        self.active.as_ref().is_some_and(|a| !a._task.is_finished())
+        self.active.as_ref().is_some_and(|a| !a.task.is_finished())
     }
 
     /// Route one demuxed agent frame. `control_scoped` reflects the current
@@ -158,7 +175,19 @@ impl AgentController {
                 if let Some(active) = &self.active {
                     // The runner filters stale decisions by (run,step); just
                     // forward. A closed channel means the run already ended.
-                    let _ = active.decisions_tx.send(inbound);
+                    //
+                    // Bounded (L-248): the receiver is idle during a model call
+                    // or a sandboxed script, so an unbounded queue let a phone
+                    // that repeats a decision grow this process without limit.
+                    // A run has one outstanding question, so a full queue means
+                    // the frames are duplicates — dropping one loses nothing and
+                    // is visible in the log, unlike buffering it forever.
+                    if let Err(e) = active.decisions_tx.try_send(inbound) {
+                        log::warn!(
+                            target: "lilypad::agent",
+                            "dropping agent decision for run {}: {e}", active.run_id
+                        );
+                    }
                 }
             }
         }
@@ -179,10 +208,26 @@ impl AgentController {
         }
     }
 
-    fn cancel_active_if_any(&mut self) {
-        if self.active.is_some() {
-            self.cancel_active();
-        }
+    /// Cancel the active run and take ownership of its handles, so the caller
+    /// can wait for it to actually stop.
+    ///
+    /// The old code cancelled and then dropped `ActiveRun`, which drops the
+    /// `JoinHandle` — and a dropped tokio `JoinHandle` does not stop the task,
+    /// it detaches it. Cancellation is a *request*; between the request and the
+    /// task noticing, the superseded run can still be mid-`AXPress` or mid-
+    /// script. Replacing `self.active` immediately meant two runners could be
+    /// acting on the same Mac at once, each believing it was the only one.
+    fn supersede_active(&mut self) -> Option<PriorRun> {
+        let active = self.active.take()?;
+        active.cancel.cancel();
+        // The forwarder handle is deliberately dropped, not aborted: the old
+        // run still has terminal frames to send, and dropping a `JoinHandle`
+        // detaches rather than stops. It ends by itself when the run's sender
+        // is dropped.
+        Some(PriorRun {
+            run_id: active.run_id,
+            task: active.task,
+        })
     }
 
     fn start_command(
@@ -224,9 +269,6 @@ impl AgentController {
             return;
         }
 
-        // A new command supersedes any in-flight run.
-        self.cancel_active_if_any();
-
         let Some(peer) = peer else {
             // No peer to send a feed back on — nothing we can usefully do.
             return;
@@ -250,6 +292,12 @@ impl AgentController {
         }
         let choice = choice.expect("authorize_command guaranteed a provider");
 
+        // A new command supersedes any in-flight run — but only once this
+        // command is admitted. Cancelling before the gate would let a refused
+        // command (view-only session, no provider) kill a legitimate run.
+        // The new run waits below for the old one to actually stop.
+        let prior = self.supersede_active();
+
         // Feed forwarder: runner step events → phone, over the reliable input
         // channel.
         let (steps_tx, mut steps_rx) = unbounded_channel::<AgentOutbound>();
@@ -266,11 +314,64 @@ impl AgentController {
         self.runs
             .insert(run_id.clone(), Arc::clone(&outcome_record));
         let display = self.display.clone();
-        let (decisions_tx, mut decisions_rx) = unbounded_channel::<AgentInbound>();
+        let (decisions_tx, mut decisions_rx) = channel::<AgentInbound>(DECISION_QUEUE_CAPACITY);
         let cancel = Cancel::new();
         let run_cancel = cancel.clone();
         let run_id_task = run_id.clone();
         let task = tokio::spawn(async move {
+            // Admission acknowledgment does not wait on the model, and does not
+            // wait on the previous run either — the phone learns the task was
+            // accepted immediately. This uses an existing step shape so older
+            // mobile clients can also read it.
+            let _ = steps_tx.send(AgentOutbound::step(
+                &run_id_task,
+                format!("{run_id_task}-accepted"),
+                StepKind::Thinking,
+                "Task accepted. Planning the next step…",
+                None,
+                None,
+                StepState::Running,
+                now_ms(),
+            ));
+
+            // Exclusive ownership (L-252). The superseded run was *asked* to
+            // stop; until its task ends it may still be inside a synchronous
+            // native call. Starting now would put two runners on one Mac.
+            if let Some(prior) = prior {
+                let waited = tokio::time::timeout(
+                    std::time::Duration::from_millis(PRIOR_RUN_DRAIN_MS),
+                    prior.task,
+                )
+                .await;
+                if waited.is_err() {
+                    // Refuse rather than share the Mac. The old run is still
+                    // cancelled and will end on its own; this one never starts,
+                    // so no two runners ever act at the same time.
+                    log::error!(
+                        target: "lilypad::agent",
+                        "previous agent run {} did not stop within {PRIOR_RUN_DRAIN_MS}ms — refusing to start {run_id_task}",
+                        prior.run_id
+                    );
+                    let _ = steps_tx.send(AgentOutbound::step(
+                        &run_id_task,
+                        format!("{run_id_task}-0"),
+                        StepKind::Error,
+                        "The previous task is still stopping. Try again in a moment.",
+                        None,
+                        None,
+                        StepState::Failed,
+                        now_ms(),
+                    ));
+                    let _ = steps_tx.send(AgentOutbound::run_end(
+                        &run_id_task,
+                        RunOutcome::Failed,
+                        now_ms(),
+                    ));
+                    *outcome_record.lock().unwrap() = Some(RunOutcome::Failed);
+                    return;
+                }
+            }
+
             let brain = LlmBrain::new(AnyProvider::new(choice));
             let executor = match TieredExecutor::from_env(display) {
                 Ok(e) => e,
@@ -288,18 +389,6 @@ impl AgentController {
                     return;
                 }
             };
-            // Admission acknowledgment does not wait on the model. This uses
-            // an existing step shape so older mobile clients can also read it.
-            let _ = steps_tx.send(AgentOutbound::step(
-                &run_id_task,
-                format!("{run_id_task}-accepted"),
-                StepKind::Thinking,
-                "Task accepted. Planning the next step…",
-                None,
-                None,
-                StepState::Running,
-                now_ms(),
-            ));
             let mut runner = AgentRunner::new(brain, executor, steps_tx, now_ms);
             let outcome = runner
                 .run(&run_id_task, &text, &mut decisions_rx, &run_cancel)
@@ -312,7 +401,7 @@ impl AgentController {
             run_id,
             cancel,
             decisions_tx,
-            _task: task,
+            task,
             _forwarder: forwarder,
         });
     }
@@ -363,7 +452,7 @@ mod tests {
     async fn dropping_the_controller_cancels_its_detached_run() {
         let cancel = Cancel::new();
         let observer = cancel.clone();
-        let (decisions_tx, _decisions_rx) = unbounded_channel();
+        let (decisions_tx, _decisions_rx) = channel(DECISION_QUEUE_CAPACITY);
         let task_cancel = cancel.clone();
         let task = tokio::spawn(async move { task_cancel.wait().await });
         let mut controller = AgentController::new();
@@ -371,7 +460,7 @@ mod tests {
             run_id: "drop-test".into(),
             cancel,
             decisions_tx,
-            _task: task,
+            task,
             _forwarder: tokio::spawn(async {}),
         });
         drop(controller);
@@ -381,15 +470,113 @@ mod tests {
         );
     }
     #[tokio::test]
+    async fn superseding_a_run_hands_over_a_join_point_not_just_a_cancel_flag() {
+        // L-252. The old code cancelled the previous run and dropped its
+        // `ActiveRun`, which drops the `JoinHandle` — and dropping a tokio
+        // handle detaches the task rather than stopping it. Cancellation is a
+        // request; a run that is inside a synchronous `AXPress` has not seen it
+        // yet. So the successor must receive something it can *wait on*, and
+        // the moment that wait returns is the moment the Mac has one owner.
+        let mut controller = AgentController::new();
+        let cancel = Cancel::new();
+        let (tx, _rx) = channel(DECISION_QUEUE_CAPACITY);
+        let still_acting = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let flag = Arc::clone(&still_acting);
+        let observed = cancel.clone();
+        controller.active = Some(ActiveRun {
+            run_id: "first".into(),
+            cancel,
+            decisions_tx: tx,
+            task: tokio::spawn(async move {
+                observed.wait().await;
+                // Stands in for the tail of a real step: the run has been told
+                // to stop but has not finished stopping.
+                tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+                flag.store(false, std::sync::atomic::Ordering::SeqCst);
+            }),
+            _forwarder: tokio::spawn(async {}),
+        });
+
+        let prior = controller.supersede_active().expect("a run was active");
+        assert_eq!(prior.run_id, "first");
+        assert!(controller.active.is_none());
+        assert!(
+            still_acting.load(std::sync::atomic::Ordering::SeqCst),
+            "cancelling is not the same as having stopped"
+        );
+
+        prior.task.await.unwrap();
+        assert!(
+            !still_acting.load(std::sync::atomic::Ordering::SeqCst),
+            "awaiting the prior run must mean it has actually stopped"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refused_command_does_not_kill_the_run_already_in_flight() {
+        // Superseding happens after admission, not before: a view-only session
+        // sending a command must not take down a legitimate run.
+        let mut controller = AgentController::new();
+        let cancel = Cancel::new();
+        let (tx, _rx) = channel(DECISION_QUEUE_CAPACITY);
+        controller.active = Some(ActiveRun {
+            run_id: "live".into(),
+            cancel: cancel.clone(),
+            decisions_tx: tx,
+            task: tokio::spawn(async {}),
+            _forwarder: tokio::spawn(async {}),
+        });
+        controller.start_command("new".into(), "do a thing".into(), false, None);
+        assert!(
+            !cancel.is_cancelled(),
+            "a command that was never admitted cancelled the live run"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_decision_queue_is_bounded_and_drops_rather_than_growing() {
+        // L-248. The receiver is idle during a model call, so an unbounded
+        // queue turned a phone stuck in a retry loop into unbounded desktop
+        // memory. A run has one outstanding question; past the cap the frames
+        // are duplicates.
+        let mut controller = AgentController::new();
+        let (tx, _rx) = channel(DECISION_QUEUE_CAPACITY);
+        controller.active = Some(ActiveRun {
+            run_id: "r".into(),
+            cancel: Cancel::new(),
+            decisions_tx: tx,
+            task: tokio::spawn(async {}),
+            _forwarder: tokio::spawn(async {}),
+        });
+        for _ in 0..(DECISION_QUEUE_CAPACITY * 10) {
+            controller.handle_inbound(
+                AgentInbound::AgentDecision {
+                    run_id: "r".into(),
+                    step_id: "r-1".into(),
+                    approve: true,
+                    ts: 0,
+                },
+                true,
+                None,
+            );
+        }
+        let queued = controller.active.as_ref().unwrap().decisions_tx.capacity();
+        assert_eq!(
+            queued, 0,
+            "the queue should be full, not grown: {queued} slots free"
+        );
+    }
+
+    #[tokio::test]
     async fn a_replayed_run_id_does_not_cancel_the_current_run_or_restart_work() {
         let mut controller = AgentController::new();
         let cancel = Cancel::new();
-        let (tx, _rx) = unbounded_channel();
+        let (tx, _rx) = channel(DECISION_QUEUE_CAPACITY);
         controller.active = Some(ActiveRun {
             run_id: "current".into(),
             cancel: cancel.clone(),
             decisions_tx: tx,
-            _task: tokio::spawn(async {}),
+            task: tokio::spawn(async {}),
             _forwarder: tokio::spawn(async {}),
         });
         controller.runs.insert(
@@ -408,12 +595,12 @@ mod tests {
     async fn switching_the_shared_display_cancels_the_old_observation_context() {
         let mut controller = AgentController::new();
         let cancel = Cancel::new();
-        let (tx, _rx) = unbounded_channel();
+        let (tx, _rx) = channel(DECISION_QUEUE_CAPACITY);
         controller.active = Some(ActiveRun {
             run_id: "current".into(),
             cancel: cancel.clone(),
             decisions_tx: tx,
-            _task: tokio::spawn(async {}),
+            task: tokio::spawn(async {}),
             _forwarder: tokio::spawn(async {}),
         });
         controller.set_display(Some(7));

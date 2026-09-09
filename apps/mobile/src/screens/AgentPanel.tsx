@@ -65,9 +65,25 @@ export function describeForScreenReader(view: AgentStepView): string {
         ? `can write to ${a.writablePaths.join(', ')}`
         : 'can write to its scratch folder only',
     );
+    parts.push(readsLabel(a.readablePaths));
     if (a.script) parts.push(`${a.script.language} script of ${a.script.source.length} characters`);
   }
   return parts.join('. ');
+}
+
+/**
+ * What the card says about reading — including when the desktop did not say.
+ *
+ * `readablePaths` is optional on the wire because an older desktop has no such
+ * field. Absent is not "nothing": that desktop grants a script broad read
+ * access to the user's files, which is the opposite of what an empty list
+ * means. Rendering the two the same way would be the exact defect this list
+ * exists to fix, so they are worded differently.
+ */
+export function readsLabel(readablePaths: string[] | undefined): string {
+  if (readablePaths === undefined) return 'reads not disclosed by this Mac';
+  if (readablePaths.length === 0) return 'reads none of your files';
+  return `can read ${readablePaths.join(', ')}`;
 }
 
 function stateColor(view: AgentStepView): string {
@@ -359,6 +375,23 @@ export function AgentPanel({
                   {held.approval.writablePaths.length > 0
                     ? held.approval.writablePaths.join(', ')
                     : 'its scratch folder only'}
+                </Text>
+              </Text>
+              <Text style={styles.grantLine}>
+                Can read:{' '}
+                <Text
+                  style={
+                    held.approval.readablePaths === undefined ||
+                    held.approval.readablePaths.length > 0
+                      ? styles.grantDanger
+                      : styles.grantValue
+                  }
+                >
+                  {held.approval.readablePaths === undefined
+                    ? 'not disclosed by this Mac'
+                    : held.approval.readablePaths.length > 0
+                      ? held.approval.readablePaths.join(', ')
+                      : 'none of your files'}
                 </Text>
               </Text>
               {held.approval.script ? (

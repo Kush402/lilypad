@@ -39,4 +39,29 @@ describe('Ask compatibility boundary', () => {
       AgentApprovalSchema.safeParse({ ...approval, writablePaths: ['x'.repeat(1025)] }).success,
     ).toBe(false);
   });
+
+  it('carries read grants, and keeps "absent" distinguishable from "none" (L-247)', () => {
+    const approval = { purpose: 'Run script', writablePaths: [], network: false };
+
+    // Present and empty: the desktop said the script reads nothing of theirs.
+    expect(AgentApprovalSchema.parse({ ...approval, readablePaths: [] }).readablePaths).toEqual([]);
+    // Present and populated: exactly what it may read.
+    expect(
+      AgentApprovalSchema.parse({ ...approval, readablePaths: ['/Users/me/a.txt'] }).readablePaths,
+    ).toEqual(['/Users/me/a.txt']);
+    // Absent: an older desktop that grants broad reads and cannot say so. It
+    // must stay `undefined` rather than defaulting to `[]`, or the phone would
+    // render the most permissive case as the most restrictive one.
+    expect(AgentApprovalSchema.parse(approval).readablePaths).toBeUndefined();
+
+    // Same disclosure bounds as the write list — an approval may not exceed
+    // what can be shown verbatim.
+    expect(
+      AgentApprovalSchema.safeParse({ ...approval, readablePaths: Array(33).fill('/tmp/a') })
+        .success,
+    ).toBe(false);
+    expect(
+      AgentApprovalSchema.safeParse({ ...approval, readablePaths: ['x'.repeat(1025)] }).success,
+    ).toBe(false);
+  });
 });

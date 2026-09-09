@@ -382,9 +382,10 @@ fn base_tools() -> Vec<ToolSpec> {
             description: "Run a small script under a secure sandbox for computation or file \
                           work that no specific tool covers (e.g. compressing a folder, \
                           transforming files). The script runs with writes restricted to a \
-                          scratch area, no network, and secrets unreadable, and ALWAYS \
-                          requires the user's approval first. Prefer a specific tool when one \
-                          fits. Print any result the user should see to stdout.",
+                          scratch area, no network, and NO access to the user's files unless \
+                          you list them in `readable_paths` — an undeclared read fails. It \
+                          ALWAYS requires the user's approval first. Prefer a specific tool \
+                          when one fits. Print any result the user should see to stdout.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -396,6 +397,15 @@ fn base_tools() -> Vec<ToolSpec> {
                         "description": "Folders under the home directory the script must write \
                                         to besides the scratch area (e.g. an output folder). \
                                         Omit if the script only needs the scratch area."
+                    },
+                    "readable_paths": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Files or folders under the home directory the script \
+                                        must READ. Nothing under the home directory is \
+                                        readable unless listed here, and the user sees this \
+                                        list before approving. Name the narrowest path that \
+                                        works. Omit if the script reads nothing of the user's."
                     },
                     "needs_network": {
                         "type": "boolean",
@@ -549,6 +559,16 @@ pub fn decision_from_tool_call(call: &ToolCall) -> Result<Decision> {
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default();
+            let readable_paths = call
+                .input
+                .get("readable_paths")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(str::to_string))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
             let needs_network = call
                 .input
                 .get("needs_network")
@@ -561,6 +581,7 @@ pub fn decision_from_tool_call(call: &ToolCall) -> Result<Decision> {
                     language,
                     script,
                     writable_paths,
+                    readable_paths,
                     needs_network,
                 },
             })
@@ -831,6 +852,7 @@ mod tests {
                 "language": "python",
                 "script": "print(1+1)",
                 "writable_paths": ["~/Downloads"],
+                "readable_paths": ["~/Documents/report.md"],
                 "needs_network": true,
             }),
             extra: None,
@@ -842,6 +864,7 @@ mod tests {
                     Action::RunScript {
                         language,
                         writable_paths,
+                        readable_paths,
                         needs_network,
                         ..
                     },
@@ -850,6 +873,7 @@ mod tests {
             } => {
                 assert_eq!(language, ScriptLanguage::Python);
                 assert_eq!(writable_paths, vec!["~/Downloads".to_string()]);
+                assert_eq!(readable_paths, vec!["~/Documents/report.md".to_string()]);
                 assert!(needs_network);
             }
             _ => panic!("wrong decision"),

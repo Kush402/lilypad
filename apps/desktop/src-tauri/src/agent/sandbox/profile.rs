@@ -2,25 +2,69 @@
 //! the sandbox. Given a [`SandboxPolicy`], produce the exact profile string
 //! passed to `sandbox-exec -p`. No I/O, so every rule is unit-testable.
 //!
-//! Posture: **deny by default**, with a deliberately asymmetric read/write
-//! stance because the two carry different risk:
+//! Posture: **deny by default**, for reads as well as writes.
+//!
 //!   - **Writes** are jailed to the per-run scratch dir (plus the stdio
-//!     devices). Nothing else on disk can be created or modified.
+//!     devices and any approved output paths). Nothing else on disk can be
+//!     created or modified.
 //!   - **Network** is denied unless the policy explicitly allows it (a
 //!     network step is held for human approval before it ever reaches here).
-//!   - **Reads** are allowed broadly EXCEPT an explicit deny-list of secret
-//!     locations (`~/.ssh`, keychains, cloud creds, …). A hard read-allowlist
-//!     that still lets an interpreter's dyld bootstrap is brittle across macOS
-//!     versions (the shared-cache paths move); denying the *secrets* while
-//!     allowing benign reads is the robust equivalent, because the actual
-//!     exfiltration threat is cut at BOTH ends — the secret can't be read, and
-//!     even non-secret data can't leave (network denied). Explicit denies win
-//!     over the broad allow in SBPL, so the secret list is authoritative.
+//!   - **Reads** are an allow-list: the OS locations an interpreter needs to
+//!     bootstrap, the run's own scratch dir, and the paths the user explicitly
+//!     granted for this script. The user's home directory is *not* on that
+//!     list. A grant that falls inside the secret deny-list is still denied.
+//!
+//! ### Why reads used to be broad, and why that was wrong (L-247)
+//!
+//! This file previously allowed `file-read*` everywhere except a deny-list of
+//! secret locations, and justified it like this: a hard read-allow-list that
+//! still lets dyld bootstrap is brittle across macOS versions, and the
+//! exfiltration threat is cut at both ends anyway, because network is denied.
+//!
+//! The first half is true. The second half is false, and it is false for a
+//! reason the sentence never mentions: **stdout is the network.** A sandboxed
+//! script's output is folded straight back into the model prompt and sent to
+//! the provider. `cat ~/Documents/taxes.pdf` needs no sockets. So "network
+//! denied" bounded where a script could *connect*, never what it could
+//! *disclose*, and a finite deny-list of secret paths was never going to
+//! enumerate a person's private documents, their project `.env` files, or
+//! their Notes database.
+//!
+//! The brittleness problem is real but it is not an argument for reading the
+//! user's home directory. It only argues against enumerating *system* paths
+//! finely — so this allow-list does not: it names whole OS roots (`/System`,
+//! `/usr`, `/Library`, …), which are stable across releases, and stops at the
+//! boundary that actually matters. Everything the person owns starts denied
+//! and becomes readable one approved path at a time.
+//!
+//! ### Rule precedence — measured, not assumed
+//!
+//! Established on macOS 26 (Darwin 25.5) by running `sandbox-exec` against
+//! real files, because getting this backwards silently inverts the boundary:
+//!
+//!   1. A `(deny file-read* (subpath X))` beats a bare `(allow file-read*)`
+//!      whichever order they appear in. The secret list therefore survives a
+//!      broad allow.
+//!   2. **But a *more specific* filter wins.** An `(allow file-read* (subpath
+//!      X/Y/file))` beats a `(deny file-read* (subpath X))`. Specificity
+//!      outranks both order and verb.
+//!
+//! Rule 2 is the one that matters here, and it is the opposite of what the
+//! first draft of this module assumed. It means SBPL cannot be trusted to keep
+//! an approved read grant out of `~/.ssh`: a grant naming a file *inside* a
+//! denied subtree would win. So the deny list is enforced **in Rust**, by
+//! dropping such a grant before the profile is built ([`is_denied_read`]) and
+//! by refusing the step in the executor, and the SBPL denies remain only as a
+//! second layer. A regression test runs a real `sandbox-exec` against a real
+//! file under `~/.config` to keep this honest.
+//!
+//! Home is excluded by *omission* rather than by an explicit deny, so that an
+//! ordinary grant under home works at all.
 
 use std::path::{Path, PathBuf};
 
-/// What one sandboxed run is permitted to touch. Reads are broad (secrets
-/// denied, see below), so only WRITE widening and network need enumerating.
+/// What one sandboxed run is permitted to touch. Everything not named here is
+/// denied — reads included.
 #[derive(Debug, Clone)]
 pub struct SandboxPolicy {
     /// The per-run scratch dir: always writable.
@@ -28,6 +72,11 @@ pub struct SandboxPolicy {
     /// Extra paths (beyond scratch) the script may write to — home-jailed by
     /// the executor before it reaches here (e.g. a plan-named output folder).
     pub writable_paths: Vec<PathBuf>,
+    /// Paths under the user's home the script may read, each named by the
+    /// model, home-jailed by the executor and shown on the approval card
+    /// before the person approved the step. Empty is the default: a script
+    /// that declares no reads cannot see anything the person owns.
+    pub readable_paths: Vec<PathBuf>,
     /// Whether outbound network is permitted. Default false; only true when a
     /// network-needing step has been approved.
     pub allow_network: bool,
@@ -38,6 +87,7 @@ impl SandboxPolicy {
         SandboxPolicy {
             scratch_dir,
             writable_paths: Vec::new(),
+            readable_paths: Vec::new(),
             allow_network: false,
         }
     }
@@ -93,10 +143,51 @@ fn sensitive_deny_subpaths(home: &Path) -> Vec<PathBuf> {
     .collect()
 }
 
+/// OS roots a sandboxed interpreter may read.
+///
+/// Deliberately coarse. The alternative — enumerating dyld's shared cache,
+/// the toolchain's stdlib, the frameworks each interpreter links — is what
+/// breaks on every macOS update, and it buys nothing: none of these paths
+/// holds the user's data, which is the thing this boundary exists to protect.
+///
+/// Empirically derived, not assumed: `/bin/sh` and `/usr/bin/python3` both
+/// fail to start (SIGABRT inside dyld) without the root literal, and
+/// `python3` cannot import its stdlib without `/Applications` on a Mac whose
+/// `python3` is Xcode's shim. Each entry earned its place by a run that
+/// failed without it.
+const SYSTEM_READ_ROOTS: &[&str] = &[
+    "/System",
+    "/usr",
+    "/bin",
+    "/sbin",
+    "/Library",
+    "/opt",
+    "/Applications",
+    "/private/etc",
+    "/private/var/db",
+    "/private/var/folders",
+    "/dev",
+    "/AppleInternal",
+];
+
 /// System keychain locations (outside home) that must also never be read.
 const SYSTEM_SECRET_DENY: &[&str] = &["/Library/Keychains", "/private/var/db/SystemKey"];
 
 /// SBPL string-literal escaping: wrap in double quotes, escape `\` and `"`.
+/// Is reading `path` forbidden outright, regardless of any approval?
+///
+/// SBPL will not enforce this for us — a specific enough `allow` outranks a
+/// broader `deny` (see this module's precedence notes) — so the secret list is
+/// applied here, in code, before a path can reach the profile.
+pub fn is_denied_read(path: &Path, home: &Path) -> bool {
+    sensitive_deny_subpaths(home)
+        .iter()
+        .any(|deny| path == deny || path.starts_with(deny))
+        || SYSTEM_SECRET_DENY
+            .iter()
+            .any(|deny| path == Path::new(deny) || path.starts_with(deny))
+}
+
 fn sbpl_quote(path: &Path) -> String {
     let s = path.to_string_lossy();
     format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
@@ -125,7 +216,8 @@ pub fn build_profile(policy: &SandboxPolicy, home: &Path) -> String {
     p.push_str("(allow mach-lookup)\n");
 
     // ── reads ────────────────────────────────────────────────────────────
-    // Secret denies FIRST — an explicit deny outranks the broad allow below.
+    // Secret denies first. A deny wins over any allow, so these also override
+    // an approved read grant: no card can authorize reading `~/.ssh`.
     for deny in sensitive_deny_subpaths(home) {
         p.push_str(&format!(
             "(deny file-read* (subpath {}))\n",
@@ -138,10 +230,36 @@ pub fn build_profile(policy: &SandboxPolicy, home: &Path) -> String {
             sbpl_quote(Path::new(deny))
         ));
     }
-    // Remaining files are readable. Network denial is NOT a confidentiality
-    // boundary: stdout is returned to the model provider. Explicit read grants
-    // are required before treating this tier as protecting arbitrary secrets.
-    p.push_str("(allow file-read*)\n");
+    // Metadata (stat) everywhere: an interpreter probes for files it may not
+    // open, and a path cannot be reached without walking its parents. This
+    // discloses existence and size, never content.
+    p.push_str("(allow file-read-metadata)\n");
+    // The OS roots an interpreter needs. Whole roots, not individual dyld
+    // paths, so a macOS update that moves the shared cache does not break the
+    // sandbox. None of these is where a person keeps their own files.
+    p.push_str("(allow file-read* (literal \"/\"))\n");
+    for root in SYSTEM_READ_ROOTS {
+        p.push_str(&format!(
+            "(allow file-read* (subpath {}))\n",
+            sbpl_quote(Path::new(root))
+        ));
+    }
+    // The run's own scratch dir — the script itself lives there, and the
+    // interpreter has to read it to run it.
+    p.push_str(&format!(
+        "(allow file-read* (subpath {}))\n",
+        sbpl_quote(&policy.scratch_dir)
+    ));
+    // Everything the person explicitly granted for this script, and nothing
+    // else under their home — minus anything on the secret list, which no
+    // approval can unlock. Dropped here rather than left to SBPL because a
+    // specific allow would outrank the broader deny above.
+    for r in &policy.readable_paths {
+        if is_denied_read(r, home) {
+            continue;
+        }
+        p.push_str(&format!("(allow file-read* (subpath {}))\n", sbpl_quote(r)));
+    }
 
     // ── writes ───────────────────────────────────────────────────────────
     // The scratch dir, any explicitly-granted (approved, home-jailed) output
@@ -210,6 +328,7 @@ mod tests {
         let policy = SandboxPolicy {
             scratch_dir: "/tmp/r".into(),
             writable_paths: vec!["/Users/kush/Downloads".into()],
+            readable_paths: Vec::new(),
             allow_network: false,
         };
         let prof = profile(&policy);
@@ -217,11 +336,8 @@ mod tests {
     }
 
     #[test]
-    fn secret_paths_are_denied_before_the_broad_read_allow() {
+    fn secret_paths_are_denied_outright() {
         let prof = profile(&SandboxPolicy::read_only("/tmp/r".into()));
-        let allow_at = prof
-            .find("(allow file-read*)")
-            .expect("broad read allow present");
         for sensitive in [
             "/Users/kush/.ssh",
             "/Users/kush/Library/Keychains",
@@ -239,10 +355,95 @@ mod tests {
         ] {
             let deny = format!("(deny file-read* (subpath \"{sensitive}\"))");
             assert!(prof.contains(&deny), "missing deny for {sensitive}");
-            // Explicit deny must precede the broad allow so it stays authoritative.
+        }
+    }
+
+    #[test]
+    fn the_home_directory_is_not_readable_without_a_grant() {
+        // L-247. The old profile ended with a blanket `(allow file-read*)`,
+        // which meant every document, project `.env` and note the person owned
+        // was readable by a model-written script whose stdout goes back to the
+        // provider. Nothing under home may be readable by default.
+        let prof = profile(&SandboxPolicy::read_only("/tmp/r".into()));
+        assert!(
+            !prof.contains("(allow file-read*)\n"),
+            "the blanket read allow is back:\n{prof}"
+        );
+        for line in prof.lines().filter(|l| l.starts_with("(allow file-read*")) {
             assert!(
-                prof.find(&deny).unwrap() < allow_at,
-                "{sensitive} denied too late"
+                !line.contains("\"/Users/kush\""),
+                "home is readable by default: {line}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_approved_read_grant_is_the_only_way_into_home() {
+        let mut policy = SandboxPolicy::read_only("/tmp/r".into());
+        policy.readable_paths = vec![PathBuf::from("/Users/kush/Documents/report")];
+        let prof = profile(&policy);
+        assert!(
+            prof.contains("(allow file-read* (subpath \"/Users/kush/Documents/report\"))"),
+            "granted read missing:\n{prof}"
+        );
+        // And only that one — a grant widens the boundary by exactly its path.
+        let home_allows: Vec<&str> = prof
+            .lines()
+            .filter(|l| l.starts_with("(allow file-read*") && l.contains("/Users/kush/"))
+            .collect();
+        assert_eq!(
+            home_allows.len(),
+            1,
+            "unexpected home reads: {home_allows:?}"
+        );
+    }
+
+    #[test]
+    fn a_grant_cannot_reopen_a_secret_path() {
+        // No approval card may authorize reading the user's keys — not even if
+        // the model names the path and the person taps approve.
+        //
+        // This cannot be left to SBPL. A `subpath` allow that is *more
+        // specific* than the deny wins (measured, see this module's docs), so
+        // a grant naming a file inside `~/.ssh` would have been honoured. The
+        // grant is dropped here instead, and the deny stays as second cover.
+        let mut policy = SandboxPolicy::read_only("/tmp/r".into());
+        policy.readable_paths = vec![
+            PathBuf::from("/Users/kush/.ssh"),
+            PathBuf::from("/Users/kush/.config/gh/hosts.yml"),
+            PathBuf::from("/Library/Keychains/System.keychain"),
+            PathBuf::from("/Users/kush/Documents/fine.txt"),
+        ];
+        let prof = profile(&policy);
+        assert!(prof.contains("(deny file-read* (subpath \"/Users/kush/.ssh\"))"));
+        for secret in [
+            "/Users/kush/.ssh",
+            "/Users/kush/.config/gh/hosts.yml",
+            "/Library/Keychains/System.keychain",
+        ] {
+            assert!(
+                !prof.contains(&format!("(allow file-read* (subpath \"{secret}\"))")),
+                "a grant re-opened {secret}:\n{prof}"
+            );
+        }
+        // The legitimate grant in the same list still works.
+        assert!(prof.contains("(allow file-read* (subpath \"/Users/kush/Documents/fine.txt\"))"));
+    }
+
+    #[test]
+    fn the_scratch_dir_is_readable_so_the_script_can_be_run_at_all() {
+        let prof = profile(&SandboxPolicy::read_only("/tmp/run-xyz".into()));
+        assert!(prof.contains("(allow file-read* (subpath \"/tmp/run-xyz\"))"));
+    }
+
+    #[test]
+    fn the_system_roots_an_interpreter_needs_stay_readable() {
+        let prof = profile(&SandboxPolicy::read_only("/tmp/r".into()));
+        assert!(prof.contains("(allow file-read* (literal \"/\"))"));
+        for root in ["/System", "/usr", "/bin", "/Library"] {
+            assert!(
+                prof.contains(&format!("(allow file-read* (subpath \"{root}\"))")),
+                "missing system read root {root}"
             );
         }
     }

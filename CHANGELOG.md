@@ -19,6 +19,46 @@ All notable changes to Lilypad are documented here. The format follows
   estimate below the encoder's own floor is now discarded rather than believed;
   packet loss and send-queue congestion still lower the bitrate as before.
 
+### Security
+
+- A sandboxed Ask script can no longer read your files. The sandbox allowed
+  reads everywhere except a list of known secret locations, on the reasoning
+  that nothing could leave anyway because the network was off. Stdout is the
+  network: a script's output goes straight back to the AI provider, so
+  `cat ~/Documents/taxes.pdf` never needed a socket, and a list of known
+  secrets was never going to cover a person's own documents. Reads now start
+  denied. A script must name the files it needs, they appear on the approval
+  card before you approve, and the secret locations stay unreadable even if
+  a script asks for one and you say yes.
+- Opening a link is now something you approve, whatever the address. `https://`
+  links used to open on the assistant's own initiative, because visiting a page
+  reads like looking rather than doing. The address is the message: anything
+  the assistant has just read off your screen fits in a link, and your browser
+  sends it with your cookies attached. The card names the site that will
+  receive the request separately from the rest of the link — `bank.example@
+evil.test` goes to evil.test — and says outright when the link carries data.
+- Two assistant tasks can no longer run at the same time. Starting a new task
+  asked the previous one to stop and then began immediately, but stopping is
+  not instant: a task in the middle of a click or a screenshot finishes it.
+  The new task now waits for the old one to actually stop, and says "the
+  previous task is still stopping" rather than sharing your Mac with it.
+- A file the assistant creates or opens is re-checked after the fact. Between
+  deciding a path was inside your home folder and acting on it, the last piece
+  of that path could be swapped for a link pointing elsewhere. That now fails
+  the step visibly instead of quietly succeeding outside the folder.
+
+### Fixed
+
+- A single unreadable record in the backend's session store no longer stops the
+  server from starting. Recovery trusted whatever was stored; a `null` left
+  behind by a bad write crashed the boot sequence, and stayed crashed on every
+  restart, because the record was still there. Invalid records are now skipped
+  one by one, and a good record alongside them still recovers.
+- Assistant runs hold on to less memory: screenshots older than the last two
+  are released rather than kept for the whole task, under an explicit size
+  ceiling as well as a count, and repeated approve/deny taps from the phone are
+  bounded instead of queueing without limit.
+
 ## [0.1.32] — 2026-09-08
 
 ### Fixed

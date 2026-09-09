@@ -18,7 +18,7 @@
 use std::ffi::OsString;
 use std::path::{Component, Path, PathBuf};
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 
 use crate::agent::Action;
 
@@ -210,25 +210,60 @@ pub fn postcondition(action: &Action) -> Postcondition {
 
 /// Check a postcondition against the real filesystem. `Ok(())` = verified;
 /// `Err` describes what was expected but not found. `None` verifies trivially.
+///
+/// This is also the second half of the path jail (L-243). [`resolve_in`]
+/// checks where a path points and then hands the result to `open`/`mkdir`,
+/// which resolve it *again*; between those two resolutions the final component
+/// can become a symlink pointing anywhere. Nothing can make that window zero
+/// while the action is an external command taking a path — but the window can
+/// be made *loud*: re-resolve here, and refuse to report success for a path
+/// that is now a symlink, or that now lands outside home. A silent escape
+/// becomes a failed step the model and the person both see.
 pub fn check(pc: &Postcondition) -> Result<()> {
     match pc {
         Postcondition::None => Ok(()),
         Postcondition::InvalidPath(path) => bail!("cannot verify rejected path: {path}"),
         Postcondition::PathExists(p) => {
-            if p.exists() {
-                Ok(())
-            } else {
-                bail!("expected {} to exist", p.display())
+            if !p.exists() {
+                bail!("expected {} to exist", p.display());
             }
+            still_jailed(p)
         }
         Postcondition::PathIsDir(p) => {
-            if p.is_dir() {
-                Ok(())
-            } else {
-                bail!("expected {} to be a directory", p.display())
+            if !p.is_dir() {
+                bail!("expected {} to be a directory", p.display());
             }
+            still_jailed(p)
         }
     }
+}
+
+/// Is the path the action just acted on still the jailed path it was checked
+/// as — not a symlink, and still inside home?
+fn still_jailed(p: &Path) -> Result<()> {
+    // `symlink_metadata` does not follow the last component, so this catches a
+    // link swapped in after `resolve_in` returned.
+    let meta = std::fs::symlink_metadata(p)
+        .with_context(|| format!("cannot inspect {} after acting on it", p.display()))?;
+    if meta.file_type().is_symlink() {
+        bail!(
+            "{} became a symbolic link after it was checked — refusing to report success",
+            p.display()
+        );
+    }
+    let home = home_dir()?;
+    let real_home = home.canonicalize().unwrap_or(home);
+    let real = p
+        .canonicalize()
+        .with_context(|| format!("cannot resolve {} after acting on it", p.display()))?;
+    if !contains(&real_home, &real) {
+        bail!(
+            "{} now resolves outside the home directory ({})",
+            p.display(),
+            real.display()
+        );
+    }
+    Ok(())
 }
 
 /// Serializes the handful of tests that must mutate the process-global `$HOME`
@@ -318,17 +353,75 @@ mod tests {
         }
     }
 
+    /// Run `body` with `$HOME` pointed at an isolated jail, restoring the
+    /// previous value afterwards. `check` re-resolves against the real home
+    /// (L-243), so any test of it has to own that variable.
+    fn with_home<T>(j: &Jail, body: impl FnOnce() -> T) -> T {
+        let _g = HOME_TEST_LOCK.lock().unwrap();
+        let prev = std::env::var("HOME").ok();
+        std::env::set_var("HOME", &j.home);
+        let out = body();
+        match prev {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+        out
+    }
+
     #[test]
     fn check_verifies_real_filesystem() {
-        let dir = std::env::temp_dir().join(format!("lilypad_verify_{}", std::process::id()));
+        let j = jail();
+        let dir = j.home.join("verify");
         std::fs::create_dir_all(&dir).unwrap();
-        assert!(check(&Postcondition::PathIsDir(dir.clone())).is_ok());
-        assert!(check(&Postcondition::PathExists(dir.clone())).is_ok());
-        let missing = dir.join("nope");
-        assert!(check(&Postcondition::PathExists(missing.clone())).is_err());
-        assert!(check(&Postcondition::PathIsDir(missing)).is_err());
-        assert!(check(&Postcondition::None).is_ok());
-        std::fs::remove_dir_all(&dir).ok();
+        with_home(&j, || {
+            assert!(check(&Postcondition::PathIsDir(dir.clone())).is_ok());
+            assert!(check(&Postcondition::PathExists(dir.clone())).is_ok());
+            let missing = dir.join("nope");
+            assert!(check(&Postcondition::PathExists(missing.clone())).is_err());
+            assert!(check(&Postcondition::PathIsDir(missing)).is_err());
+            assert!(check(&Postcondition::None).is_ok());
+        });
+    }
+
+    #[test]
+    fn a_path_that_became_a_symlink_after_the_check_is_not_reported_as_success() {
+        // L-243. `resolve_in` decides where a path points; `mkdir -p`/`open`
+        // resolve it again a moment later. Between the two, the last component
+        // can be replaced by a link out of home — and `mkdir -p` on an existing
+        // symlink-to-directory exits 0, so the old `is_dir()` postcondition
+        // (which follows links) reported success for a folder created outside
+        // the jail. Simulated here by doing the swap directly.
+        let j = jail();
+        let target = j.home.join("Reports");
+        std::os::unix::fs::symlink(&j.outside, &target).unwrap();
+        with_home(&j, || {
+            let err = check(&Postcondition::PathIsDir(target.clone()))
+                .expect_err("a symlinked result must not verify");
+            assert!(
+                err.to_string().contains("symbolic link"),
+                "unexpected error: {err}"
+            );
+        });
+    }
+
+    #[test]
+    fn a_path_that_now_resolves_outside_home_is_not_reported_as_success() {
+        // The same defect one level up: the *parent* is swapped, so the final
+        // component is a real directory but lives outside the jail.
+        let j = jail();
+        let real = j.outside.join("escaped");
+        std::fs::create_dir_all(&real).unwrap();
+        let link = j.home.join("Docs");
+        std::os::unix::fs::symlink(&j.outside, &link).unwrap();
+        let via_link = link.join("escaped");
+        with_home(&j, || {
+            let err = check(&Postcondition::PathIsDir(via_link))
+                .expect_err("a path outside home must not verify");
+            assert!(
+                err.to_string().contains("outside the home directory"),
+                "unexpected error: {err}"
+            );
+        });
     }
 
     // ── L-231: the home boundary survives a symlink ──

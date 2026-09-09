@@ -224,6 +224,10 @@ pub struct Approval {
     /// Locations the action may write to beyond its own scratch directory.
     #[serde(rename = "writablePaths")]
     pub writable_paths: Vec<String>,
+    /// Paths the script is granted to read. The sandbox denies the rest of the
+    /// user's home, so this list is the whole of what the script can see.
+    #[serde(rename = "readablePaths")]
+    pub readable_paths: Vec<String>,
     /// Whether outbound network access is granted.
     pub network: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -248,6 +252,12 @@ impl Approval {
         self.writable_paths.truncate(MAX_WRITABLE_PATHS);
         self.writable_paths = self
             .writable_paths
+            .into_iter()
+            .map(|p| clip_to_bytes(p, MAX_PATH_LEN))
+            .collect();
+        self.readable_paths.truncate(MAX_WRITABLE_PATHS);
+        self.readable_paths = self
+            .readable_paths
             .into_iter()
             .map(|p| clip_to_bytes(p, MAX_PATH_LEN))
             .collect();
@@ -286,7 +296,10 @@ pub enum AgentOutbound {
         state: StepState,
         /// Present only on a `Held` step: what is being asked for.
         #[serde(skip_serializing_if = "Option::is_none")]
-        approval: Option<Approval>,
+        /// Boxed: an `Approval` carries a script and two path lists, and the
+        /// enum is sized by its largest variant. Every step frame — most of
+        /// which carry no approval at all — would otherwise be that big.
+        approval: Option<Box<Approval>>,
         ts: u64,
     },
     AgentRunEnd {
@@ -344,7 +357,7 @@ impl AgentOutbound {
             tier,
             class,
             state: StepState::Held,
-            approval: Some(approval.clamped()),
+            approval: Some(Box::new(approval.clamped())),
             ts,
         }
     }
@@ -476,6 +489,7 @@ mod tests {
                 source: source.into(),
             }),
             writable_paths: paths,
+            readable_paths: Vec::new(),
             network,
             target: None,
         }
@@ -588,6 +602,7 @@ mod tests {
             purpose: "\u{e9}".repeat(MAX_SUMMARY_LEN),
             script: None,
             writable_paths: vec!["\u{4e16}".repeat(MAX_PATH_LEN)],
+            readable_paths: vec!["\u{4e16}".repeat(MAX_PATH_LEN)],
             network: false,
             target: Some(ApprovalTarget {
                 role: "AXButton".into(),
@@ -597,6 +612,7 @@ mod tests {
         .clamped();
         assert!(approval.purpose.len() <= MAX_SUMMARY_LEN);
         assert!(approval.writable_paths[0].len() <= MAX_PATH_LEN);
+        assert!(approval.readable_paths[0].len() <= MAX_PATH_LEN);
         assert!(approval.target.unwrap().label.len() <= MAX_PATH_LEN);
     }
 
@@ -608,10 +624,14 @@ mod tests {
             writable_paths: (0..MAX_WRITABLE_PATHS + 20)
                 .map(|i| format!("/p/{i}"))
                 .collect(),
+            readable_paths: (0..MAX_WRITABLE_PATHS + 20)
+                .map(|i| format!("/r/{i}"))
+                .collect(),
             network: false,
             target: None,
         }
         .clamped();
         assert_eq!(approval.writable_paths.len(), MAX_WRITABLE_PATHS);
+        assert_eq!(approval.readable_paths.len(), MAX_WRITABLE_PATHS);
     }
 }

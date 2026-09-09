@@ -6,9 +6,9 @@
 //! held for the user's approval, or `Forbidden` → refused) BEFORE the runner
 //! calls this executor, and the [`sandbox`](crate::agent::sandbox) harness
 //! constrains what a script can do regardless of what it contains — writes
-//! jailed, secrets unreadable, network off unless granted, CPU/mem/time
-//! bounded. Every run's script + profile + output persist under the run dir
-//! for audit.
+//! jailed, the user's home unreadable except for the paths named on the
+//! approval card, network off unless granted, CPU/mem/time bounded. Every
+//! run's script + profile + output persist under the run dir for audit.
 
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -17,7 +17,7 @@ use anyhow::{anyhow, bail, Result};
 
 use crate::agent::executor::verify::resolve_user_path;
 use crate::agent::runner::{Executor, Observation};
-use crate::agent::sandbox::{self, SandboxLimits, SandboxPolicy};
+use crate::agent::sandbox::{self, is_denied_read, SandboxLimits, SandboxPolicy};
 use crate::agent::security::ScriptLanguage;
 use crate::agent::Action;
 
@@ -77,6 +77,7 @@ impl Executor for SandboxExecutor {
             language,
             script,
             writable_paths,
+            readable_paths,
             needs_network,
         } = action
         else {
@@ -99,6 +100,30 @@ impl Executor for SandboxExecutor {
             }
         }
 
+        // Home-jail every requested read grant, exactly like the writes. The
+        // sandbox denies the rest of home, so this list is the whole of what
+        // the script can see of the person's files (L-247) — and it is the
+        // same list the approval card showed before they approved.
+        let mut jailed_readables = Vec::with_capacity(readable_paths.len());
+        for r in readable_paths {
+            match resolve_user_path(r) {
+                Ok(p) => {
+                    // Refuse rather than quietly drop it. The approval card
+                    // listed this path; running the script anyway would make
+                    // the card a description of something that did not happen,
+                    // and the script would fail on a read it was told it had.
+                    if is_denied_read(&p, &self.home) {
+                        return Ok(Observation::fail(format!(
+                            "reading {} is never permitted, with or without approval",
+                            p.display()
+                        )));
+                    }
+                    jailed_readables.push(p);
+                }
+                Err(e) => return Ok(Observation::fail(format!("readable path rejected: {e}"))),
+            }
+        }
+
         let scratch = self.next_run_dir();
         tokio::fs::create_dir_all(&scratch).await?;
         let script_path = scratch.join(format!("script.{ext}"));
@@ -107,6 +132,7 @@ impl Executor for SandboxExecutor {
         let policy = SandboxPolicy {
             scratch_dir: scratch.clone(),
             writable_paths: jailed_writables,
+            readable_paths: jailed_readables,
             allow_network: *needs_network,
         };
         let outcome = sandbox::run(
@@ -251,7 +277,8 @@ mod tests {
             .execute(&Action::RunScript {
                 language: ScriptLanguage::Shell,
                 script: "echo lilypad-p2-ok".into(),
-                writable_paths: vec![],
+                writable_paths: vec![], // NOT granted write to home
+                readable_paths: vec![],
                 needs_network: false,
             })
             .await
@@ -281,6 +308,7 @@ mod tests {
                 language: ScriptLanguage::Shell,
                 script: format!("echo x > {target}"),
                 writable_paths: vec![], // NOT granted write to home
+                readable_paths: vec![],
                 needs_network: false,
             })
             .await
