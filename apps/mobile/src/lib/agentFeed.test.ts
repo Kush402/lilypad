@@ -1,5 +1,11 @@
 import type { AgentStep, AgentRunEnd } from '@lilypad/protocol';
-import { agentFeedReducer, heldStep, INITIAL_AGENT_FEED, type AgentFeedState } from './agentFeed';
+import {
+  ACK_DEADLINE_MS,
+  agentFeedReducer,
+  heldStep,
+  INITIAL_AGENT_FEED,
+  type AgentFeedState,
+} from './agentFeed';
 
 function step(
   partial: Partial<AgentStep> & { stepId: string; state: AgentStep['state'] },
@@ -19,15 +25,26 @@ function runEnd(outcome: AgentRunEnd['outcome'], runId = 'run-1'): AgentRunEnd {
 }
 
 describe('agentFeedReducer', () => {
-  it('command_sent starts a fresh running feed', () => {
+  it('command_sent starts a fresh feed that is sending, not yet running', () => {
+    // Was `command_sent starts a fresh running feed`, asserting `running: true`
+    // the instant the frame was handed to the transport. That is the assertion
+    // L-233 is about: the bytes leaving this device is not the Mac having them.
+    // Flipped rather than deleted so the change of meaning is visible here.
     const prior: AgentFeedState = {
       runId: 'old',
+      phase: 'ended',
       running: false,
       steps: [{ stepId: 's', step: 'action', summary: 'x', state: 'done' }],
       outcome: 'completed',
     };
     const next = agentFeedReducer(prior, { type: 'command_sent', runId: 'run-1' });
-    expect(next).toEqual({ runId: 'run-1', running: true, steps: [], outcome: null });
+    expect(next).toEqual({
+      runId: 'run-1',
+      phase: 'sending',
+      running: false,
+      steps: [],
+      outcome: null,
+    });
   });
 
   it('appends new steps and replaces a step advancing in place', () => {
@@ -171,5 +188,94 @@ describe('a held step carries its structured approval (L-229)', () => {
     expect(held?.approval?.network).toBe(true);
     expect(held?.approval?.writablePaths).toEqual(['/Users/me/Documents']);
     expect(held?.approval?.script?.source).toContain('curl');
+  });
+});
+
+// ── L-233: the phone reports what the transport actually did ──
+//
+// `sendAgent` silently dropped a message on a missing/closed channel and
+// swallowed send errors, while `sendAgentCommand` returned a runId regardless
+// and the screen set the feed running. `stopAgent` dispatched an optimistic
+// `run_end`, so a dropped stop packet still rendered "Stopped."
+describe('transport-truthful run phases (L-233)', () => {
+  const sent = () => agentFeedReducer(INITIAL_AGENT_FEED, { type: 'command_sent', runId: 'run-1' });
+
+  it('a dispatched command is sending, not running', () => {
+    const s = sent();
+    expect(s.phase).toBe('sending');
+    expect(s.running).toBe(false);
+  });
+
+  it('a command that never left claims nothing and keeps its run id', () => {
+    const s = agentFeedReducer(INITIAL_AGENT_FEED, { type: 'command_unsent', runId: 'run-1' });
+    expect(s.phase).toBe('unsent');
+    expect(s.running).toBe(false);
+    // Minted either way: a failed command must never be retried under a new
+    // identity, which is how one instruction runs twice.
+    expect(s.runId).toBe('run-1');
+  });
+
+  it("the desktop's first step is the acknowledgment", () => {
+    let s = sent();
+    s = agentFeedReducer(s, { type: 'step', step: step({ stepId: 'a', state: 'running' }) });
+    expect(s.phase).toBe('running');
+    expect(s.running).toBe(true);
+  });
+
+  it('an unacknowledged command stops claiming to run at the deadline', () => {
+    let s = sent();
+    s = agentFeedReducer(s, { type: 'ack_timeout', runId: 'run-1' });
+    expect(s.phase).toBe('unsent');
+    expect(ACK_DEADLINE_MS).toBeGreaterThan(0);
+  });
+
+  it('a late ack_timeout cannot unseat a run that was acknowledged', () => {
+    let s = sent();
+    s = agentFeedReducer(s, { type: 'step', step: step({ stepId: 'a', state: 'running' }) });
+    s = agentFeedReducer(s, { type: 'ack_timeout', runId: 'run-1' });
+    expect(s.phase).toBe('running');
+  });
+
+  it('stop is stopping until the desktop confirms, never optimistic', () => {
+    let s = sent();
+    s = agentFeedReducer(s, { type: 'step', step: step({ stepId: 'a', state: 'running' }) });
+    s = agentFeedReducer(s, { type: 'stop_sent' });
+    expect(s.phase).toBe('stopping');
+    expect(s.outcome).toBeNull();
+    expect(heldStep(s)).toBeNull();
+    s = agentFeedReducer(s, { type: 'run_end', end: runEnd('stopped') });
+    expect(s.phase).toBe('ended');
+    expect(s.outcome).toBe('stopped');
+  });
+
+  it('a stop that never left goes back to running, not "Stopped."', () => {
+    let s = sent();
+    s = agentFeedReducer(s, { type: 'step', step: step({ stepId: 'a', state: 'running' }) });
+    s = agentFeedReducer(s, { type: 'stop_sent' });
+    s = agentFeedReducer(s, { type: 'stop_unsent' });
+    expect(s.phase).toBe('running');
+    expect(s.running).toBe(true);
+    expect(s.outcome).toBeNull();
+  });
+
+  it('stop_sent on an idle feed changes nothing', () => {
+    expect(agentFeedReducer(INITIAL_AGENT_FEED, { type: 'stop_sent' }).phase).toBe('idle');
+  });
+
+  it('a run_end for a superseded run is ignored', () => {
+    let s = sent();
+    s = agentFeedReducer(s, { type: 'run_end', end: runEnd('completed', 'other') });
+    expect(s.phase).toBe('sending');
+  });
+});
+
+// ── L-232: turning AI sharing off stops the thing that is sharing ──
+describe('consent withdrawal retires pending decisions (L-232)', () => {
+  it('offers no approval once a stop is in flight', () => {
+    let s = agentFeedReducer(INITIAL_AGENT_FEED, { type: 'command_sent', runId: 'run-1' });
+    s = agentFeedReducer(s, { type: 'step', step: step({ stepId: 'a', state: 'held' }) });
+    expect(heldStep(s)).not.toBeNull();
+    s = agentFeedReducer(s, { type: 'stop_sent' });
+    expect(heldStep(s)).toBeNull();
   });
 });

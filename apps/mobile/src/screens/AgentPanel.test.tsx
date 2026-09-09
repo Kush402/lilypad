@@ -42,7 +42,18 @@ function step(over: Partial<AgentStepView> = {}): AgentStepView {
 }
 
 function feed(over: Partial<AgentFeedState> = {}): AgentFeedState {
-  return { runId: 'r1', running: false, steps: [], outcome: null, ...over };
+  // `phase` and `running` are two views of the same fact (L-233), so a fixture
+  // that sets one and not the other would render a state the reducer cannot
+  // produce. Default to a live run and derive `running` unless overridden.
+  const phase = over.phase ?? 'running';
+  return {
+    runId: 'r1',
+    phase,
+    running: phase === 'running',
+    steps: [],
+    outcome: null,
+    ...over,
+  };
 }
 
 const noop = () => {};

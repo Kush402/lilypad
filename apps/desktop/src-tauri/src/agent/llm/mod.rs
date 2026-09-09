@@ -407,8 +407,7 @@ fn base_tools() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "finish",
-            description:
-                "Call when you are done. `status` says how: `completed` when the task is \
+            description: "Call when you are done. `status` says how: `completed` when the task is \
                  actually done, `cannot` when you are unable to do it, `needs_input` when you \
                  need something from the person first. Provide a one-line summary either way. \
                  Never answer in prose instead of calling a tool.",
@@ -1011,10 +1010,9 @@ mod tests {
             ("cannot", FinishReason::Incomplete),
             ("needs_input", FinishReason::NeedsInput),
         ] {
-            let d = decision_from_tool_call(&finish_call(
-                json!({ "summary": "s", "status": status }),
-            ))
-            .unwrap();
+            let d =
+                decision_from_tool_call(&finish_call(json!({ "summary": "s", "status": status })))
+                    .unwrap();
             match d {
                 Decision::Finish { reason, .. } => assert_eq!(reason, want, "status {status}"),
                 other => panic!("expected Finish, got {other:?}"),

@@ -464,41 +464,56 @@ export class ViewerConnection {
     this.sig.setDisplay(displayId);
   }
 
-  /** Dispatch a natural-language task to the desktop agent. Returns the runId
-   * so the caller can correlate the step feed and later stop/decision calls. */
-  sendAgentCommand(text: string): string {
+  /** Dispatch a natural-language task to the desktop agent.
+   *
+   * Returns the runId **and whether the frame actually left this device**.
+   * It used to return only the runId, even when `sendAgent` had dropped the
+   * message on a missing or closed channel, so the caller marked the feed
+   * running for a command the Mac never received (L-233). A runId is minted
+   * either way, because a command that failed to send must never be retried
+   * under a new identity — that is how one instruction runs twice. */
+  sendAgentCommand(text: string): { runId: string; sent: boolean } {
     const runId = `run-${Date.now()}-${(this.agentRunCounter += 1)}`;
-    this.sendAgent({ kind: 'agent_command', runId, text, ts: Date.now() });
-    return runId;
+    const sent = this.sendAgent({ kind: 'agent_command', runId, text, ts: Date.now() });
+    return { runId, sent };
   }
 
-  sendAgentStop(runId: string): void {
-    this.sendAgent({ kind: 'agent_stop', runId, ts: Date.now() });
+  /** Returns whether the stop frame left this device. A dropped stop used to
+   * be reported as "Stopped." regardless (L-233). */
+  sendAgentStop(runId: string): boolean {
+    return this.sendAgent({ kind: 'agent_stop', runId, ts: Date.now() });
   }
 
-  sendAgentDecision(runId: string, stepId: string, approve: boolean): void {
-    this.sendAgent({ kind: 'agent_decision', runId, stepId, approve, ts: Date.now() });
+  sendAgentDecision(runId: string, stepId: string, approve: boolean): boolean {
+    return this.sendAgent({ kind: 'agent_decision', runId, stepId, approve, ts: Date.now() });
   }
 
-  private sendWhenOpen(getChannel: () => DataChannelLike | null): (data: string) => void {
+  /** Send on a channel, reporting whether the bytes actually left.
+   *
+   * The boolean is the point: every caller that reported success to the user
+   * was reading a `void`, so a closed channel and a thrown send looked exactly
+   * like delivery. */
+  private sendWhenOpen(getChannel: () => DataChannelLike | null): (data: string) => boolean {
     return (data: string) => {
       const channel = getChannel();
-      if (!channel) return;
+      if (!channel) return false;
       // Missing `readyState` (Jest fakes) is treated as open so unit tests
       // keep covering the send path. A real RTCDataChannel is only writable
       // in `open`.
-      if (channel.readyState && channel.readyState !== 'open') return;
+      if (channel.readyState && channel.readyState !== 'open') return false;
       try {
         channel.send(data);
+        return true;
       } catch {
-        /* channel not open */
+        // The channel closed under us between the check and the write.
+        return false;
       }
     };
   }
 
-  private sendAgent(msg: Parameters<typeof encodeAgentMessage>[0]): void {
-    if (!this.dataChannel || this.isClosed) return;
-    this.sendWhenOpen(() => this.dataChannel)(encodeAgentMessage(msg));
+  private sendAgent(msg: Parameters<typeof encodeAgentMessage>[0]): boolean {
+    if (!this.dataChannel || this.isClosed) return false;
+    return this.sendWhenOpen(() => this.dataChannel)(encodeAgentMessage(msg));
   }
 
   private onSignal(m: SignalingMessage): void {

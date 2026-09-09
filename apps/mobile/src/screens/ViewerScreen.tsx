@@ -44,7 +44,7 @@ import {
   type Viewport,
 } from '../lib/viewport';
 import { PressRepeater } from '../lib/pressRepeat';
-import { agentFeedReducer, INITIAL_AGENT_FEED } from '../lib/agentFeed';
+import { ACK_DEADLINE_MS, agentFeedReducer, INITIAL_AGENT_FEED } from '../lib/agentFeed';
 import { forgetPair, loadPairs, setPairLanEndpoints, setPairSecret } from '../lib/pairs';
 import { requestConnectForPair } from '../lib/api';
 import { AgentPanel } from './AgentPanel';
@@ -780,22 +780,38 @@ export function ViewerScreen({ route, navigation }: Props) {
   // The fourth lock: "Ask". While the panel is open, typed text is a command
   // to the AI agent (dispatched over the input channel), not keystrokes to the
   // Mac. See docs/m5.3-ai-executor-plan.md §6.
+  //
+  // Every one of these reports what the transport actually did. A command that
+  // never left the device used to set the feed running, and a dropped stop used
+  // to report "Stopped." (L-233); the run id is minted either way so a failed
+  // command is never retried under a new identity, which is how one instruction
+  // runs twice.
+  const [unsentCommand, setUnsentCommand] = useState<string | null>(null);
   const sendAgentCommand = useCallback((text: string) => {
-    const runId = connRef.current?.sendAgentCommand(text);
-    if (runId) dispatchAgent({ type: 'command_sent', runId });
+    const result = connRef.current?.sendAgentCommand(text);
+    if (!result) {
+      setUnsentCommand(text);
+      return;
+    }
+    if (result.sent) {
+      setUnsentCommand(null);
+      dispatchAgent({ type: 'command_sent', runId: result.runId });
+    } else {
+      // Preserve what the person typed: it is theirs, and it never arrived.
+      setUnsentCommand(text);
+      dispatchAgent({ type: 'command_unsent', runId: result.runId });
+    }
   }, []);
   const stopAgent = useCallback(() => {
-    if (agentFeed.runId) {
-      connRef.current?.sendAgentStop(agentFeed.runId);
-      // Optimistic local stop: the desktop's own run-end (if it arrives) is a
-      // harmless duplicate, but if the desktop-side run already died — or the
-      // link is broken — waiting for it leaves Stop looking dead and the
-      // panel on "Thinking…" forever. Stop must always visibly stop.
-      dispatchAgent({
-        type: 'run_end',
-        end: { kind: 'agent_run_end', runId: agentFeed.runId, outcome: 'stopped', ts: Date.now() },
-      });
-    }
+    if (!agentFeed.runId) return;
+    // No optimistic terminal state. Stop is a request, and the desktop's
+    // run-end is the only thing that can confirm it — the previous optimistic
+    // `run_end` is exactly what let a dropped stop packet render as "Stopped."
+    // The `stopping` phase keeps Stop visibly progressing meanwhile, and the
+    // ack deadline below bounds how long it can sit there.
+    dispatchAgent({ type: 'stop_sent' });
+    const sent = connRef.current?.sendAgentStop(agentFeed.runId);
+    if (!sent) dispatchAgent({ type: 'stop_unsent' });
   }, [agentFeed.runId]);
   const decideAgent = useCallback(
     (stepId: string, approve: boolean) => {
@@ -803,6 +819,20 @@ export function ViewerScreen({ route, navigation }: Props) {
     },
     [agentFeed.runId],
   );
+
+  // Bounded acknowledgment: the desktop has to answer a dispatched command with
+  // a step (or a run end) before the phone stops claiming anything is running.
+  // "Sending…" forever is the same lie as a false "running", just slower.
+  const agentPhase = agentFeed.phase;
+  const agentRunId = agentFeed.runId;
+  useEffect(() => {
+    if (agentPhase !== 'sending' || !agentRunId) return;
+    const timer = setTimeout(
+      () => dispatchAgent({ type: 'ack_timeout', runId: agentRunId }),
+      ACK_DEADLINE_MS,
+    );
+    return () => clearTimeout(timer);
+  }, [agentPhase, agentRunId]);
 
   // Landscape is a full-bleed video surface: the navigation header would
   // burn a permanent strip of the exact screen space rotating is meant to
@@ -981,6 +1011,7 @@ export function ViewerScreen({ route, navigation }: Props) {
           onSend={sendAgentCommand}
           onStop={stopAgent}
           onDecide={decideAgent}
+          unsentCommand={unsentCommand}
         />
       ) : null}
 

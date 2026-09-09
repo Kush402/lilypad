@@ -19,6 +19,25 @@ export interface AgentPanelProps {
   onStop: () => void;
   /** Answer the held step. */
   onDecide: (stepId: string, approve: boolean) => void;
+  /** Text of a command that never left the device, restored into the box so
+   * the person does not lose what they typed (L-233). */
+  unsentCommand?: string | null;
+}
+
+/** The one honest sentence for each transport state (L-233). */
+export function phaseLabel(phase: AgentFeedState['phase']): string | null {
+  switch (phase) {
+    case 'sending':
+      return 'Sending\u2026';
+    case 'running':
+      return null; // the step feed already says what is happening
+    case 'stopping':
+      return 'Stopping\u2026';
+    case 'unsent':
+      return 'Not sent \u2014 your Mac did not receive this. Try again when reconnected.';
+    default:
+      return null;
+  }
 }
 
 /**
@@ -89,9 +108,22 @@ export function AgentPanel({
   onSend,
   onStop,
   onDecide,
+  unsentCommand,
 }: AgentPanelProps): React.JSX.Element | null {
   const [text, setText] = useState('');
   const held = heldStep(feed);
+  const status = phaseLabel(feed.phase);
+  // Something may be happening on the Mac in any of these, so Stop stays
+  // reachable throughout — a command that is still `sending` used to have no
+  // Stop at all, and a `stopping` one lost it the moment it was pressed.
+  const inFlight =
+    feed.phase === 'sending' || feed.phase === 'running' || feed.phase === 'stopping';
+
+  // A command that never left is given back to the person who typed it,
+  // rather than vanishing into a feed that claims to be running (L-233).
+  useEffect(() => {
+    if (unsentCommand) setText(unsentCommand);
+  }, [unsentCommand]);
 
   /* `null` is "we have not asked the keychain yet", which is neither yes nor
    * no. Rendering nothing for that beat is the same thing the desktop's Setup
@@ -183,7 +215,7 @@ export function AgentPanel({
           onChangeText={setText}
           placeholder="Ask your Mac to do something…"
           placeholderTextColor={theme.muted}
-          editable={!feed.running}
+          editable={!inFlight}
           onSubmitEditing={submit}
           returnKeyType="send"
           // On iOS a multiline TextInput turns Return into a newline key and
@@ -194,16 +226,23 @@ export function AgentPanel({
           autoCapitalize="sentences"
           multiline
         />
-        {feed.running ? (
+        {inFlight ? (
           <Pressable
             testID="agent-stop"
-            style={[styles.btn, styles.stopBtn]}
+            style={[styles.btn, styles.stopBtn, feed.phase === 'stopping' && styles.btnDisabled]}
             onPress={onStop}
+            disabled={feed.phase === 'stopping'}
             accessibilityRole="button"
-            accessibilityLabel="Stop"
-            accessibilityHint="Stops what Lilypad is doing on your Mac"
+            accessibilityLabel={feed.phase === 'stopping' ? 'Stopping' : 'Stop'}
+            accessibilityHint={
+              feed.phase === 'stopping'
+                ? 'Waiting for your Mac to confirm it stopped'
+                : 'Stops what Lilypad is doing on your Mac'
+            }
           >
-            <Text style={styles.btnText}>Stop</Text>
+            <Text style={styles.btnText}>
+              {feed.phase === 'stopping' ? 'Stopping\u2026' : 'Stop'}
+            </Text>
           </Pressable>
         ) : (
           <Pressable
@@ -322,7 +361,11 @@ export function AgentPanel({
       <ScrollView style={styles.feed} contentContainerStyle={styles.feedContent}>
         {feed.steps.length === 0 ? (
           <Text style={styles.empty}>
-            {feed.running ? 'Thinking…' : 'Type a task above. The assistant acts on your Mac.'}
+            {feed.running
+              ? 'Thinking…'
+              : inFlight
+                ? 'Waiting for your Mac…'
+                : 'Type a task above. The assistant acts on your Mac.'}
           </Text>
         ) : (
           feed.steps.map((s) => (
@@ -336,7 +379,19 @@ export function AgentPanel({
             </View>
           ))
         )}
-        {feed.outcome && !feed.running ? (
+        {/* Transport truth first: while sending, stopping, or after a frame
+         * that never left, there is no outcome to report and saying one would
+         * be a guess (L-233). */}
+        {status ? (
+          <Text
+            testID="agent-phase"
+            style={[styles.outcome, feed.phase === 'unsent' && styles.outcomeBad]}
+            accessibilityLiveRegion="polite"
+          >
+            {status}
+          </Text>
+        ) : null}
+        {feed.outcome && feed.phase === 'ended' ? (
           <Text style={[styles.outcome, feed.outcome !== 'completed' && styles.outcomeBad]}>
             {feed.outcome === 'completed'
               ? 'Done.'
@@ -357,9 +412,20 @@ export function AgentPanel({
           the feature exists, so it is the only place someone looks for it. */}
       <Pressable
         testID="agent-consent-withdraw"
-        onPress={() => void revokeAiConsent().then(() => setConsented(false))}
+        // Turning sharing off has to stop the thing that is sharing (L-232).
+        // Revoking phone-local consent and hiding the panel left the desktop
+        // run taking observations and issuing provider requests while the UI
+        // said sharing was off — and hid the Stop button that could have
+        // ended it. The desktop is the authoritative boundary, so the stop
+        // goes out first; its `stopping` state stays visible until the Mac
+        // confirms. Nothing here can recall what was already sent, and the
+        // wording does not pretend otherwise.
+        onPress={() => {
+          onStop();
+          void revokeAiConsent().then(() => setConsented(false));
+        }}
         accessibilityRole="button"
-        accessibilityLabel="Stop sending my screen to an AI model"
+        accessibilityLabel="Stop the running task and stop sending my screen to an AI model"
       >
         <Text style={styles.withdraw}>Ask sends your screen to an AI provider. Turn off</Text>
       </Pressable>
