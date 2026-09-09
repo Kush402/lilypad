@@ -138,8 +138,9 @@ pub fn build_profile(policy: &SandboxPolicy, home: &Path) -> String {
             sbpl_quote(Path::new(deny))
         ));
     }
-    // Everything else is readable — benign reads aren't the threat once secrets
-    // are denied and the network is off (nothing read can leave).
+    // Remaining files are readable. Network denial is NOT a confidentiality
+    // boundary: stdout is returned to the model provider. Explicit read grants
+    // are required before treating this tier as protecting arbitrary secrets.
     p.push_str("(allow file-read*)\n");
 
     // ── writes ───────────────────────────────────────────────────────────

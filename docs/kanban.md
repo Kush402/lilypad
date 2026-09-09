@@ -1,7 +1,7 @@
 ---
 status: Reference
 owner: @kushsharma024
-last-verified: 2026-09-08
+last-verified: 2026-09-09
 summary: Every defect found during the pre-launch product review, and what happened to it.
 ---
 
@@ -16,9 +16,9 @@ This file exists because the list used to live only in a conversation. Six rows
 (L-20, L-38 through L-42) were reconstructed from later summaries after the
 earlier record was compacted away, which is the argument for the file.
 
-**Status counts:** 220 fixed · 5 shipped · 0 open · 1 blocked on something outside
+**Status counts:** 229 fixed · 5 shipped · 2 open · 1 blocked on something outside
 the code · 4 deliberately unchanged · 4 not a bug · 1 unrecoverable (L-20).
-235 rows.
+246 rows.
 
 **v0.1.32 published on BOTH halves (2026-09-08):** Release commit
 `4d34b271d0eec5353406c9b6bb78d05feaa5ab41` is on main and tagged `v0.1.32` /
@@ -512,10 +512,10 @@ Ask's action surface.
 
 #### Progress against this sequence — 2026-09-09
 
-**The P1 boundaries this table says to complete first are now complete at
-source** (L-228 … L-233, plus L-234 … L-236), so upgrade 2's "expand Ask's
-action surface" is unblocked in the order the table asks for. None of the four
-upgrades is started; what follows is what the boundary work established about
+**Claude’s initial conclusion was that the P1 boundaries were complete at
+source. The independent follow-up below supersedes that conclusion:** L-237–L-247
+identify sibling gaps. Broader autonomous action remains gated on those findings. The bounded visual-history improvement below starts the reasoning-efficiency work; the four larger
+upgrades remain unimplemented; what follows is what the boundary work established about
 them, so the next pass does not re-derive it.
 
 - **Upgrade 1 (watch, guide, take over).** Two of its parts already exist and
@@ -553,6 +553,59 @@ Release discipline: Claude should fix and verify coherent groups, update these
 same rows with commit/test evidence, and retain separate statuses for source
 fixed, released and device-verified. Keep L-227 in scope without duplicating its
 existing implementation. This review does not authorize a new release tag.
+
+## Independent release-readiness review — Codex after Claude (2026-09-09)
+
+Baseline: `0fd09161d0b1a0150fda8757788379263d9cd49a`; its CI run
+`34305011026` independently confirmed successful. Working branch:
+`codex/ask-release-readiness`. This is source work, **not v0.1.33**, and no tag
+or deployment is authorized by this review. Original L-228–L-236 describe the
+first fixes; these rows record the sibling defects found while verifying them.
+
+| ID    | Finding                                                                                                                                                                                                                                                                                                                                                        | Status / evidence and next action                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| ----- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| L-237 | **An acknowledgment timeout becomes “not sent,” despite possible desktop execution; Stop waiting is unbounded.** `agentFeed.ts` mapped timeout to unsent and ignored late acknowledgments, while `ViewerScreen` armed its deadline only for sending. A second failed send of the same text could erase the draft because its restoration effect did not rerun. | Fixed at source — local regression coverage; not released or device-verified. Add unknown/stop-unconfirmed phases, keep Stop reachable, retire approval while stopping, bound both waits, accept late acknowledgment and preserve failed drafts synchronously. Two new reducer regressions failed on the handoff and pass after the change. Desktop admission now acknowledges before model work.                                                                                                                       |
+| L-238 | **Withdrawal still hides Stop while cancellation is unconfirmed.** The new `onStop()` call was followed immediately by the consent-only render; its comment claimed stopping stayed visible, but that branch rendered no stopping status or retry.                                                                                                             | Fixed at source — local regression coverage; not released or device-verified. The consent view must retain pending cancellation and retry controls, prevent re-enabling during uncertainty, and explicitly distinguish disabled new tasks from an unconfirmed active stop. Component regression covers lost Stop, retry and confirmed completion.                                                                                                                                                                       |
+| L-239 | **The AX gate treats an unrecognized label as a benign effect; approval identity contains only role and label.** “OK,” “Continue,” localized controls and changed recipients can bypass the intended boundary without changing a Send button's label.                                                                                                          | Fixed at source — local regression coverage; not released or device-verified. Every opaque AX press requires approval until a trusted semantic skill proves its effect. Before execution, re-read and compare the full observed tree plus focused-app native identity, as well as the target label. This is a conservative tradeoff: more approvals, not a claim that a live GUI offers atomic transactions. Native focus/recipient-change testing remains required.                                                    |
+| L-240 | **Approval serialization truncates authority while execution retains it.** `Approval::clamped` clipped script source, paths and path count, but the runner executed the original action after approval.                                                                                                                                                        | Fixed at source — local regression coverage; not released or device-verified. Reject any action that cannot be disclosed exactly within wire limits before offering approval. Regression verifies that an oversized script neither creates a held card nor executes. Boundaries apply to every disclosure field, including UTF-8 paths.                                                                                                                                                                                 |
+| L-241 | **The run deadline only applies between steps; sandbox cancellation kills the parent but may leave descendants executing.** Approval waiting can outlive the budget, and `killpg` was only in the timeout branch. A background child could also retain output pipes after the parent exits.                                                                    | Fixed at source — local regression coverage; not released or device-verified. A monotonic deadline participates in reasoning, approval and execution waits. A process-group drop guard kills descendants on cancellation and before draining output on normal exit. Skill children use kill-on-drop. Regressions cover a held approval and a background child attempting a delayed write after cancellation.                                                                                                            |
+| L-242 | **Background pause stops video but not Ask; a display switch redirects the next screenshot without retiring the old run's approvals and context.** New Ask commands checked only granted control rather than current live, unpaused session authority.                                                                                                         | Fixed at source — local regression coverage; not released or device-verified. Cancel on pause and display changes. Share the existing live-channel/unpaused capability predicate between Ask admission and clipboard. This retains the actual-traffic liveness rule; it does not let a dead FSM overrule working media.                                                                                                                                                                                                 |
+| L-243 | **Path validation returns a mutable alias after checking its destination; failed postcondition resolution becomes no check and succeeds.** Symlink/canonicalization failures could fall back to unchecked text.                                                                                                                                                | Open — partially addressed, not a complete race-resistant filesystem boundary. Execute against the resolved location, reject unresolved existing ancestors (including dangling links), and fail rejected postconditions. Regression replaces a validated alias and verifies it cannot redirect execution. Still required: descriptor-relative/no-follow operations or an OS-enforced capability boundary for concurrent replacement of ordinary path components; do not claim canonicalization solves all TOCTOU races. |
+| L-244 | **Mixed app versions silently lose Ask's new approval boundary.** An older mobile parser ignores the structured disclosure but can still approve; a new phone has no proof that an old desktop enforces the revised gate.                                                                                                                                      | Fixed at source — local regression coverage; not released or device-verified. Add a side-effect-free `agent_hello`/`agent_ready` handshake in the shared protocol, scoped to the current peer/probe, and require protocol version 1 on commands. Older clients receive a clear refusal; new clients send no work before compatibility is established. Manual control remains available. Test stale probes and mismatched versions before release.                                                                       |
+| L-245 | **The same run ID can start work again; retrying a lost terminal Stop has no retained outcome.** `start_command` always superseded and restarted, while cancellation forgot the active record.                                                                                                                                                                 | Fixed at source — local regression coverage; not released or device-verified. Keep a bounded per-session run ledger and terminal outcome; duplicates report existing status instead of executing. Stop retries return the recorded terminal result after cleanup. Cap admission at 128 tasks per session rather than evicting IDs and making old commands executable again.                                                                                                                                             |
+| L-246 | **Sandboxed scripts inherit desktop environment credentials.** Environment-based model keys bypass filesystem secret denies and can reach the model through stdout even with script network disabled.                                                                                                                                                          | Fixed at source — local regression coverage; not released or device-verified. Clear the child environment and supply only fixed runtime variables; disable Python user-site/environment injection and run in scratch. A real sandbox regression verifies that the environment contains only the allowlist.                                                                                                                                                                                                              |
+| L-247 | **The sandbox's broad read permission is not a confidentiality boundary.** A finite secret-path denylist misses arbitrary project `.env` files and other sensitive documents; stdout is forwarded to the model, contradicting the comment that network-disabled reads cannot leave.                                                                            | Open — P1 architecture follow-up. The misleading comment is corrected, but explicit readable-path grants and an OS-enforced read allowlist are still needed. Preserve interpreter bootstrap access separately from user data. Do not advertise arbitrary-secret protection or expand sandbox access until granted reads, dynamic paths and stdout exfiltration have negative integration tests.                                                                                                                         |
+
+**M5 decision:** prioritize reliable, inspectable task execution before more
+computer-use primitives. Implemented a bounded visual history: keep the two
+most recent screenshots for before/after reasoning, preserve all tool/result
+identities and text, omit older image payloads. Test covers retained image order
+and idempotence. This lowers repeat transmission; no measured latency or token
+savings are claimed yet. Next strongest upgrade is deterministic task-result
+verification and explicit data grants, not a larger clicking surface.
+
+**Validation and integration handoff (2026-09-09):** implemented against Claude's
+`0fd09161d0b1a0150fda8757788379263d9cd49a` on
+`codex/ask-release-readiness`. That exact baseline has successful CI run
+`34305011026`; it is not evidence for this new branch. Local verification:
+464 Rust library tests passed; the full mobile suite passed 655 tests with 11
+intentional skips (666 total); protocol tests passed 18 tests. Mobile/protocol
+typechecks pass. New reducer regressions failed on the baseline before the fix.
+The native tests require `DYLD_FALLBACK_LIBRARY_PATH=/usr/lib/swift` on this Mac.
+Use two Cargo jobs and Jest `--runInBand` to avoid local memory contention.
+The iCloud checkout's Git index times out, so implementation and validation ran
+in `/tmp/lilypad-ceo-review-20260908`; preserve unrelated root checkout edits and
+the private vault. Source changes are not signed-device proof. Synchronous native
+AX/capture calls cannot be preempted mid-call by an async cancellation deadline;
+process-group cleanup covers descendants remaining in that group, not an arbitrary
+daemon that escapes it. Never promise instantaneous rollback of an OS effect.
+
+**Handoff for Claude:** inspect L-243 and L-247 first; finish the capability-based
+filesystem design with negative tests. Verify focus changes, localized controls,
+background/pause, display changes and mixed app versions on signed hardware.
+Keep L-227's constrained-cellular and selected-TURN validation separate from its
+unit-test proof. L-225 keyboard and L-226 updater still need physical validation.
+Do not publish v0.1.33 or label these changes device-verified based on CI alone.
 
 ## What is left, and who it needs
 

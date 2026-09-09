@@ -14,7 +14,7 @@ import { grantAiConsent, hasAiConsent, revokeAiConsent } from '../lib/aiConsent'
 export interface AgentPanelProps {
   feed: AgentFeedState;
   /** Dispatch a natural-language task. */
-  onSend: (text: string) => void;
+  onSend: (text: string) => boolean | void;
   /** Stop the running task. */
   onStop: () => void;
   /** Answer the held step. */
@@ -22,6 +22,8 @@ export interface AgentPanelProps {
   /** Text of a command that never left the device, restored into the box so
    * the person does not lose what they typed (L-233). */
   unsentCommand?: string | null;
+  compatible?: boolean;
+  onCheckCompatibility?: () => void;
 }
 
 /** The one honest sentence for each transport state (L-233). */
@@ -33,6 +35,10 @@ export function phaseLabel(phase: AgentFeedState['phase']): string | null {
       return null; // the step feed already says what is happening
     case 'stopping':
       return 'Stopping\u2026';
+    case 'unknown':
+      return 'Your Mac has not confirmed this task. It may still be running. You can request Stop.';
+    case 'stop_unconfirmed':
+      return 'Stop is not confirmed. The task may still be running. Retry Stop or end the session.';
     case 'unsent':
       return 'Not sent \u2014 your Mac did not receive this. Try again when reconnected.';
     default:
@@ -109,6 +115,8 @@ export function AgentPanel({
   onStop,
   onDecide,
   unsentCommand,
+  compatible = true,
+  onCheckCompatibility,
 }: AgentPanelProps): React.JSX.Element | null {
   const [text, setText] = useState('');
   const held = heldStep(feed);
@@ -116,8 +124,9 @@ export function AgentPanel({
   // Something may be happening on the Mac in any of these, so Stop stays
   // reachable throughout — a command that is still `sending` used to have no
   // Stop at all, and a `stopping` one lost it the moment it was pressed.
-  const inFlight =
-    feed.phase === 'sending' || feed.phase === 'running' || feed.phase === 'stopping';
+  const inFlight = ['sending', 'running', 'stopping', 'unknown', 'stop_unconfirmed'].includes(
+    feed.phase,
+  );
 
   // A command that never left is given back to the person who typed it,
   // rather than vanishing into a feed that claims to be running (L-233).
@@ -151,8 +160,8 @@ export function AgentPanel({
 
   const submit = () => {
     const t = text.trim();
-    if (!t) return;
-    onSend(t);
+    if (!t || inFlight || !consented || !compatible) return;
+    if (onSend(t) === false) return;
     setText('');
     // The command is dispatched — give the screen back to the step feed /
     // live stream. Without this (and `submitBehavior` below) a multiline
@@ -179,6 +188,24 @@ export function AgentPanel({
           Nothing else in Lilypad does this. A normal session streams only between this phone and
           your Mac.
         </Text>
+        {inFlight ? (
+          <View testID="agent-withdrawal-pending">
+            <Text accessibilityRole="alert" accessibilityLiveRegion="polite">
+              AI sharing is disabled for new tasks. The current task has not confirmed stopping.
+              {status ? ` ${status}` : ''}
+            </Text>
+            <Pressable
+              testID="agent-withdrawal-stop"
+              onPress={onStop}
+              disabled={feed.phase === 'stopping'}
+              accessibilityRole="button"
+              accessibilityLabel="Retry stopping the current task"
+              accessibilityState={{ disabled: feed.phase === 'stopping' }}
+            >
+              <Text>{feed.phase === 'stopping' ? 'Stopping…' : 'Retry Stop'}</Text>
+            </Pressable>
+          </View>
+        ) : null}
         <View style={styles.holdBtns}>
           <Pressable
             testID="agent-consent-decline"
@@ -192,7 +219,11 @@ export function AgentPanel({
           <Pressable
             testID="agent-consent-allow"
             style={[styles.btn, styles.approveBtn]}
-            onPress={() => void grantAiConsent().then(() => setConsented(true))}
+            disabled={inFlight}
+            accessibilityState={{ disabled: inFlight }}
+            onPress={() => {
+              if (!inFlight) void grantAiConsent().then(() => setConsented(true));
+            }}
             accessibilityRole="button"
             accessibilityLabel="Allow Lilypad to send my screen to an AI model"
           >
@@ -205,6 +236,21 @@ export function AgentPanel({
 
   return (
     <View style={styles.panel} testID="agent-panel">
+      {!compatible ? (
+        <View testID="agent-compatibility">
+          <Text accessibilityLiveRegion="polite">
+            Ask needs compatible versions on your phone and Mac. Connect and update both apps, then
+            check again. Manual control is still available.
+          </Text>
+          <Pressable
+            onPress={onCheckCompatibility}
+            accessibilityRole="button"
+            accessibilityLabel="Check Ask compatibility"
+          >
+            <Text>Check again</Text>
+          </Pressable>
+        </View>
+      ) : null}
       <View style={styles.inputRow}>
         <TextInput
           testID="agent-command-input"
@@ -249,10 +295,10 @@ export function AgentPanel({
             testID="agent-send"
             style={[styles.btn, styles.sendBtn, !text.trim() && styles.btnDisabled]}
             onPress={submit}
-            disabled={!text.trim()}
+            disabled={!text.trim() || !compatible}
             accessibilityRole="button"
             accessibilityLabel="Ask"
-            accessibilityState={{ disabled: !text.trim() }}
+            accessibilityState={{ disabled: !text.trim() || !compatible }}
           >
             <Text style={styles.btnText}>Ask</Text>
           </Pressable>
@@ -421,7 +467,7 @@ export function AgentPanel({
         // confirms. Nothing here can recall what was already sent, and the
         // wording does not pretend otherwise.
         onPress={() => {
-          onStop();
+          if (inFlight) onStop();
           void revokeAiConsent().then(() => setConsented(false));
         }}
         accessibilityRole="button"

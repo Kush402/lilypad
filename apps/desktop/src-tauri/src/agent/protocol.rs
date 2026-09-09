@@ -112,11 +112,18 @@ pub enum RunOutcome {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AgentInbound {
+    AgentHello {
+        #[serde(rename = "runId", deserialize_with = "de_id")]
+        run_id: String,
+        ts: u64,
+    },
     AgentCommand {
         #[serde(rename = "runId", deserialize_with = "de_id")]
         run_id: String,
         #[serde(deserialize_with = "de_command")]
         text: String,
+        #[serde(default, rename = "protocolVersion")]
+        protocol_version: Option<u32>,
         ts: u64,
     },
     AgentStop {
@@ -137,7 +144,8 @@ pub enum AgentInbound {
 impl AgentInbound {
     pub fn run_id(&self) -> &str {
         match self {
-            AgentInbound::AgentCommand { run_id, .. }
+            AgentInbound::AgentHello { run_id, .. }
+            | AgentInbound::AgentCommand { run_id, .. }
             | AgentInbound::AgentStop { run_id, .. }
             | AgentInbound::AgentDecision { run_id, .. } => run_id,
         }
@@ -146,7 +154,12 @@ impl AgentInbound {
 
 /// The agent message kinds, used to cheaply tell an agent frame apart from an
 /// input frame on the shared DataChannel without a full parse.
-const AGENT_KINDS: &[&str] = &["agent_command", "agent_stop", "agent_decision"];
+const AGENT_KINDS: &[&str] = &[
+    "agent_hello",
+    "agent_command",
+    "agent_stop",
+    "agent_decision",
+];
 
 /// Demux one raw DataChannel frame: return `Some(AgentInbound)` iff it is a
 /// well-formed agent message, else `None` (the caller treats `None` as input
@@ -218,6 +231,12 @@ pub struct Approval {
 }
 
 impl Approval {
+    /// Execution must never exceed what can be disclosed verbatim. The runner
+    /// rejects an over-limit action before any approval can authorize it.
+    pub fn fits_wire(&self) -> bool {
+        self == &self.clone().clamped()
+    }
+
     /// Clamp every field to its wire cap. Applied at construction so an
     /// oversized model script cannot produce an oversized frame.
     pub fn clamped(mut self) -> Self {
@@ -246,6 +265,13 @@ impl Approval {
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AgentOutbound {
+    AgentReady {
+        #[serde(rename = "runId")]
+        run_id: String,
+        #[serde(rename = "protocolVersion")]
+        protocol_version: u32,
+        ts: u64,
+    },
     AgentStep {
         #[serde(rename = "runId")]
         run_id: String,
@@ -348,7 +374,9 @@ mod tests {
         let json = r#"{"kind":"agent_command","runId":"run-1","text":"open Safari","ts":5}"#;
         let msg: AgentInbound = serde_json::from_str(json).unwrap();
         match msg {
-            AgentInbound::AgentCommand { run_id, text, ts } => {
+            AgentInbound::AgentCommand {
+                run_id, text, ts, ..
+            } => {
                 assert_eq!(run_id, "run-1");
                 assert_eq!(text, "open Safari");
                 assert_eq!(ts, 5);

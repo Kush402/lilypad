@@ -324,8 +324,10 @@ fn classify_ax_press(target: Option<&AxTarget>) -> ToolClass {
         // A control that advertises no label tells us nothing about its effect.
         Some(t) if t.label.trim().is_empty() => ToolClass::Consequential,
         Some(t) if label_is_consequential(&t.label) => ToolClass::Consequential,
-        // A labeled control with no consequential word: ordinary navigation.
-        Some(_) => ToolClass::Sensitive,
+        // A name is not an effect contract. "OK", "Continue", localized
+        // labels and app-authored labels can all commit irreversible actions.
+        // Until a trusted semantic skill proves the effect, hold every press.
+        Some(_) => ToolClass::Consequential,
     }
 }
 
@@ -492,7 +494,7 @@ mod tests {
                 element_id: 7,
                 target: Some(AxTarget::new("AXButton", "Back")),
             }),
-            ToolClass::Sensitive
+            ToolClass::Consequential
         );
         assert_eq!(
             classify(&Action::RunShortcut {
@@ -681,7 +683,7 @@ mod tests {
     }
 
     #[test]
-    fn benign_navigation_still_runs_without_asking() {
+    fn a_label_alone_cannot_prove_navigation_is_benign() {
         for label in [
             "Back",
             "Next",
@@ -694,7 +696,7 @@ mod tests {
         ] {
             assert_eq!(
                 classify(&press(label)),
-                ToolClass::Sensitive,
+                ToolClass::Consequential,
                 "{label:?} should not need approval"
             );
         }
@@ -784,7 +786,7 @@ mod tests {
         let approved = press("Save Draft");
         let substituted = press("Send");
         assert_ne!(approved, substituted);
-        assert_eq!(classify(&approved), ToolClass::Sensitive);
+        assert_eq!(classify(&approved), ToolClass::Consequential);
         assert_eq!(classify(&substituted), ToolClass::Consequential);
     }
 

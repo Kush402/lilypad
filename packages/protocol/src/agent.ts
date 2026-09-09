@@ -78,6 +78,14 @@ const agentCommand = WithTs.extend({
   runId: RunId,
   /** The natural-language task. */
   text: z.string().min(1).max(MAX_COMMAND_LEN),
+  protocolVersion: z.literal(1).optional(),
+});
+
+const agentHello = WithTs.extend({ kind: z.literal('agent_hello'), runId: RunId });
+const agentReady = WithTs.extend({
+  kind: z.literal('agent_ready'),
+  runId: RunId,
+  protocolVersion: z.literal(1),
 });
 
 const agentStop = WithTs.extend({
@@ -155,6 +163,7 @@ const agentRunEnd = WithTs.extend({
 
 /** Messages the phone sends to the desktop agent. */
 export const AgentInboundSchema = z.discriminatedUnion('kind', [
+  agentHello,
   agentCommand,
   agentStop,
   agentDecision,
@@ -162,14 +171,20 @@ export const AgentInboundSchema = z.discriminatedUnion('kind', [
 export type AgentInbound = z.infer<typeof AgentInboundSchema>;
 
 /** Messages the desktop agent sends to the phone. */
-export const AgentOutboundSchema = z.discriminatedUnion('kind', [agentStep, agentRunEnd]);
+export const AgentOutboundSchema = z.discriminatedUnion('kind', [
+  agentReady,
+  agentStep,
+  agentRunEnd,
+]);
 export type AgentOutbound = z.infer<typeof AgentOutboundSchema>;
 
 /** Every agent message, either direction — for a single DataChannel demux. */
 export const AgentMessageSchema = z.discriminatedUnion('kind', [
+  agentHello,
   agentCommand,
   agentStop,
   agentDecision,
+  agentReady,
   agentStep,
   agentRunEnd,
 ]);

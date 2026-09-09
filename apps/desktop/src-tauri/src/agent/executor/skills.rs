@@ -97,6 +97,7 @@ impl Executor for SkillsExecutor {
         let spec = plan_command(action)?;
         let status = tokio::process::Command::new(&spec.program)
             .args(&spec.args)
+            .kill_on_drop(true)
             .status()
             .await
             .map_err(|e| anyhow!("failed to spawn `{}`: {e}", spec.program))?;

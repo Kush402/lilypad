@@ -304,6 +304,20 @@ where
         outcome
     }
 
+    fn timed_out(&mut self, run_id: &str) -> RunOutcome {
+        let sid = self.next_step_id(run_id);
+        self.emit(
+            run_id,
+            &sid,
+            StepKind::Error,
+            "The task ran out of time before finishing",
+            None,
+            None,
+            StepState::Failed,
+        );
+        self.end(run_id, RunOutcome::Failed)
+    }
+
     /// Run one task to completion, cancellation, or failure. Returns the
     /// terminal outcome (also emitted as an `agent_run_end` on the feed).
     pub async fn run(
@@ -315,6 +329,8 @@ where
     ) -> RunOutcome {
         let mut history: Vec<Observation> = Vec::new();
         let started_ms = (self.now_ms)();
+        let deadline =
+            tokio::time::Instant::now() + std::time::Duration::from_millis(self.config.max_run_ms);
 
         for _ in 0..self.config.max_steps {
             if cancel.is_cancelled() {
@@ -340,6 +356,7 @@ where
             let decision = tokio::select! {
                 biased;
                 _ = cancel.wait() => return self.end(run_id, RunOutcome::Stopped),
+                _ = tokio::time::sleep_until(deadline) => return self.timed_out(run_id),
                 d = self.brain.next(task, &history) => d,
             };
             let decision = match decision {
@@ -408,6 +425,21 @@ where
                     continue;
                 }
                 Gate::Hold(class) => {
+                    let approval = crate::agent::security::approval_for(&action);
+                    if !approval.fits_wire() {
+                        let message = "Action exceeds approval limits; shorten it without hiding any code or permissions";
+                        self.emit(
+                            run_id,
+                            &step_id,
+                            StepKind::Error,
+                            message,
+                            Some(tier),
+                            Some(class),
+                            StepState::Failed,
+                        );
+                        history.push(Observation::fail(message));
+                        continue;
+                    }
                     // The card must show what is actually being granted, not a
                     // generic label: "Run shell script" is the same sentence
                     // for a script that lists a directory and one that uploads
@@ -418,7 +450,7 @@ where
                         summary.clone(),
                         Some(tier),
                         Some(class),
-                        crate::agent::security::approval_for(&action),
+                        approval,
                         (self.now_ms)(),
                     ));
                     let approved = tokio::select! {
@@ -428,6 +460,7 @@ where
                                 Some(tier), Some(class), StepState::Denied);
                             return self.end(run_id, RunOutcome::Stopped);
                         }
+                        _ = tokio::time::sleep_until(deadline) => return self.timed_out(run_id),
                         a = Self::await_decision(decisions_rx, run_id, &step_id) => a,
                     };
                     if !approved {
@@ -461,6 +494,7 @@ where
             let result = tokio::select! {
                 biased;
                 _ = cancel.wait() => return self.end(run_id, RunOutcome::Stopped),
+                _ = tokio::time::sleep_until(deadline) => return self.timed_out(run_id),
                 r = self.executor.execute(&action) => r,
             };
             match result {
@@ -937,5 +971,72 @@ mod tests {
             runner.run("r1", "task", &mut drx, &cancel).await,
             RunOutcome::Stopped
         );
+    }
+    #[tokio::test]
+    async fn run_budget_interrupts_a_held_approval() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let brain = ScriptedBrain::new(vec![Decision::Act {
+            summary: "held".into(),
+            tier: AgentTier::Sandbox,
+            action: Action::RunScript {
+                language: crate::agent::security::ScriptLanguage::Shell,
+                script: "true".into(),
+                writable_paths: vec![],
+                needs_network: false,
+            },
+        }]);
+        let mut runner = AgentRunner::with_config(
+            brain,
+            RecordingExecutor::default(),
+            tx,
+            || 0,
+            RunnerConfig {
+                max_steps: 40,
+                max_run_ms: 20,
+            },
+        );
+        let (_dtx, mut drx) = mpsc::unbounded_channel();
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            runner.run("r", "task", &mut drx, &Cancel::new()),
+        )
+        .await;
+        assert_eq!(
+            outcome.expect("approval wait exceeded whole-run budget"),
+            RunOutcome::Failed
+        );
+    }
+
+    #[tokio::test]
+    async fn approval_limits_reject_full_actions_instead_of_hiding_the_tail() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let brain = ScriptedBrain::new(vec![Decision::Act {
+            summary: "oversized".into(),
+            tier: AgentTier::Sandbox,
+            action: Action::RunScript {
+                language: crate::agent::security::ScriptLanguage::Shell,
+                script: "#".repeat(9000),
+                writable_paths: vec![],
+                needs_network: false,
+            },
+        }]);
+        let mut runner = AgentRunner::new(brain, RecordingExecutor::default(), tx, || 0);
+        let (_dtx, mut drx) = mpsc::unbounded_channel();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            runner.run("r", "task", &mut drx, &Cancel::new()),
+        )
+        .await
+        .unwrap();
+        assert!(runner.executor.executed.lock().unwrap().is_empty());
+        while let Ok(message) = rx.try_recv() {
+            if let AgentOutbound::AgentStep { state, .. } = message {
+                assert_ne!(
+                    state,
+                    StepState::Held,
+                    "a partial approval must never be offered"
+                );
+            }
+        }
     }
 }

@@ -208,9 +208,38 @@ describe('before a screen may be sent to a model', () => {
       hasAiConsent: jest.Mock;
     };
     hasAiConsent.mockRejectedValueOnce(new Error('keychain unavailable'));
-    hasAiConsent.mockResolvedValueOnce(false);
 
     render(<AgentPanel feed={feed()} onSend={noop} onStop={noop} onDecide={noop} />);
     await shown('agent-consent');
   });
+});
+
+describe('withdrawal while desktop state is uncertain', () => {
+  it('keeps Stop reachable and prevents re-enabling while the old run may act', async () => {
+    const stop = jest.fn();
+    const props = { onSend: noop, onStop: stop, onDecide: noop };
+    const view = render(<AgentPanel {...props} feed={feed({ phase: 'running' })} />);
+    await shown('agent-panel');
+    fireEvent.press(screen.getByTestId('agent-consent-withdraw'));
+    expect(stop).toHaveBeenCalledTimes(1);
+    view.rerender(<AgentPanel {...props} feed={feed({ phase: 'stop_unconfirmed' })} />);
+    await shown('agent-withdrawal-pending');
+    fireEvent.press(screen.getByTestId('agent-withdrawal-stop'));
+    expect(stop).toHaveBeenCalledTimes(2);
+    fireEvent.press(screen.getByTestId('agent-consent-allow'));
+    expect(screen.queryByTestId('agent-panel')).toBeNull();
+    view.rerender(<AgentPanel {...props} feed={feed({ phase: 'ended', outcome: 'stopped' })} />);
+    expect(screen.queryByTestId('agent-withdrawal-pending')).toBeNull();
+  });
+});
+
+it('preserves the same command through repeated failed sends', async () => {
+  const send = jest.fn(() => false);
+  render(<AgentPanel feed={feed()} onSend={send} onStop={noop} onDecide={noop} />);
+  await shown('agent-command-input');
+  fireEvent.changeText(screen.getByTestId('agent-command-input'), 'Open Safari');
+  fireEvent.press(screen.getByTestId('agent-send'));
+  fireEvent.press(screen.getByTestId('agent-send'));
+  expect(send).toHaveBeenCalledTimes(2);
+  expect(screen.getByTestId('agent-command-input').props.value).toBe('Open Safari');
 });

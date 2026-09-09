@@ -36,8 +36,11 @@ export interface AgentStepView {
  *   `stopping`  a stop left this device; waiting for the desktop to confirm
  *   `ended`     the desktop reported a terminal outcome
  *   `unsent`    the frame never left; nothing is running and the text is kept
+ *   `unknown`   delivery was attempted but the Mac has not confirmed it
+ *   `stop_unconfirmed` Stop failed or timed out; do not offer approval or replay
  */
-export type AgentPhase = 'idle' | 'sending' | 'running' | 'stopping' | 'ended' | 'unsent';
+export type AgentPhase =
+  'idle' | 'sending' | 'running' | 'stopping' | 'ended' | 'unsent' | 'unknown' | 'stop_unconfirmed';
 
 export interface AgentFeedState {
   /** The current (or most recent) run id; steps for other runs are ignored. */
@@ -77,9 +80,8 @@ export const INITIAL_AGENT_FEED: AgentFeedState = {
 };
 
 /** How long the desktop has to acknowledge a dispatched command before the
- * phone stops claiming anything is happening. Generous — the desktop has to
- * reach a model provider before its first step — but finite, because "sending"
- * forever is the same lie in slower clothing. */
+ * phone stops claiming anything is happening. The desktop acknowledges before
+ * contacting its model provider. Expiry means uncertainty, not non-delivery. */
 export const ACK_DEADLINE_MS = 20_000;
 
 /** Cap the rendered history so a long-running agent can't grow the list
@@ -100,19 +102,23 @@ export function agentFeedReducer(state: AgentFeedState, action: AgentFeedAction)
 
     case 'stop_sent':
       // Only meaningful while something is believed to be in flight.
-      if (state.phase !== 'sending' && state.phase !== 'running') return state;
+      if (!['sending', 'running', 'unknown', 'stop_unconfirmed'].includes(state.phase))
+        return state;
       return { ...state, phase: 'stopping', running: false };
 
     case 'stop_unsent':
       // The stop never left, so the run is very likely still going. Saying
       // "Stopped." here is the lie L-233 is about.
       if (state.phase !== 'stopping') return state;
-      return { ...state, phase: 'running', running: true };
+      return { ...state, phase: 'stop_unconfirmed', running: false };
 
     case 'ack_timeout':
       // Deadline only bites while still waiting for the first acknowledgment.
-      if (state.runId !== action.runId || state.phase !== 'sending') return state;
-      return { ...state, phase: 'unsent', running: false };
+      if (state.runId !== action.runId) return state;
+      if (state.phase === 'stopping')
+        return { ...state, phase: 'stop_unconfirmed', running: false };
+      if (state.phase !== 'sending') return state;
+      return { ...state, phase: 'unknown', running: false };
 
     case 'step': {
       const s = action.step;
@@ -147,7 +153,8 @@ export function agentFeedReducer(state: AgentFeedState, action: AgentFeedAction)
       }
       // A step frame IS the desktop's acknowledgment: it has the command and
       // is working on it. A stop already in flight is not undone by it.
-      const phase = state.phase === 'sending' ? 'running' : state.phase;
+      const phase =
+        state.phase === 'sending' || state.phase === 'unknown' ? 'running' : state.phase;
       return { ...state, steps, phase, running: phase === 'running' };
     }
 

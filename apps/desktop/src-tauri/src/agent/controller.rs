@@ -12,7 +12,8 @@
 //! the load-bearing decisions are the pure, unit-tested [`authorize_command`]
 //! and [`crate::agent::parse_inbound`], and the runner loop + gate they drive.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
@@ -72,6 +73,9 @@ pub struct AgentController {
     /// Held here rather than passed per-run so a mid-run switch reaches the
     /// running executor.
     display: SharedDisplay,
+    // Bounded for the lifetime of this session; a repeated command ID never
+    // becomes a second execution, even after the original run ended.
+    runs: HashMap<String, Arc<Mutex<Option<RunOutcome>>>>,
 }
 
 impl AgentController {
@@ -82,13 +86,17 @@ impl AgentController {
     /// Point Ask's perception at the display the session now shares. Called
     /// from the same places that retarget input, for the same reason: a
     /// screenshot of an unshared monitor would go to the model provider.
-    pub fn set_display(&self, display_id: Option<u32>) {
+    pub fn set_display(&mut self, display_id: Option<u32>) {
+        if self.display.get() != display_id {
+            // Retire old observations and approvals, not only the next capture.
+            self.cancel_active();
+        }
         self.display.set(display_id);
     }
 
     /// True while a run is in flight.
     pub fn is_running(&self) -> bool {
-        self.active.is_some()
+        self.active.as_ref().is_some_and(|a| !a._task.is_finished())
     }
 
     /// Route one demuxed agent frame. `control_scoped` reflects the current
@@ -100,12 +108,50 @@ impl AgentController {
         peer: Option<Arc<WebRtcPeer>>,
     ) {
         match inbound {
-            AgentInbound::AgentCommand { run_id, text, .. } => {
+            AgentInbound::AgentHello { run_id, .. } => {
+                if let Some(peer) = peer {
+                    let msg = AgentOutbound::AgentReady {
+                        run_id,
+                        protocol_version: 1,
+                        ts: now_ms(),
+                    };
+                    tokio::spawn(async move {
+                        let _ = peer.send_input_text(msg.encode()).await;
+                    });
+                }
+            }
+            AgentInbound::AgentCommand {
+                run_id,
+                text,
+                protocol_version,
+                ..
+            } => {
+                if protocol_version != Some(1) {
+                    if let Some(peer) = peer {
+                        Self::send_refusal(
+                            &peer,
+                            &run_id,
+                            "Update Lilypad on your phone to use Ask's approval controls.",
+                        );
+                    }
+                    return;
+                }
                 self.start_command(run_id, text, control_scoped, peer);
             }
             AgentInbound::AgentStop { run_id, .. } => {
                 if self.active.as_ref().is_some_and(|a| a.run_id == run_id) {
                     self.cancel_active();
+                }
+                // A retry after a lost terminal frame receives the same
+                // terminal outcome. An in-flight stop waits for actual cleanup.
+                if let (Some(outcome), Some(peer)) = (
+                    self.runs.get(&run_id).and_then(|r| *r.lock().unwrap()),
+                    peer,
+                ) {
+                    let msg = AgentOutbound::run_end(&run_id, outcome, now_ms());
+                    tokio::spawn(async move {
+                        let _ = peer.send_input_text(msg.encode()).await;
+                    });
                 }
             }
             AgentInbound::AgentDecision { .. } => {
@@ -126,9 +172,9 @@ impl AgentController {
         }
     }
 
-    /// Cancel and forget the active run (its task drains on its own).
+    /// Cancel the active run, retaining its identity while the task drains.
     pub fn cancel_active(&mut self) {
-        if let Some(active) = self.active.take() {
+        if let Some(active) = &self.active {
             active.cancel.cancel();
         }
     }
@@ -146,6 +192,38 @@ impl AgentController {
         control_scoped: bool,
         peer: Option<Arc<WebRtcPeer>>,
     ) {
+        if let Some(previous) = self.runs.get(&run_id) {
+            if let Some(peer) = peer {
+                let msg = match *previous.lock().unwrap() {
+                    Some(outcome) => AgentOutbound::run_end(&run_id, outcome, now_ms()),
+                    None => AgentOutbound::step(
+                        &run_id,
+                        format!("{run_id}-accepted"),
+                        StepKind::Thinking,
+                        "Task already accepted",
+                        None,
+                        None,
+                        StepState::Running,
+                        now_ms(),
+                    ),
+                };
+                tokio::spawn(async move {
+                    let _ = peer.send_input_text(msg.encode()).await;
+                });
+            }
+            return;
+        }
+        if self.runs.len() >= 128 {
+            if let Some(peer) = peer {
+                Self::send_refusal(
+                    &peer,
+                    &run_id,
+                    "This session reached its Ask task limit. Start a new session to continue.",
+                );
+            }
+            return;
+        }
+
         // A new command supersedes any in-flight run.
         self.cancel_active_if_any();
 
@@ -184,6 +262,9 @@ impl AgentController {
             }
         });
 
+        let outcome_record = Arc::new(Mutex::new(None));
+        self.runs
+            .insert(run_id.clone(), Arc::clone(&outcome_record));
         let display = self.display.clone();
         let (decisions_tx, mut decisions_rx) = unbounded_channel::<AgentInbound>();
         let cancel = Cancel::new();
@@ -202,14 +283,28 @@ impl AgentController {
                         RunOutcome::Failed,
                         now_ms(),
                     ));
+                    *outcome_record.lock().unwrap() = Some(RunOutcome::Failed);
                     log::error!(target: "lilypad::agent", "agent executor init failed: {e}");
                     return;
                 }
             };
+            // Admission acknowledgment does not wait on the model. This uses
+            // an existing step shape so older mobile clients can also read it.
+            let _ = steps_tx.send(AgentOutbound::step(
+                &run_id_task,
+                format!("{run_id_task}-accepted"),
+                StepKind::Thinking,
+                "Task accepted. Planning the next step…",
+                None,
+                None,
+                StepState::Running,
+                now_ms(),
+            ));
             let mut runner = AgentRunner::new(brain, executor, steps_tx, now_ms);
             let outcome = runner
                 .run(&run_id_task, &text, &mut decisions_rx, &run_cancel)
                 .await;
+            *outcome_record.lock().unwrap() = Some(outcome);
             log::info!(target: "lilypad::agent", "agent run {run_id_task} ended: {outcome:?}");
         });
 
@@ -284,5 +379,45 @@ mod tests {
             observer.is_cancelled(),
             "the session's Ask run was detached alive"
         );
+    }
+    #[tokio::test]
+    async fn a_replayed_run_id_does_not_cancel_the_current_run_or_restart_work() {
+        let mut controller = AgentController::new();
+        let cancel = Cancel::new();
+        let (tx, _rx) = unbounded_channel();
+        controller.active = Some(ActiveRun {
+            run_id: "current".into(),
+            cancel: cancel.clone(),
+            decisions_tx: tx,
+            _task: tokio::spawn(async {}),
+            _forwarder: tokio::spawn(async {}),
+        });
+        controller.runs.insert(
+            "old".into(),
+            Arc::new(Mutex::new(Some(RunOutcome::Completed))),
+        );
+        controller.start_command("old".into(), "execute again".into(), true, None);
+        assert!(
+            !cancel.is_cancelled(),
+            "a replay must not supersede the live task"
+        );
+        assert_eq!(controller.runs.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn switching_the_shared_display_cancels_the_old_observation_context() {
+        let mut controller = AgentController::new();
+        let cancel = Cancel::new();
+        let (tx, _rx) = unbounded_channel();
+        controller.active = Some(ActiveRun {
+            run_id: "current".into(),
+            cancel: cancel.clone(),
+            decisions_tx: tx,
+            _task: tokio::spawn(async {}),
+            _forwarder: tokio::spawn(async {}),
+        });
+        controller.set_display(Some(7));
+        assert!(cancel.is_cancelled());
+        assert_eq!(controller.display.get(), Some(7));
     }
 }

@@ -41,6 +41,7 @@ extern "C" {
 extern "C" {
     fn CFRetain(cf: CFTypeRef) -> CFTypeRef;
     fn CFRelease(cf: CFTypeRef);
+    fn CFEqual(a: CFTypeRef, b: CFTypeRef) -> u8;
     fn CFGetTypeID(cf: CFTypeRef) -> CFTypeID;
     fn CFArrayGetCount(arr: CFTypeRef) -> isize;
     fn CFArrayGetValueAtIndex(arr: CFTypeRef, idx: isize) -> *const c_void;
@@ -85,6 +86,16 @@ pub struct AxSnapshot {
 }
 
 impl AxSnapshot {
+    /// Approval names an observation, not merely a reusable button label.
+    /// Compare full values and the focused application's native identity.
+    pub fn same_context(&self, other: &Self) -> bool {
+        self.nodes == other.nodes
+            && match (self.handles.first(), other.handles.first()) {
+                (Some(a), Some(b)) => unsafe { CFEqual(a.raw, b.raw) != 0 },
+                _ => false,
+            }
+    }
+
     pub fn handle(&self, id: usize) -> Option<&AxHandle> {
         self.handles.get(id)
     }

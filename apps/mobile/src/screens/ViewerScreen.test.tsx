@@ -40,6 +40,7 @@ jest.mock('../lib/webrtc', () => {
           close: jest.fn(),
           requestCaptureMode: jest.fn(),
           requestDisplay: jest.fn(),
+          prepareAsk: jest.fn(() => cb.onAgentReady?.()),
         };
         instances.push(inst);
         return inst;

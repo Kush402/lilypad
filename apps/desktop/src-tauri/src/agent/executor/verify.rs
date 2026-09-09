@@ -121,7 +121,12 @@ fn resolve_in(home: &Path, raw: &str) -> Result<PathBuf> {
     // as in tests and a fresh account), and rejecting on that would refuse
     // every legitimate path — it is not an escape, it is a prefix.
     let (existing, missing) = deepest_existing(&normalized);
-    let mut resolved = existing.canonicalize().unwrap_or(existing);
+    let mut resolved = existing.canonicalize().map_err(|e| {
+        anyhow::anyhow!(
+            "cannot resolve existing ancestor {}: {e}",
+            existing.display()
+        )
+    })?;
     for segment in missing {
         resolved.push(segment);
     }
@@ -132,13 +137,9 @@ fn resolve_in(home: &Path, raw: &str) -> Result<PathBuf> {
         );
     }
 
-    // Return the lexical path, not the canonical one. Canonicalization is a
-    // *check* here, not a rewrite: on macOS it would turn `/var/…` into
-    // `/private/var/…` and hand the user, the Finder reveal and the
-    // postcondition a path they never typed. The two differ only where a
-    // symlink is involved, and we have just established that any symlink on
-    // this path stays inside home.
-    Ok(normalized)
+    // Execute against the resolved location; returning the alias would follow
+    // it a second time if another process replaced that symlink after checking.
+    Ok(resolved)
 }
 
 /// Is `p` the root itself, or inside it?
@@ -155,7 +156,7 @@ fn deepest_existing(path: &Path) -> (PathBuf, Vec<OsString>) {
     let mut missing: Vec<OsString> = Vec::new();
     let mut cur = path.to_path_buf();
     loop {
-        if cur.exists() {
+        if std::fs::symlink_metadata(&cur).is_ok() {
             missing.reverse();
             return (cur, missing);
         }
@@ -185,6 +186,7 @@ pub enum Postcondition {
     PathIsDir(PathBuf),
     /// No cheap deterministic check available at this tier (exit code only).
     None,
+    InvalidPath(String),
 }
 
 /// The postcondition for a tier-1 action. Resolves the path exactly as
@@ -196,10 +198,10 @@ pub fn postcondition(action: &Action) -> Postcondition {
     match action {
         Action::NewFolder { path } => resolved(path)
             .map(Postcondition::PathIsDir)
-            .unwrap_or(Postcondition::None),
+            .unwrap_or_else(|| Postcondition::InvalidPath(path.clone())),
         Action::OpenFile { path } | Action::RevealInFinder { path } => resolved(path)
             .map(Postcondition::PathExists)
-            .unwrap_or(Postcondition::None),
+            .unwrap_or_else(|| Postcondition::InvalidPath(path.clone())),
         // OpenApp/OpenUrl/RunShortcut: launch verification needs the tier-2 AX
         // executor (running-app / window / URL-bar read); exit code only in v1.
         _ => Postcondition::None,
@@ -211,6 +213,7 @@ pub fn postcondition(action: &Action) -> Postcondition {
 pub fn check(pc: &Postcondition) -> Result<()> {
     match pc {
         Postcondition::None => Ok(()),
+        Postcondition::InvalidPath(path) => bail!("cannot verify rejected path: {path}"),
         Postcondition::PathExists(p) => {
             if p.exists() {
                 Ok(())
@@ -302,12 +305,12 @@ mod tests {
             }),
             Postcondition::None
         );
-        // An escaping path yields None (plan_command refuses it first).
+        // Verification must also fail closed if planning is bypassed.
         assert_eq!(
             postcondition(&Action::NewFolder {
                 path: "/etc/evil".into()
             }),
-            Postcondition::None
+            Postcondition::InvalidPath("/etc/evil".into())
         );
         match prev {
             Some(v) => std::env::set_var("HOME", v),
@@ -369,7 +372,7 @@ mod tests {
     fn a_legitimate_in_home_path_is_accepted() {
         let j = jail();
         let got = resolve_in(&j.home, "~/Documents/notes").expect("in-home path must resolve");
-        assert_eq!(got, j.home.join("Documents/notes"));
+        assert_eq!(got, j.home.canonicalize().unwrap().join("Documents/notes"));
     }
 
     #[test]
@@ -435,8 +438,10 @@ mod tests {
         let got = resolve_in(&j.home, "~/alias/child").expect("in-home symlink must resolve");
         assert_eq!(
             got,
-            j.home.join("alias/child"),
-            "the path the user named is returned"
+            real.join("child")
+                .canonicalize()
+                .unwrap_or_else(|_| real.canonicalize().unwrap().join("child")),
+            "execution uses the checked location, not the mutable alias"
         );
     }
 
@@ -453,5 +458,25 @@ mod tests {
                 OsString::from("c")
             ]
         );
+    }
+    #[test]
+    fn a_rejected_path_is_not_a_successful_postcondition() {
+        assert!(check(&postcondition(&Action::NewFolder { path: "/".into() })).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn replacing_a_valid_alias_does_not_redirect_the_resolved_path() {
+        let j = jail();
+        let real = j.home.join("real");
+        std::fs::create_dir(&real).unwrap();
+        let alias = j.home.join("alias");
+        std::os::unix::fs::symlink(&real, &alias).unwrap();
+        let target = resolve_in(&j.home, "~/alias/child").unwrap();
+        std::fs::remove_file(&alias).unwrap();
+        std::os::unix::fs::symlink(&j.outside, &alias).unwrap();
+        std::fs::create_dir(&target).unwrap();
+        assert!(real.join("child").exists());
+        assert!(!j.outside.join("child").exists());
     }
 }

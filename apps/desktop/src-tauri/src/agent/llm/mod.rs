@@ -649,6 +649,8 @@ impl<P: LlmProvider + Send> Brain for LlmBrain<P> {
             }
         }
 
+        retain_recent_images(&mut self.messages);
+
         let reply = self
             .provider
             .complete(&self.system, &self.messages, &self.tools)
@@ -699,6 +701,33 @@ impl<P: LlmProvider + Send> Brain for LlmBrain<P> {
                     }),
                 reason: FinishReason::Incomplete,
             }),
+        }
+    }
+}
+
+/// Keep before/after visual context without retransmitting every historical
+/// screenshot on every reasoning turn. Tool identities and textual results
+/// remain intact, so both provider dialects retain valid call/result pairs.
+fn retain_recent_images(messages: &mut [ChatMessage]) {
+    let mut retained = 0;
+    for message in messages.iter_mut().rev() {
+        for block in message.blocks.iter_mut().rev() {
+            if let Block::ToolResult {
+                image_base64,
+                content,
+                ..
+            } = block
+            {
+                if image_base64.is_some() {
+                    retained += 1;
+                    if retained > 2 {
+                        *image_base64 = None;
+                        content.push_str(
+                            " [Historical image omitted; use the two most recent screenshots.]",
+                        );
+                    }
+                }
+            }
         }
     }
 }
@@ -1122,5 +1151,38 @@ mod tests {
             "must give up on its own deadline, took {elapsed:?}"
         );
         accepted.abort();
+    }
+    #[test]
+    fn recent_images_keep_before_after_and_all_tool_result_identities() {
+        let mut messages: Vec<_> = (0..4)
+            .map(|i| ChatMessage {
+                role: Role::User,
+                blocks: vec![Block::ToolResult {
+                    tool_use_id: format!("shot-{i}"),
+                    content: format!("display observation {i}"),
+                    is_error: false,
+                    image_base64: Some(format!("image-{i}")),
+                }],
+            })
+            .collect();
+        retain_recent_images(&mut messages);
+        retain_recent_images(&mut messages); // idempotent on turns without a new image
+        for (i, message) in messages.iter().enumerate() {
+            let Block::ToolResult {
+                tool_use_id,
+                content,
+                image_base64,
+                ..
+            } = &message.blocks[0]
+            else {
+                panic!()
+            };
+            assert_eq!(tool_use_id, &format!("shot-{i}"));
+            assert_eq!(image_base64.is_some(), i >= 2);
+            assert_eq!(
+                content.matches("Historical image omitted").count(),
+                usize::from(i < 2)
+            );
+        }
     }
 }

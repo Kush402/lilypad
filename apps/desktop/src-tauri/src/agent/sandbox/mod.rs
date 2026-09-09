@@ -111,6 +111,16 @@ pub async fn run(
     // Build via std so we can set a pre_exec hook, then hand to tokio.
     let mut std_cmd = std::process::Command::new("/usr/bin/sandbox-exec");
     std_cmd
+        // The desktop may hold API credentials in environment overrides.
+        // Filesystem policy cannot protect inherited process memory.
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+        .env("HOME", home)
+        .env("TMPDIR", &policy.scratch_dir)
+        .env("LANG", "en_US.UTF-8")
+        .env("PYTHONNOUSERSITE", "1")
+        .env("PYTHONSAFEPATH", "1")
+        .current_dir(&policy.scratch_dir)
         .arg("-f")
         .arg(&profile_path)
         .arg(program)
@@ -146,6 +156,7 @@ pub async fn run(
         .id()
         .ok_or_else(|| anyhow!("sandboxed child has no pid"))? as i32;
 
+    let group = ProcessGroup(pid);
     let mut stdout_pipe = child.stdout.take().expect("piped");
     let mut stderr_pipe = child.stderr.take().expect("piped");
     let out_task = tokio::spawn(async move { read_capped(&mut stdout_pipe).await });
@@ -164,6 +175,9 @@ pub async fn run(
         }
     };
 
+    // A child can exit while its descendants retain the pipes. Retire those
+    // descendants before waiting for EOF, including on normal completion.
+    drop(group);
     let stdout = out_task.await.unwrap_or_default();
     let stderr = err_task.await.unwrap_or_default();
 
@@ -173,6 +187,18 @@ pub async fn run(
         stderr,
         timed_out,
     })
+}
+
+/// Cancellation drops the future before its timeout branch can run. The
+/// process group must therefore be owned by a drop guard, not only that branch.
+struct ProcessGroup(i32);
+impl Drop for ProcessGroup {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        unsafe {
+            libc::killpg(self.0, libc::SIGKILL);
+        }
+    }
 }
 
 /// Read a pipe to EOF but keep only the first [`OUTPUT_CAP_BYTES`]; drain the
@@ -288,5 +314,77 @@ mod tests {
             "kill was not prompt"
         );
         std::fs::remove_dir_all(&dir).ok();
+    }
+    #[tokio::test]
+    async fn cancelling_a_script_kills_its_background_descendants() {
+        if !sandbox_available() {
+            return;
+        }
+        let dir = scratch("cancel_descendants");
+        let ready = dir.join("ready");
+        let escaped = dir.join("late-write");
+        let policy = SandboxPolicy::read_only(dir.clone());
+        let script = format!(
+            "(sleep 1; echo escaped > '{}') & echo ready > '{}'; wait",
+            escaped.display(),
+            ready.display()
+        );
+        let task = tokio::spawn(async move {
+            run(
+                &policy,
+                &SandboxLimits::default(),
+                "/bin/sh",
+                &["-c".into(), script],
+                Path::new("/tmp"),
+            )
+            .await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while !ready.exists() {
+                assert!(!task.is_finished(), "script failed before readiness");
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        task.abort();
+        let _ = task.await;
+        tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+        assert!(!escaped.exists(), "a descendant kept executing after Stop");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[tokio::test]
+    async fn script_environment_does_not_inherit_desktop_variables() {
+        if !sandbox_available() {
+            return;
+        }
+        let dir = scratch("clean_env");
+        let policy = SandboxPolicy::read_only(dir.clone());
+        let result = run(
+            &policy,
+            &SandboxLimits::default(),
+            "/usr/bin/env",
+            &[],
+            Path::new("/tmp"),
+        )
+        .await
+        .unwrap();
+        assert!(result.succeeded(), "{}", result.stderr);
+        for line in result.stdout.lines() {
+            let key = line.split('=').next().unwrap();
+            assert!(
+                [
+                    "PATH",
+                    "HOME",
+                    "TMPDIR",
+                    "LANG",
+                    "PYTHONNOUSERSITE",
+                    "PYTHONSAFEPATH"
+                ]
+                .contains(&key),
+                "inherited unexpected environment key {key}"
+            );
+        }
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

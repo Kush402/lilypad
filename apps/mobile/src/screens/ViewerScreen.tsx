@@ -190,6 +190,7 @@ export function ViewerScreen({ route, navigation }: Props) {
   const isLandscape = win.width > win.height;
   const [trayOpen, setTrayOpen] = useState(false);
   const [askOpen, setAskOpen] = useState(false);
+  const [askCompatible, setAskCompatible] = useState(false);
   const [agentFeed, dispatchAgent] = useReducer(agentFeedReducer, INITIAL_AGENT_FEED);
   // Source video pixel size, from the desktop's `frame-size` signal. `null`
   // until it arrives (full-bleed fallback) — see Finding 1.
@@ -315,6 +316,7 @@ export function ViewerScreen({ route, navigation }: Props) {
             next === 'failed' ||
             next === 'denied'
           ) {
+            setAskCompatible(false);
             resetKeyboard();
             for (const repeater of toolbarRepeatersRef.current.values()) repeater.stop();
             if (longPressTimer.current) clearTimeout(longPressTimer.current);
@@ -358,6 +360,9 @@ export function ViewerScreen({ route, navigation }: Props) {
             () => setClipboardToast(false),
             CLIPBOARD_TOAST_MS,
           );
+        },
+        onAgentReady: () => {
+          if (active) setAskCompatible(true);
         },
         onAgentStep: (step) => {
           if (active) dispatchAgent({ type: 'step', step });
@@ -791,15 +796,17 @@ export function ViewerScreen({ route, navigation }: Props) {
     const result = connRef.current?.sendAgentCommand(text);
     if (!result) {
       setUnsentCommand(text);
-      return;
+      return false;
     }
     if (result.sent) {
       setUnsentCommand(null);
       dispatchAgent({ type: 'command_sent', runId: result.runId });
+      return true;
     } else {
       // Preserve what the person typed: it is theirs, and it never arrived.
       setUnsentCommand(text);
       dispatchAgent({ type: 'command_unsent', runId: result.runId });
+      return false;
     }
   }, []);
   const stopAgent = useCallback(() => {
@@ -826,7 +833,7 @@ export function ViewerScreen({ route, navigation }: Props) {
   const agentPhase = agentFeed.phase;
   const agentRunId = agentFeed.runId;
   useEffect(() => {
-    if (agentPhase !== 'sending' || !agentRunId) return;
+    if ((agentPhase !== 'sending' && agentPhase !== 'stopping') || !agentRunId) return;
     const timer = setTimeout(
       () => dispatchAgent({ type: 'ack_timeout', runId: agentRunId }),
       ACK_DEADLINE_MS,
@@ -937,6 +944,7 @@ export function ViewerScreen({ route, navigation }: Props) {
                 // Closing the panel must also release its keyboard — the
                 // panel unmounts and an orphaned keyboard has no dismisser.
                 if (v) Keyboard.dismiss();
+                else connRef.current?.prepareAsk();
                 return !v;
               })
             }
@@ -1008,6 +1016,8 @@ export function ViewerScreen({ route, navigation }: Props) {
       {canControl && askOpen ? (
         <AgentPanel
           feed={agentFeed}
+          compatible={askCompatible}
+          onCheckCompatibility={() => connRef.current?.prepareAsk()}
           onSend={sendAgentCommand}
           onStop={stopAgent}
           onDecide={decideAgent}

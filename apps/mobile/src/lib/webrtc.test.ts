@@ -1524,11 +1524,35 @@ describe('ViewerConnection', () => {
   // ── AI agent channel (docs/m5.3-ai-executor-plan.md §6) ──────────────────
 
   describe('agent messaging over the reliable input channel', () => {
+    it('does not send work before a current-peer Ask handshake', async () => {
+      const { conn, peer } = await startConnected(makeCallbacks());
+      const critical = peer.dispatchDataChannel(INPUT_CHANNEL_LABEL);
+      expect(conn.sendAgentCommand('delete a file').sent).toBe(false);
+      expect(critical.send).not.toHaveBeenCalled();
+      conn.prepareAsk();
+      const probe = JSON.parse(critical.send.mock.calls[0][0]);
+      critical.emitMessage(
+        JSON.stringify({ kind: 'agent_ready', runId: 'stale-probe', protocolVersion: 1, ts: 1 }),
+      );
+      expect(conn.sendAgentCommand('delete a file').sent).toBe(false);
+      critical.emitMessage(
+        JSON.stringify({ kind: 'agent_ready', runId: probe.runId, protocolVersion: 1, ts: 1 }),
+      );
+      expect(conn.sendAgentCommand('open Safari').sent).toBe(true);
+      expect(JSON.parse(critical.send.mock.calls[1][0]).protocolVersion).toBe(1);
+    });
+
     it('sends an agent_command frame and returns a runId', async () => {
       const cb = makeCallbacks();
       const { conn, peer } = await startConnected(cb);
       const critical = peer.dispatchDataChannel(INPUT_CHANNEL_LABEL);
 
+      conn.prepareAsk();
+      const probe = JSON.parse(critical.send.mock.calls[0][0]);
+      critical.emitMessage(
+        JSON.stringify({ kind: 'agent_ready', runId: probe.runId, protocolVersion: 1, ts: 1 }),
+      );
+      critical.send.mockClear();
       const { runId, sent: didSend } = conn.sendAgentCommand('open Safari');
 
       // The result carries whether the frame actually left, not just an id
@@ -1547,6 +1571,12 @@ describe('ViewerConnection', () => {
       const critical = peer.dispatchDataChannel(INPUT_CHANNEL_LABEL);
       critical.bufferedAmount = MAX_BUFFERED_AMOUNT_BYTES + 1;
 
+      conn.prepareAsk();
+      const probe = JSON.parse(critical.send.mock.calls[0][0]);
+      critical.emitMessage(
+        JSON.stringify({ kind: 'agent_ready', runId: probe.runId, protocolVersion: 1, ts: 1 }),
+      );
+      critical.send.mockClear();
       conn.sendAgentCommand('open Safari');
 
       expect(critical.send).toHaveBeenCalledTimes(1);
