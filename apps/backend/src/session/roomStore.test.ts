@@ -23,6 +23,18 @@ class FakeRedis implements RoomKvStore {
     const prefix = pattern.replace(/\*$/, '');
     return [...this.data.keys()].filter((k) => k.startsWith(prefix));
   }
+  async scan(
+    cursor: string,
+    _match: 'MATCH',
+    pattern: string,
+    _count: 'COUNT',
+    size: number,
+  ): Promise<[string, string[]]> {
+    const keys = await this.keys(pattern);
+    const start = Number(cursor);
+    const next = start + size;
+    return [next >= keys.length ? '0' : String(next), keys.slice(start, next)];
+  }
   async mget(...keys: string[]): Promise<(string | null)[]> {
     return keys.map((k) => this.data.get(k) ?? null);
   }
@@ -208,5 +220,51 @@ describe('RoomStore recovery is defensive about what it reads (L-250, L-251)', (
     const all = await store.loadAll(10);
     expect(all).toHaveLength(10);
     expect(requested).toBe(10);
+  });
+  it('skips unknown authority, wrong key identity and invalid timestamps', async () => {
+    const redis = new FakeRedis();
+    const store = new RoomStore(redis);
+    for (const [id, overrides] of Object.entries({
+      scope: { scopes: ['admin'] },
+      role: { deviceIds: { intruder: 'x' } },
+      time: { updatedAt: -1 },
+      version: { version: 2 },
+    })) {
+      const raw = JSON.stringify({ ...record({ id }), updatedAt: 1, ...overrides });
+      expect(decodeRoomRecord(raw)).toBeNull();
+      await redis.set(`lilypad:room:${id}`, raw);
+    }
+    await redis.set(
+      'lilypad:room:wrong-key',
+      JSON.stringify({ ...record({ id: 'different' }), updatedAt: 1 }),
+    );
+    await store.save(record({ id: 'good' }));
+    expect((await store.loadAll(1)).map((r) => r.id)).toEqual(['good']);
+  });
+
+  it('enforces bytes rather than UTF-16 code units', () => {
+    expect(
+      decodeRoomRecord(JSON.stringify({ ...record(), updatedAt: 1, padding: '界'.repeat(6000) })),
+    ).toBeNull();
+  });
+
+  it('deduplicates scan results and bounds empty nonterminal scans', async () => {
+    const redis = new FakeRedis();
+    const store = new RoomStore(redis);
+    await store.save(record());
+    let calls = 0;
+    redis.scan = async () => {
+      calls++;
+      return ['1', ['lilypad:room:room-1']];
+    };
+    expect(await store.loadAll(2)).toHaveLength(1);
+    expect(calls).toBe(256);
+    calls = 0;
+    redis.scan = async () => {
+      calls++;
+      return ['1', []];
+    };
+    expect(await store.loadAll()).toEqual([]);
+    expect(calls).toBe(256);
   });
 });

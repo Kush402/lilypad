@@ -86,6 +86,18 @@ pub async fn run(
     args: &[String],
     home: &Path,
 ) -> Result<SandboxOutcome> {
+    // /usr/bin/python3 is an Xcode discovery shim. Running it in the
+    // sandbox starts xcodebuild and probes unrelated caches. Use an installed
+    // interpreter directly; do not broaden data access to make the shim work.
+    let program = if program == "/usr/bin/python3" {
+        [
+            "/Applications/Xcode.app/Contents/Developer/usr/bin/python3",
+            "/Library/Developer/CommandLineTools/usr/bin/python3",
+        ].into_iter().find(|p| Path::new(p).is_file())
+            .ok_or_else(|| anyhow!("Python execution requires a supported Xcode or Command Line Tools interpreter; no script was started"))?
+    } else {
+        program
+    };
     // Canonicalize the scratch dir: Seatbelt matches on the REAL path, so a
     // symlinked prefix (e.g. /tmp → /private/tmp) would make the write-jail
     // allow a directory the script actually sees under a different path. The
@@ -550,5 +562,48 @@ mod tests {
             );
         }
         std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[tokio::test]
+    async fn ungranted_neighboring_temp_file_is_not_readable() {
+        if !sandbox_available() {
+            return;
+        }
+        let dir = scratch("private_neighbor");
+        let victim = scratch("ungranted_neighbor");
+        let file = victim.join("private.txt");
+        std::fs::write(&file, "synthetic-private-marker").unwrap();
+        let result = run(
+            &SandboxPolicy::read_only(dir.clone()),
+            &SandboxLimits::default(),
+            "/bin/cat",
+            &[file.to_string_lossy().into_owned()],
+            Path::new("/Users/test"),
+        )
+        .await
+        .unwrap();
+        assert!(!result.succeeded(), "ungranted temp file was readable");
+        assert!(!result.stdout.contains("synthetic-private-marker"));
+        // /System also contains the writable Data volume on modern macOS.
+        // A runtime grant must not reopen the same file through that alias.
+        let canonical = file.canonicalize().unwrap();
+        let alias = Path::new("/System/Volumes/Data").join(canonical.strip_prefix("/").unwrap());
+        if alias.exists() {
+            let aliased = run(
+                &SandboxPolicy::read_only(dir.clone()),
+                &SandboxLimits::default(),
+                "/bin/cat",
+                &[alias.to_string_lossy().into_owned()],
+                Path::new("/Users/test"),
+            )
+            .await
+            .unwrap();
+            assert!(
+                !aliased.succeeded(),
+                "Data-volume alias reopened an ungranted file"
+            );
+        }
+
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(victim).ok();
     }
 }

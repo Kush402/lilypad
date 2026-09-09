@@ -30,12 +30,12 @@
 //! enumerate a person's private documents, their project `.env` files, or
 //! their Notes database.
 //!
-//! The brittleness problem is real but it is not an argument for reading the
-//! user's home directory. It only argues against enumerating *system* paths
-//! finely — so this allow-list does not: it names whole OS roots (`/System`,
-//! `/usr`, `/Library`, …), which are stable across releases, and stops at the
-//! boundary that actually matters. Everything the person owns starts denied
-//! and becomes readable one approved path at a time.
+//! Runtime compatibility is tested with explicit OS and developer-runtime
+//! locations. Whole `/Library`, `/Applications`, `/opt` and macOS temporary
+//! directories also contain user data and must not be treated as system-only.
+//! Nonstandard interpreter installations fail closed until their runtime-only
+//! access is reviewed. This is a path-access boundary, not a guarantee that
+//! arbitrary IPC or content inside explicitly granted files is non-sensitive.
 //!
 //! ### Rule precedence — measured, not assumed
 //!
@@ -143,31 +143,21 @@ fn sensitive_deny_subpaths(home: &Path) -> Vec<PathBuf> {
     .collect()
 }
 
-/// OS roots a sandboxed interpreter may read.
-///
-/// Deliberately coarse. The alternative — enumerating dyld's shared cache,
-/// the toolchain's stdlib, the frameworks each interpreter links — is what
-/// breaks on every macOS update, and it buys nothing: none of these paths
-/// holds the user's data, which is the thing this boundary exists to protect.
-///
-/// Empirically derived, not assumed: `/bin/sh` and `/usr/bin/python3` both
-/// fail to start (SIGABRT inside dyld) without the root literal, and
-/// `python3` cannot import its stdlib without `/Applications` on a Mac whose
-/// `python3` is Xcode's shim. Each entry earned its place by a run that
-/// failed without it.
+/// Runtime locations, excluding shared writable data and temporary roots.
+/// Python uses the real developer-tools executable rather than the OS shim.
+/// Test on supported macOS/toolchain layouts before adding any new root.
 const SYSTEM_READ_ROOTS: &[&str] = &[
-    "/System",
-    "/usr",
+    "/System/Library",
+    "/usr/bin",
+    "/usr/lib",
+    "/usr/share",
     "/bin",
     "/sbin",
-    "/Library",
-    "/opt",
-    "/Applications",
-    "/private/etc",
-    "/private/var/db",
-    "/private/var/folders",
-    "/dev",
-    "/AppleInternal",
+    "/Library/Developer/CommandLineTools",
+    "/Applications/Xcode.app/Contents/Developer",
+    "/Applications/Xcode.app/Contents/SharedFrameworks",
+    "/Applications/Xcode.app/Contents/Frameworks",
+    "/private/var/db/dyld",
 ];
 
 /// System keychain locations (outside home) that must also never be read.
@@ -216,8 +206,8 @@ pub fn build_profile(policy: &SandboxPolicy, home: &Path) -> String {
     p.push_str("(allow mach-lookup)\n");
 
     // ── reads ────────────────────────────────────────────────────────────
-    // Secret denies first. A deny wins over any allow, so these also override
-    // an approved read grant: no card can authorize reading `~/.ssh`.
+    // Secret denies are defense in depth; grant filtering below enforces
+    // the restriction before SBPL specificity can reopen a denied subtree.
     for deny in sensitive_deny_subpaths(home) {
         p.push_str(&format!(
             "(deny file-read* (subpath {}))\n",
@@ -244,6 +234,8 @@ pub fn build_profile(policy: &SandboxPolicy, home: &Path) -> String {
             sbpl_quote(Path::new(root))
         ));
     }
+    // Python's hash seed needs entropy, not blanket access to device nodes.
+    p.push_str("(allow file-read* (literal \"/dev/urandom\") (literal \"/dev/random\") (literal \"/dev/null\"))\n");
     // The run's own scratch dir — the script itself lives there, and the
     // interpreter has to read it to run it.
     p.push_str(&format!(
@@ -440,7 +432,12 @@ mod tests {
     fn the_system_roots_an_interpreter_needs_stay_readable() {
         let prof = profile(&SandboxPolicy::read_only("/tmp/r".into()));
         assert!(prof.contains("(allow file-read* (literal \"/\"))"));
-        for root in ["/System", "/usr", "/bin", "/Library"] {
+        for root in [
+            "/System/Library",
+            "/usr/lib",
+            "/bin",
+            "/Library/Developer/CommandLineTools",
+        ] {
             assert!(
                 prof.contains(&format!("(allow file-read* (subpath \"{root}\"))")),
                 "missing system read root {root}"

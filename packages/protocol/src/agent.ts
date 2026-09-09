@@ -1,5 +1,8 @@
 import { z } from 'zod';
 
+/** Increment when older peers cannot disclose or enforce the same authority. */
+export const ASK_PROTOCOL_VERSION = 2 as const;
+
 /**
  * AI-agent protocol — carried over the SAME WebRTC DataChannel as input
  * (`input.ts`), but as its own message kinds. The agent runs on the desktop;
@@ -78,14 +81,14 @@ const agentCommand = WithTs.extend({
   runId: RunId,
   /** The natural-language task. */
   text: z.string().min(1).max(MAX_COMMAND_LEN),
-  protocolVersion: z.literal(1).optional(),
+  protocolVersion: z.literal(ASK_PROTOCOL_VERSION).optional(),
 });
 
 const agentHello = WithTs.extend({ kind: z.literal('agent_hello'), runId: RunId });
 const agentReady = WithTs.extend({
   kind: z.literal('agent_ready'),
   runId: RunId,
-  protocolVersion: z.literal(1),
+  protocolVersion: z.literal(ASK_PROTOCOL_VERSION),
 });
 
 const agentStop = WithTs.extend({

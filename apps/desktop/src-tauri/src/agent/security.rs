@@ -255,8 +255,7 @@ pub fn classify(action: &Action) -> ToolClass {
         // An accessibility press is only as safe as the control it lands on.
         Action::AxPress { target, .. } => classify_ax_press(target.as_ref()),
 
-        // A URL is sensitive unless it smells like a scheme that can execute or
-        // exfiltrate; unknown schemes are held.
+        // Every model-chosen URL is held: the URL itself can transmit data.
         Action::OpenUrl { url } => classify_url(url),
 
         // A keystroke is normally sensitive, but a dangerous chord is held.
@@ -435,28 +434,15 @@ pub fn approval_for(action: &Action) -> Approval {
 /// would put a reassuring host on a card for a request going somewhere else,
 /// which is worse than saying nothing.
 fn url_origin(url: &str) -> String {
-    let trimmed = url.trim();
-    let Some((scheme, rest)) = trimmed.split_once("://") else {
-        // `mailto:`, `javascript:`, custom schemes: no authority at all.
-        return match trimmed.split_once(':') {
-            Some((scheme, _)) if !scheme.is_empty() && !scheme.contains(' ') => {
-                format!("{}:", scheme.to_ascii_lowercase())
-            }
-            _ => "unknown destination".into(),
-        };
-    };
-    let authority = rest
-        .split(['/', '?', '#'])
-        .next()
-        .unwrap_or_default()
-        .trim();
-    if authority.is_empty() {
-        return "unknown destination".into();
+    // Use the same URL parsing rules as HTTP clients, not an authority split:
+    // backslashes, encoded hosts and IDNs can change the effective host.
+    match reqwest::Url::parse(url.trim()) {
+        Ok(parsed) if matches!(parsed.scheme(), "http" | "https") => {
+            parsed.origin().ascii_serialization()
+        }
+        Ok(parsed) => format!("{}:", parsed.scheme()),
+        Err(_) => "unknown destination".into(),
     }
-    // `user:pass@host` — the host is what matters, and the userinfo half is a
-    // classic way to make a hostile URL read like a friendly one.
-    let host = authority.rsplit('@').next().unwrap_or(authority);
-    format!("{}://{}", scheme.to_ascii_lowercase(), host)
 }
 
 /// Does this URL carry a payload beyond the page it names — a query string or
@@ -665,7 +651,7 @@ mod tests {
         );
         assert_eq!(
             url_origin("HTTP://Example.com/a/b?c=1"),
-            "http://Example.com"
+            "http://example.com"
         );
         assert_eq!(url_origin("mailto:someone@example.com"), "mailto:");
         assert_eq!(url_origin("javascript:alert(1)"), "javascript:");
@@ -952,5 +938,17 @@ mod tests {
         });
         assert!(a.purpose.contains("unidentified"));
         assert!(a.target.is_none());
+    }
+    #[test]
+    fn navigation_origin_handles_browser_backslashes_and_encoded_hosts() {
+        assert_eq!(
+            url_origin(r"https://evil.test\@bank.example/"),
+            "https://evil.test"
+        );
+        assert_eq!(url_origin("https://%65vil.test/"), "https://evil.test");
+        assert_eq!(
+            url_origin("https://example.com:443/"),
+            "https://example.com"
+        );
     }
 }

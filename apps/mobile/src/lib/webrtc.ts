@@ -1,3 +1,4 @@
+import { ASK_PROTOCOL_VERSION } from '@lilypad/protocol';
 import { Platform } from 'react-native';
 import {
   RTCPeerConnection,
@@ -491,7 +492,13 @@ export class ViewerConnection {
     const runId = `run-${Date.now()}-${(this.agentRunCounter += 1)}`;
     const sent =
       this.askReady &&
-      this.sendAgent({ kind: 'agent_command', runId, text, protocolVersion: 1, ts: Date.now() });
+      this.sendAgent({
+        kind: 'agent_command',
+        runId,
+        text,
+        protocolVersion: ASK_PROTOCOL_VERSION,
+        ts: Date.now(),
+      });
     return { runId, sent };
   }
 

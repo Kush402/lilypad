@@ -162,7 +162,11 @@ fn truncate(s: &str) -> String {
     if s.len() <= OBSERVATION_OUTPUT_CAP {
         s.to_string()
     } else {
-        format!("{}… [truncated]", &s[..OBSERVATION_OUTPUT_CAP])
+        let mut end = OBSERVATION_OUTPUT_CAP;
+        while !s.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!("{}… [truncated]", &s[..end])
     }
 }
 
@@ -316,5 +320,14 @@ mod tests {
         assert!(!obs.ok, "writing outside scratch must fail");
         assert!(!std::path::Path::new(&target).exists());
         std::fs::remove_file(&target).ok();
+    }
+    #[test]
+    fn output_truncation_preserves_utf8_boundaries() {
+        let text = format!("{}界", "a".repeat(1999));
+        assert_eq!(
+            truncate(&text),
+            format!("{}… [truncated]", "a".repeat(1999))
+        );
+        assert_eq!(truncate("hello界"), "hello界");
     }
 }

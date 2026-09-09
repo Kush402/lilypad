@@ -13,14 +13,16 @@
 //! and [`crate::agent::parse_inbound`], and the runner loop + gate they drive.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use tokio::sync::mpsc::{channel, unbounded_channel, Sender};
 use tokio::task::JoinHandle;
 
 use crate::agent::llm::{AnyProvider, ProviderChoice, NOT_CONFIGURED_MESSAGE};
-use crate::agent::protocol::{AgentInbound, AgentOutbound, RunOutcome, StepKind, StepState};
+use crate::agent::protocol::{
+    AgentInbound, AgentOutbound, RunOutcome, StepKind, StepState, ASK_PROTOCOL_VERSION,
+};
 use crate::agent::runner::{AgentRunner, Cancel, DECISION_QUEUE_CAPACITY};
 use crate::agent::{LlmBrain, SharedDisplay, TieredExecutor};
 use crate::rtc::WebRtcPeer;
@@ -82,9 +84,10 @@ struct PriorRun {
 /// the only way to know the old run has stopped clicking.
 const PRIOR_RUN_DRAIN_MS: u64 = 20_000;
 
-#[derive(Default)]
 pub struct AgentController {
     active: Option<ActiveRun>,
+    // Task-owned lease survives replacement and drain timeouts.
+    execution_lease: Arc<tokio::sync::Mutex<()>>,
     /// The display the session is sharing, handed to every run's executor so
     /// Ask can only ever look at the screen the phone is watching (L-230).
     /// Held here rather than passed per-run so a mid-run switch reaches the
@@ -93,6 +96,24 @@ pub struct AgentController {
     // Bounded for the lifetime of this session; a repeated command ID never
     // becomes a second execution, even after the original run ended.
     runs: HashMap<String, Arc<Mutex<Option<RunOutcome>>>>,
+}
+
+// One Mac is the effectful resource. A reconnect can create a new controller
+// while an old cancelled task is still draining, so session-local locks are
+// insufficient. This is desktop execution ownership, not backend routing state.
+static EXECUTION_LEASE: OnceLock<Arc<tokio::sync::Mutex<()>>> = OnceLock::new();
+
+impl Default for AgentController {
+    fn default() -> Self {
+        Self {
+            active: None,
+            execution_lease: Arc::clone(
+                EXECUTION_LEASE.get_or_init(|| Arc::new(tokio::sync::Mutex::new(()))),
+            ),
+            display: SharedDisplay::default(),
+            runs: HashMap::new(),
+        }
+    }
 }
 
 impl AgentController {
@@ -129,7 +150,7 @@ impl AgentController {
                 if let Some(peer) = peer {
                     let msg = AgentOutbound::AgentReady {
                         run_id,
-                        protocol_version: 1,
+                        protocol_version: ASK_PROTOCOL_VERSION,
                         ts: now_ms(),
                     };
                     tokio::spawn(async move {
@@ -143,7 +164,7 @@ impl AgentController {
                 protocol_version,
                 ..
             } => {
-                if protocol_version != Some(1) {
+                if protocol_version != Some(ASK_PROTOCOL_VERSION) {
                     if let Some(peer) = peer {
                         Self::send_refusal(
                             &peer,
@@ -297,6 +318,7 @@ impl AgentController {
         // command (view-only session, no provider) kill a legitimate run.
         // The new run waits below for the old one to actually stop.
         let prior = self.supersede_active();
+        let execution_lease = Arc::clone(&self.execution_lease);
 
         // Feed forwarder: runner step events → phone, over the reliable input
         // channel.
@@ -333,6 +355,34 @@ impl AgentController {
                 StepState::Running,
                 now_ms(),
             ));
+
+            // The predecessor handle is insufficient: a timed-out successor
+            // can finish while its detached predecessor still acts. All
+            // generations must acquire the same task-owned lease.
+            let _execution_guard = tokio::select! {
+                biased;
+                _ = run_cancel.wait() => {
+                    let _ = steps_tx.send(AgentOutbound::run_end(&run_id_task, RunOutcome::Stopped, now_ms()));
+                    *outcome_record.lock().unwrap() = Some(RunOutcome::Stopped);
+                    return;
+                }
+                acquired = tokio::time::timeout(
+                    std::time::Duration::from_millis(PRIOR_RUN_DRAIN_MS),
+                    execution_lease.lock_owned(),
+                ) => match acquired {
+                    Ok(guard) => guard,
+                    Err(_) => {
+                        let _ = steps_tx.send(AgentOutbound::step(
+                            &run_id_task, format!("{run_id_task}-busy"), StepKind::Error,
+                            "A previous task is still stopping. No new work has started.",
+                            None, None, StepState::Failed, now_ms(),
+                        ));
+                        let _ = steps_tx.send(AgentOutbound::run_end(&run_id_task, RunOutcome::Failed, now_ms()));
+                        *outcome_record.lock().unwrap() = Some(RunOutcome::Failed);
+                        return;
+                    }
+                },
+            };
 
             // Exclusive ownership (L-252). The superseded run was *asked* to
             // stop; until its task ends it may still be inside a synchronous
@@ -606,5 +656,23 @@ mod tests {
         controller.set_display(Some(7));
         assert!(cancel.is_cancelled());
         assert_eq!(controller.display.get(), Some(7));
+    }
+    #[tokio::test]
+    async fn a_timed_out_successor_cannot_forget_the_original_execution_owner() {
+        let controller = AgentController::default();
+        let owner = controller.execution_lease.clone().lock_owned().await;
+        let second = tokio::time::timeout(
+            std::time::Duration::from_millis(10),
+            controller.execution_lease.clone().lock_owned(),
+        )
+        .await;
+        assert!(second.is_err());
+        // Reconnecting cannot create a second execution owner either.
+        let reconnected = AgentController::default();
+        assert!(reconnected.execution_lease.try_lock().is_err());
+        // A third generation still cannot enter after the second has ended.
+        assert!(controller.execution_lease.try_lock().is_err());
+        drop(owner);
+        assert!(controller.execution_lease.try_lock().is_ok());
     }
 }

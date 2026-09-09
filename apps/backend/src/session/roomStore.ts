@@ -1,15 +1,22 @@
-import type { DeviceKind, SessionScope } from '@lilypad/protocol';
+import { SessionScopeSchema, type DeviceKind, type SessionScope } from '@lilypad/protocol';
+import { z } from 'zod';
 import { redisKeys } from '@lilypad/shared';
 import { SESSION_STATES, type SessionState } from './stateMachine.js';
 
 /** Redis surface `RoomStore` needs — satisfied by ioredis in production and
  * an in-memory fake in tests. A superset of `manager.ts`'s `KvStore`
- * (adds `keys`/`mget` for the boot-time full-table scan). */
+ * (adds bounded `scan`/`mget` for boot-time recovery). */
 export interface RoomKvStore {
   get(key: string): Promise<string | null>;
   set(key: string, value: string, mode: 'EX', ttlSeconds: number): Promise<unknown>;
   del(key: string): Promise<unknown>;
-  keys(pattern: string): Promise<string[]>;
+  scan(
+    cursor: string,
+    match: 'MATCH',
+    pattern: string,
+    count: 'COUNT',
+    size: number,
+  ): Promise<[string, string[]]>;
   mget(...keys: string[]): Promise<(string | null)[]>;
 }
 
@@ -64,50 +71,78 @@ export class RoomStore {
 
   async save(record: Omit<RoomRecord, 'updatedAt'>): Promise<void> {
     const full: RoomRecord = { ...record, updatedAt: this.now() };
-    await this.store.set(redisKeys.room(record.id), JSON.stringify(full), 'EX', this.ttlSeconds);
+    await this.store.set(
+      redisKeys.room(record.id),
+      JSON.stringify({ ...full, version: 1 }),
+      'EX',
+      this.ttlSeconds,
+    );
   }
 
   async delete(id: string): Promise<void> {
     await this.store.del(redisKeys.room(id));
   }
 
-  /**
-   * Non-expired room records for the one-time boot-time resurrection scan, at
-   * most `limit` of them.
-   *
-   * **Bounds (L-251).** `limit` is applied to the key list *before* the bulk
-   * read, and the read itself is chunked, so this process decodes at most
-   * `limit` records and holds at most `MGET_CHUNK` raw strings at a time. The
-   * previous comment claimed the scan was "bounded by `maxRooms`", but the cap
-   * lived in `RoomRegistry.resurrect` — every key was fetched, parsed and
-   * materialised first, and only then discarded. A Redis holding far more room
-   * keys than this instance's cap would have been decoded in full at boot.
-   *
-   * **Limitation, stated rather than implied:** `KEYS` is still O(keyspace)
-   * *inside Redis*, and briefly blocks it. Capping our side does not change
-   * that. This is acceptable only because it is one call at process start on a
-   * single-instance deployment; a horizontally scaled deployment needs a
-   * cursor (`SCAN`) here, and that is M11 work, not a comment.
-   */
+  /** Bounded cursor recovery. Invalid/expired keys consume work budget, not
+   * valid room capacity. No KEYS call or whole-keyspace array is allocated.
+   * SCAN count is a hint: oversized batches are truncated to the work budget.
+   * Redis command-level timeouts remain a client configuration responsibility. */
   async loadAll(limit = DEFAULT_MAX_RECORDS): Promise<RoomRecord[]> {
-    const keys = (await this.store.keys(`${redisKeys.room('')}*`)).slice(0, limit);
-    if (keys.length === 0) return [];
+    const cap = Math.min(DEFAULT_MAX_RECORDS, Math.max(0, Math.floor(limit)));
+    if (!Number.isFinite(cap) || cap === 0) return [];
     const records: RoomRecord[] = [];
-    for (let i = 0; i < keys.length; i += MGET_CHUNK) {
-      const values = await this.store.mget(...keys.slice(i, i + MGET_CHUNK));
-      for (const raw of values) {
-        if (!raw) continue; // expired between KEYS and MGET, or a stray key
-        const record = decodeRoomRecord(raw);
-        if (record) records.push(record);
+    const seen = new Set<string>();
+    let cursor = '0';
+    let scanned = 0;
+    let scans = 0;
+    const started = performance.now();
+    do {
+      scans++;
+      const [next, batch] = await this.store.scan(
+        cursor,
+        'MATCH',
+        `${redisKeys.room('')}*`,
+        'COUNT',
+        MGET_CHUNK,
+      );
+      cursor = next;
+      const keys = batch.slice(0, MAX_SCAN_KEYS - scanned).filter((key) => {
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+      scanned += Math.min(batch.length, MAX_SCAN_KEYS - scanned);
+      for (
+        let i = 0;
+        i < keys.length && records.length < cap && performance.now() - started < MAX_SCAN_MS;
+      ) {
+        const chunk = keys.slice(i, i + Math.min(MGET_CHUNK, cap - records.length));
+        const values = await this.store.mget(...chunk);
+        i += chunk.length;
+        for (let j = 0; j < values.length; j++) {
+          const raw = values[j];
+          if (!raw) continue;
+          const record = decodeRoomRecord(raw);
+          if (record && redisKeys.room(record.id) === chunk[j]) records.push(record);
+        }
       }
-    }
+    } while (
+      cursor !== '0' &&
+      scans < 256 &&
+      records.length < cap &&
+      scanned < MAX_SCAN_KEYS &&
+      performance.now() - started < MAX_SCAN_MS &&
+      seen.size < MAX_SCAN_KEYS
+    );
     return records;
   }
 }
 
-/** How many keys one `MGET` asks for. Keeps the reply size bounded regardless
- * of how many rooms are being recovered. */
+/** Keys per MGET, not a byte bound on a corrupt Redis reply. Record sizes
+ * are checked before JSON parsing; transport-level reply limits remain separate. */
 const MGET_CHUNK = 256;
+const MAX_SCAN_KEYS = 40_000;
+const MAX_SCAN_MS = 5_000;
 
 /** Fallback cap when a caller does not pass the registry's room cap. */
 const DEFAULT_MAX_RECORDS = 10_000;
@@ -135,28 +170,33 @@ export function decodeRoomRecord(raw: string): RoomRecord | null {
   // A per-record size limit, so one oversized value cannot make recovery cost
   // whatever the writer felt like. A real record is a few hundred bytes; this
   // is generous by two orders of magnitude and still bounded.
-  if (raw.length > MAX_RECORD_BYTES) return null;
-  let parsed: unknown;
+  if (Buffer.byteLength(raw, 'utf8') > MAX_RECORD_BYTES) return null;
   try {
-    parsed = JSON.parse(raw);
+    const result = PersistedRoomSchema.safeParse(JSON.parse(raw));
+    return result.success ? result.data : null;
   } catch {
-    return null; // not JSON at all
-  }
-  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null;
-  const r = parsed as Record<string, unknown>;
-  if (typeof r.id !== 'string' || r.id.length === 0) return null;
-  if (typeof r.fsmState !== 'string' || !SESSION_STATES.includes(r.fsmState as SessionState)) {
     return null;
   }
-  if (r.sessionId !== undefined && typeof r.sessionId !== 'string') return null;
-  if (!Array.isArray(r.scopes) || r.scopes.some((s) => typeof s !== 'string')) return null;
-  if (typeof r.deviceIds !== 'object' || r.deviceIds === null || Array.isArray(r.deviceIds)) {
-    return null;
-  }
-  if (Object.values(r.deviceIds as Record<string, unknown>).some((v) => typeof v !== 'string')) {
-    return null;
-  }
-  if (typeof r.established !== 'boolean') return null;
-  if (typeof r.updatedAt !== 'number' || !Number.isFinite(r.updatedAt)) return null;
-  return parsed as RoomRecord;
 }
+
+// Add a version to new records while accepting existing versionless records.
+const PersistedRoomSchema = z
+  .object({
+    version: z.literal(1).optional(),
+    id: z.string().min(1).max(128),
+    fsmState: z.enum(SESSION_STATES),
+    sessionId: z.string().min(1).max(128).optional(),
+    scopes: z.array(SessionScopeSchema).max(8),
+    deviceIds: z
+      .object({
+        desktop: z.string().min(1).max(256).optional(),
+        mobile: z.string().min(1).max(256).optional(),
+      })
+      .strict(),
+    established: z.boolean(),
+    updatedAt: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+  })
+  .transform(({ version, ...record }) => {
+    void version;
+    return record;
+  });

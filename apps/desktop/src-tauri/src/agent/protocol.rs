@@ -6,6 +6,9 @@
 //! names, enum variants (snake_case), and length caps match the zod schema
 //! exactly so the wire format never drifts between the mobile app and here.
 
+/// Must match @lilypad/protocol: version 2 discloses read and navigation grants.
+pub const ASK_PROTOCOL_VERSION: u32 = 2;
+
 use serde::{Deserialize, Deserializer, Serialize};
 
 const MAX_COMMAND_LEN: usize = 4 * 1024;
