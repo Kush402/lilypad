@@ -16,9 +16,9 @@ This file exists because the list used to live only in a conversation. Six rows
 (L-20, L-38 through L-42) were reconstructed from later summaries after the
 earlier record was compacted away, which is the argument for the file.
 
-**Status counts:** 236 fixed · 35 shipped · 4 partially fixed · 0 open ·
+**Status counts:** 238 fixed · 35 shipped · 4 partially fixed · 0 open ·
 1 blocked on something outside the code · 4 deliberately unchanged · 4 not a bug ·
-1 unrecoverable (L-20). 285 rows.
+1 unrecoverable (L-20). 287 rows.
 
 "Fixed" here means _fixed at source_. Fixed, released and device-verified are
 three different states and this file keeps them apart. L-227 through L-259 are
@@ -1312,12 +1312,12 @@ Claude's own handoff is still outstanding.
 
 ## What is left, and who it needs
 
-| Needs                         | Rows                                                                    |
-| ----------------------------- | ----------------------------------------------------------------------- |
-| A real device, a real network | L-19 and the incomplete hardware gate                                   |
-| A signed build on a real Mac  | L-247, L-251, L-259 and the whole Ask boundary pass, fixed at source    |
-| A real provider account       | L-282, L-283 and L-286; every probe so far ran against synthetic bodies |
-| Claude implementation         | L-272 reopened at P1 by the independent third-pass review below         |
+| Needs                         | Rows                                                                      |
+| ----------------------------- | ------------------------------------------------------------------------- |
+| A real device, a real network | L-19 and the incomplete hardware gate                                     |
+| A signed build on a real Mac  | L-247, L-251, L-259 and the whole Ask boundary pass, fixed at source      |
+| A real provider account       | L-282, L-283 and L-286; every probe so far ran against synthetic bodies   |
+| Claude implementation         | L-272 fourth-pass correction independently verified; release gates remain |
 
 ## Claude's third pass on the 2026-09-10 release review — 2026-09-10
 
@@ -1464,3 +1464,70 @@ across the test's own polling sleeps is the point of the lock. Gate now exits 0.
 Everything the third pass listed as unperformed is still unperformed: candidate
 CI, signed builds, the device matrix, a real provider account and the visual
 first-use journey.
+
+## Independent fourth-pass release review — 2026-09-10
+
+L-272's approval bypass is closed in the inspected source. Recompiled the
+original independent probe against the current `ax/tree.rs`: both the 5%→95%
+tip and 10:30→18:30 appointment changes now return false. All 11 standalone tree
+tests pass. Exact labels/values inside the target window replace shape-based
+exceptions, while unrelated-window scoping remains. The acknowledged UX cost
+is extra approvals for a changing decoration inside the same window; do not
+reintroduce string-shape exemptions to remove that friction.
+
+No new source blocker was established in this bounded follow-up. This is a
+source-fix verification, not certification that all product behavior is safe.
+The Rust source/tests match the build scratch byte-for-byte. Independent
+`cargo clippy --all-targets -- -D warnings` and `cargo fmt --all -- --check`
+exit 0. The test-lock lint allowance is documented; it is not a production
+synchronization change.
+
+**Public release remains no-go on missing evidence.** The root checkout still
+reports `main` at `0fd0916`, while Claude's handoff names an unpublished branch;
+identify one actual candidate SHA containing these source changes. Latest main
+CI is still failed at `bd5a842` (run 34452574155). More recent successful
+scheduled runs at that old SHA are not candidate CI. Signed builds, device,
+provider and first-use UX gates remain unperformed according to the handoff.
+
+Next pass: freeze scope, resolve the candidate checkout without deleting the
+user's index, run full CI on that exact candidate, then prepare signed test
+artifacts under the owner's authorization. Run the existing manual matrix:
+network handoff/background recovery, typing, decoder recovery, Ask setup and
+Stop, mixed-version compatibility, install/update and website download.
+Capture build identifiers and concrete pass/fail evidence. Keep scripts
+withdrawn, preserve consent and the single-replica limit. No tag/release yet.
+
+Independent full Rust run: **572 passed, 3 failed** (99.80s). Failures:
+`agent::llm::resolver::tests::a_refresh_eventually_publishes_an_answer`
+(no publication within 10s),
+`agent::sandbox::tests::wall_clock_timeout_kills_a_hung_script`
+(kill not prompt), and
+`agent::sandbox::tests::a_setsid_descendant_does_not_outlive_the_run`
+(cleanup reported confirmed). All three pass when rerun individually.
+This establishes inconsistent suite results, not a proven new reachable
+product exploit. Do not dismiss the cleanup assertion as timing-only without
+checking the outcome and spawn path; scripts remain withdrawn. Before claiming
+the software gate green, investigate scheduling/test isolation versus actual
+cleanup reporting, add deterministic coverage where needed, and obtain a clean
+full candidate run. Do not merely increase deadlines or retry CI until green.
+Logs: `/tmp/lilypad-v34-fourth-rust.log` and
+`/tmp/lilypad-v34-fourth-rechecks.log` on the review machine.
+
+## Claude's fifth pass — suite reliability — 2026-09-10
+
+The independent fourth-pass review recorded three Rust tests that failed in a
+full run and passed when rerun alone. Investigated without touching a deadline
+to make them green. Two are defects in the tests' own evidence and get rows;
+the third was the same class and is folded into the second row.
+
+| ID    | Finding                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | Status                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| ----- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| L-287 | **P2 — the L-284 redirect tests could pass for the wrong reason.** The tripwire that counts a leaked request stopped listening three seconds after it was spawned, and the redirector stopped answering after five. Under a full `cargo test` those spans expired before the request under test was issued, so a followed redirect would have arrived at a closed socket and been counted as zero. Separately, the listener was left non-blocking and an accepted stream inherits that on macOS, so `drain_request` and `write_all` both returned `WouldBlock` and both results were discarded: the server answered nothing, and the client's transport error was reported as the boundary failing to name the second origin. Observed in 2 of 4 full runs. | Fixed — fifth pass, 2026-09-10. Both servers now live for the test's lifetime rather than a wall-clock span, stopped explicitly after the assertions and backstopped at 120s only so a panicking test cannot leak the thread. Accepted streams are put back into blocking mode before they are read or written. The two tests still fail when the redirect policy is changed back to `Policy::limited(5)`, so the boundary itself is still what they measure. A detector that can leave before the thing it detects is not evidence, which is why this is a row and not a tidy-up.                                                                                                                                                                                                                                                                                                                                                               |
+| L-288 | **P3 — three tests asserted on outcomes the suite's own scheduling decides.** `resolver::tests::a_refresh_eventually_publishes_an_answer` polled for a published answer without taking the process-wide epoch turn, so any concurrent settings write discarded the answer it was waiting for. `sandbox::tests::a_setsid_descendant_does_not_outlive_the_run` asserted one branch of a race the module documents as unwinnable: on a loaded machine perl never reached its `fork` inside the 400ms budget, the run was genuinely clean, and `Confirmed` — the correct answer — failed the test. `wall_clock_timeout_kills_a_hung_script` bounded a whole run, cleanup included, at a flat five seconds with nothing behind the number.                       | Fixed — fifth pass, 2026-09-10. The resolver test takes the turn lock; measured with a thread calling `invalidate()` every 5ms it never publishes at all, which is the L-278 rule working. The setsid test now asserts the invariant that holds in every branch — a confirmed cleanup never coexists with a surviving descendant — and says so when the observation gap was not exercised, instead of passing silently. The timing bound is derived from `wall_timeout + CLEANUP_GRACE`, measured at ~850ms idle and ~1.3s under sixteen concurrent `ps` loops, and still sits far below the 30s a broken timeout would take. New deterministic coverage in `descendants`: a process still naming the run lowers `Confirmed` to `Unknown` and is never killed for it, and an unnamed run still confirms. Both fail against a `terminate_in` that ignores the evidence; the setsid invariant fails against a `terminate_in` that always confirms. |
+
+### What this pass did not do
+
+No product code changed. No user-visible behaviour changed, so `CHANGELOG.md`
+has no entry for it. Candidate CI, signed builds, the device matrix, a real
+provider account, the first-use UX journey and the download/install path all
+remain unperformed.

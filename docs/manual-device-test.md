@@ -620,6 +620,72 @@ _after_ the row-3 check, not before, since that check needs the old install.
   If you have such a Mac, item 12 there is worth more than anywhere else.
 - Redis recovery is covered by fake-store tests, not a real Redis.
 
+## v0.1.34 gate sheet — what to check on the signed candidate
+
+The general procedure above still applies. This is the short list for the
+v0.1.34 candidate, and it is the gate the independent reviews have repeatedly
+called unperformed. Nothing in this release is verified by source tests alone.
+
+Two facts that shape the test before you start:
+
+- **Ask is protocol version 3 now.** Both halves must agree. A phone on 0.1.33
+  against a 0.1.34 Mac must say it needs updating and offer a way forward — not
+  sit on a screen you cannot complete. Test the mismatch in both directions.
+- **Ask still cannot run scripts.** They were withdrawn in this cycle and stay
+  withdrawn. Asking for one should produce a clear refusal, not a hang.
+
+### The first-use journey, start to finish
+
+| #   | Scenario                                                                           | Expected                                                                                                                 |
+| --- | ---------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| 1   | Clean Mac, no provider configured. Open Ask on the phone                           | The phone says which state the Mac is in — checking, not configured, unavailable or too old — and offers Check again     |
+| 2   | Set up the default provider from nothing, following only what the screen tells you | You reach a saved, tested configuration without leaving the app for instructions                                         |
+| 3   | Make the first configuration read fail, then retry                                 | Try again clears the error and shows the real state. The error screen must not survive a successful retry                |
+| 4   | Complete one genuinely useful Ask task end to end                                  | The task finishes and the result is visible on the phone                                                                 |
+| 5   | Turn on Let Ask take screenshots, then change the provider                         | Your screenshot choice stays yours. Changing the provider clears only the tested-capability result, never the permission |
+
+### Approval context after L-272
+
+| #   | Scenario                                                                                 | Expected                                                                                                          |
+| --- | ---------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| 6   | Approve a press, then change a value in the same window before it happens                | You are asked again. This is the release blocker that was reopened at P1, so try an amount, a time and a quantity |
+| 7   | Approve a press with an unrelated window visible whose clock or unread count is changing | You are not asked again for that                                                                                  |
+| 8   | Approve a press in a window that has its own clock in it                                 | You are asked again. Documented cost of exactness, not a bug — record it if it is annoying in practice            |
+
+### Connection, input and recovery
+
+| #   | Scenario                                                                  | Expected                                                                                                             |
+| --- | ------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| 9   | LAN to cellular and back, mid-session                                     | Video recovers each way and the status text tells the truth throughout                                               |
+| 10  | Background the phone, wait, foreground it                                 | The session resumes or ends honestly. Never connected over a dead stream                                             |
+| 11  | Type a long sentence with Unicode, emoji, paste, backspace and a held key | Every character arrives once, in order                                                                               |
+| 12  | Provoke a frozen picture while bytes still arrive                         | The phone says picture frozen, retrying, retries a bounded number of times, and does not report a healthy connection |
+| 13  | Pull the control channel down mid-session                                 | The phone says controls not connected rather than showing a good connection                                          |
+| 14  | Press Stop during an Ask task                                             | The run stops and Stop stays reachable while it is stopping                                                          |
+
+### Provider validation
+
+| #   | Scenario                                                                        | Expected                                                                                       |
+| --- | ------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| 15  | A real provider account, with credentials you supply deliberately for this test | Setup, connection test and one real task all succeed. Record which provider and which model    |
+| 16  | A local or compatible endpoint                                                  | Same, without a hosted account. Do not claim compatible-endpoint support until this row passes |
+| 17  | An endpoint that answers with a redirect to another origin                      | Refused, naming where it was being sent. Nothing reaches the second origin                     |
+
+### Distribution
+
+| #   | Scenario                                                                 | Expected                                                                                                                           |
+| --- | ------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------- |
+| 18  | Download the Mac build from the site, signed out and in a private window | The download works anonymously and the page states this version. See the note above about cached pages                             |
+| 19  | Install over an older version and let the updater find this one          | The update appears on the bubble and installing it is still a deliberate click. Install the older build first or mark this blocked |
+| 20  | Install the phone build from TestFlight                                  | Record the build number against the version                                                                                        |
+
+### Recording the result
+
+Use the Results block below, and add the two identifiers this gate turns on:
+the candidate commit the builds were made from, and the desktop and mobile
+version and build numbers as the installed apps report them. A row without
+those is not evidence about this candidate.
+
 ## Results
 
 Copy this in and fill it out. "Not run" is a legitimate answer; a guess is not.

@@ -444,6 +444,88 @@ mod tests {
         );
     }
 
+    /// The second signal, tested without a race.
+    ///
+    /// The `setsid` escapee in `sandbox::tests` can only be *observed* by
+    /// luck — that is the documented gap — so the thing that catches it when
+    /// ancestry does not must be provable on its own: a process still naming
+    /// this run after cleanup lowers `Confirmed` to `Unknown`, and is never
+    /// killed for it.
+    #[test]
+    fn a_process_still_naming_the_run_lowers_the_verdict() {
+        let dir = std::env::temp_dir().join(format!("lilypad_named_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Not a descendant of the tracked run: it only mentions the
+        // directory. `tail -f` rather than a shell, because `/bin/sh -c` on
+        // macOS `exec`s its last command and the mention disappears from the
+        // argv with it — which is the same reason the doc comment above says
+        // an argv check may only ever lower confidence.
+        std::fs::write(dir.join("held"), b"").unwrap();
+        let mut namer = Command::new("/usr/bin/tail")
+            .arg("-f")
+            .arg(dir.join("held"))
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn namer");
+        let namer_pid = namer.id() as i32;
+
+        let mut mine = Command::new("/bin/sh")
+            .arg("-c")
+            .arg("sleep 5")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn tracked");
+        let tracker = Tracker::start(mine.id() as i32);
+        std::thread::sleep(Duration::from_millis(200));
+        let _ = mine.kill();
+        let _ = mine.wait();
+
+        // Ancestry alone is satisfied — everything owned has exited — and the
+        // argv evidence is what refuses to call that a clean run.
+        assert_eq!(
+            tracker.terminate_in(Duration::from_secs(3), Some(&dir)),
+            Cleanup::Unknown,
+            "a process still naming the run was reported as a clean run"
+        );
+        // SAFETY: signal 0 only probes for existence.
+        assert!(
+            unsafe { libc::kill(namer_pid, 0) } == 0,
+            "evidence was treated as authority and the process was killed"
+        );
+
+        let _ = namer.kill();
+        let _ = namer.wait();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The same tracker, with nothing naming the run, still confirms — so the
+    /// test above is about the evidence and not about `terminate_in` always
+    /// answering `Unknown`.
+    #[test]
+    fn an_unnamed_run_still_confirms() {
+        let dir = std::env::temp_dir().join(format!("lilypad_unnamed_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut mine = Command::new("/bin/sh")
+            .arg("-c")
+            .arg("sleep 5")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn tracked");
+        let tracker = Tracker::start(mine.id() as i32);
+        std::thread::sleep(Duration::from_millis(200));
+        let _ = mine.kill();
+        let _ = mine.wait();
+        assert_eq!(
+            tracker.terminate_in(Duration::from_secs(3), Some(&dir)),
+            Cleanup::Confirmed
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     #[test]
     fn an_unreadable_process_table_is_none_rather_than_empty() {
         // The shape of the original defect, at the lowest level: "could not

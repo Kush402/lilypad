@@ -312,8 +312,18 @@ mod tests {
         );
     }
 
+    // Takes a turn for the same reason the two tests below do. This one
+    // asserts that an answer *is* published, and `peek` reports `Unknown` for
+    // any answer whose generation is no longer current — so any test that
+    // writes settings while this one polls (every write bumps the epoch)
+    // discards the answer this test is waiting for. Measured: with a thread
+    // calling `invalidate()` every 5ms, this test never sees a published
+    // answer at all. That is the L-278 rule working, not a resolver defect,
+    // and the fix is to take the turn rather than to poll for longer.
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn a_refresh_eventually_publishes_an_answer() {
+        let _turn = epoch_test_lock();
         let resolver = ProviderResolver::new();
         resolver.warm();
         for _ in 0..200 {
@@ -325,8 +335,8 @@ mod tests {
         panic!("no resolution was published within 10s");
     }
 
-    // The epoch is process-wide, so this test must hold the turn lock across
-    // its own polling sleeps; that is the point of the lock, not a mistake.
+    // The epoch is process-wide, so this test holds the turn lock across its
+    // own polling sleeps; that is the point of the lock, not a mistake.
     #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn invalidating_discards_what_was_known() {

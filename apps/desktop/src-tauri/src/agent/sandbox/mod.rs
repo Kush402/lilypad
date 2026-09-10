@@ -611,9 +611,25 @@ mod tests {
         .unwrap();
         assert!(outcome.timed_out);
         assert!(!outcome.succeeded());
+        // The regression this catches is the timeout not firing: the script
+        // sleeps for 30 seconds, so a run that waited it out would return with
+        // `timed_out` false, which the two assertions above already refuse.
+        //
+        // The bound below is the run's own budget rather than a round number.
+        // `run` may spend the wall timeout, then the cleanup grace it is
+        // allowed for descendants, plus a `ps` and a `pgrep`. Measured on this
+        // machine: ~850ms idle, ~1.3s with sixteen concurrent `ps` loops. The
+        // previous bound was a flat five seconds with nothing behind it, and a
+        // loaded review machine exceeded it on a run where the kill had in
+        // fact worked. Deriving it from the constants keeps it true if either
+        // changes, and it still sits far below the 30 seconds that a broken
+        // timeout would take.
+        let budget = limits.wall_timeout + CLEANUP_GRACE;
         assert!(
-            start.elapsed() < Duration::from_secs(5),
-            "kill was not prompt"
+            start.elapsed() < budget * 4,
+            "the run took {:?}, past four times its own {:?} budget",
+            start.elapsed(),
+            budget
         );
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -853,34 +869,50 @@ mod tests {
         .await
         .unwrap();
 
-        // The honest outcome, and the one this test exists to pin.
+        // What this test pins is the *claim*, not the outcome of a race.
         //
-        // This script is written to be unobservable: the parent forks, prints,
-        // and exits immediately, so the child is reparented before the first
-        // ancestry sample can attribute it to the run. Nothing kills it, and
-        // the marker below is duly written two seconds later.
+        // Three things can happen, and which one happens depends on machine
+        // load, because the 400ms budget has to cover an `execve` of
+        // sandbox-exec, an `execve` of perl, and a `fork`:
         //
-        // What must NOT happen is Lilypad calling that a clean run. An earlier
-        // implementation did exactly that — the sweep it used could not see the
-        // process either, and reported the absence of evidence as evidence of
-        // absence. So the assertion is about the claim, not about the process:
-        // cleanup is `Unknown`, and an unconfirmed cleanup is never success.
+        //   1. perl never reaches the fork. There is no escapee, the run
+        //      really is clean, and `Confirmed` is the correct answer.
+        //   2. the fork happens and a sample catches it before it is
+        //      reparented. It is killed by pid, and the run is clean.
+        //   3. the fork happens and evades every sample — the case this test
+        //      exists for. Nothing kills it, the marker appears two seconds
+        //      later, and cleanup must NOT be `Confirmed`.
+        //
+        // An earlier revision asserted case 3 unconditionally and failed on a
+        // loaded machine in case 1, which is a correct run. The invariant that
+        // holds in all three is the one that matters, and it is exactly the
+        // defect the old `pgrep` sweep had: a confirmed cleanup must never
+        // coexist with a surviving descendant. Absence of evidence is not
+        // evidence of absence.
         //
         // Containment itself is not available on macOS to an unprivileged
         // process (see `descendants` for the two mechanisms measured and
         // rejected), which is why `run_script` is not offered to the model in
         // this build.
-        assert!(
-            !outcome.cleanup_confirmed,
-            "a descendant that evades observation was reported as a clean run"
-        );
-
+        let forked = outcome.stdout.contains("spawned");
         tokio::time::sleep(Duration::from_millis(2500)).await;
+        let escaped = marker.exists();
         assert!(
-            marker.exists(),
-            "the escapee did not run — this test no longer reproduces the gap it documents, \
-             so the claim above is untested"
+            !(outcome.cleanup_confirmed && escaped),
+            "a descendant survived a run that was reported clean"
         );
+        assert!(
+            !escaped || forked,
+            "the marker appeared without the run ever reporting the fork"
+        );
+        // Case 1 is a correct run but not the one documented above, so say so
+        // rather than passing silently as though the gap had been exercised.
+        if !forked {
+            eprintln!(
+                "note: perl did not reach the fork inside the 400ms budget; \
+                 the observation gap was not exercised by this run"
+            );
+        }
         std::fs::remove_dir_all(&dir).ok();
     }
 }
