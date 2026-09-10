@@ -234,6 +234,7 @@ describe('ViewerScreen', () => {
         bitrateKbps: 1200,
         fps: 30,
         packetLossPct: 0,
+        video: { flowing: true, decoding: true, control: true, recoveries: 0 },
       });
     });
 
@@ -241,6 +242,60 @@ describe('ViewerScreen', () => {
     expect(screen.getByText('42 ms')).toBeTruthy();
     expect(screen.getByText('1200 kbps')).toBeTruthy();
     expect(screen.getByText('30 fps')).toBeTruthy();
+    // A healthy stream says nothing extra.
+    expect(screen.queryByTestId('video-frozen')).toBeNull();
+    expect(screen.queryByTestId('control-channel-down')).toBeNull();
+  });
+
+  /** L-273. A frozen picture used to look exactly like a good connection,
+   * because health was one video-shaped question answered by arriving bytes. */
+  it('says the picture is frozen when video arrives but does not decode', async () => {
+    renderViewer();
+    const stats = (video: {
+      flowing: boolean;
+      decoding: boolean | null;
+      control: boolean;
+      recoveries: number;
+    }) =>
+      act(async () => {
+        lastConn().cb.onStats({
+          level: 'good',
+          rttMs: 42,
+          bitrateKbps: 1200,
+          fps: 0,
+          packetLossPct: 0,
+          video,
+        });
+      });
+
+    await stats({ flowing: true, decoding: false, control: true, recoveries: 1 });
+    expect(screen.getByTestId('video-frozen')).toBeTruthy();
+    expect(screen.queryByTestId('control-channel-down')).toBeNull();
+
+    // A still screen is not a frozen one: an idle encoder sends nothing, so
+    // neither bytes nor frames advance and there is nothing to report.
+    await stats({ flowing: false, decoding: false, control: true, recoveries: 0 });
+    expect(screen.queryByTestId('video-frozen')).toBeNull();
+
+    // Nor is a platform that does not report decoded frames at all.
+    await stats({ flowing: true, decoding: null, control: true, recoveries: 0 });
+    expect(screen.queryByTestId('video-frozen')).toBeNull();
+  });
+
+  it('says so when the picture is perfect and the controls are not connected', async () => {
+    renderViewer();
+    await act(async () => {
+      lastConn().cb.onStats({
+        level: 'good',
+        rttMs: 42,
+        bitrateKbps: 1200,
+        fps: 30,
+        packetLossPct: 0,
+        video: { flowing: true, decoding: true, control: false, recoveries: 0 },
+      });
+    });
+    expect(screen.getByTestId('control-channel-down')).toBeTruthy();
+    expect(screen.queryByTestId('video-frozen')).toBeNull();
   });
 
   it('sends only the newly-typed increment via the hidden keyboard input', async () => {

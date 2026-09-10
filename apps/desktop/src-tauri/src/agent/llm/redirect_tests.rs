@@ -24,7 +24,9 @@ use std::time::{Duration, Instant};
 /// Drain one request's headers so the peer is not left writing into a closed
 /// socket. The content is not asserted on; arrival is the whole signal.
 fn drain_request(stream: &mut TcpStream) {
-    let Ok(clone) = stream.try_clone() else { return };
+    let Ok(clone) = stream.try_clone() else {
+        return;
+    };
     let mut reader = BufReader::new(clone);
     loop {
         let mut line = String::new();

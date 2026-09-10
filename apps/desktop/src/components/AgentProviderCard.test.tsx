@@ -35,6 +35,7 @@ const UNCONFIGURED = {
   model: null,
   baseUrl: null,
   origin: null,
+  allowScreenshots: null,
   vision: null,
   tools: null,
   verifiedAt: null,
@@ -150,5 +151,66 @@ describe('recovering from a failed load (L-280)', () => {
     fireEvent.click(screen.getByText('Try again'));
     await waitFor(() => expect(screen.getByTestId('agent-provider-load-error')).toBeTruthy());
     expect(screen.getByText('Try again')).toBeTruthy();
+  });
+});
+
+describe('screenshot permission is not a probe result (L-286)', () => {
+  /** A Mac where the model passed a vision probe but the person never allowed
+   * screenshots. One field used to hold both answers. */
+  const TESTED_BUT_NOT_ALLOWED = {
+    providerKind: 'anthropic',
+    profileId: 'anthropic',
+    model: 'claude-sonnet-4',
+    baseUrl: null,
+    origin: 'https://api.anthropic.com',
+    allowScreenshots: false,
+    vision: true,
+    tools: true,
+    verifiedAt: '2026-09-10T00:00:00Z',
+    hasKey: true,
+    readiness: 'ready',
+    problem: null,
+    source: 'settings',
+  };
+
+  const load = (config: unknown) =>
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === 'list_provider_presets') return PRESETS;
+      if (cmd === 'get_agent_config') return config;
+      if (cmd === 'set_agent_config') return config;
+      return undefined;
+    });
+
+  it('leaves the checkbox unticked when only the model was verified', async () => {
+    load(TESTED_BUT_NOT_ALLOWED);
+    render(<AgentProviderCard />);
+    const box = await screen.findByRole('checkbox', { name: /take screenshots/i });
+    expect((box as HTMLInputElement).checked).toBe(false);
+    // …and says so, rather than reporting a capability as if it were in use.
+    expect(screen.getByText(/turned off above/i)).toBeTruthy();
+  });
+
+  it('ticks the checkbox from the permission, not from the measurement', async () => {
+    load({ ...TESTED_BUT_NOT_ALLOWED, allowScreenshots: true, vision: null });
+    render(<AgentProviderCard />);
+    const box = await screen.findByRole('checkbox', { name: /take screenshots/i });
+    expect((box as HTMLInputElement).checked).toBe(true);
+  });
+
+  it('sends the permission as its own field on save', async () => {
+    load({ ...TESTED_BUT_NOT_ALLOWED, allowScreenshots: false, vision: null });
+    render(<AgentProviderCard />);
+    const box = await screen.findByRole('checkbox', { name: /take screenshots/i });
+    fireEvent.click(box);
+    fireEvent.click(screen.getByRole('button', { name: /save without testing/i }));
+    await waitFor(() => {
+      const save = vi.mocked(invoke).mock.calls.find(([cmd]) => cmd === 'set_agent_config');
+      expect(save).toBeTruthy();
+      const args = (save?.[1] as { args: Record<string, unknown> }).args;
+      expect(args.allowScreenshots).toBe(true);
+      // The probe's field is not the checkbox's field, and the card must not
+      // pretend to answer for it.
+      expect(args.vision).toBeUndefined();
+    });
   });
 });

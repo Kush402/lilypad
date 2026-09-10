@@ -10,6 +10,9 @@ interface AgentConfigDto {
   model: string | null;
   baseUrl: string | null;
   origin: string | null;
+  /** The person's answer to "may Ask take screenshots". Not a measurement. */
+  allowScreenshots: boolean | null;
+  /** Whether image input was **observed** to work. Three-state. */
   vision: boolean | null;
   tools: boolean | null;
   verifiedAt: string | null;
@@ -125,7 +128,10 @@ export function AgentProviderCard() {
       if (c.profileId) setProfileId(c.profileId);
       setModel(c.model ?? '');
       setBaseUrl(c.baseUrl ?? '');
-      setWantVision(c.vision === true);
+      // The checkbox shows the permission, never the probe result. They were
+      // one field, so a model that happened to pass a vision probe used to
+      // tick a box the person had never ticked (L-286).
+      setWantVision(c.allowScreenshots === true);
       // A configured Mac opens on the last step; an unconfigured one starts at
       // the beginning, with the default preset already usable (L-279).
       setStep(c.readiness === 'unconfigured' ? 'provider' : 'test');
@@ -183,7 +189,7 @@ export function AgentProviderCard() {
           baseUrl: baseUrl.trim() || null,
           // Only ever sent as a real answer. Omitting it preserves whatever
           // is stored, which is what the old `null` should always have meant.
-          vision: wantVision,
+          allowScreenshots: wantVision,
           apiKey: apiKey.trim() || null,
         },
       });
@@ -485,14 +491,28 @@ export function AgentProviderCard() {
   );
 }
 
-/** What is known about capabilities, in one sentence, three-state. */
+/**
+ * What is known about capabilities, in one sentence, three-state.
+ *
+ * Capability only. The checkbox above states the permission, and saying
+ * "screenshots work" about a box that is unticked would describe a thing that
+ * will not happen (L-286).
+ */
 export function capabilitySentence(config: AgentConfigDto): string {
   if (config.tools === null && config.vision === null) return 'Nothing has been tested yet.';
   const parts: string[] = [];
   parts.push(config.tools === true ? 'Tool calling works' : 'Tool calling did not work');
-  if (config.vision === true) parts.push('screenshots work');
-  else if (config.vision === false) parts.push('screenshots did not work, so Ask stays text-only');
-  else parts.push('screenshots untested');
+  if (config.vision === true) {
+    parts.push(
+      config.allowScreenshots === true
+        ? 'screenshots work'
+        : 'screenshots work, but they are turned off above',
+    );
+  } else if (config.vision === false) {
+    parts.push('screenshots did not work, so Ask stays text-only');
+  } else {
+    parts.push('screenshots untested');
+  }
   const when = config.verifiedAt ? ` (checked ${config.verifiedAt.slice(0, 10)})` : '';
   return `${parts.join('; ')}${when}.`;
 }

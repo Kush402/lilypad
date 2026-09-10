@@ -278,6 +278,34 @@ fn open_dir_at(parent: Option<&OwnedFd>, name: &OsStr, nofollow: bool) -> Result
 /// `target` must already have passed [`resolve_in`], so it is lexically inside
 /// home; this walk is what makes that true of the real objects as well.
 pub fn walk_to_parent(home: &Path, target: &Path) -> Result<(JailedDir, OsString)> {
+    walk(home, target, false)
+}
+
+/// How many path components below home one `new_folder` may create.
+///
+/// `mkdir -p` has no limit, and a model that has misread a task can ask for
+/// one. This is deep enough for anything a person would type and shallow
+/// enough that a runaway request is refused rather than acted on.
+pub const MAX_NEW_FOLDER_DEPTH: usize = 32;
+
+/// As [`walk_to_parent`], but creating the intermediate directories that do
+/// not exist yet (L-268).
+///
+/// The tool has always told the model it creates "any missing parents". It did
+/// not: the walk only ever *opened* components, so a nested path failed at the
+/// first one that was not already there — and the tests all created the parent
+/// in advance, so nothing said so.
+///
+/// Each level is created and then descended into by descriptor, never by path,
+/// so the jail is the same one the plain walk enforces. A component that is
+/// already a real directory is reused; one that is a symbolic link or a
+/// regular file is refused rather than replaced, and a link swapped in between
+/// the create and the open fails the `O_NOFOLLOW` open.
+pub fn walk_creating_parents(home: &Path, target: &Path) -> Result<(JailedDir, OsString)> {
+    walk(home, target, true)
+}
+
+fn walk(home: &Path, target: &Path, create: bool) -> Result<(JailedDir, OsString)> {
     let rest = target
         .strip_prefix(home)
         .map_err(|_| anyhow::anyhow!("{} is not under the home directory", target.display()))?;
@@ -285,24 +313,33 @@ pub fn walk_to_parent(home: &Path, target: &Path) -> Result<(JailedDir, OsString
     let Some(last) = components.pop() else {
         bail!("cannot operate on the home directory itself");
     };
+    if create && components.len() + 1 > MAX_NEW_FOLDER_DEPTH {
+        bail!(
+            "{} is more than {MAX_NEW_FOLDER_DEPTH} folders deep",
+            target.display()
+        );
+    }
 
     // Home is opened *following* links: the user may legitimately have their
     // home directory behind one, and it is the root of the jail rather than
     // something inside it. Everything below it is walked no-follow.
-    let mut dir = open_dir_at(None, home.as_os_str(), false)
-        .with_context(|| format!("cannot open the home directory {}", home.display()))?;
-    let mut walked = home.to_path_buf();
+    let mut dir = JailedDir {
+        fd: open_dir_at(None, home.as_os_str(), false)
+            .with_context(|| format!("cannot open the home directory {}", home.display()))?,
+        path: home.to_path_buf(),
+    };
     for comp in components {
-        dir = open_dir_at(Some(&dir), comp, true)?;
-        walked.push(comp);
+        if create {
+            // Succeeds when the component is already a real directory, and
+            // refuses a link or a file in its place — the same rule the final
+            // component gets, applied at every level.
+            create_dir_at(&dir, comp)?;
+        }
+        let fd = open_dir_at(Some(&dir.fd), comp, true)?;
+        let path = dir.path.join(comp);
+        dir = JailedDir { fd, path };
     }
-    Ok((
-        JailedDir {
-            fd: dir,
-            path: walked,
-        },
-        last.to_os_string(),
-    ))
+    Ok((dir, last.to_os_string()))
 }
 
 /// The identity of `name` inside `dir`, or `None` if it does not exist.
@@ -398,7 +435,8 @@ pub fn new_folder(raw: &str) -> Result<PathBuf> {
     // same root it checked against — walking from anywhere else would be
     // checking one thing and creating in another.
     let real_home = home.canonicalize().unwrap_or(home);
-    let (dir, name) = walk_to_parent(&real_home, &jailed)?;
+    // "and any missing parents", as the tool has always claimed (L-268).
+    let (dir, name) = walk_creating_parents(&real_home, &jailed)?;
     create_dir_at(&dir, &name)?;
     Ok(dir.path().join(&name))
 }
@@ -583,7 +621,10 @@ mod tests {
     /// previous value afterwards. `check` re-resolves against the real home
     /// (L-243), so any test of it has to own that variable.
     fn with_home<T>(j: &Jail, body: impl FnOnce() -> T) -> T {
-        let _g = HOME_TEST_LOCK.lock().unwrap();
+        // Not `unwrap()`: one test failing inside this closure poisons the
+        // lock, and a poisoned lock turns a single readable failure into four
+        // `PoisonError` panics that say nothing about what broke.
+        let _g = HOME_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let prev = std::env::var("HOME").ok();
         std::env::set_var("HOME", &j.home);
         let out = body();
@@ -641,6 +682,72 @@ mod tests {
         // `mkdir -p` semantics: asking twice is not an error.
         let again = with_home(&j, || new_folder("~/Research/2026").unwrap());
         assert_eq!(made, again);
+    }
+
+    /// L-268. The tool description has always promised "and any missing
+    /// parents", and the walk only ever opened what was already there — so a
+    /// nested path failed at the first missing level. Every existing test
+    /// created the parent in advance, which is why nothing caught it.
+    #[test]
+    fn creating_a_folder_creates_the_parents_the_tool_promises() {
+        let j = jail();
+        let made = with_home(&j, || {
+            new_folder("~/Research/2026/Q3/drafts").expect("missing parents must be created")
+        });
+        assert!(made.is_dir());
+        for level in ["Research", "Research/2026", "Research/2026/Q3"] {
+            assert!(
+                j.home.join(level).is_dir(),
+                "{level} was not created on the way down"
+            );
+        }
+        // Still idempotent, and still through descriptors.
+        let again = with_home(&j, || new_folder("~/Research/2026/Q3/drafts").unwrap());
+        assert_eq!(made, again);
+    }
+
+    /// The jail applies at every level, not only the last one. A link or a
+    /// regular file part-way down is refused rather than followed or replaced.
+    #[test]
+    fn a_parent_that_is_not_a_real_directory_is_refused_rather_than_created_through() {
+        let j = jail();
+        std::os::unix::fs::symlink(&j.outside, j.home.join("Linked")).unwrap();
+        std::fs::write(j.home.join("Notes"), "not a directory").unwrap();
+
+        with_home(&j, || {
+            new_folder("~/Linked/Q3").expect_err("a symlinked parent must be refused");
+            new_folder("~/Notes/Q3").expect_err("a regular file as a parent must be refused");
+        });
+        assert!(
+            !j.outside.join("Q3").exists(),
+            "a folder was created through a link — this is detection, not prevention"
+        );
+        assert!(
+            std::fs::symlink_metadata(j.home.join("Linked"))
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "the link was replaced instead of refused"
+        );
+        assert!(j.home.join("Notes").is_file());
+    }
+
+    /// `mkdir -p` will happily create a thousand levels. A model that has
+    /// misread a task can ask for that, so the depth is bounded and the
+    /// refusal happens before anything is created.
+    #[test]
+    fn an_absurdly_deep_request_is_refused_before_anything_is_made() {
+        let j = jail();
+        let deep = std::iter::repeat_n("d", MAX_NEW_FOLDER_DEPTH + 1)
+            .collect::<Vec<_>>()
+            .join("/");
+        with_home(&j, || {
+            new_folder(&format!("~/{deep}")).expect_err("an unbounded depth must be refused")
+        });
+        assert!(
+            !j.home.join("d").exists(),
+            "the first level was created anyway"
+        );
     }
 
     #[test]

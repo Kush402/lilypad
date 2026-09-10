@@ -50,19 +50,19 @@ impl Executor for AxExecutor {
                 // Reading the AX tree is a blocking FFI walk; keep it off the
                 // async worker.
                 let display = self.display.get();
-                let snapshot = match tokio::task::spawn_blocking(move || {
-                    ax::read_focused_tree(display)
-                })
-                .await
-                {
-                    Ok(Ok(s)) => s,
-                    Ok(Err(e)) => {
-                        return Ok(Observation::fail(format!(
-                            "could not read the accessibility tree: {e}"
-                        )))
-                    }
-                    Err(e) => return Ok(Observation::fail(format!("ax read task failed: {e}"))),
-                };
+                let snapshot =
+                    match tokio::task::spawn_blocking(move || ax::read_focused_tree(display)).await
+                    {
+                        Ok(Ok(s)) => s,
+                        Ok(Err(e)) => {
+                            return Ok(Observation::fail(format!(
+                                "could not read the accessibility tree: {e}"
+                            )))
+                        }
+                        Err(e) => {
+                            return Ok(Observation::fail(format!("ax read task failed: {e}")))
+                        }
+                    };
                 let text = tree::serialize(&snapshot.nodes);
                 self.last = Some(snapshot);
                 self.read_on = display;
@@ -138,7 +138,7 @@ impl AxExecutor {
             // cannot answer, because it is a copy of what we already believed.
             if let Some(approved) = approved {
                 let fresh = ax::read_focused_tree(self.display.get())?;
-                if !snapshot.same_context(&fresh) {
+                if !snapshot.same_context(&fresh, element_id) {
                     return Ok(Observation::fail(
                         "The app or its contents changed since this action was chosen. Read again and request fresh approval."
                     ));
@@ -224,7 +224,11 @@ mod tests {
             .press(0, Some(&AxTarget::new("AXButton", "Send")))
             .unwrap();
         assert!(!obs.ok);
-        assert!(obs.summary.contains("shared screen changed"), "{}", obs.summary);
+        assert!(
+            obs.summary.contains("shared screen changed"),
+            "{}",
+            obs.summary
+        );
     }
 
     #[test]

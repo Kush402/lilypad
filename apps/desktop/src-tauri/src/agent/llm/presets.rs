@@ -132,7 +132,11 @@ mod tests {
                 "{} names an adapter that does not exist",
                 p.id
             );
-            assert!(!p.auth_hint.is_empty(), "{} explains no authentication", p.id);
+            assert!(
+                !p.auth_hint.is_empty(),
+                "{} explains no authentication",
+                p.id
+            );
             if p.id == "custom" {
                 assert!(p.default_base_url.is_empty());
                 continue;

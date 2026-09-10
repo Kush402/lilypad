@@ -27,9 +27,56 @@ not tagged, not on any device yet.
   now tells your Mac which AI destination it agreed to, and your Mac refuses a
   task aimed at a different one. An older phone cannot do that, so it will say
   it needs updating rather than sending the task.
+- **Ask tells you what it is waiting for.** Opening Ask used to show the same
+  screen whether your Mac was still checking its settings, had no AI provider
+  set up, could not open its keychain, or was simply too old to answer. All four
+  looked like a permission request you could not complete, and closing and
+  reopening Ask was the only way through. Each now says which one it is, offers
+  Check again, and your Mac follows up on its own when it finishes checking. You
+  are only asked about sending your screen once there is somewhere to send it.
+- **"Let Ask take screenshots" is your setting again.** It used to share one
+  field with the result of the connection test, so testing a model could tick a
+  box you never ticked, and changing your provider could untick one you did.
+  They are separate now: you decide whether screenshots are allowed, the test
+  reports whether the model can actually read one, and Ask sends an image only
+  when both are true.
+- **Ask creates the folders it says it creates.** Asking for a folder several
+  levels deep used to fail at the first level that did not exist yet, although
+  the description promised otherwise. It now makes each missing level, still
+  refusing to follow a link or replace a file on the way, and refuses a path
+  more than 32 folders deep rather than making it.
+- **Approving an action no longer expires because a clock ticked.** The check
+  that runs before Ask presses a button compared the whole screen, so a clock,
+  a progress bar or an unread count in another window could reject the same
+  action over and over. It now compares the window the button is in and ignores
+  only a short, named list of things that change by themselves. A changed
+  amount, a changed recipient, a rearranged window or a different button still
+  asks you again.
 
 ### Security
 
+- **A frozen picture no longer looks like a working session.** Video that
+  arrived but could not be decoded kept the connection reported as healthy,
+  because "video is arriving" was measured by counting bytes rather than
+  decoded frames. Your phone now watches the picture, the network and the
+  controls separately: it retries a frozen picture a bounded number of times,
+  and says "picture frozen, retrying" or "controls not connected" instead of
+  showing a good connection.
+- **Your saved AI settings can no longer be read half-written.** Saving them
+  replaced the file in place, so anything reading at that moment could see a
+  partly written file and fall back to defaults, and a provider change could be
+  briefly attributed to the wrong version of the settings. Settings are now
+  written whole and read one at a time.
+- **A connection test can no longer overwrite a newer setting.** If you changed
+  the address, replaced the key or disconnected while a test was running, the
+  test's result used to be written back over what you had just done. A late
+  result is now discarded rather than applied, and a result earned by a key you
+  have since replaced is never recorded against the new one.
+- **Reading the screen is now bounded in time, not only in size.** Ask limited
+  how much of an app's structure it would read but not how long it would wait
+  for it, so an application that had stopped responding could hold the step. It
+  now gives up on a single unanswered request after half a second and on the
+  whole read after three, using what it has.
 - **A provider address could redirect your key and your screen to someone
   else.** If the endpoint you configured answered with a redirect, Lilypad
   followed it — and while the usual authorization header is dropped when the

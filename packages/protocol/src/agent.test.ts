@@ -1,10 +1,21 @@
 import { describe, it, expect } from 'vitest';
-import { AgentInboundSchema, AgentOutboundSchema, AgentApprovalSchema } from './agent.js';
+import {
+  AgentFrameProbeSchema,
+  AgentInboundSchema,
+  AgentOutboundSchema,
+  AgentApprovalSchema,
+} from './agent.js';
 
 describe('Ask compatibility boundary', () => {
   it('round-trips a side-effect-free probe and versioned response', () => {
     const hello = { kind: 'agent_hello', runId: 'probe-1', ts: 1 };
-    const ready = { kind: 'agent_ready', runId: 'probe-1', protocolVersion: 3, ts: 2 };
+    const ready = {
+      kind: 'agent_ready',
+      runId: 'probe-1',
+      protocolVersion: 3,
+      state: 'checking',
+      ts: 2,
+    };
     expect(AgentInboundSchema.parse(hello)).toEqual(hello);
     expect(AgentOutboundSchema.parse(ready)).toEqual(ready);
     // Neither an older nor an unknown version parses: version 2 could not
@@ -19,6 +30,7 @@ describe('Ask compatibility boundary', () => {
       kind: 'agent_ready',
       runId: 'probe-1',
       protocolVersion: 3,
+      state: 'ready',
       destination: {
         profileId: 'openai',
         providerName: 'OpenAI',
@@ -37,7 +49,7 @@ describe('Ask compatibility boundary', () => {
     // A Mac that discloses nothing still parses; the phone renders that as
     // "not disclosed" rather than reusing an older destination.
     const { destination: _omitted, ...bare } = ready;
-    expect(AgentOutboundSchema.safeParse(bare).success).toBe(true);
+    expect(AgentOutboundSchema.safeParse({ ...bare, state: 'unconfigured' }).success).toBe(true);
   });
 
   it('preserves legacy commands for an explicit desktop refusal, rejecting unknown versions', () => {
@@ -94,5 +106,33 @@ describe('Ask compatibility boundary', () => {
     expect(
       AgentApprovalSchema.safeParse({ ...approval, readablePaths: ['x'.repeat(1025)] }).success,
     ).toBe(false);
+  });
+});
+
+describe('the handshake state is stated, not inferred (L-285)', () => {
+  const base = { kind: 'agent_ready', runId: 'probe-1', protocolVersion: 3, ts: 2 };
+
+  it('names every situation the Mac can be in', () => {
+    for (const state of ['ready', 'checking', 'unconfigured', 'unavailable']) {
+      expect(AgentOutboundSchema.safeParse({ ...base, state }).success).toBe(true);
+    }
+  });
+
+  it('refuses a ready frame that does not say which situation it is', () => {
+    // The whole defect: four situations arriving as one absent field. A frame
+    // with no state is a frame the phone would have to guess about.
+    expect(AgentOutboundSchema.safeParse(base).success).toBe(false);
+    expect(AgentOutboundSchema.safeParse({ ...base, state: 'incompatible' }).success).toBe(false);
+  });
+
+  it('recognises an out-of-date Mac\'s frame without trusting it', () => {
+    // `incompatible` is never on the wire — it is what the phone concludes
+    // when the strict schema rejects a frame that is plainly an Ask handshake.
+    const older = { kind: 'agent_ready', runId: 'probe-1', protocolVersion: 2, ts: 2 };
+    expect(AgentOutboundSchema.safeParse(older).success).toBe(false);
+    const probe = AgentFrameProbeSchema.safeParse(older);
+    expect(probe.success).toBe(true);
+    expect(probe.success && probe.data.protocolVersion).toBe(2);
+    expect(probe.success && probe.data.runId).toBe('probe-1');
   });
 });

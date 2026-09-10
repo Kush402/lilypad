@@ -147,16 +147,62 @@ export type AgentDestination = z.infer<typeof AgentDestinationSchema>;
 export const AI_CONSENT_POLICY = 1 as const;
 
 const agentHello = WithTs.extend({ kind: z.literal('agent_hello'), runId: RunId });
+
+/**
+ * Where the Mac is in answering "can Ask run here" (L-285).
+ *
+ * This used to be inferred from whether `destination` was present, and four
+ * different situations collapsed into one absent field: a resolution still
+ * running, a Mac with no provider set up, a keychain that would not open, and
+ * a Mac that answered fine. The phone rendered all of them as the consent card
+ * with a disabled Allow button and no way forward — so the workaround for a
+ * slow keychain was closing and reopening Ask, which nothing told anyone.
+ *
+ * `checking` is not a failure and is not final: the Mac sends a second
+ * `agent_ready` for the same `runId` when the resolution lands.
+ */
+export const AgentHandshakeStateSchema = z.enum([
+  /** Resolved, and `destination` says where. */
+  'ready',
+  /** A resolution is running. The Mac will send another frame. */
+  'checking',
+  /** No provider is set up on that Mac. Nothing to agree to yet. */
+  'unconfigured',
+  /** The keychain would not answer. Retryable, and not the same as unset. */
+  'unavailable',
+]);
+export type AgentHandshakeState = z.infer<typeof AgentHandshakeStateSchema>;
+
 const agentReady = WithTs.extend({
   kind: z.literal('agent_ready'),
   runId: RunId,
   protocolVersion: z.literal(ASK_PROTOCOL_VERSION),
+  /** Which of the four situations this is. Never inferred from `destination`. */
+  state: AgentHandshakeStateSchema,
   /**
    * Optional on the wire only so a malformed or partial frame is not a parse
    * failure. Absent means the Mac did not disclose a destination, which the
    * phone must treat as "unknown" — never as "the one you agreed to before".
+   * Present exactly when `state` is `ready`.
    */
   destination: AgentDestinationSchema.optional(),
+});
+
+/**
+ * Just enough of a frame to tell an Ask handshake from an unrelated one, with
+ * no version constraint (L-285).
+ *
+ * A Mac on an older Ask protocol sends an `agent_ready` the strict schema
+ * rejects, and a rejected frame used to be dropped in silence — so a phone
+ * paired with an out-of-date Mac sat on a consent card that could never be
+ * completed, with the "update both apps" message it needed rendered behind
+ * that card. Recognising the frame without trusting its contents is what lets
+ * the phone say which of the two is behind.
+ */
+export const AgentFrameProbeSchema = z.object({
+  kind: z.string().max(64),
+  runId: z.string().max(128).optional(),
+  protocolVersion: z.number().int().optional(),
 });
 
 const agentStop = WithTs.extend({

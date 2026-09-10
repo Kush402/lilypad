@@ -7,12 +7,41 @@ import { theme } from '../theme';
 
 export type QualityLevel = 'good' | 'fair' | 'poor';
 
+/**
+ * Three separate questions about the picture (L-273).
+ *
+ * They used to be one. `bytesReceived` advancing was recorded as
+ * "video advanced", that timestamp suppressed recovery and reported the
+ * session connected, and there was no decoded-frame check anywhere — so video
+ * that arrived and could not be decoded read as a healthy stream while the
+ * person watched a frozen image.
+ *
+ *   - `flowing`   — bytes are arriving. A statement about the network.
+ *   - `decoding`  — decoded frames are advancing. A statement about the picture.
+ *   - `control`   — the input channel is open. A statement about whether
+ *                   anything the person does can reach the Mac.
+ *
+ * A legitimately static screen is `flowing: false, decoding: false`: an idle
+ * encoder sends almost nothing. Undecodable video is `flowing: true,
+ * decoding: false`, which is the one that needs recovering.
+ */
+export interface VideoHealth {
+  flowing: boolean;
+  /** `null` when the platform reports no decoded-frame statistic: unknown,
+   * which is neither yes nor no, and never acted on as a stall. */
+  decoding: boolean | null;
+  control: boolean;
+  /** How many bounded recovery nudges have been spent on a decoder stall. */
+  recoveries: number;
+}
+
 export interface ConnectionQuality {
   level: QualityLevel;
   rttMs: number | null;
   bitrateKbps: number | null;
   fps: number | null;
   packetLossPct: number | null;
+  video: VideoHealth;
 }
 
 /** Polling cadence for `RTCPeerConnection.getStats()`, mirroring the existing

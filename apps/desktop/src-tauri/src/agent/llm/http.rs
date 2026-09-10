@@ -225,7 +225,10 @@ pub(crate) fn parse_success(body: &[u8]) -> std::result::Result<Value, ProviderF
     serde_json::from_slice(body).map_err(|_| ProviderFailure {
         kind: FailureKind::Malformed,
         status: None,
-        message: format!("the provider replied with something that is not JSON: {}", quotable(body)),
+        message: format!(
+            "the provider replied with something that is not JSON: {}",
+            quotable(body)
+        ),
     })
 }
 
@@ -241,8 +244,16 @@ mod tests {
         let failure = classify(502, html);
         assert_eq!(failure.kind, FailureKind::Unavailable);
         assert!(failure.kind.is_transient());
-        assert!(failure.message.contains("502 Bad Gateway"), "{}", failure.message);
-        assert!(!failure.message.contains('<'), "markup survived: {}", failure.message);
+        assert!(
+            failure.message.contains("502 Bad Gateway"),
+            "{}",
+            failure.message
+        );
+        assert!(
+            !failure.message.contains('<'),
+            "markup survived: {}",
+            failure.message
+        );
     }
 
     #[test]
@@ -266,7 +277,11 @@ mod tests {
             FailureKind::Auth
         );
         assert_eq!(
-            classify(404, br#"{"error":{"message":"The model `x` does not exist"}}"#).kind,
+            classify(
+                404,
+                br#"{"error":{"message":"The model `x` does not exist"}}"#
+            )
+            .kind,
             FailureKind::UnknownModel
         );
         assert_eq!(
@@ -285,7 +300,11 @@ mod tests {
     fn quoted_error_text_is_bounded() {
         let huge = vec![b'x'; 10 * 1024];
         let quoted = quotable(&huge);
-        assert!(quoted.len() <= MAX_QUOTED_ERROR_BYTES + 4, "{}", quoted.len());
+        assert!(
+            quoted.len() <= MAX_QUOTED_ERROR_BYTES + 4,
+            "{}",
+            quoted.len()
+        );
         assert!(quoted.ends_with('…'));
     }
 
@@ -293,8 +312,15 @@ mod tests {
     fn a_refused_redirect_names_where_it_wanted_to_go() {
         let failure = refused_redirect(301, Some("https://elsewhere.example/v1"));
         assert_eq!(failure.kind, FailureKind::Redirected);
-        assert!(failure.message.contains("elsewhere.example"), "{}", failure.message);
-        assert!(!failure.kind.is_transient(), "retrying the same address will redirect again");
+        assert!(
+            failure.message.contains("elsewhere.example"),
+            "{}",
+            failure.message
+        );
+        assert!(
+            !failure.kind.is_transient(),
+            "retrying the same address will redirect again"
+        );
         // A redirect with no Location still refuses rather than guessing.
         assert_eq!(refused_redirect(302, None).kind, FailureKind::Redirected);
     }

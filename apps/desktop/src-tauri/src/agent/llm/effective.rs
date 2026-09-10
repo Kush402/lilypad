@@ -69,6 +69,10 @@ impl ConfigSource {
 pub struct EffectiveConfig {
     /// Monotonic, process-wide. Only ever compared for equality.
     pub generation: u64,
+    /// The **committed settings generation** this was resolved under, read in
+    /// the same critical section as the settings file itself. A result may
+    /// only be filed back while this is still current (L-278, L-282).
+    pub committed: u64,
     pub source: ConfigSource,
     /// "anthropic" | "openai_compat".
     pub dialect: &'static str,
@@ -149,15 +153,29 @@ impl EffectiveConfig {
     /// the resolver's own worker, never on a session path (L-271).
     pub fn resolve_blocking(
     ) -> std::result::Result<Option<(EffectiveConfig, String)>, store::SecretUnavailable> {
-        // Environment first, matching `ProviderChoice::resolve`. That
-        // precedence is the whole reason this function exists.
-        if let Some(config) = Self::from_env() {
-            return Ok(Some(config));
-        }
-        Self::from_settings()
+        let (settings, committed) = store::load_committed();
+        Self::resolve_from(&settings, committed)
     }
 
-    fn from_env() -> Option<(EffectiveConfig, String)> {
+    /// Resolve from settings that were already read, together with the
+    /// generation they were read under.
+    ///
+    /// The resolver reads both in one critical section and passes them here,
+    /// so the answer and the generation it is published under describe the
+    /// same bytes (L-278).
+    pub fn resolve_from(
+        settings: &store::AgentSettings,
+        committed: u64,
+    ) -> std::result::Result<Option<(EffectiveConfig, String)>, store::SecretUnavailable> {
+        // Environment first, matching `ProviderChoice::resolve`. That
+        // precedence is the whole reason this function exists.
+        if let Some(config) = Self::from_env(committed) {
+            return Ok(Some(config));
+        }
+        Self::from_settings(settings, committed)
+    }
+
+    fn from_env(committed: u64) -> Option<(EffectiveConfig, String)> {
         use super::{anthropic, openai_compat};
         let (dialect, base_url, model, key) =
             if let Some(c) = anthropic::AnthropicConfig::from_env() {
@@ -179,6 +197,7 @@ impl EffectiveConfig {
             };
         Self::assemble(
             ConfigSource::Environment,
+            committed,
             dialect,
             None,
             base_url,
@@ -188,8 +207,9 @@ impl EffectiveConfig {
     }
 
     fn from_settings(
+        settings: &store::AgentSettings,
+        committed: u64,
     ) -> std::result::Result<Option<(EffectiveConfig, String)>, store::SecretUnavailable> {
-        let settings = store::load_settings();
         let Some(kind) = settings.provider_kind.as_deref() else {
             return Ok(None);
         };
@@ -215,6 +235,7 @@ impl EffectiveConfig {
         }
         Ok(Self::assemble(
             ConfigSource::Settings,
+            committed,
             dialect,
             settings.profile_id.clone(),
             base_url,
@@ -225,6 +246,7 @@ impl EffectiveConfig {
 
     fn assemble(
         source: ConfigSource,
+        committed: u64,
         dialect: &'static str,
         profile_id: Option<String>,
         base_url: String,
@@ -250,6 +272,7 @@ impl EffectiveConfig {
         ]);
         let config = EffectiveConfig {
             generation: next_generation(),
+            committed,
             source,
             dialect,
             profile_id,
@@ -275,6 +298,10 @@ impl EffectiveConfig {
     ) -> Option<EffectiveConfig> {
         Self::assemble(
             ConfigSource::Settings,
+            // A draft is not a committed configuration; whatever is current
+            // when it is built is the only honest answer, and the caller that
+            // files a result supplies the generation it actually resolved.
+            super::resolver::epoch(),
             dialect,
             profile_id,
             base_url,
@@ -319,6 +346,7 @@ mod tests {
     fn config(origin: &str, model: Option<&str>, key: Option<&str>) -> EffectiveConfig {
         EffectiveConfig::assemble(
             ConfigSource::Settings,
+            0,
             "openai_compat",
             None,
             origin.to_string(),
@@ -366,6 +394,7 @@ mod tests {
         let from_settings = config("https://api.openai.com/v1", Some("m"), Some("k"));
         let from_env = EffectiveConfig::assemble(
             ConfigSource::Environment,
+            0,
             "openai_compat",
             None,
             "https://api.openai.com/v1".to_string(),

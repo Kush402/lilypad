@@ -13,6 +13,7 @@ import {
   MAX_ICE_RESTARTS,
   SIGNALING_OPEN_TIMEOUT_MS,
   iceRecoveryTimeoutMs,
+  AgentFrameProbeSchema,
   AgentOutboundSchema,
   ClipboardUpdateSchema,
   encodeAgentMessage,
@@ -24,6 +25,7 @@ import {
   type AgentStep,
   type AgentRunEnd,
   type AgentDestination,
+  type AgentHandshakeState,
 } from '@lilypad/protocol';
 import { MobileSignaling, type SignalingLifecycleEvent } from './signaling';
 import { isLanPinTarget } from './lanTls';
@@ -79,7 +81,19 @@ export interface ViewerCallbacks {
   /** The AI agent emitted a step on its live feed (desktop → phone over the
    * reliable input channel). Optional — a viewer that doesn't surface the
    * agent simply omits it. See docs/m5.3-ai-executor-plan.md §6. */
-  onAgentReady?: (destination?: AgentDestination) => void;
+  /**
+   * The Mac answered the Ask handshake. `state` says which of five situations
+   * this is, and `destination` is present only for `ready` (L-285).
+   *
+   * `incompatible` never comes off the wire: it is what this phone concludes
+   * when the Mac's frame is an `agent_ready` it cannot parse — a Mac on an
+   * older Ask protocol. That frame used to be dropped in silence, leaving the
+   * panel with nothing to show and nothing to offer.
+   */
+  onAgentReady?: (
+    state: AgentHandshakeState | 'incompatible',
+    destination?: AgentDestination,
+  ) => void;
   onAgentStep?: (step: AgentStep) => void;
   /** The AI agent run ended (completed/stopped/denied/failed). */
   onAgentRunEnd?: (end: AgentRunEnd) => void;
@@ -170,6 +184,34 @@ const NETWORK_RESTORE_DEBOUNCE_MS = 10_000;
  */
 const VIDEO_LIVENESS_WINDOW_MS = 15_000;
 
+// ── the picture, as distinct from the packets (L-273) ────────────────────
+//
+// `lastVideoAdvanceAt` came from `bytesReceived` and was documented as
+// "decoded video advanced". It is not: a stream that arrives and cannot be
+// decoded advances bytes forever. That timestamp outvotes a `failed` ICE
+// verdict and reports the session connected, so undecodable video looked
+// exactly like a healthy one while the person watched a frozen frame.
+//
+// Bytes remain the right signal for "is the forward path alive" — that is a
+// question about the network, and the answer is still yes. Decoded frames are
+// the signal for "is the picture moving", and the two now have separate
+// timestamps and separate consequences.
+
+/** How long decoded frames may stand still, **while bytes keep arriving**,
+ * before the picture is treated as frozen rather than merely static. An idle
+ * screen sends almost nothing, so it never reaches this branch. */
+export const DECODER_STALL_MS = 6_000;
+
+/** Nudges spent on a decoder stall before it is reported rather than retried.
+ * Each one is an ICE restart request, which the desktop honours by rebuilding
+ * the encoder — that is what produces a fresh keyframe. Bounded, because a
+ * stall the desktop cannot fix must not become a restart loop. */
+export const MAX_DECODER_RECOVERIES = 3;
+
+/** Floor between two nudges, above the desktop's own restart spacing so a
+ * request is not simply throttled away. */
+const DECODER_RECOVERY_INTERVAL_MS = 8_000;
+
 const BUFFERED_AMOUNT_LOW_THRESHOLD_BYTES = MAX_BUFFERED_AMOUNT_BYTES / 2;
 
 type DataChannelLike = {
@@ -241,6 +283,11 @@ export class ViewerConnection {
    * the receiver's proof the forward path is alive. Drives the video-liveness
    * outvote of a false `disconnected` (see `VIDEO_LIVENESS_WINDOW_MS`). */
   private lastVideoAdvanceAt: number | null = null;
+  /** When decoded frames last advanced — the picture, not the packets (L-273). */
+  private lastFrameDecodedAt: number | null = null;
+  private lastDecodedFrames: number | null = null;
+  private decoderRecoveries = 0;
+  private lastDecoderRecoveryAt: number | null = null;
   /** Timer for debouncing a lingering 'disconnected' OR 'failed' state before
    * escalating — both PC states are routed through the same video-aware
    * recheck (`armDegradedRecheck`), since ICE's severity ranking between them
@@ -453,16 +500,37 @@ export class ViewerConnection {
       return;
     }
     const parsed = AgentOutboundSchema.safeParse(json);
-    if (!parsed.success) return;
+    if (!parsed.success) {
+      // A frame this phone cannot parse is usually noise. An `agent_ready` for
+      // the hello we sent is not: it is a Mac whose Ask protocol this phone
+      // does not speak, and the person needs to be told which half to update
+      // rather than left on a card that can never be completed (L-285).
+      const probe = AgentFrameProbeSchema.safeParse(json);
+      if (
+        probe.success &&
+        probe.data.kind === 'agent_ready' &&
+        probe.data.runId === this.askProbe &&
+        probe.data.protocolVersion !== ASK_PROTOCOL_VERSION
+      ) {
+        this.askReady = false;
+        this.askDestination = undefined;
+        this.cb.onAgentReady?.('incompatible', undefined);
+      }
+      return;
+    }
     if (parsed.data.kind === 'agent_ready') {
       if (parsed.data.runId === this.askProbe) {
-        this.askReady = true;
+        // Only a disclosed destination lets a command be sent. "Still
+        // checking" and "the keychain would not open" are not permission to
+        // send, and a follow-up frame for the same hello can move this in
+        // either direction (L-285).
+        this.askReady = parsed.data.state === 'ready';
         // Where this Mac would send observations, straight through to the
         // caller. `undefined` when the Mac disclosed nothing, and it stays
         // `undefined` — an unstated destination must not inherit the last
         // one this phone saw (L-265).
         this.askDestination = parsed.data.destination;
-        this.cb.onAgentReady?.(parsed.data.destination);
+        this.cb.onAgentReady?.(parsed.data.state, parsed.data.destination);
       }
       return;
     }
@@ -932,14 +1000,72 @@ export class ViewerConnection {
     );
   }
 
-  /** The receiver's ground-truth liveness: has decoded video advanced within
-   * the window? When true, the forward path works regardless of ICE's verdict,
-   * so a `disconnected` is a false positive we must not act on. */
+  /** Is the forward path alive — are video bytes still arriving?
+   *
+   * This is a statement about the **network**, and it is what outvotes ICE's
+   * verdict: while packets land, a `disconnected` is a false positive and
+   * tearing the connection down would fix nothing. It deliberately says
+   * nothing about whether those packets decode; that is `isVideoDecoding`,
+   * and conflating the two is L-273. */
   private isReceivingVideo(): boolean {
     return (
       this.lastVideoAdvanceAt !== null &&
       Date.now() - this.lastVideoAdvanceAt < VIDEO_LIVENESS_WINDOW_MS
     );
+  }
+
+  /** Is the picture actually moving — have decoded frames advanced recently?
+   *
+   * Judged over `DECODER_STALL_MS`, not the transport window: those are two
+   * different questions and answering them over two different periods is how
+   * a report could say "decoding" about a picture already being nudged. */
+  private isVideoDecoding(): boolean {
+    return (
+      this.lastFrameDecodedAt !== null &&
+      Date.now() - this.lastFrameDecodedAt < DECODER_STALL_MS
+    );
+  }
+
+  /**
+   * Bytes arriving, frames frozen: undecodable video (L-273).
+   *
+   * The discriminator against a legitimately static screen is the first half.
+   * An idle desktop encoder sends almost nothing, so a still picture has
+   * neither advancing bytes nor advancing frames and never lands here.
+   */
+  private isDecoderStalled(now: number): boolean {
+    // No decoded-frame statistic has ever been reported, so the decoder cannot
+    // be judged here at all. An unanswered question is not a stall, and acting
+    // on one would restart ICE on every platform that omits the stat.
+    if (this.lastFrameDecodedAt === null) return false;
+    const flowing =
+      this.lastVideoAdvanceAt !== null && now - this.lastVideoAdvanceAt < DECODER_STALL_MS;
+    return flowing && !this.isVideoDecoding();
+  }
+
+  /**
+   * Bounded recovery for a frozen picture, before anything is torn down.
+   *
+   * An ICE restart is what the desktop does with a `renegotiate`, and it
+   * rebuilds the encoder — which is where the fresh keyframe comes from. Three
+   * of them, spaced, and then it stops: a stall the desktop cannot fix must be
+   * reported to the person rather than turned into a restart loop.
+   */
+  private nudgeStalledDecoder(now: number): void {
+    if (this.decoderRecoveries >= MAX_DECODER_RECOVERIES) return;
+    if (
+      this.lastDecoderRecoveryAt !== null &&
+      now - this.lastDecoderRecoveryAt < DECODER_RECOVERY_INTERVAL_MS
+    ) {
+      return;
+    }
+    this.decoderRecoveries += 1;
+    this.lastDecoderRecoveryAt = now;
+    record(
+      'decoder stall',
+      `video arriving but not decoding; keyframe nudge ${this.decoderRecoveries}/${MAX_DECODER_RECOVERIES}`,
+    );
+    this.sig.renegotiate();
   }
 
   /** Arm (or re-arm) the grace timer that decides what to do about a
@@ -1080,6 +1206,10 @@ export class ViewerConnection {
     this.previousVideoStats.clear();
     this.lastStatsAt = null;
     this.lastVideoAdvanceAt = null;
+    this.lastFrameDecodedAt = null;
+    this.lastDecodedFrames = null;
+    this.decoderRecoveries = 0;
+    this.lastDecoderRecoveryAt = null;
     this.statsPoll = setInterval(() => void this.pollStats(), QUALITY_POLL_MS);
   }
 
@@ -1129,6 +1259,7 @@ export class ViewerConnection {
     let liveStreamDelta = -1;
     let intervalLost = 0;
     let intervalReceived = 0;
+    let videoFrames: number | null = null;
     const nextVideoStats = new Map<string, { bytes: number; lost: number; received: number }>();
 
     for (const [id, stat] of report.entries()) {
@@ -1140,6 +1271,11 @@ export class ViewerConnection {
       if (stat.type === 'inbound-rtp' && stat.kind === 'video') {
         const bytes = typeof stat.bytesReceived === 'number' ? stat.bytesReceived : 0;
         if (typeof stat.bytesReceived === 'number') videoBytes = (videoBytes ?? 0) + bytes;
+        // Summed across streams for the same reason bytes are: an ICE restart
+        // leaves the retired SSRC in the report with its counters frozen.
+        if (typeof stat.framesDecoded === 'number') {
+          videoFrames = (videoFrames ?? 0) + stat.framesDecoded;
+        }
         const before = this.previousVideoStats.get(id);
         const deltaBytes = Math.max(0, bytes - (before?.bytes ?? 0));
         if (deltaBytes > liveStreamDelta) {
@@ -1160,8 +1296,8 @@ export class ViewerConnection {
     const intervalPackets = intervalLost + intervalReceived;
     if (intervalPackets > 0) packetLossPct = (intervalLost / intervalPackets) * 100;
 
+    const now = Date.now();
     if (videoBytes !== null) {
-      const now = Date.now();
       if (this.lastInboundBytes !== null && this.lastStatsAt !== null) {
         const deltaBytes = videoBytes - this.lastInboundBytes;
         const deltaSec = (now - this.lastStatsAt) / 1000;
@@ -1177,6 +1313,19 @@ export class ViewerConnection {
       this.lastInboundBytes = videoBytes;
       this.lastStatsAt = now;
     }
+
+    // The picture, asked separately from the packets (L-273).
+    if (videoFrames !== null) {
+      if (this.lastDecodedFrames === null || videoFrames > this.lastDecodedFrames) {
+        this.lastFrameDecodedAt = now;
+        // Frames moved, so whatever was wrong is over and the budget is
+        // whole again for the next stall.
+        this.decoderRecoveries = 0;
+        this.lastDecoderRecoveryAt = null;
+      }
+      this.lastDecodedFrames = videoFrames;
+    }
+    if (this.isDecoderStalled(now)) this.nudgeStalledDecoder(now);
 
     const level = classifyQuality(rttMs, packetLossPct);
     // Only when it CHANGES. A sample every 2s would bury the transitions that
@@ -1197,6 +1346,16 @@ export class ViewerConnection {
       bitrateKbps,
       fps,
       packetLossPct,
+      video: {
+        flowing: this.isReceivingVideo(),
+        // `null` is "this platform does not report decoded frames", which is
+        // neither yes nor no and must not be shown as either.
+        decoding: this.lastFrameDecodedAt === null ? null : this.isVideoDecoding(),
+        // Live video and a dead control channel is its own failure: the
+        // screen looks perfect and nothing the person does arrives.
+        control: this.dataChannel?.readyState === 'open',
+        recoveries: this.decoderRecoveries,
+      },
     });
   }
 

@@ -169,7 +169,12 @@ impl ProviderChoice {
         // (L-262). A store that will not answer is treated as no key here —
         // callers that need to tell those apart use the resolver, which keeps
         // `Unavailable` as its own outcome (L-271).
-        let api_key = store::credential_for(kind, settings.base_url.as_deref()).ok().flatten();
+        let api_key = store::credential_for(kind, settings.base_url.as_deref())
+            .ok()
+            .flatten();
+        // Computed before the fields below are moved out, and by the one rule
+        // that decides it (L-286).
+        let vision = store::effective_vision(&settings);
         match kind {
             "anthropic" => {
                 let model = settings
@@ -180,7 +185,7 @@ impl ProviderChoice {
                     c.base_url = base;
                 }
                 // `None` is untested, and untested is not a capability.
-                c.vision = settings.vision.unwrap_or(false);
+                c.vision = vision;
                 Some(ProviderChoice::Anthropic(c))
             }
             "openai_compat" => {
@@ -200,7 +205,7 @@ impl ProviderChoice {
                 if let Some(base) = settings.base_url {
                     c.base_url = base;
                 }
-                c.vision = settings.vision.unwrap_or(false);
+                c.vision = vision;
                 Some(ProviderChoice::OpenAiCompat(c))
             }
             _ => None,
@@ -938,7 +943,13 @@ mod tests {
         // than repeat itself.
         assert!(refused.contains("Opening"), "{refused}");
         // Everything else Ask can do is untouched.
-        for still_offered in ["open_app", "new_folder", "read_ax_tree", "ax_press", "finish"] {
+        for still_offered in [
+            "open_app",
+            "new_folder",
+            "read_ax_tree",
+            "ax_press",
+            "finish",
+        ] {
             assert!(
                 base_tools().iter().any(|t| t.name == still_offered),
                 "{still_offered} went missing"

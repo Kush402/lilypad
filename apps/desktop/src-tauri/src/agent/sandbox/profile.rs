@@ -447,10 +447,12 @@ mod tests {
             .filter(|l| l.starts_with("(allow file-write"))
             .collect();
         assert_eq!(write_lines.len(), 2, "{write_lines:?}");
-        assert!(write_lines.iter().all(|l| l.contains("/tmp/run-xyz/scratch")
-            || l.contains("/dev/null")
-            || l.contains("/dev/stdout")
-            || l.contains("/dev/stderr")));
+        assert!(write_lines
+            .iter()
+            .all(|l| l.contains("/tmp/run-xyz/scratch")
+                || l.contains("/dev/null")
+                || l.contains("/dev/stdout")
+                || l.contains("/dev/stderr")));
     }
 
     #[test]
@@ -543,9 +545,8 @@ mod tests {
         // measured, and the opposite of what this module first assumed. If
         // that ever changes, every sandboxed script stops being able to write
         // anything, which is the failure direction we can live with.
-        let policy = SandboxPolicy::read_only(
-            "/Users/kush/Library/Caches/Lilypad/ask-runs/run-7".into(),
-        );
+        let policy =
+            SandboxPolicy::read_only("/Users/kush/Library/Caches/Lilypad/ask-runs/run-7".into());
         let prof = profile(&policy);
         assert!(prof.contains(
             "(allow file-write* (subpath \"/Users/kush/Library/Caches/Lilypad/ask-runs/run-7/scratch\"))"

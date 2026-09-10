@@ -730,10 +730,13 @@ impl SessionRunner {
             "renegotiate" => {
                 // Mobile-initiated recovery request. The RECEIVER is authoritative here:
                 // only the phone knows whether it's actually decoding our video, and the
-                // mobile client now sends this ONLY when its own video-liveness says the
-                // stream has genuinely stopped (while video flows it stays 'connected' and
-                // sends nothing — apps/mobile/src/lib/webrtc.ts). So an inbound renegotiate
-                // means "I'm not receiving — please ICE-restart," and we HONOR it.
+                // mobile client sends this when its own video-liveness says the stream
+                // has genuinely stopped — and, since L-273, also when video is arriving
+                // but not decoding: bytes advancing is a fact about the network, not
+                // about the picture. Both mean "what I am seeing is not what you are
+                // sending", the restart rebuilds the encoder and produces a fresh
+                // keyframe, and the phone bounds how many it will ask for
+                // (apps/mobile/src/lib/webrtc.ts). We HONOR it.
                 //
                 // Exception: if the input DataChannel never opened, an ICE restart on
                 // the same PeerConnection would re-nominate the same srflx pair.

@@ -1238,7 +1238,11 @@ pub struct AgentConfigDto {
     /// effective base URL. Shown on both devices so "where does this go" is
     /// never inferred from a provider name (L-262, L-265).
     pub origin: Option<String>,
-    /// Three-state: `None` is untested, which is not the same as false.
+    /// Whether the person allowed screenshots. Their choice; `None` is
+    /// "never asked" (L-286).
+    pub allow_screenshots: Option<bool>,
+    /// Whether image input was **observed** to work. Three-state: `None` is
+    /// untested, which is not the same as false.
     pub vision: Option<bool>,
     pub tools: Option<bool>,
     pub verified_at: Option<String>,
@@ -1328,6 +1332,7 @@ pub fn get_agent_config() -> AgentConfigDto {
         model: settings.model,
         base_url: settings.base_url,
         origin,
+        allow_screenshots: settings.allow_screenshots,
         vision: settings.vision,
         tools: settings.tools,
         verified_at: settings.verified_at,
@@ -1351,11 +1356,16 @@ pub struct SetAgentConfigArgs {
     pub profile_id: Option<String>,
     pub model: Option<String>,
     pub base_url: Option<String>,
+    /// The screenshot permission, as the checkbox left it.
+    ///
     /// Omitted means "leave whatever is stored alone" — it does NOT mean
     /// false. The card used to send `null` on every save and the command
     /// turned that into `false`, so editing the model silently disabled
-    /// screenshots (L-263).
-    pub vision: Option<bool>,
+    /// screenshots (L-263). This is a permission and never a capability: it
+    /// survives a change of destination, because the person's answer to "may
+    /// Ask take screenshots" does not depend on which model is selected
+    /// (L-286).
+    pub allow_screenshots: Option<bool>,
     /// When present and non-empty, stored in the keychain; never echoed back.
     pub api_key: Option<String>,
 }
@@ -1394,7 +1404,8 @@ pub fn set_agent_config(args: SetAgentConfigArgs) -> Result<AgentConfigDto, Stri
         .as_deref()
         .map(str::trim)
         .is_some_and(|k| !k.is_empty());
-    let destination_changed = previous.provider_kind.as_deref() != Some(args.provider_kind.as_str())
+    let destination_changed = previous.provider_kind.as_deref()
+        != Some(args.provider_kind.as_str())
         || previous.base_url != base_url
         || previous.model != args.model.clone().filter(|s| !s.trim().is_empty())
         || replaced_key;
@@ -1404,10 +1415,15 @@ pub fn set_agent_config(args: SetAgentConfigArgs) -> Result<AgentConfigDto, Stri
         profile_id: args.profile_id.filter(|s| !s.trim().is_empty()),
         model: args.model.filter(|s| !s.trim().is_empty()),
         base_url,
+        // Permission is the person's, so it is preserved across every save,
+        // including one that changes destination (L-286).
+        allow_screenshots: args.allow_screenshots.or(previous.allow_screenshots),
+        // Capability is a measurement of one configuration. Change the
+        // configuration and the measurement is about something else.
         vision: if destination_changed {
             None
         } else {
-            args.vision.or(previous.vision)
+            previous.vision
         },
         tools: if destination_changed {
             None
@@ -1462,7 +1478,11 @@ pub async fn test_agent_connection(
         .clone()
         .map(|k| k.trim().to_string())
         .filter(|k| !k.is_empty())
-        .or_else(|| store::credential_for(&args.provider_kind, base_url.as_deref()).ok().flatten());
+        .or_else(|| {
+            store::credential_for(&args.provider_kind, base_url.as_deref())
+                .ok()
+                .flatten()
+        });
     // The exact credential this probe used, so the result can be bound to it.
     let probed_key = key.clone();
 
@@ -1528,19 +1548,25 @@ pub async fn test_agent_connection(
     let tested_model = args.model.clone().filter(|s| !s.trim().is_empty());
     let tested_key = probed_key.clone();
     let persisted = tokio::task::spawn_blocking(move || {
-        let stored = store::load_settings();
-        let Some(saved) = crate::agent::llm::effective::EffectiveConfig::resolve_blocking()
+        use crate::agent::llm::effective::EffectiveConfig;
+        // The settings and the generation that describes them, read together.
+        // Everything below is decided against this one snapshot, and the write
+        // at the end refuses if the generation has moved on (L-278, L-282).
+        let (stored, committed) = store::load_committed();
+        let Some(saved) = EffectiveConfig::resolve_from(&stored, committed)
             .ok()
             .flatten()
             .map(|(config, _)| config)
         else {
             return Err("this Mac has no saved AI configuration to record the result against");
         };
-        let Some(tested) = crate::agent::llm::effective::EffectiveConfig::draft(
+        let Some(tested) = EffectiveConfig::draft(
             dialect,
             stored.profile_id.clone(),
             tested_base.clone().unwrap_or_else(|| {
-                store::default_base_url(dialect).unwrap_or_default().to_string()
+                store::default_base_url(dialect)
+                    .unwrap_or_default()
+                    .to_string()
             }),
             tested_model.clone(),
             tested_key,
@@ -1553,19 +1579,30 @@ pub async fn test_agent_connection(
             // against a configuration it does not describe.
             return Ok(false);
         }
-        let mut next = stored;
-        next.tools = Some(report_tools_supported);
-        next.vision = match report_vision {
+        // Only the verification fields, onto a freshly re-read snapshot, under
+        // the settings lock, and only while `committed` is still current. The
+        // previous version wrote back a whole settings snapshot taken before
+        // the probe ran, so a save, key change or disconnect during the probe
+        // was silently reverted (L-282).
+        let vision = match report_vision {
             probe::Capability::Supported => Some(true),
             probe::Capability::Unsupported => Some(false),
-            probe::Capability::Untested => next.vision,
+            // A vision probe that was not asked for says nothing about images.
+            probe::Capability::Untested => None,
         };
-        next.verified_at = Some(now_rfc3339());
-        // Reported, not swallowed: a Ready the person can see but that was
-        // never written down is a lie the next launch tells.
-        store::save_settings(&next)
-            .map(|()| true)
-            .map_err(|_| "the result could not be saved to this Mac's settings")
+        match store::record_verification(
+            committed,
+            &tested,
+            Some(report_tools_supported),
+            vision,
+            now_rfc3339(),
+        ) {
+            Ok(store::Verification::Recorded) => Ok(true),
+            // Not an error: the person changed something while the check ran,
+            // and the newer state is the one that should survive.
+            Ok(store::Verification::Superseded) => Ok(false),
+            Err(_) => Err("the result could not be saved to this Mac's settings"),
+        }
     })
     .await
     .unwrap_or(Err("the check could not be completed"));
@@ -1663,7 +1700,9 @@ pub async fn list_agent_models(args: ListModelsArgs) -> Result<Vec<String>, Stri
     let status = resp.status();
     // Same order as every other provider call: status, bounded body, then
     // parse (L-275, L-276).
-    let raw = http::collect_bounded(resp).await.map_err(|e| e.to_string())?;
+    let raw = http::collect_bounded(resp)
+        .await
+        .map_err(|e| e.to_string())?;
     if !status.is_success() {
         return Err(http::classify(status.as_u16(), &raw).message);
     }

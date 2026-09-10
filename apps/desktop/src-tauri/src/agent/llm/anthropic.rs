@@ -276,10 +276,11 @@ impl LlmProvider for AnthropicProvider {
             // the observation in the body would both go to the new origin.
             if resp.status().is_redirection() {
                 let location = super::http::location_of(&resp);
-                return Err(
-                    super::http::refused_redirect(resp.status().as_u16(), location.as_deref())
-                        .into(),
-                );
+                return Err(super::http::refused_redirect(
+                    resp.status().as_u16(),
+                    location.as_deref(),
+                )
+                .into());
             }
             // Status and headers first, body second, JSON last (L-275, L-276).
             let status = resp.status();

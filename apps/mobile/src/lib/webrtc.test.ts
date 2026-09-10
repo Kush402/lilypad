@@ -7,7 +7,12 @@ import {
 } from '@lilypad/protocol';
 import { MAX_BUFFERED_AMOUNT_BYTES } from './input';
 import { QUALITY_POLL_MS } from './quality';
-import { ViewerConnection, type ViewerCallbacks } from './webrtc';
+import {
+  DECODER_STALL_MS,
+  MAX_DECODER_RECOVERIES,
+  ViewerConnection,
+  type ViewerCallbacks,
+} from './webrtc';
 
 // --- react-native-webrtc: a minimal fake peer connection, enough to drive
 // `connectionstatechange` and the offer/answer plumbing without any native
@@ -41,6 +46,9 @@ jest.mock('react-native-webrtc', () => {
       const bufferedAmountLowListeners: ((e: unknown) => void)[] = [];
       const channel = {
         label,
+        // The real RTCDataChannel has one; the control-channel half of the
+        // video-health signal reads it (L-273).
+        readyState: 'open',
         bufferedAmount: 0,
         bufferedAmountLowThreshold: 0,
         onbufferedamountlow: null as any,
@@ -159,6 +167,7 @@ function makeCallbacks() {
     onFrameSize: jest.fn(),
     onDisplays: jest.fn(),
     onClipboardUpdate: jest.fn(),
+    onAgentReady: jest.fn(),
     onAgentStep: jest.fn(),
     onAgentRunEnd: jest.fn(),
   } satisfies ViewerCallbacks;
@@ -189,6 +198,7 @@ function readyFrame(runId: string, over: Record<string, unknown> = {}) {
     kind: 'agent_ready',
     runId,
     protocolVersion: 3,
+    state: 'ready',
     destination: {
       profileId: 'openai',
       providerName: 'OpenAI',
@@ -1544,6 +1554,127 @@ describe('ViewerConnection', () => {
     });
   });
 
+  // ── the picture, as distinct from the packets (L-273) ───────────────────
+
+  describe('decoded-video health', () => {
+    /** `getStats` that reports one inbound video stream, with the bytes and
+     * decoded frames each poll returns decided by the caller. */
+    const streaming = (
+      peer: { getStats: unknown },
+      step: (poll: number) => { bytesReceived: number; framesDecoded?: number },
+    ) => {
+      let poll = 0;
+      (peer.getStats as jest.Mock).mockImplementation(async () => {
+        poll += 1;
+        return new Map([['in1', { type: 'inbound-rtp', kind: 'video', ...step(poll) }]]);
+      });
+    };
+
+    it('recovers a stream that arrives and does not decode', async () => {
+      // The defect: `lastVideoAdvanceAt` came from `bytesReceived` and was
+      // documented as decoded video. Undecodable frames kept it fresh, which
+      // suppressed recovery and reported the session connected, while the
+      // person watched one still image.
+      const cb = makeCallbacks();
+      const { sig, peer } = await startConnected(cb);
+      streaming(peer, (poll) => ({ bytesReceived: poll * 1000, framesDecoded: 30 }));
+
+      await jest.advanceTimersByTimeAsync(QUALITY_POLL_MS * 2);
+      expect(sig.renegotiate).not.toHaveBeenCalled();
+
+      // Past the stall window, with bytes still climbing.
+      await jest.advanceTimersByTimeAsync(DECODER_STALL_MS + QUALITY_POLL_MS);
+      expect(sig.renegotiate).toHaveBeenCalled();
+
+      const last = cb.onStats.mock.calls.at(-1)?.[0];
+      expect(last.video.flowing).toBe(true);
+      expect(last.video.decoding).toBe(false);
+      expect(last.video.recoveries).toBeGreaterThan(0);
+    });
+
+    it('bounds the nudges rather than restarting forever', async () => {
+      const cb = makeCallbacks();
+      const { sig, peer } = await startConnected(cb);
+      streaming(peer, (poll) => ({ bytesReceived: poll * 1000, framesDecoded: 30 }));
+      await jest.advanceTimersByTimeAsync(120_000);
+      expect((sig.renegotiate as jest.Mock).mock.calls.length).toBeLessThanOrEqual(
+        MAX_DECODER_RECOVERIES,
+      );
+      expect(cb.onStats.mock.calls.at(-1)?.[0].video.recoveries).toBe(MAX_DECODER_RECOVERIES);
+    });
+
+    it('leaves a legitimately static screen alone', async () => {
+      // An idle desktop encoder sends almost nothing, so a still picture has
+      // neither advancing bytes nor advancing frames. That is not a stall and
+      // must never be nudged.
+      const cb = makeCallbacks();
+      const { sig, peer } = await startConnected(cb);
+      streaming(peer, () => ({ bytesReceived: 1000, framesDecoded: 30 }));
+      await jest.advanceTimersByTimeAsync(60_000);
+      expect(sig.renegotiate).not.toHaveBeenCalled();
+      const last = cb.onStats.mock.calls.at(-1)?.[0];
+      expect(last.video.flowing).toBe(false);
+      expect(last.video.decoding).toBe(false);
+    });
+
+    it('stops nudging as soon as frames move again', async () => {
+      const cb = makeCallbacks();
+      const { sig, peer } = await startConnected(cb);
+      let frames = 30;
+      streaming(peer, (poll) => ({ bytesReceived: poll * 1000, framesDecoded: frames }));
+      await jest.advanceTimersByTimeAsync(DECODER_STALL_MS + QUALITY_POLL_MS * 2);
+      expect(sig.renegotiate).toHaveBeenCalled();
+      const spent = (sig.renegotiate as jest.Mock).mock.calls.length;
+
+      // The keyframe lands and the picture keeps moving.
+      const decoding = setInterval(() => {
+        frames += 5;
+      }, QUALITY_POLL_MS);
+      await jest.advanceTimersByTimeAsync(QUALITY_POLL_MS * 2);
+      const recovered = cb.onStats.mock.calls.at(-1)?.[0];
+      expect(recovered.video.decoding).toBe(true);
+      expect(recovered.video.recoveries).toBe(0);
+      // …and no further nudges are spent on a stream that is working.
+      await jest.advanceTimersByTimeAsync(60_000);
+      expect((sig.renegotiate as jest.Mock).mock.calls.length).toBe(spent);
+      clearInterval(decoding);
+    });
+
+    it('says nothing about a decoder the platform does not report', async () => {
+      // Absence of `framesDecoded` is not evidence of a stall. Treating it as
+      // one would restart ICE on every platform that omits the statistic.
+      const cb = makeCallbacks();
+      const { sig, peer } = await startConnected(cb);
+      streaming(peer, (poll) => ({ bytesReceived: poll * 1000 }));
+      await jest.advanceTimersByTimeAsync(60_000);
+      expect(sig.renegotiate).not.toHaveBeenCalled();
+      const last = cb.onStats.mock.calls.at(-1)?.[0];
+      expect(last.video.flowing).toBe(true);
+      expect(last.video.decoding).toBeNull();
+    });
+
+    it('reports a broken control channel while the picture is perfect', async () => {
+      // Live video and a dead input channel is its own failure: the screen
+      // looks right and nothing the person does reaches the Mac. It used to
+      // be invisible, because health was one video-shaped question.
+      const cb = makeCallbacks();
+      const { peer } = await startConnected(cb);
+      const critical = peer.dispatchDataChannel(INPUT_CHANNEL_LABEL);
+      let frames = 30;
+      streaming(peer, (poll) => ({ bytesReceived: poll * 1000, framesDecoded: (frames += 5) }));
+      await jest.advanceTimersByTimeAsync(QUALITY_POLL_MS * 2);
+      expect(cb.onStats.mock.calls.at(-1)?.[0].video).toMatchObject({
+        flowing: true,
+        decoding: true,
+        control: true,
+      });
+
+      critical.readyState = 'closed';
+      await jest.advanceTimersByTimeAsync(QUALITY_POLL_MS);
+      expect(cb.onStats.mock.calls.at(-1)?.[0].video.control).toBe(false);
+    });
+  });
+
   // ── AI agent channel (docs/m5.3-ai-executor-plan.md §6) ──────────────────
 
   describe('agent messaging over the reliable input channel', () => {
@@ -1565,6 +1696,67 @@ describe('ViewerConnection', () => {
       // The destination the Mac disclosed, echoed back, so the Mac can refuse a
       // command aimed at one that has since changed (L-265).
       expect(command.consentRevision).toBe('rev-abc');
+    });
+
+    /* ── L-285 ────────────────────────────────────────────────────────── */
+
+    it('reports each handshake state instead of an absent destination', async () => {
+      // Four situations used to arrive as one missing `destination`, and the
+      // phone rendered all of them as a consent card that could not be
+      // completed.
+      const cb = makeCallbacks();
+      const { conn, peer } = await startConnected(cb);
+      const critical = peer.dispatchDataChannel(INPUT_CHANNEL_LABEL);
+      conn.prepareAsk();
+      const probe = JSON.parse(critical.send.mock.calls[0][0]);
+
+      for (const state of ['checking', 'unconfigured', 'unavailable'] as const) {
+        critical.emitMessage(
+          readyFrame(probe.runId, { state, destination: undefined }),
+        );
+        expect(cb.onAgentReady).toHaveBeenLastCalledWith(state, undefined);
+        // None of these is permission to send.
+        expect(conn.sendAgentCommand('open Safari').sent).toBe(false);
+      }
+
+      // …and the follow-up frame for the same hello resolves it.
+      critical.emitMessage(readyFrame(probe.runId));
+      expect(cb.onAgentReady).toHaveBeenLastCalledWith(
+        'ready',
+        expect.objectContaining({ origin: 'https://api.openai.com' }),
+      );
+      expect(conn.sendAgentCommand('open Safari').sent).toBe(true);
+    });
+
+    it('recognises an Ask handshake it cannot parse as an out-of-date Mac', async () => {
+      // The strict schema rejects a v2 frame, and a rejected frame used to be
+      // dropped in silence — so the phone waited forever and the "update both
+      // apps" message was rendered behind a card it could not get past.
+      const cb = makeCallbacks();
+      const { conn, peer } = await startConnected(cb);
+      const critical = peer.dispatchDataChannel(INPUT_CHANNEL_LABEL);
+      conn.prepareAsk();
+      const probe = JSON.parse(critical.send.mock.calls[0][0]);
+
+      critical.emitMessage(readyFrame(probe.runId, { protocolVersion: 2 }));
+      expect(cb.onAgentReady).toHaveBeenCalledWith('incompatible', undefined);
+      expect(conn.sendAgentCommand('open Safari').sent).toBe(false);
+    });
+
+    it('does not mistake an unparseable frame for an out-of-date Mac', async () => {
+      const cb = makeCallbacks();
+      const { conn, peer } = await startConnected(cb);
+      const critical = peer.dispatchDataChannel(INPUT_CHANNEL_LABEL);
+      conn.prepareAsk();
+      const probe = JSON.parse(critical.send.mock.calls[0][0]);
+
+      // Right version, wrong hello: another run's frame is not this one's.
+      critical.emitMessage(readyFrame('someone-else', { protocolVersion: 2 }));
+      // Not a handshake at all.
+      critical.emitMessage(JSON.stringify({ kind: 'input_batch', events: [] }));
+      critical.emitMessage('{');
+      expect(cb.onAgentReady).not.toHaveBeenCalled();
+      expect(probe.runId).toBeTruthy();
     });
 
     it('sends an agent_command frame and returns a runId', async () => {

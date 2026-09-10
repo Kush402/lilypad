@@ -19,10 +19,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc::{channel, unbounded_channel, Sender};
 use tokio::task::JoinHandle;
 
-use crate::agent::llm::resolver::Readiness;
+use crate::agent::llm::resolver::{ProviderResolver, Readiness};
 use crate::agent::llm::{AnyProvider, NOT_CONFIGURED_MESSAGE};
 use crate::agent::protocol::{
-    AgentInbound, AgentOutbound, RunOutcome, StepKind, StepState, ASK_PROTOCOL_VERSION,
+    AgentHandshakeState, AgentInbound, AgentOutbound, RunOutcome, StepKind, StepState,
+    ASK_PROTOCOL_VERSION,
 };
 use crate::agent::runner::{AgentRunner, Cancel, DECISION_QUEUE_CAPACITY};
 use crate::agent::{LlmBrain, SharedDisplay, TieredExecutor};
@@ -85,6 +86,13 @@ struct PriorRun {
 /// the only way to know the old run has stopped clicking.
 const PRIOR_RUN_DRAIN_MS: u64 = 20_000;
 
+/// How often a hello's follow-up checks whether the resolution landed, and how
+/// many times before it gives up (L-285). Twenty seconds in total: longer than
+/// a keychain read that is going to succeed, and short enough that a Mac with
+/// a locked keychain is not carrying one task per hello indefinitely.
+const HELLO_FOLLOW_UP_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
+const HELLO_FOLLOW_UP_LIMIT: u32 = 80;
+
 pub struct AgentController {
     active: Option<ActiveRun>,
     // Task-owned lease survives replacement and drain timeouts.
@@ -99,7 +107,7 @@ pub struct AgentController {
     runs: HashMap<String, Arc<Mutex<Option<RunOutcome>>>>,
     /// Publishes the resolved provider from a background task, so the keychain
     /// is never read on this event path (L-271).
-    provider: crate::agent::llm::resolver::ProviderResolver,
+    provider: ProviderResolver,
 }
 
 // One Mac is the effectful resource. A reconnect can create a new controller
@@ -116,7 +124,7 @@ impl Default for AgentController {
             ),
             display: SharedDisplay::default(),
             runs: HashMap::new(),
-            provider: crate::agent::llm::resolver::ProviderResolver::new(),
+            provider: ProviderResolver::new(),
         }
     }
 }
@@ -162,22 +170,27 @@ impl AgentController {
                     // while `ProviderChoice::resolve` preferred an environment
                     // override, so a Mac with `LILYPAD_*` set told the phone one
                     // destination and sent the screen to another.
-                    let destination = match self.provider.peek() {
-                        Readiness::Ready(resolved) => Some(resolved.config.destination()),
-                        // Not yet resolved, not configured, or the keychain did
-                        // not answer: all three mean this Mac cannot state a
-                        // destination right now, and the phone renders that as
-                        // "not disclosed" rather than reusing an older one.
-                        _ => None,
-                    };
-                    let msg = AgentOutbound::AgentReady {
-                        run_id,
-                        protocol_version: ASK_PROTOCOL_VERSION,
-                        destination,
-                        ts: now_ms(),
-                    };
+                    //
+                    // The state is stated rather than inferred from whether a
+                    // destination is present (L-285): "still checking",
+                    // "nothing set up" and "the keychain would not open" are
+                    // three different answers, and the phone needs to offer
+                    // three different things.
+                    let readiness = self.provider.peek();
+                    let msg = Self::ready_frame(&run_id, &readiness);
+                    let follow_up = matches!(readiness, Readiness::Unknown);
+                    let resolver = self.provider.clone();
                     tokio::spawn(async move {
-                        let _ = peer.send_input_text(msg.encode()).await;
+                        if peer.send_input_text(msg.encode()).await.is_err() {
+                            return;
+                        }
+                        if follow_up {
+                            // A resolution that had not finished is not an
+                            // answer, and closing and reopening Ask was the
+                            // undisclosed workaround for it. Publish the real
+                            // one to the hello that asked (L-285).
+                            Self::follow_up_when_resolved(run_id, resolver, peer).await;
+                        }
                     });
                 }
             }
@@ -362,8 +375,9 @@ impl AgentController {
                     // A resolution that has not finished is not "no provider".
                     // Saying so lets the person retry instead of going to
                     // settings that are already correct.
-                    Readiness::Unknown => "Still checking this Mac's AI setup. Try again in a moment."
-                        .to_string(),
+                    Readiness::Unknown => {
+                        "Still checking this Mac's AI setup. Try again in a moment.".to_string()
+                    }
                     _ => NOT_CONFIGURED_MESSAGE.to_string(),
                 };
                 Self::send_refusal(&peer, &run_id, &reason);
@@ -518,6 +532,53 @@ impl AgentController {
 
     /// Emit a single error step + a `Denied` run-end directly (no run spawned).
     /// Best-effort, fire-and-forget: the phone may already be gone.
+    /// One `agent_ready` describing exactly what the resolver knows (L-285).
+    fn ready_frame(run_id: &str, readiness: &Readiness) -> AgentOutbound {
+        let (state, destination) = match readiness {
+            Readiness::Ready(resolved) => (
+                AgentHandshakeState::Ready,
+                Some(resolved.config.destination()),
+            ),
+            Readiness::Unknown => (AgentHandshakeState::Checking, None),
+            Readiness::NotConfigured => (AgentHandshakeState::Unconfigured, None),
+            Readiness::Unavailable(_) => (AgentHandshakeState::Unavailable, None),
+        };
+        AgentOutbound::AgentReady {
+            run_id: run_id.to_string(),
+            protocol_version: ASK_PROTOCOL_VERSION,
+            state,
+            destination,
+            ts: now_ms(),
+        }
+    }
+
+    /// Wait for the in-flight resolution and send its answer to the hello that
+    /// asked for it.
+    ///
+    /// Bounded and cancellable: it gives up after `HELLO_FOLLOW_UP_LIMIT`
+    /// polls and stops the moment the channel will not take a frame, so a
+    /// keychain that never answers costs one sleeping task per hello and not a
+    /// task that lives as long as the process. Giving up is safe because the
+    /// phone keeps a Recheck action on screen for exactly this state — the
+    /// follow-up saves a tap, it is not the only way out.
+    async fn follow_up_when_resolved(
+        run_id: String,
+        resolver: ProviderResolver,
+        peer: Arc<WebRtcPeer>,
+    ) {
+        for _ in 0..HELLO_FOLLOW_UP_LIMIT {
+            tokio::time::sleep(HELLO_FOLLOW_UP_INTERVAL).await;
+            let readiness = resolver.peek();
+            if matches!(readiness, Readiness::Unknown) {
+                continue;
+            }
+            let _ = peer
+                .send_input_text(Self::ready_frame(&run_id, &readiness).encode())
+                .await;
+            return;
+        }
+    }
+
     fn send_refusal(peer: &Arc<WebRtcPeer>, run_id: &str, message: &str) {
         let step = AgentOutbound::step(
             run_id,
@@ -549,6 +610,30 @@ impl Drop for AgentController {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// L-285. Four situations, four answers. They used to arrive as one absent
+    /// `destination`, and the phone could not tell a Mac that was still
+    /// checking from one with nothing set up — so it offered neither a wait
+    /// nor a way to fix it.
+    #[test]
+    fn every_resolver_state_is_disclosed_as_its_own_answer() {
+        let cases = [
+            (Readiness::Unknown, "checking"),
+            (Readiness::NotConfigured, "unconfigured"),
+            (Readiness::Unavailable("locked".into()), "unavailable"),
+        ];
+        for (readiness, want) in cases {
+            let frame = AgentController::ready_frame("run-1", &readiness);
+            let json: serde_json::Value = serde_json::from_str(&frame.encode()).unwrap();
+            assert_eq!(json["state"], want, "for {readiness:?}");
+            assert!(
+                json.get("destination").is_none(),
+                "{want} disclosed a destination it does not have"
+            );
+            assert_eq!(json["protocolVersion"], ASK_PROTOCOL_VERSION);
+            assert_eq!(json["runId"], "run-1");
+        }
+    }
 
     #[test]
     fn authorize_requires_control_then_provider() {

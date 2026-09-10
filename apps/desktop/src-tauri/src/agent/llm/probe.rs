@@ -74,7 +74,11 @@ impl Shapes {
             let x0 = PAD + i * (CELL + PAD);
             for y in PAD..PAD + CELL {
                 for x in x0..x0 + CELL {
-                    img.put_pixel(x, y, image::Rgba([self.rgb[0], self.rgb[1], self.rgb[2], 255]));
+                    img.put_pixel(
+                        x,
+                        y,
+                        image::Rgba([self.rgb[0], self.rgb[1], self.rgb[2], 255]),
+                    );
                 }
             }
         }
@@ -192,7 +196,10 @@ pub async fn run<P: LlmProvider>(
             "Call `probe_report` with ready set to true.".to_string(),
         )],
     };
-    let reply = match provider.complete(PROBE_SYSTEM, &[ask.clone()], &tools).await {
+    let reply = match provider
+        .complete(PROBE_SYSTEM, &[ask.clone()], &tools)
+        .await
+    {
         Ok(reply) => reply,
         Err(err) => return ProbeReport::failed(origin, model, &downcast(&err)),
     };
@@ -410,9 +417,11 @@ mod tests {
     }
 
     fn has_tool_result(messages: &[ChatMessage]) -> bool {
-        messages
-            .iter()
-            .any(|m| m.blocks.iter().any(|b| matches!(b, Block::ToolResult { .. })))
+        messages.iter().any(|m| {
+            m.blocks
+                .iter()
+                .any(|b| matches!(b, Block::ToolResult { .. }))
+        })
     }
 
     impl LlmProvider for Scripted {
@@ -438,9 +447,9 @@ mod tests {
                 SecondTurn::IgnoreResult => {
                     Ok(call(serde_json::json!({ "echo": "not-the-nonce" })))
                 }
-                SecondTurn::EchoNonce => Ok(call(
-                    serde_json::json!({ "echo": nonce_from(messages) }),
-                )),
+                SecondTurn::EchoNonce => {
+                    Ok(call(serde_json::json!({ "echo": nonce_from(messages) })))
+                }
                 SecondTurn::EchoWithImage(count, colour) => Ok(call(serde_json::json!({
                     "echo": nonce_from(messages),
                     "count": count,

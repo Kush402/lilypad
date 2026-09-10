@@ -461,3 +461,86 @@ it('preserves the same command through repeated failed sends', async () => {
   expect(send).toHaveBeenCalledTimes(2);
   expect(screen.getByTestId('agent-command-input').props.value).toBe('Open Safari');
 });
+
+describe('the handshake, before consent (L-285)', () => {
+  const props = { onSend: noop, onStop: noop, onDecide: noop };
+
+  /* Reproduced against the previous component: with no destination disclosed,
+   * the consent view returned first and rendered Allow disabled with no way
+   * forward. The recheck action existed, but only *after* the consent gate,
+   * which is the gate it is supposed to unblock. Closing and reopening Ask was
+   * the workaround, and nothing said so. */
+  it.each([
+    ['waiting', /checking with your mac/i],
+    ['checking', /still working out which AI provider/i],
+    ['unconfigured', /no AI provider set up/i],
+    ['unavailable', /could not read its saved AI settings/i],
+    ['incompatible', /compatible versions/i],
+  ] as const)('shows %s with a way forward, not the consent card', async (state, copy) => {
+    const check = jest.fn();
+    render(
+      <AgentPanel
+        desktopDeviceId="mac-1"
+        handshake={state}
+        onCheckCompatibility={check}
+        feed={feed()}
+        {...props}
+      />,
+    );
+    await shown('agent-handshake');
+    expect(screen.queryByTestId('agent-consent')).toBeNull();
+    expect(screen.queryByTestId('agent-panel')).toBeNull();
+    expect(screen.getByTestId('agent-handshake-message').props.children).toMatch(copy);
+    fireEvent.press(screen.getByLabelText('Check Ask compatibility'));
+    expect(check).toHaveBeenCalledTimes(1);
+  });
+
+  it('asks for consent once the Mac actually says where it sends', async () => {
+    consent.granted = false;
+    const view = render(<AgentPanel desktopDeviceId="mac-1" handshake="checking" feed={feed()} {...props} />);
+    await shown('agent-handshake');
+    // The Mac's follow-up frame for the same hello arrives.
+    view.rerender(<AgentPanel {...DISCLOSED} handshake="ready" feed={feed()} {...props} />);
+    await shown('agent-consent');
+    expect(screen.queryByTestId('agent-handshake')).toBeNull();
+    // …and now there is something to agree to, so Allow works.
+    expect(screen.getByTestId('agent-consent-allow').props.accessibilityState.disabled).toBe(false);
+  });
+
+  it('keeps Stop reachable when the handshake goes bad mid-task', async () => {
+    // Losing Stop behind a status card is the same defect as losing it behind
+    // a consent card.
+    const stop = jest.fn();
+    render(
+      <AgentPanel
+        desktopDeviceId="mac-1"
+        handshake="unavailable"
+        feed={feed({ phase: 'stop_unconfirmed' })}
+        onSend={noop}
+        onStop={stop}
+        onDecide={noop}
+      />,
+    );
+    await shown('agent-handshake-inflight');
+    fireEvent.press(screen.getByTestId('agent-handshake-stop'));
+    expect(stop).toHaveBeenCalledTimes(1);
+  });
+
+  it('never sends while the Mac has not disclosed a destination', async () => {
+    const send = jest.fn();
+    render(
+      <AgentPanel
+        desktopDeviceId="mac-1"
+        handshake="unconfigured"
+        feed={feed()}
+        onSend={send}
+        onStop={noop}
+        onDecide={noop}
+      />,
+    );
+    await shown('agent-handshake');
+    expect(screen.queryByTestId('agent-command-input')).toBeNull();
+    expect(screen.queryByTestId('agent-send')).toBeNull();
+    expect(send).not.toHaveBeenCalled();
+  });
+});

@@ -576,7 +576,7 @@ Ignore the `v0.0.0-dispatch.42` release and any DMG downloaded from it — that
 was the pre-tag build and it reports itself as 0.1.32.
 
 **Row 3 is now testable, and it is the one row with an order requirement.** The
-updater can only be seen updating *from* something older, so if you want to
+updater can only be seen updating _from_ something older, so if you want to
 check it: install **0.1.32 first**, run it, leave the bubble up, and let it find
 0.1.33. Installing 0.1.33 directly makes row 3 untestable — mark it blocked
 rather than passed in that case.
@@ -585,7 +585,7 @@ If you already ran Lilypad on this Mac, do the full clean-state wipe in
 [§ 1. Installation](#1-installation) first — the device key especially. The
 signature has not changed, so the privacy grants and the old identity both
 carry straight over and you would not be testing as a new user. Do the wipe
-*after* the row-3 check, not before, since that check needs the old install.
+_after_ the row-3 check, not before, since that check needs the old install.
 
 ### The user-reported failures this release claims to fix
 

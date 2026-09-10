@@ -632,7 +632,7 @@ mod tests {
     fn with_home<T>(home: &Path, body: impl std::future::Future<Output = T>) -> T {
         let _g = crate::agent::executor::verify::HOME_TEST_LOCK
             .lock()
-            .unwrap();
+            .unwrap_or_else(|e| e.into_inner());
         let prev = std::env::var("HOME").ok();
         std::env::set_var("HOME", home);
         let out = tokio::runtime::Builder::new_current_thread()
@@ -802,7 +802,11 @@ mod tests {
         };
         let obs = observation_from(&outcome);
         assert!(!obs.ok);
-        assert!(obs.summary.contains("could not be confirmed"), "{}", obs.summary);
+        assert!(
+            obs.summary.contains("could not be confirmed"),
+            "{}",
+            obs.summary
+        );
     }
 
     #[test]
@@ -818,7 +822,7 @@ mod tests {
     async fn rejects_non_runscript_actions() {
         let _g = crate::agent::executor::verify::HOME_TEST_LOCK
             .lock()
-            .unwrap();
+            .unwrap_or_else(|e| e.into_inner());
         // from_env may fail in a HOME-less CI; guard.
         if let Ok(mut ex) = SandboxExecutor::from_env() {
             let r = ex
@@ -839,7 +843,7 @@ mod tests {
     async fn runs_a_real_shell_script_and_returns_stdout() {
         let _g = crate::agent::executor::verify::HOME_TEST_LOCK
             .lock()
-            .unwrap();
+            .unwrap_or_else(|e| e.into_inner());
         if !std::path::Path::new("/usr/bin/sandbox-exec").exists() || std::env::var("HOME").is_err()
         {
             return;
@@ -866,7 +870,7 @@ mod tests {
     async fn script_writing_outside_scratch_fails_closed() {
         let _g = crate::agent::executor::verify::HOME_TEST_LOCK
             .lock()
-            .unwrap();
+            .unwrap_or_else(|e| e.into_inner());
         if !std::path::Path::new("/usr/bin/sandbox-exec").exists() {
             return;
         }

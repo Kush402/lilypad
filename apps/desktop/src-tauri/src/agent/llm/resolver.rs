@@ -27,6 +27,17 @@
 //! So: exactly **one** worker thread for the whole process, which does its own
 //! subprocess reaping, and a published answer that carries the generation it
 //! was resolved for and is discarded if that generation is no longer current.
+//!
+//! ### The generation has to come from the read, not from the request
+//!
+//! The second version of this file took the epoch at `peek()` time and passed
+//! it down with the job. That still admitted the defect it was meant to close:
+//! `save_settings` bumped the epoch *before* writing the file, so a worker
+//! starting in that gap read the OLD provider under the NEW epoch and published
+//! it as current. The generation is now captured by `store::load_committed()`
+//! in the same critical section as the file read, and the write bumps it only
+//! after the new contents are committed — so a published generation always
+//! describes the bytes the answer was built from.
 
 use std::sync::mpsc::{sync_channel, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -84,8 +95,18 @@ pub fn invalidate() {
     EPOCH.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 }
 
-fn epoch() -> u64 {
+/// The current committed generation. Read under the settings lock by
+/// `store::load_committed`, so an answer and its generation agree.
+pub fn epoch() -> u64 {
     EPOCH.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// The generation is one process-wide counter, as it is in production. Tests
+/// that assert on it have to take turns, wherever they live.
+#[cfg(test)]
+pub(crate) fn epoch_test_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: Mutex<()> = Mutex::new(());
+    LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 struct Cached {
@@ -143,7 +164,7 @@ impl ProviderResolver {
         }
         drop(cached);
         if should_start {
-            self.request_refresh(now_epoch);
+            self.request_refresh();
         }
         readiness
     }
@@ -154,10 +175,9 @@ impl ProviderResolver {
         let _ = self.peek();
     }
 
-    fn request_refresh(&self, for_epoch: u64) {
+    fn request_refresh(&self) {
         let inner = Arc::clone(&self.inner);
         let job = Job {
-            for_epoch,
             reply: Box::new(move |readiness, resolved_epoch| {
                 let mut cached = inner.lock().unwrap();
                 cached.in_flight = false;
@@ -194,7 +214,6 @@ impl ProviderResolver {
 type Reply = Box<dyn FnOnce(Readiness, u64) + Send>;
 
 struct Job {
-    for_epoch: u64,
     reply: Reply,
 }
 
@@ -212,8 +231,8 @@ fn worker() -> &'static SyncSender<Job> {
             .name("lilypad-provider-resolver".into())
             .spawn(move || {
                 while let Ok(job) = rx.recv() {
-                    let readiness = resolve_once();
-                    (job.reply)(readiness, job.for_epoch);
+                    let (readiness, committed) = resolve_once();
+                    (job.reply)(readiness, committed);
                 }
             })
             .expect("spawn provider resolver worker");
@@ -222,22 +241,31 @@ fn worker() -> &'static SyncSender<Job> {
 }
 
 /// Resolve on the worker thread, with the keychain call bounded by killing it.
-fn resolve_once() -> Readiness {
+///
+/// Returns the answer and the committed generation it describes. Both come
+/// from one `load_committed()` read, so nothing here can attribute an answer to
+/// a generation it did not come from (L-278).
+fn resolve_once() -> (Readiness, u64) {
+    let (settings, committed) = super::store::load_committed();
     // The deadline lives inside the keychain calls themselves, where it can
     // kill the process it is a deadline for — see `store::wait_bounded`.
-    match EffectiveConfig::resolve_blocking() {
+    let readiness = match EffectiveConfig::resolve_from(&settings, committed) {
         Err(unavailable) => Readiness::Unavailable(unavailable.0),
         Ok(None) => Readiness::NotConfigured,
-        Ok(Some((config, key))) => match build_choice(&config, key) {
+        Ok(Some((config, key))) => match build_choice(&settings, &config, key) {
             Some(choice) => Readiness::Ready(Box::new(Resolved { choice, config })),
             None => Readiness::NotConfigured,
         },
-    }
+    };
+    (readiness, committed)
 }
 
-fn build_choice(config: &EffectiveConfig, key: String) -> Option<ProviderChoice> {
-    let settings = super::store::load_settings();
-    let vision = settings.vision.unwrap_or(false);
+fn build_choice(
+    settings: &super::store::AgentSettings,
+    config: &EffectiveConfig,
+    key: String,
+) -> Option<ProviderChoice> {
+    let vision = super::store::effective_vision(settings);
     let model = config.model.clone();
     match config.dialect {
         "anthropic" => {
@@ -299,6 +327,7 @@ mod tests {
 
     #[tokio::test]
     async fn invalidating_discards_what_was_known() {
+        let _turn = epoch_test_lock();
         let resolver = ProviderResolver::new();
         resolver.warm();
         for _ in 0..200 {
@@ -315,6 +344,7 @@ mod tests {
 
     #[test]
     fn a_stale_generation_is_discarded_rather_than_published() {
+        let _turn = epoch_test_lock();
         // The exact shape of L-278: a resolution of A completes after the
         // configuration has moved on to B.
         let resolver = ProviderResolver::new();

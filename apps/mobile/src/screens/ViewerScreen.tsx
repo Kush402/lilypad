@@ -47,7 +47,7 @@ import { PressRepeater } from '../lib/pressRepeat';
 import { ACK_DEADLINE_MS, agentFeedReducer, INITIAL_AGENT_FEED } from '../lib/agentFeed';
 import { forgetPair, loadPairs, setPairLanEndpoints, setPairSecret } from '../lib/pairs';
 import { requestConnectForPair } from '../lib/api';
-import { AgentPanel } from './AgentPanel';
+import { AgentPanel, type HandshakeView } from './AgentPanel';
 import { clearResumeHandle, saveResumeHandle } from '../lib/sessionResume';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Viewer'>;
@@ -190,7 +190,10 @@ export function ViewerScreen({ route, navigation }: Props) {
   const isLandscape = win.width > win.height;
   const [trayOpen, setTrayOpen] = useState(false);
   const [askOpen, setAskOpen] = useState(false);
-  const [askCompatible, setAskCompatible] = useState(false);
+  /** What the Mac last said about the Ask handshake. `waiting` until it says
+   * anything at all, so "still checking" is never rendered as "not set up"
+   * (L-285). */
+  const [askHandshake, setAskHandshake] = useState<HandshakeView>('waiting');
   /** Where this Mac says Ask observations go. `undefined` until it says, and
    * cleared on disconnect so a reconnect cannot reuse the previous answer
    * (L-265). */
@@ -320,7 +323,9 @@ export function ViewerScreen({ route, navigation }: Props) {
             next === 'failed' ||
             next === 'denied'
           ) {
-            setAskCompatible(false);
+            // A dropped session tells this phone nothing about the Mac's AI
+            // setup, so the panel goes back to "asking", not to "broken".
+            setAskHandshake('waiting');
             setAskDestination(undefined);
             resetKeyboard();
             for (const repeater of toolbarRepeatersRef.current.values()) repeater.stop();
@@ -366,9 +371,9 @@ export function ViewerScreen({ route, navigation }: Props) {
             CLIPBOARD_TOAST_MS,
           );
         },
-        onAgentReady: (destination) => {
+        onAgentReady: (state, destination) => {
           if (!active) return;
-          setAskCompatible(true);
+          setAskHandshake(state);
           setAskDestination(destination);
         },
         onAgentStep: (step) => {
@@ -951,7 +956,14 @@ export function ViewerScreen({ route, navigation }: Props) {
                 // Closing the panel must also release its keyboard — the
                 // panel unmounts and an orphaned keyboard has no dismisser.
                 if (v) Keyboard.dismiss();
-                else connRef.current?.prepareAsk();
+                else {
+                  // Reopening asks again, and the panel says it is asking
+                  // rather than showing the last answer as though it were
+                  // current (L-285).
+                  setAskHandshake('waiting');
+                  setAskDestination(undefined);
+                  connRef.current?.prepareAsk();
+                }
                 return !v;
               })
             }
@@ -1023,7 +1035,7 @@ export function ViewerScreen({ route, navigation }: Props) {
       {canControl && askOpen ? (
         <AgentPanel
           feed={agentFeed}
-          compatible={askCompatible}
+          handshake={askHandshake}
           desktopDeviceId={desktopDeviceId}
           destination={askDestination}
           onCheckCompatibility={() => connRef.current?.prepareAsk()}
@@ -1145,6 +1157,31 @@ export function ViewerScreen({ route, navigation }: Props) {
               {zoomBadge ? ` · ${zoomBadge}` : ''}
             </Text>
           </View>
+          {/* A frozen picture used to look exactly like a good connection:
+              health was one video-shaped question answered by arriving bytes
+              (L-273). These are the two answers that differ. */}
+          {quality?.video.flowing && quality.video.decoding === false ? (
+            <Text
+              testID="video-frozen"
+              style={styles.badgeText}
+              accessibilityRole="alert"
+              accessibilityLiveRegion="polite"
+            >
+              {' '}
+              · picture frozen, retrying
+            </Text>
+          ) : null}
+          {quality && !quality.video.control ? (
+            <Text
+              testID="control-channel-down"
+              style={styles.badgeText}
+              accessibilityRole="alert"
+              accessibilityLiveRegion="polite"
+            >
+              {' '}
+              · controls not connected
+            </Text>
+          ) : null}
           {hudExpanded && quality ? (
             <View style={styles.hud}>
               <Text style={styles.hudText}>{quality.rttMs ?? '--'} ms</Text>

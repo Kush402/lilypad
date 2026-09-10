@@ -373,7 +373,11 @@ mod tests {
         let _ = child.kill();
         let _ = child.wait();
         let cleanup = tracker.terminate(Duration::from_secs(3));
-        assert_eq!(cleanup, Cleanup::Confirmed, "the run was not confirmed clean");
+        assert_eq!(
+            cleanup,
+            Cleanup::Confirmed,
+            "the run was not confirmed clean"
+        );
 
         // The marker is written three seconds in. If the escapee survived, it
         // appears while we wait here.
@@ -411,11 +415,17 @@ mod tests {
         std::thread::sleep(Duration::from_millis(200));
         let _ = mine.kill();
         let _ = mine.wait();
-        assert_eq!(tracker.terminate(Duration::from_secs(3)), Cleanup::Confirmed);
+        assert_eq!(
+            tracker.terminate(Duration::from_secs(3)),
+            Cleanup::Confirmed
+        );
 
         // SAFETY: signal 0 only probes for existence.
         let alive = unsafe { libc::kill(bystander_pid, 0) } == 0;
-        assert!(alive, "an unrelated process was killed by the run's cleanup");
+        assert!(
+            alive,
+            "an unrelated process was killed by the run's cleanup"
+        );
         let _ = bystander.kill();
         let _ = bystander.wait();
         std::fs::remove_dir_all(&dir).ok();

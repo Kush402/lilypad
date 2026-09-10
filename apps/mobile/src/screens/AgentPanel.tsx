@@ -11,7 +11,7 @@ import {
   revokeAiConsent,
   targetFor,
 } from '../lib/aiConsent';
-import type { AgentDestination } from '@lilypad/protocol';
+import type { AgentDestination, AgentHandshakeState } from '@lilypad/protocol';
 
 /**
  * The "Ask" panel — command entry + the AI agent's live step feed, with an
@@ -30,7 +30,14 @@ export interface AgentPanelProps {
   /** Text of a command that never left the device, restored into the box so
    * the person does not lose what they typed (L-233). */
   unsentCommand?: string | null;
-  compatible?: boolean;
+  /**
+   * What the Mac last said about the Ask handshake (L-285).
+   *
+   * `waiting` and `incompatible` are this phone's own conclusions: nothing has
+   * come back yet, and the Mac answered in a protocol this phone does not
+   * speak. Everything else is stated by the Mac.
+   */
+  handshake?: HandshakeView;
   onCheckCompatibility?: () => void;
   /** Which Mac this session is with — the phone's own pairing record. */
   desktopDeviceId?: string | null;
@@ -56,6 +63,35 @@ export function destinationSentence(destination: AgentDestination | undefined): 
     return `This Mac runs its model locally at ${destination.origin}${model}. Your screen is read on the Mac and does not leave it.`;
   }
   return `This Mac sends to ${destination.providerName} at ${destination.origin}${model}. Your screen leaves your Mac and your phone for that provider. Lilypad never sees it.`;
+}
+
+/** What the Mac last said about the Ask handshake, plus the two conclusions
+ * the phone draws for itself (L-285). */
+export type HandshakeView = AgentHandshakeState | 'incompatible' | 'waiting';
+
+/**
+ * The one honest sentence for each handshake state (L-285).
+ *
+ * All of these used to be a missing `destination`, and a missing destination
+ * rendered as the consent card with Allow disabled: a card asking permission
+ * to send to a provider it could not name, with no way on and nothing saying
+ * why. Closing and reopening Ask was the workaround, and nothing said that
+ * either.
+ */
+export function handshakeSentence(state: HandshakeView): string {
+  switch (state) {
+    case 'waiting':
+      return 'Checking with your Mac\u2026';
+    case 'checking':
+      return 'Your Mac is still working out which AI provider it would use. This usually takes a moment.';
+    case 'unconfigured':
+      return 'This Mac has no AI provider set up yet. Set one up on the Mac, then check again. Manual control still works.';
+    case 'unavailable':
+      return 'Your Mac could not read its saved AI settings. If a permission box is waiting on the Mac, allow it, then check again. Manual control still works.';
+    case 'incompatible':
+    default:
+      return 'Ask needs compatible versions on your phone and Mac. Connect and update both apps, then check again. Manual control is still available.';
+  }
 }
 
 /** The one honest sentence for each transport state (L-233). */
@@ -163,7 +199,7 @@ export function AgentPanel({
   onStop,
   onDecide,
   unsentCommand,
-  compatible = true,
+  handshake = 'ready',
   onCheckCompatibility,
   desktopDeviceId,
   destination,
@@ -223,7 +259,7 @@ export function AgentPanel({
 
   const submit = () => {
     const t = text.trim();
-    if (!t || inFlight || !consented || !compatible) return;
+    if (!t || inFlight || !consented || handshake !== 'ready') return;
     if (onSend(t) === false) return;
     setText('');
     // The command is dispatched — give the screen back to the step feed /
@@ -231,6 +267,49 @@ export function AgentPanel({
     // TextInput on iOS leaves the keyboard up with no way to dismiss it.
     Keyboard.dismiss();
   };
+
+  /* Before consent, deliberately (L-285). A question about where a screen
+   * goes cannot be asked while the Mac has not said where that is, and the
+   * action that fixes it must not be rendered behind the card it unblocks. */
+  if (handshake !== 'ready') {
+    return (
+      <View style={styles.panel} testID="agent-handshake">
+        <View testID="agent-compatibility">
+          <Text accessibilityLiveRegion="polite" testID="agent-handshake-message">
+            {handshakeSentence(handshake)}
+          </Text>
+          <Pressable
+            testID="agent-handshake-recheck"
+            onPress={onCheckCompatibility}
+            accessibilityRole="button"
+            accessibilityLabel="Check Ask compatibility"
+          >
+            <Text>Check again</Text>
+          </Pressable>
+        </View>
+        {/* Something may still be running on the Mac. Whatever the handshake
+         * says now, Stop stays reachable — losing it behind a status card is
+         * the same defect as losing it behind a consent card. */}
+        {inFlight ? (
+          <View testID="agent-handshake-inflight">
+            <Text accessibilityRole="alert" accessibilityLiveRegion="polite">
+              A task may still be running on your Mac.{status ? ` ${status}` : ''}
+            </Text>
+            <Pressable
+              testID="agent-handshake-stop"
+              onPress={onStop}
+              disabled={feed.phase === 'stopping'}
+              accessibilityRole="button"
+              accessibilityLabel="Stop the current task"
+              accessibilityState={{ disabled: feed.phase === 'stopping' }}
+            >
+              <Text>{feed.phase === 'stopping' ? 'Stopping\u2026' : 'Stop'}</Text>
+            </Pressable>
+          </View>
+        ) : null}
+      </View>
+    );
+  }
 
   if (consented === null) return null;
 
@@ -329,21 +408,6 @@ export function AgentPanel({
 
   return (
     <View style={styles.panel} testID="agent-panel">
-      {!compatible ? (
-        <View testID="agent-compatibility">
-          <Text accessibilityLiveRegion="polite">
-            Ask needs compatible versions on your phone and Mac. Connect and update both apps, then
-            check again. Manual control is still available.
-          </Text>
-          <Pressable
-            onPress={onCheckCompatibility}
-            accessibilityRole="button"
-            accessibilityLabel="Check Ask compatibility"
-          >
-            <Text>Check again</Text>
-          </Pressable>
-        </View>
-      ) : null}
       <View style={styles.inputRow}>
         <TextInput
           testID="agent-command-input"
@@ -388,10 +452,10 @@ export function AgentPanel({
             testID="agent-send"
             style={[styles.btn, styles.sendBtn, !text.trim() && styles.btnDisabled]}
             onPress={submit}
-            disabled={!text.trim() || !compatible}
+            disabled={!text.trim()}
             accessibilityRole="button"
             accessibilityLabel="Ask"
-            accessibilityState={{ disabled: !text.trim() || !compatible }}
+            accessibilityState={{ disabled: !text.trim() }}
           >
             <Text style={styles.btnText}>Ask</Text>
           </Pressable>

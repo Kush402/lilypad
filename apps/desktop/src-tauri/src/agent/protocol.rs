@@ -288,6 +288,22 @@ impl Approval {
     }
 }
 
+/// Where the Mac is in answering "can Ask run here" (L-285).
+///
+/// The phone used to infer this from whether a destination was present, which
+/// made "still checking", "nothing set up" and "the keychain would not open"
+/// indistinguishable — and all three rendered as a consent card whose Allow
+/// button could never be pressed. `Checking` is not final: the Mac sends a
+/// second `agent_ready` for the same run id when the resolution lands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AgentHandshakeState {
+    Ready,
+    Checking,
+    Unconfigured,
+    Unavailable,
+}
+
 /// The non-secret identity of the model destination, disclosed to the phone so
 /// consent can be bound to it (L-265).
 ///
@@ -337,8 +353,12 @@ pub enum AgentOutbound {
         run_id: String,
         #[serde(rename = "protocolVersion")]
         protocol_version: u32,
-        /// Where this Mac's observations would go (L-265). Omitted only when
-        /// nothing is configured — the phone renders that as "not disclosed",
+        /// Where the Mac is in answering "can Ask run here" (L-285). Stated,
+        /// never inferred from whether `destination` is present — four
+        /// different situations used to arrive as one absent field.
+        state: AgentHandshakeState,
+        /// Where this Mac's observations would go (L-265). Omitted whenever
+        /// `state` is not `ready` — the phone renders that as "not disclosed",
         /// never as the destination it agreed to last time.
         #[serde(skip_serializing_if = "Option::is_none")]
         destination: Option<AgentDestination>,
