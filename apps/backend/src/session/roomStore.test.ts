@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { RoomStore, type RoomKvStore, type RoomRecord } from './roomStore.js';
+import { RoomStore, decodeRoomRecord, type RoomKvStore, type RoomRecord } from './roomStore.js';
 
 /** In-memory fake satisfying the subset of ioredis's real API `RoomStore`
  * needs — no live Redis required for these tests. */
@@ -22,6 +22,18 @@ class FakeRedis implements RoomKvStore {
     // Only the trailing-`*` prefix form `RoomStore` actually uses.
     const prefix = pattern.replace(/\*$/, '');
     return [...this.data.keys()].filter((k) => k.startsWith(prefix));
+  }
+  async scan(
+    cursor: string,
+    _match: 'MATCH',
+    pattern: string,
+    _count: 'COUNT',
+    size: number,
+  ): Promise<[string, string[]]> {
+    const keys = await this.keys(pattern);
+    const start = Number(cursor);
+    const next = start + size;
+    return [next >= keys.length ? '0' : String(next), keys.slice(start, next)];
   }
   async mget(...keys: string[]): Promise<(string | null)[]> {
     return keys.map((k) => this.data.get(k) ?? null);
@@ -91,4 +103,207 @@ describe('RoomStore', () => {
     await store.save(record());
     expect(redis.setCalls).toEqual([{ key: 'lilypad:room:room-1', ttlSeconds: 999 }]);
   });
+});
+
+describe('RoomStore recovery is defensive about what it reads (L-250, L-251)', () => {
+  /** Direct Redis writes, bypassing `save`, so a test can plant exactly the
+   * bytes a bad deploy or a truncated write would leave behind. */
+  async function plant(redis: FakeRedis, id: string, raw: string): Promise<void> {
+    await redis.set(`lilypad:room:${id}`, raw, 'EX', 3600);
+  }
+
+  it('skips a stored `null` instead of handing it to the caller', async () => {
+    // `JSON.parse(raw) as RoomRecord` accepted `"null"` — the cast is erased at
+    // runtime — so `loadAll` returned `[null]` and the hub's resurrection loop
+    // threw on `record.fsmState` during boot. One bad key took the process down
+    // on every start, because the key is still there on the next start too.
+    const redis = new FakeRedis();
+    const store = new RoomStore(redis);
+    await plant(redis, 'poison', 'null');
+    await store.save(record({ id: 'good' }));
+
+    const all = await store.loadAll();
+    expect(all.map((r) => r.id)).toEqual(['good']);
+    expect(all.every((r) => r !== null && typeof r === 'object')).toBe(true);
+  });
+
+  it('skips records that parse but are the wrong shape', async () => {
+    const redis = new FakeRedis();
+    const store = new RoomStore(redis);
+    const bad: Record<string, string> = {
+      'not-json': '{oops',
+      'a-number': '42',
+      'an-array': '[]',
+      'no-id': JSON.stringify({
+        fsmState: 'connected',
+        scopes: [],
+        deviceIds: {},
+        established: true,
+        updatedAt: 1,
+      }),
+      'unknown-state': JSON.stringify({
+        id: 'x',
+        fsmState: 'teleporting',
+        scopes: [],
+        deviceIds: {},
+        established: true,
+        updatedAt: 1,
+      }),
+      'scopes-not-array': JSON.stringify({
+        id: 'x',
+        fsmState: 'connected',
+        scopes: 'view',
+        deviceIds: {},
+        established: true,
+        updatedAt: 1,
+      }),
+      'device-not-string': JSON.stringify({
+        id: 'x',
+        fsmState: 'connected',
+        scopes: [],
+        deviceIds: { desktop: 7 },
+        established: true,
+        updatedAt: 1,
+      }),
+      'established-missing': JSON.stringify({
+        id: 'x',
+        fsmState: 'connected',
+        scopes: [],
+        deviceIds: {},
+        updatedAt: 1,
+      }),
+      'updatedAt-nan': JSON.stringify({
+        id: 'x',
+        fsmState: 'connected',
+        scopes: [],
+        deviceIds: {},
+        established: true,
+        updatedAt: null,
+      }),
+      oversized: JSON.stringify({
+        ...record({ id: 'huge' }),
+        updatedAt: 1,
+        pad: 'x'.repeat(20_000),
+      }),
+    };
+    for (const [id, raw] of Object.entries(bad)) await plant(redis, id, raw);
+    await store.save(record({ id: 'good' }));
+
+    const all = await store.loadAll();
+    expect(all.map((r) => r.id)).toEqual(['good']);
+  });
+
+  it('decodeRoomRecord accepts a real record unchanged', async () => {
+    const redis = new FakeRedis();
+    const store = new RoomStore(redis, 3600, () => 1_234);
+    await store.save(record());
+    const raw = await redis.get('lilypad:room:room-1');
+    expect(decodeRoomRecord(raw as string)).toEqual({ ...record(), updatedAt: 1_234 });
+  });
+
+  it('decodes at most `limit` records, and asks Redis for no more than that', async () => {
+    // The cap used to live in `RoomRegistry.resurrect`: every key was fetched,
+    // parsed and materialised first, and only then thrown away. A Redis holding
+    // far more room keys than this instance can hold was decoded in full at
+    // boot — the "bounded by maxRooms" comment described the wrong step.
+    const redis = new FakeRedis();
+    const store = new RoomStore(redis);
+    for (let i = 0; i < 50; i++) await store.save(record({ id: `room-${i}` }));
+
+    const mget = redis.mget.bind(redis);
+    let requested = 0;
+    redis.mget = async (...keys: string[]) => {
+      requested += keys.length;
+      return mget(...keys);
+    };
+
+    const all = await store.loadAll(10);
+    expect(all).toHaveLength(10);
+    expect(requested).toBe(10);
+  });
+  it('skips unknown authority, wrong key identity and invalid timestamps', async () => {
+    const redis = new FakeRedis();
+    const store = new RoomStore(redis);
+    for (const [id, overrides] of Object.entries({
+      scope: { scopes: ['admin'] },
+      role: { deviceIds: { intruder: 'x' } },
+      time: { updatedAt: -1 },
+      version: { version: 2 },
+    })) {
+      const raw = JSON.stringify({ ...record({ id }), updatedAt: 1, ...overrides });
+      expect(decodeRoomRecord(raw)).toBeNull();
+      await redis.set(`lilypad:room:${id}`, raw);
+    }
+    await redis.set(
+      'lilypad:room:wrong-key',
+      JSON.stringify({ ...record({ id: 'different' }), updatedAt: 1 }),
+    );
+    await store.save(record({ id: 'good' }));
+    expect((await store.loadAll(1)).map((r) => r.id)).toEqual(['good']);
+  });
+
+  it('enforces bytes rather than UTF-16 code units', () => {
+    expect(
+      decodeRoomRecord(JSON.stringify({ ...record(), updatedAt: 1, padding: '界'.repeat(6000) })),
+    ).toBeNull();
+  });
+
+  it('deduplicates scan results and bounds empty nonterminal scans', async () => {
+    const redis = new FakeRedis();
+    const store = new RoomStore(redis);
+    await store.save(record());
+    let calls = 0;
+    redis.scan = async () => {
+      calls++;
+      return ['1', ['lilypad:room:room-1']];
+    };
+    expect(await store.loadAll(2)).toHaveLength(1);
+    expect(calls).toBe(256);
+    calls = 0;
+    redis.scan = async () => {
+      calls++;
+      return ['1', []];
+    };
+    expect(await store.loadAll()).toEqual([]);
+    expect(calls).toBe(256);
+  });
+});
+
+describe('recovery survives a Redis that stops answering (L-251)', () => {
+  /** A store whose `scan` never settles — a half-open connection, a Redis
+   * paused by a slow `BGSAVE`, a network that dropped without an RST. */
+  class SilentRedis extends FakeRedis {
+    override async scan(): Promise<[string, string[]]> {
+      return new Promise(() => {});
+    }
+  }
+  /** Answers the scan, then goes silent on the bulk read. */
+  class SilentOnRead extends FakeRedis {
+    override async mget(): Promise<(string | null)[]> {
+      return new Promise(() => {});
+    }
+  }
+
+  it('returns rather than hanging boot when the first command never answers', async () => {
+    // The elapsed-time budget is checked *between* commands, so it bounds a
+    // slow Redis but not a silent one: a single `await` that never settles
+    // hangs recovery, which is awaited during boot. The backend would come up
+    // never, with a healthy TCP connection and nothing logged.
+    const store = new RoomStore(new SilentRedis());
+    const started = Date.now();
+    const records = await store.loadAll(10);
+    expect(records).toEqual([]);
+    // Bounded by the recovery budget, not by the test runner's patience.
+    expect(Date.now() - started).toBeLessThan(30_000);
+  }, 40_000);
+
+  it('keeps the records it already read when Redis goes silent mid-read', async () => {
+    const redis = new SilentOnRead();
+    const store = new RoomStore(redis);
+    await store.save(record({ id: 'room-1' }));
+    const records = await store.loadAll(10);
+    // Nothing was decodable before the silence, so the result is empty — but
+    // it *returns*, which is the property under test.
+    expect(Array.isArray(records)).toBe(true);
+  }, 40_000);
 });

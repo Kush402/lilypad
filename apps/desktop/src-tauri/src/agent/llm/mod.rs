@@ -337,16 +337,12 @@ fn base_tools() -> Vec<ToolSpec> {
                 "required": ["url"],
             }),
         },
-        ToolSpec {
-            name: "open_file",
-            description: "Open a file in its default application. The path must be inside the \
-                          user's home folder (use ~/ or a path under it).",
-            input_schema: json!({
-                "type": "object",
-                "properties": { "path": { "type": "string", "description": "File path under the home folder" } },
-                "required": ["path"],
-            }),
-        },
+        // `open_file` is deliberately **not offered** (L-243). Its effect is a
+        // launch through `/usr/bin/open`, which re-resolves the path it is
+        // given, so nothing this process checks beforehand can be tied to the
+        // file that actually opens. Withdrawing the tool is the disclosure;
+        // `skills::plan_command` refuses it as well, so a model that remembers
+        // the name from an earlier conversation gets a reason, not a crash.
         ToolSpec {
             name: "new_folder",
             description: "Create a folder (and any missing parents). The path must be inside the \
@@ -382,9 +378,10 @@ fn base_tools() -> Vec<ToolSpec> {
             description: "Run a small script under a secure sandbox for computation or file \
                           work that no specific tool covers (e.g. compressing a folder, \
                           transforming files). The script runs with writes restricted to a \
-                          scratch area, no network, and secrets unreadable, and ALWAYS \
-                          requires the user's approval first. Prefer a specific tool when one \
-                          fits. Print any result the user should see to stdout.",
+                          scratch area, no network, and NO access to the user's files unless \
+                          you list them in `readable_paths` — an undeclared read fails. It \
+                          ALWAYS requires the user's approval first. Prefer a specific tool \
+                          when one fits. Print any result the user should see to stdout.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -396,6 +393,15 @@ fn base_tools() -> Vec<ToolSpec> {
                         "description": "Folders under the home directory the script must write \
                                         to besides the scratch area (e.g. an output folder). \
                                         Omit if the script only needs the scratch area."
+                    },
+                    "readable_paths": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Files or folders under the home directory the script \
+                                        must READ. Nothing under the home directory is \
+                                        readable unless listed here, and the user sees this \
+                                        list before approving. Name the narrowest path that \
+                                        works. Omit if the script reads nothing of the user's."
                     },
                     "needs_network": {
                         "type": "boolean",
@@ -489,12 +495,13 @@ pub fn decision_from_tool_call(call: &ToolCall) -> Result<Decision> {
             })
         }
         "open_file" => {
-            let path = field("path")?;
-            Ok(Decision::Act {
-                summary: format!("Open file {path}"),
-                tier: AgentTier::Skill,
-                action: Action::OpenFile { path },
-            })
+            // Not in the tool list any more; a model may still remember it.
+            // The refusal names the reason so it can choose something else.
+            bail!(
+                "open_file is unavailable in this build: the launcher re-resolves the path \
+                 it is given, so the approval cannot be tied to the file that opens. Use \
+                 open_app, or new_folder for filesystem work."
+            )
         }
         "new_folder" => {
             let path = field("path")?;
@@ -549,6 +556,16 @@ pub fn decision_from_tool_call(call: &ToolCall) -> Result<Decision> {
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default();
+            let readable_paths = call
+                .input
+                .get("readable_paths")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(str::to_string))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
             let needs_network = call
                 .input
                 .get("needs_network")
@@ -561,6 +578,7 @@ pub fn decision_from_tool_call(call: &ToolCall) -> Result<Decision> {
                     language,
                     script,
                     writable_paths,
+                    readable_paths,
                     needs_network,
                 },
             })
@@ -649,6 +667,8 @@ impl<P: LlmProvider + Send> Brain for LlmBrain<P> {
             }
         }
 
+        retain_recent_images(&mut self.messages);
+
         let reply = self
             .provider
             .complete(&self.system, &self.messages, &self.tools)
@@ -699,6 +719,33 @@ impl<P: LlmProvider + Send> Brain for LlmBrain<P> {
                     }),
                 reason: FinishReason::Incomplete,
             }),
+        }
+    }
+}
+
+/// Keep before/after visual context without retransmitting every historical
+/// screenshot on every reasoning turn. Tool identities and textual results
+/// remain intact, so both provider dialects retain valid call/result pairs.
+fn retain_recent_images(messages: &mut [ChatMessage]) {
+    let mut retained = 0;
+    for message in messages.iter_mut().rev() {
+        for block in message.blocks.iter_mut().rev() {
+            if let Block::ToolResult {
+                image_base64,
+                content,
+                ..
+            } = block
+            {
+                if image_base64.is_some() {
+                    retained += 1;
+                    if retained > 2 {
+                        *image_base64 = None;
+                        content.push_str(
+                            " [Historical image omitted; use the two most recent screenshots.]",
+                        );
+                    }
+                }
+            }
         }
     }
 }
@@ -802,6 +849,7 @@ mod tests {
                 "language": "python",
                 "script": "print(1+1)",
                 "writable_paths": ["~/Downloads"],
+                "readable_paths": ["~/Documents/report.md"],
                 "needs_network": true,
             }),
             extra: None,
@@ -813,6 +861,7 @@ mod tests {
                     Action::RunScript {
                         language,
                         writable_paths,
+                        readable_paths,
                         needs_network,
                         ..
                     },
@@ -821,6 +870,7 @@ mod tests {
             } => {
                 assert_eq!(language, ScriptLanguage::Python);
                 assert_eq!(writable_paths, vec!["~/Downloads".to_string()]);
+                assert_eq!(readable_paths, vec!["~/Documents/report.md".to_string()]);
                 assert!(needs_network);
             }
             _ => panic!("wrong decision"),
@@ -1122,5 +1172,38 @@ mod tests {
             "must give up on its own deadline, took {elapsed:?}"
         );
         accepted.abort();
+    }
+    #[test]
+    fn recent_images_keep_before_after_and_all_tool_result_identities() {
+        let mut messages: Vec<_> = (0..4)
+            .map(|i| ChatMessage {
+                role: Role::User,
+                blocks: vec![Block::ToolResult {
+                    tool_use_id: format!("shot-{i}"),
+                    content: format!("display observation {i}"),
+                    is_error: false,
+                    image_base64: Some(format!("image-{i}")),
+                }],
+            })
+            .collect();
+        retain_recent_images(&mut messages);
+        retain_recent_images(&mut messages); // idempotent on turns without a new image
+        for (i, message) in messages.iter().enumerate() {
+            let Block::ToolResult {
+                tool_use_id,
+                content,
+                image_base64,
+                ..
+            } = &message.blocks[0]
+            else {
+                panic!()
+            };
+            assert_eq!(tool_use_id, &format!("shot-{i}"));
+            assert_eq!(image_base64.is_some(), i >= 2);
+            assert_eq!(
+                content.matches("Historical image omitted").count(),
+                usize::from(i < 2)
+            );
+        }
     }
 }

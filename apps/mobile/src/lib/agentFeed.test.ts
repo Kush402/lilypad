@@ -226,10 +226,10 @@ describe('transport-truthful run phases (L-233)', () => {
     expect(s.running).toBe(true);
   });
 
-  it('an unacknowledged command stops claiming to run at the deadline', () => {
+  it('an unacknowledged command becomes uncertain at the deadline', () => {
     let s = sent();
     s = agentFeedReducer(s, { type: 'ack_timeout', runId: 'run-1' });
-    expect(s.phase).toBe('unsent');
+    expect(s.phase).toBe('unknown');
     expect(ACK_DEADLINE_MS).toBeGreaterThan(0);
   });
 
@@ -252,13 +252,13 @@ describe('transport-truthful run phases (L-233)', () => {
     expect(s.outcome).toBe('stopped');
   });
 
-  it('a stop that never left goes back to running, not "Stopped."', () => {
+  it('a stop that never left stays unconfirmed, with decisions retired', () => {
     let s = sent();
     s = agentFeedReducer(s, { type: 'step', step: step({ stepId: 'a', state: 'running' }) });
     s = agentFeedReducer(s, { type: 'stop_sent' });
     s = agentFeedReducer(s, { type: 'stop_unsent' });
-    expect(s.phase).toBe('running');
-    expect(s.running).toBe(true);
+    expect(s.phase).toBe('stop_unconfirmed');
+    expect(s.running).toBe(false);
     expect(s.outcome).toBeNull();
   });
 
@@ -281,5 +281,31 @@ describe('consent withdrawal retires pending decisions (L-232)', () => {
     expect(heldStep(s)).not.toBeNull();
     s = agentFeedReducer(s, { type: 'stop_sent' });
     expect(heldStep(s)).toBeNull();
+  });
+});
+
+// A missing response is uncertainty, never proof that a command was not sent.
+describe('release readiness: uncertain delivery and cancellation', () => {
+  it('keeps an unacknowledged command stoppable and accepts a late acknowledgment', () => {
+    let s = agentFeedReducer(INITIAL_AGENT_FEED, { type: 'command_sent', runId: 'run-1' });
+    s = agentFeedReducer(s, { type: 'ack_timeout', runId: 'run-1' });
+    expect(s.phase).toBe('unknown');
+    s = agentFeedReducer(s, { type: 'step', step: step({ stepId: 'approval', state: 'held' }) });
+    expect(s.phase).toBe('running');
+    expect(heldStep(s)).not.toBeNull();
+  });
+
+  it('bounds waiting for Stop without claiming it succeeded or reopening approval', () => {
+    let s = agentFeedReducer(INITIAL_AGENT_FEED, { type: 'command_sent', runId: 'run-1' });
+    s = agentFeedReducer(s, { type: 'stop_sent' });
+    s = agentFeedReducer(s, { type: 'ack_timeout', runId: 'run-1' });
+    expect(s.phase).toBe('stop_unconfirmed');
+    s = agentFeedReducer(s, { type: 'step', step: step({ stepId: 'approval', state: 'held' }) });
+    expect(heldStep(s)).toBeNull();
+    expect(s.outcome).toBeNull();
+    s = agentFeedReducer(s, { type: 'stop_sent' });
+    expect(s.phase).toBe('stopping');
+    s = agentFeedReducer(s, { type: 'run_end', end: runEnd('stopped') });
+    expect(s.phase).toBe('ended');
   });
 });

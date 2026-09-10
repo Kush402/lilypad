@@ -104,6 +104,12 @@ impl AxExecutor {
             // Ask the live element what it is before pressing it; the snapshot
             // cannot answer, because it is a copy of what we already believed.
             if let Some(approved) = approved {
+                let fresh = ax::read_focused_tree()?;
+                if !snapshot.same_context(&fresh) {
+                    return Ok(Observation::fail(
+                        "The app or its contents changed since this action was chosen. Read again and request fresh approval."
+                    ));
+                }
                 match ax::describe_live(handle) {
                     Some((role, label)) => {
                         let now = AxTarget::new(role, label);

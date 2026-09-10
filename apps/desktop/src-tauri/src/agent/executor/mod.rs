@@ -103,7 +103,14 @@ impl Executor for TieredExecutor {
     }
 
     fn resolve(&self, action: Action) -> Action {
-        // Only the accessibility tier holds state an action's class depends on.
-        self.ax.resolve(action)
+        // Two tiers need to see an action before it is classified and shown:
+        // the accessibility tier, because an element id means nothing without
+        // the tree it came from, and the sandbox tier, because a granted path
+        // must be jailed and bound to the object it names *before* the card is
+        // built from it.
+        match action {
+            a @ Action::RunScript { .. } => self.sandbox.resolve(a),
+            other => self.ax.resolve(other),
+        }
     }
 }

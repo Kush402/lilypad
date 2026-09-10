@@ -22,6 +22,18 @@ class FakeRedis implements RoomKvStore {
     const prefix = pattern.replace(/\*$/, '');
     return [...this.data.keys()].filter((k) => k.startsWith(prefix));
   }
+  async scan(
+    cursor: string,
+    _match: 'MATCH',
+    pattern: string,
+    _count: 'COUNT',
+    size: number,
+  ): Promise<[string, string[]]> {
+    const keys = await this.keys(pattern);
+    const start = Number(cursor);
+    const next = start + size;
+    return [next >= keys.length ? '0' : String(next), keys.slice(start, next)];
+  }
   async mget(...keys: string[]): Promise<(string | null)[]> {
     return keys.map((k) => this.data.get(k) ?? null);
   }
@@ -1339,6 +1351,9 @@ describe('SignalingHub — Redis-backed room resurrection', () => {
         throw new Error('redis unavailable');
       }
       async del(): Promise<unknown> {
+        throw new Error('redis unavailable');
+      }
+      async scan(): Promise<[string, string[]]> {
         throw new Error('redis unavailable');
       }
       async keys(): Promise<string[]> {

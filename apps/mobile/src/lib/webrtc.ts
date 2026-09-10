@@ -1,3 +1,4 @@
+import { ASK_PROTOCOL_VERSION } from '@lilypad/protocol';
 import { Platform } from 'react-native';
 import {
   RTCPeerConnection,
@@ -77,6 +78,7 @@ export interface ViewerCallbacks {
   /** The AI agent emitted a step on its live feed (desktop → phone over the
    * reliable input channel). Optional — a viewer that doesn't surface the
    * agent simply omits it. See docs/m5.3-ai-executor-plan.md §6. */
+  onAgentReady?: () => void;
   onAgentStep?: (step: AgentStep) => void;
   /** The AI agent run ended (completed/stopped/denied/failed). */
   onAgentRunEnd?: (end: AgentRunEnd) => void;
@@ -197,6 +199,8 @@ export class ViewerConnection {
   private readonly sig: MobileSignaling;
   private input: InputSender | null = null;
   /** Monotonic suffix for run ids minted by `sendAgentCommand`. */
+  private askReady = false;
+  private askProbe: string | null = null;
   private agentRunCounter = 0;
   private dataChannel: DataChannelLike | null = null;
   /** The unreliable move channel — separate from `dataChannel` above since
@@ -447,6 +451,13 @@ export class ViewerConnection {
     }
     const parsed = AgentOutboundSchema.safeParse(json);
     if (!parsed.success) return;
+    if (parsed.data.kind === 'agent_ready') {
+      if (parsed.data.runId === this.askProbe) {
+        this.askReady = true;
+        this.cb.onAgentReady?.();
+      }
+      return;
+    }
     if (parsed.data.kind === 'agent_step') this.cb.onAgentStep?.(parsed.data);
     else this.cb.onAgentRunEnd?.(parsed.data);
   }
@@ -472,9 +483,22 @@ export class ViewerConnection {
    * running for a command the Mac never received (L-233). A runId is minted
    * either way, because a command that failed to send must never be retried
    * under a new identity — that is how one instruction runs twice. */
+  prepareAsk(): boolean {
+    this.askProbe = `ask-${Date.now()}-${++this.agentRunCounter}`;
+    return this.sendAgent({ kind: 'agent_hello', runId: this.askProbe, ts: Date.now() });
+  }
+
   sendAgentCommand(text: string): { runId: string; sent: boolean } {
     const runId = `run-${Date.now()}-${(this.agentRunCounter += 1)}`;
-    const sent = this.sendAgent({ kind: 'agent_command', runId, text, ts: Date.now() });
+    const sent =
+      this.askReady &&
+      this.sendAgent({
+        kind: 'agent_command',
+        runId,
+        text,
+        protocolVersion: ASK_PROTOCOL_VERSION,
+        ts: Date.now(),
+      });
     return { runId, sent };
   }
 
@@ -729,6 +753,8 @@ export class ViewerConnection {
     this.pc = null;
     this.input = null;
     this.dataChannel = null;
+    this.askReady = false;
+    this.askProbe = null;
     this.moveDataChannel = null;
     this.peerConnected = false;
     try {
@@ -1257,6 +1283,8 @@ export class ViewerConnection {
     this.pc = null;
     this.input = null;
     this.dataChannel = null;
+    this.askReady = false;
+    this.askProbe = null;
     this.moveDataChannel = null;
     this.peerConnected = false;
   }

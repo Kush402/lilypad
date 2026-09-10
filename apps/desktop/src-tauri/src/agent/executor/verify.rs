@@ -15,10 +15,12 @@
 //!      app/URL launch verification is exit-code-only until the tier-2 AX
 //!      executor can read the running-app / window state (documented gap).
 
-use std::ffi::OsString;
+use std::ffi::{CString, OsStr, OsString};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Component, Path, PathBuf};
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 
 use crate::agent::Action;
 
@@ -121,7 +123,12 @@ fn resolve_in(home: &Path, raw: &str) -> Result<PathBuf> {
     // as in tests and a fresh account), and rejecting on that would refuse
     // every legitimate path — it is not an escape, it is a prefix.
     let (existing, missing) = deepest_existing(&normalized);
-    let mut resolved = existing.canonicalize().unwrap_or(existing);
+    let mut resolved = existing.canonicalize().map_err(|e| {
+        anyhow::anyhow!(
+            "cannot resolve existing ancestor {}: {e}",
+            existing.display()
+        )
+    })?;
     for segment in missing {
         resolved.push(segment);
     }
@@ -132,13 +139,9 @@ fn resolve_in(home: &Path, raw: &str) -> Result<PathBuf> {
         );
     }
 
-    // Return the lexical path, not the canonical one. Canonicalization is a
-    // *check* here, not a rewrite: on macOS it would turn `/var/…` into
-    // `/private/var/…` and hand the user, the Finder reveal and the
-    // postcondition a path they never typed. The two differ only where a
-    // symlink is involved, and we have just established that any symlink on
-    // this path stays inside home.
-    Ok(normalized)
+    // Execute against the resolved location; returning the alias would follow
+    // it a second time if another process replaced that symlink after checking.
+    Ok(resolved)
 }
 
 /// Is `p` the root itself, or inside it?
@@ -155,7 +158,7 @@ fn deepest_existing(path: &Path) -> (PathBuf, Vec<OsString>) {
     let mut missing: Vec<OsString> = Vec::new();
     let mut cur = path.to_path_buf();
     loop {
-        if cur.exists() {
+        if std::fs::symlink_metadata(&cur).is_ok() {
             missing.reverse();
             return (cur, missing);
         }
@@ -176,6 +179,230 @@ fn deepest_existing(path: &Path) -> (PathBuf, Vec<OsString>) {
     }
 }
 
+// ── the anchored jail (L-243) ────────────────────────────────────────────
+//
+// `resolve_user_path` decides where a path *points*; `open`/`mkdir` then
+// resolve the same text again, and between those two resolutions the meaning
+// of a component can change. Re-checking afterwards ([`check`]) reports the
+// escape, which is better than silence, but it cannot un-create a directory or
+// un-launch a file.
+//
+// The fix for anything we perform ourselves is to stop naming the target by
+// text at all: walk the path one component at a time, refusing to traverse a
+// symbolic link at any step, and keep the *descriptor* of the directory we
+// arrived at. A descriptor refers to the directory object, not to its name, so
+// renaming or replacing that name afterwards cannot redirect the operation.
+// `mkdirat` on that descriptor either creates the folder in the directory we
+// verified or fails; there is no window in between.
+//
+// This only works for operations that take a descriptor. `open(1)` takes a
+// path, so `open_file` cannot be anchored and is refused instead — see
+// `skills::plan_command`.
+
+/// A directory this module opened itself, component by component, without
+/// following a symbolic link.
+#[derive(Debug)]
+pub struct JailedDir {
+    fd: OwnedFd,
+    path: PathBuf,
+}
+
+impl JailedDir {
+    /// The path walked to get here — for messages only. The *operation* uses
+    /// the descriptor; this text is never re-resolved.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+/// Identity of a filesystem object: the same object under any name.
+///
+/// A path can be made to mean something else between two calls; a `(dev, ino)`
+/// pair cannot. Used to bind a grant to the object the person approved, so a
+/// target swapped after approval is refused rather than acted on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FileId {
+    dev: i64,
+    ino: u64,
+}
+
+fn cstr(name: &OsStr) -> Result<CString> {
+    CString::new(name.as_bytes()).map_err(|_| anyhow::anyhow!("path component contains a NUL"))
+}
+
+/// Is `name` inside `dirfd` a symbolic link? Used only to explain a failure,
+/// so an unanswerable question is "no" rather than an error.
+fn is_symlink_at(dirfd: i32, name: &CString) -> bool {
+    let mut st: libc::stat = unsafe { std::mem::zeroed() };
+    // SAFETY: valid descriptor and C string; `st` is ours to fill.
+    let rc = unsafe { libc::fstatat(dirfd, name.as_ptr(), &mut st, libc::AT_SYMLINK_NOFOLLOW) };
+    rc == 0 && st.st_mode & libc::S_IFMT == libc::S_IFLNK
+}
+
+/// Open `name` inside `parent` as a directory, refusing a symbolic link.
+fn open_dir_at(parent: Option<&OwnedFd>, name: &OsStr, nofollow: bool) -> Result<OwnedFd> {
+    let c = cstr(name)?;
+    let mut flags = libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC;
+    if nofollow {
+        flags |= libc::O_NOFOLLOW;
+    }
+    let dirfd = parent.map(|p| p.as_raw_fd()).unwrap_or(libc::AT_FDCWD);
+    // SAFETY: `c` is a valid NUL-terminated C string that outlives the call,
+    // and `dirfd` is either AT_FDCWD or a descriptor we own.
+    let fd = unsafe { libc::openat(dirfd, c.as_ptr(), flags) };
+    if fd < 0 {
+        let err = std::io::Error::last_os_error();
+        // Which errno means "that was a symlink" depends on the flags and the
+        // platform: `O_NOFOLLOW` alone gives ELOOP, but combined with
+        // `O_DIRECTORY` macOS gives ENOTDIR, which is also what a plain file
+        // gives. Guessing from errno gets one of those two cases wrong, so ask
+        // the filesystem what the name actually is.
+        if nofollow && is_symlink_at(dirfd, &c) {
+            bail!(
+                "{} is a symbolic link — the jail will not follow one",
+                name.to_string_lossy()
+            );
+        }
+        return Err(
+            anyhow::Error::new(err).context(format!("cannot open {}", name.to_string_lossy()))
+        );
+    }
+    // SAFETY: `openat` returned a fresh, owned descriptor.
+    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+}
+
+/// Walk `target` from `home`, component by component, following no symbolic
+/// link, and return the descriptor of its **parent** directory plus the final
+/// component's name.
+///
+/// `target` must already have passed [`resolve_in`], so it is lexically inside
+/// home; this walk is what makes that true of the real objects as well.
+pub fn walk_to_parent(home: &Path, target: &Path) -> Result<(JailedDir, OsString)> {
+    let rest = target
+        .strip_prefix(home)
+        .map_err(|_| anyhow::anyhow!("{} is not under the home directory", target.display()))?;
+    let mut components: Vec<&OsStr> = rest.iter().collect();
+    let Some(last) = components.pop() else {
+        bail!("cannot operate on the home directory itself");
+    };
+
+    // Home is opened *following* links: the user may legitimately have their
+    // home directory behind one, and it is the root of the jail rather than
+    // something inside it. Everything below it is walked no-follow.
+    let mut dir = open_dir_at(None, home.as_os_str(), false)
+        .with_context(|| format!("cannot open the home directory {}", home.display()))?;
+    let mut walked = home.to_path_buf();
+    for comp in components {
+        dir = open_dir_at(Some(&dir), comp, true)?;
+        walked.push(comp);
+    }
+    Ok((
+        JailedDir {
+            fd: dir,
+            path: walked,
+        },
+        last.to_os_string(),
+    ))
+}
+
+/// The identity of `name` inside `dir`, or `None` if it does not exist.
+/// A symbolic link is an error, not an identity — the jail never resolves one.
+pub fn identify_at(dir: &JailedDir, name: &OsStr) -> Result<Option<FileId>> {
+    let c = cstr(name)?;
+    let mut st: libc::stat = unsafe { std::mem::zeroed() };
+    // SAFETY: valid descriptor, valid C string, and `st` is ours to fill.
+    let rc = unsafe {
+        libc::fstatat(
+            dir.fd.as_raw_fd(),
+            c.as_ptr(),
+            &mut st,
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    };
+    if rc < 0 {
+        let err = std::io::Error::last_os_error();
+        if err.kind() == std::io::ErrorKind::NotFound {
+            return Ok(None);
+        }
+        return Err(anyhow::Error::new(err)
+            .context(format!("cannot inspect {}", dir.path.join(name).display())));
+    }
+    if st.st_mode & libc::S_IFMT == libc::S_IFLNK {
+        bail!(
+            "{} is a symbolic link — the jail will not follow one",
+            dir.path.join(name).display()
+        );
+    }
+    Ok(Some(FileId {
+        dev: st.st_dev as i64,
+        ino: st.st_ino,
+    }))
+}
+
+/// Create a directory named `name` inside the already-verified `dir`.
+///
+/// Race-free where the old `mkdir -p` was not: the directory is created
+/// *relative to a descriptor* we walked ourselves, so replacing any name along
+/// the way afterwards cannot redirect it. Idempotent, like `mkdir -p`, but an
+/// existing symbolic link is a failure rather than a silent success.
+pub fn create_dir_at(dir: &JailedDir, name: &OsStr) -> Result<()> {
+    let c = cstr(name)?;
+    // SAFETY: valid descriptor and C string; 0o755 is a plain mode.
+    let rc = unsafe { libc::mkdirat(dir.fd.as_raw_fd(), c.as_ptr(), 0o755) };
+    if rc == 0 {
+        return Ok(());
+    }
+    let err = std::io::Error::last_os_error();
+    if err.kind() != std::io::ErrorKind::AlreadyExists {
+        return Err(anyhow::Error::new(err)
+            .context(format!("cannot create {}", dir.path.join(name).display())));
+    }
+    // Already there. `mkdir -p` treats that as success; so do we, but only for
+    // a real directory. A symlink sitting in the target's place is exactly the
+    // case this whole walk exists to refuse.
+    match identify_at(dir, name)? {
+        Some(_) => {
+            let c2 = cstr(name)?;
+            let mut st: libc::stat = unsafe { std::mem::zeroed() };
+            // SAFETY: as in `identify_at`.
+            let rc = unsafe {
+                libc::fstatat(
+                    dir.fd.as_raw_fd(),
+                    c2.as_ptr(),
+                    &mut st,
+                    libc::AT_SYMLINK_NOFOLLOW,
+                )
+            };
+            if rc == 0 && st.st_mode & libc::S_IFMT == libc::S_IFDIR {
+                Ok(())
+            } else {
+                bail!(
+                    "{} already exists and is not a directory",
+                    dir.path.join(name).display()
+                )
+            }
+        }
+        None => bail!(
+            "{} vanished while it was being created",
+            dir.path.join(name).display()
+        ),
+    }
+}
+
+/// Create a home-jailed folder, anchored to a descriptor rather than to text.
+/// The whole of `new_folder`'s effect, so the tier-1 executor spawns nothing.
+pub fn new_folder(raw: &str) -> Result<PathBuf> {
+    let home = home_dir()?;
+    let jailed = resolve_in(&home, raw)?;
+    // `resolve_in` already returns the canonicalised location, so this is the
+    // same root it checked against — walking from anywhere else would be
+    // checking one thing and creating in another.
+    let real_home = home.canonicalize().unwrap_or(home);
+    let (dir, name) = walk_to_parent(&real_home, &jailed)?;
+    create_dir_at(&dir, &name)?;
+    Ok(dir.path().join(&name))
+}
+
 /// What must be true after an action for it to count as succeeded.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Postcondition {
@@ -185,6 +412,7 @@ pub enum Postcondition {
     PathIsDir(PathBuf),
     /// No cheap deterministic check available at this tier (exit code only).
     None,
+    InvalidPath(String),
 }
 
 /// The postcondition for a tier-1 action. Resolves the path exactly as
@@ -196,10 +424,10 @@ pub fn postcondition(action: &Action) -> Postcondition {
     match action {
         Action::NewFolder { path } => resolved(path)
             .map(Postcondition::PathIsDir)
-            .unwrap_or(Postcondition::None),
+            .unwrap_or_else(|| Postcondition::InvalidPath(path.clone())),
         Action::OpenFile { path } | Action::RevealInFinder { path } => resolved(path)
             .map(Postcondition::PathExists)
-            .unwrap_or(Postcondition::None),
+            .unwrap_or_else(|| Postcondition::InvalidPath(path.clone())),
         // OpenApp/OpenUrl/RunShortcut: launch verification needs the tier-2 AX
         // executor (running-app / window / URL-bar read); exit code only in v1.
         _ => Postcondition::None,
@@ -208,24 +436,60 @@ pub fn postcondition(action: &Action) -> Postcondition {
 
 /// Check a postcondition against the real filesystem. `Ok(())` = verified;
 /// `Err` describes what was expected but not found. `None` verifies trivially.
+///
+/// This is also the second half of the path jail (L-243). [`resolve_in`]
+/// checks where a path points and then hands the result to `open`/`mkdir`,
+/// which resolve it *again*; between those two resolutions the final component
+/// can become a symlink pointing anywhere. Nothing can make that window zero
+/// while the action is an external command taking a path — but the window can
+/// be made *loud*: re-resolve here, and refuse to report success for a path
+/// that is now a symlink, or that now lands outside home. A silent escape
+/// becomes a failed step the model and the person both see.
 pub fn check(pc: &Postcondition) -> Result<()> {
     match pc {
         Postcondition::None => Ok(()),
+        Postcondition::InvalidPath(path) => bail!("cannot verify rejected path: {path}"),
         Postcondition::PathExists(p) => {
-            if p.exists() {
-                Ok(())
-            } else {
-                bail!("expected {} to exist", p.display())
+            if !p.exists() {
+                bail!("expected {} to exist", p.display());
             }
+            still_jailed(p)
         }
         Postcondition::PathIsDir(p) => {
-            if p.is_dir() {
-                Ok(())
-            } else {
-                bail!("expected {} to be a directory", p.display())
+            if !p.is_dir() {
+                bail!("expected {} to be a directory", p.display());
             }
+            still_jailed(p)
         }
     }
+}
+
+/// Is the path the action just acted on still the jailed path it was checked
+/// as — not a symlink, and still inside home?
+fn still_jailed(p: &Path) -> Result<()> {
+    // `symlink_metadata` does not follow the last component, so this catches a
+    // link swapped in after `resolve_in` returned.
+    let meta = std::fs::symlink_metadata(p)
+        .with_context(|| format!("cannot inspect {} after acting on it", p.display()))?;
+    if meta.file_type().is_symlink() {
+        bail!(
+            "{} became a symbolic link after it was checked — refusing to report success",
+            p.display()
+        );
+    }
+    let home = home_dir()?;
+    let real_home = home.canonicalize().unwrap_or(home);
+    let real = p
+        .canonicalize()
+        .with_context(|| format!("cannot resolve {} after acting on it", p.display()))?;
+    if !contains(&real_home, &real) {
+        bail!(
+            "{} now resolves outside the home directory ({})",
+            p.display(),
+            real.display()
+        );
+    }
+    Ok(())
 }
 
 /// Serializes the handful of tests that must mutate the process-global `$HOME`
@@ -302,12 +566,12 @@ mod tests {
             }),
             Postcondition::None
         );
-        // An escaping path yields None (plan_command refuses it first).
+        // Verification must also fail closed if planning is bypassed.
         assert_eq!(
             postcondition(&Action::NewFolder {
                 path: "/etc/evil".into()
             }),
-            Postcondition::None
+            Postcondition::InvalidPath("/etc/evil".into())
         );
         match prev {
             Some(v) => std::env::set_var("HOME", v),
@@ -315,17 +579,166 @@ mod tests {
         }
     }
 
+    /// Run `body` with `$HOME` pointed at an isolated jail, restoring the
+    /// previous value afterwards. `check` re-resolves against the real home
+    /// (L-243), so any test of it has to own that variable.
+    fn with_home<T>(j: &Jail, body: impl FnOnce() -> T) -> T {
+        let _g = HOME_TEST_LOCK.lock().unwrap();
+        let prev = std::env::var("HOME").ok();
+        std::env::set_var("HOME", &j.home);
+        let out = body();
+        match prev {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+        out
+    }
+
     #[test]
     fn check_verifies_real_filesystem() {
-        let dir = std::env::temp_dir().join(format!("lilypad_verify_{}", std::process::id()));
+        let j = jail();
+        let dir = j.home.join("verify");
         std::fs::create_dir_all(&dir).unwrap();
-        assert!(check(&Postcondition::PathIsDir(dir.clone())).is_ok());
-        assert!(check(&Postcondition::PathExists(dir.clone())).is_ok());
-        let missing = dir.join("nope");
-        assert!(check(&Postcondition::PathExists(missing.clone())).is_err());
-        assert!(check(&Postcondition::PathIsDir(missing)).is_err());
-        assert!(check(&Postcondition::None).is_ok());
-        std::fs::remove_dir_all(&dir).ok();
+        with_home(&j, || {
+            assert!(check(&Postcondition::PathIsDir(dir.clone())).is_ok());
+            assert!(check(&Postcondition::PathExists(dir.clone())).is_ok());
+            let missing = dir.join("nope");
+            assert!(check(&Postcondition::PathExists(missing.clone())).is_err());
+            assert!(check(&Postcondition::PathIsDir(missing)).is_err());
+            assert!(check(&Postcondition::None).is_ok());
+        });
+    }
+
+    #[test]
+    fn creating_a_folder_refuses_to_traverse_a_symlink_instead_of_following_it() {
+        // L-243, the prevention half. `mkdir -p ~/Reports/Q3` with `~/Reports`
+        // a link to somewhere outside home used to create `Q3` out there and
+        // exit 0. The walk refuses the link itself, so nothing is created —
+        // and the outside directory must still be empty afterwards, which is
+        // the only assertion that distinguishes "prevented" from "detected".
+        let j = jail();
+        std::os::unix::fs::symlink(&j.outside, j.home.join("Reports")).unwrap();
+        with_home(&j, || {
+            new_folder("~/Reports/Q3").expect_err("a symlinked parent must be refused")
+        });
+        // Two layers refuse this — `resolve_in` canonicalises and sees the
+        // destination is outside home, and the walk refuses the link itself —
+        // so the message depends on which fires first. The assertion is about
+        // the *effect*: with `mkdir -p` this directory used to be created out
+        // here and the command exited 0.
+        assert!(
+            !j.outside.join("Q3").exists(),
+            "the folder was created outside the jail — this is detection, not prevention"
+        );
+    }
+
+    #[test]
+    fn creating_a_folder_works_for_an_ordinary_nested_path_and_is_idempotent() {
+        let j = jail();
+        std::fs::create_dir_all(j.home.join("Research")).unwrap();
+        let made = with_home(&j, || new_folder("~/Research/2026").unwrap());
+        assert!(made.is_dir());
+        // `mkdir -p` semantics: asking twice is not an error.
+        let again = with_home(&j, || new_folder("~/Research/2026").unwrap());
+        assert_eq!(made, again);
+    }
+
+    #[test]
+    fn a_symlink_standing_where_the_folder_should_go_is_an_error_not_a_silent_success() {
+        // `mkdirat` returns EEXIST for a symlink just as it does for a real
+        // directory. Treating EEXIST as success — which is what `mkdir -p`
+        // does — would accept exactly the case the walk exists to refuse.
+        let j = jail();
+        std::os::unix::fs::symlink(&j.outside, j.home.join("Q3")).unwrap();
+        with_home(&j, || {
+            new_folder("~/Q3").expect_err("a symlink in the target's place must fail")
+        });
+        // The link is still a link: nothing was created through it, and it was
+        // not silently accepted as "the folder already exists".
+        assert!(std::fs::symlink_metadata(j.home.join("Q3"))
+            .unwrap()
+            .file_type()
+            .is_symlink());
+    }
+
+    #[test]
+    fn identity_distinguishes_the_same_name_from_the_same_object() {
+        // What a grant has to be bound to. Two names for one object share an
+        // identity; one name that has been replaced does not.
+        let j = jail();
+        std::fs::create_dir_all(j.home.join("Docs")).unwrap();
+        std::fs::write(j.home.join("Docs/a.txt"), "x").unwrap();
+        let (dir, name) = walk_to_parent(&j.home, &j.home.join("Docs/a.txt")).unwrap();
+        let first = identify_at(&dir, &name).unwrap().expect("the file exists");
+
+        std::fs::remove_file(j.home.join("Docs/a.txt")).unwrap();
+        std::fs::write(j.home.join("Docs/a.txt"), "y").unwrap();
+        let second = identify_at(&dir, &name)
+            .unwrap()
+            .expect("the new file exists");
+        assert_ne!(
+            first, second,
+            "a replaced file kept its identity — a grant bound to it would follow the swap"
+        );
+
+        // And a missing name has no identity at all, rather than a stale one.
+        std::fs::remove_file(j.home.join("Docs/a.txt")).unwrap();
+        assert_eq!(identify_at(&dir, &name).unwrap(), None);
+    }
+
+    #[test]
+    fn the_walk_refuses_a_symlinked_component_even_when_it_stays_inside_home() {
+        // Inside-home is not the test; *not following a link* is. A link
+        // between two home folders is still a name whose meaning can change
+        // after it is checked.
+        let j = jail();
+        std::fs::create_dir_all(j.home.join("Real")).unwrap();
+        std::os::unix::fs::symlink(j.home.join("Real"), j.home.join("Alias")).unwrap();
+        let err = walk_to_parent(&j.home, &j.home.join("Alias/file.txt"))
+            .expect_err("a symlinked component must be refused")
+            .to_string();
+        assert!(err.contains("symbolic link"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn a_path_that_became_a_symlink_after_the_check_is_not_reported_as_success() {
+        // L-243. `resolve_in` decides where a path points; `mkdir -p`/`open`
+        // resolve it again a moment later. Between the two, the last component
+        // can be replaced by a link out of home — and `mkdir -p` on an existing
+        // symlink-to-directory exits 0, so the old `is_dir()` postcondition
+        // (which follows links) reported success for a folder created outside
+        // the jail. Simulated here by doing the swap directly.
+        let j = jail();
+        let target = j.home.join("Reports");
+        std::os::unix::fs::symlink(&j.outside, &target).unwrap();
+        with_home(&j, || {
+            let err = check(&Postcondition::PathIsDir(target.clone()))
+                .expect_err("a symlinked result must not verify");
+            assert!(
+                err.to_string().contains("symbolic link"),
+                "unexpected error: {err}"
+            );
+        });
+    }
+
+    #[test]
+    fn a_path_that_now_resolves_outside_home_is_not_reported_as_success() {
+        // The same defect one level up: the *parent* is swapped, so the final
+        // component is a real directory but lives outside the jail.
+        let j = jail();
+        let real = j.outside.join("escaped");
+        std::fs::create_dir_all(&real).unwrap();
+        let link = j.home.join("Docs");
+        std::os::unix::fs::symlink(&j.outside, &link).unwrap();
+        let via_link = link.join("escaped");
+        with_home(&j, || {
+            let err = check(&Postcondition::PathIsDir(via_link))
+                .expect_err("a path outside home must not verify");
+            assert!(
+                err.to_string().contains("outside the home directory"),
+                "unexpected error: {err}"
+            );
+        });
     }
 
     // ── L-231: the home boundary survives a symlink ──
@@ -369,7 +782,7 @@ mod tests {
     fn a_legitimate_in_home_path_is_accepted() {
         let j = jail();
         let got = resolve_in(&j.home, "~/Documents/notes").expect("in-home path must resolve");
-        assert_eq!(got, j.home.join("Documents/notes"));
+        assert_eq!(got, j.home.canonicalize().unwrap().join("Documents/notes"));
     }
 
     #[test]
@@ -435,8 +848,10 @@ mod tests {
         let got = resolve_in(&j.home, "~/alias/child").expect("in-home symlink must resolve");
         assert_eq!(
             got,
-            j.home.join("alias/child"),
-            "the path the user named is returned"
+            real.join("child")
+                .canonicalize()
+                .unwrap_or_else(|_| real.canonicalize().unwrap().join("child")),
+            "execution uses the checked location, not the mutable alias"
         );
     }
 
@@ -453,5 +868,25 @@ mod tests {
                 OsString::from("c")
             ]
         );
+    }
+    #[test]
+    fn a_rejected_path_is_not_a_successful_postcondition() {
+        assert!(check(&postcondition(&Action::NewFolder { path: "/".into() })).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn replacing_a_valid_alias_does_not_redirect_the_resolved_path() {
+        let j = jail();
+        let real = j.home.join("real");
+        std::fs::create_dir(&real).unwrap();
+        let alias = j.home.join("alias");
+        std::os::unix::fs::symlink(&real, &alias).unwrap();
+        let target = resolve_in(&j.home, "~/alias/child").unwrap();
+        std::fs::remove_file(&alias).unwrap();
+        std::os::unix::fs::symlink(&j.outside, &alias).unwrap();
+        std::fs::create_dir(&target).unwrap();
+        assert!(real.join("child").exists());
+        assert!(!j.outside.join("child").exists());
     }
 }

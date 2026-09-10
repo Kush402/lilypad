@@ -6,6 +6,9 @@
 //! names, enum variants (snake_case), and length caps match the zod schema
 //! exactly so the wire format never drifts between the mobile app and here.
 
+/// Must match @lilypad/protocol: version 2 discloses read and navigation grants.
+pub const ASK_PROTOCOL_VERSION: u32 = 2;
+
 use serde::{Deserialize, Deserializer, Serialize};
 
 const MAX_COMMAND_LEN: usize = 4 * 1024;
@@ -112,11 +115,18 @@ pub enum RunOutcome {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AgentInbound {
+    AgentHello {
+        #[serde(rename = "runId", deserialize_with = "de_id")]
+        run_id: String,
+        ts: u64,
+    },
     AgentCommand {
         #[serde(rename = "runId", deserialize_with = "de_id")]
         run_id: String,
         #[serde(deserialize_with = "de_command")]
         text: String,
+        #[serde(default, rename = "protocolVersion")]
+        protocol_version: Option<u32>,
         ts: u64,
     },
     AgentStop {
@@ -137,7 +147,8 @@ pub enum AgentInbound {
 impl AgentInbound {
     pub fn run_id(&self) -> &str {
         match self {
-            AgentInbound::AgentCommand { run_id, .. }
+            AgentInbound::AgentHello { run_id, .. }
+            | AgentInbound::AgentCommand { run_id, .. }
             | AgentInbound::AgentStop { run_id, .. }
             | AgentInbound::AgentDecision { run_id, .. } => run_id,
         }
@@ -146,7 +157,12 @@ impl AgentInbound {
 
 /// The agent message kinds, used to cheaply tell an agent frame apart from an
 /// input frame on the shared DataChannel without a full parse.
-const AGENT_KINDS: &[&str] = &["agent_command", "agent_stop", "agent_decision"];
+const AGENT_KINDS: &[&str] = &[
+    "agent_hello",
+    "agent_command",
+    "agent_stop",
+    "agent_decision",
+];
 
 /// Demux one raw DataChannel frame: return `Some(AgentInbound)` iff it is a
 /// well-formed agent message, else `None` (the caller treats `None` as input
@@ -211,6 +227,10 @@ pub struct Approval {
     /// Locations the action may write to beyond its own scratch directory.
     #[serde(rename = "writablePaths")]
     pub writable_paths: Vec<String>,
+    /// Paths the script is granted to read. The sandbox denies the rest of the
+    /// user's home, so this list is the whole of what the script can see.
+    #[serde(rename = "readablePaths")]
+    pub readable_paths: Vec<String>,
     /// Whether outbound network access is granted.
     pub network: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -218,6 +238,12 @@ pub struct Approval {
 }
 
 impl Approval {
+    /// Execution must never exceed what can be disclosed verbatim. The runner
+    /// rejects an over-limit action before any approval can authorize it.
+    pub fn fits_wire(&self) -> bool {
+        self == &self.clone().clamped()
+    }
+
     /// Clamp every field to its wire cap. Applied at construction so an
     /// oversized model script cannot produce an oversized frame.
     pub fn clamped(mut self) -> Self {
@@ -229,6 +255,12 @@ impl Approval {
         self.writable_paths.truncate(MAX_WRITABLE_PATHS);
         self.writable_paths = self
             .writable_paths
+            .into_iter()
+            .map(|p| clip_to_bytes(p, MAX_PATH_LEN))
+            .collect();
+        self.readable_paths.truncate(MAX_WRITABLE_PATHS);
+        self.readable_paths = self
+            .readable_paths
             .into_iter()
             .map(|p| clip_to_bytes(p, MAX_PATH_LEN))
             .collect();
@@ -246,6 +278,13 @@ impl Approval {
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AgentOutbound {
+    AgentReady {
+        #[serde(rename = "runId")]
+        run_id: String,
+        #[serde(rename = "protocolVersion")]
+        protocol_version: u32,
+        ts: u64,
+    },
     AgentStep {
         #[serde(rename = "runId")]
         run_id: String,
@@ -260,7 +299,10 @@ pub enum AgentOutbound {
         state: StepState,
         /// Present only on a `Held` step: what is being asked for.
         #[serde(skip_serializing_if = "Option::is_none")]
-        approval: Option<Approval>,
+        /// Boxed: an `Approval` carries a script and two path lists, and the
+        /// enum is sized by its largest variant. Every step frame — most of
+        /// which carry no approval at all — would otherwise be that big.
+        approval: Option<Box<Approval>>,
         ts: u64,
     },
     AgentRunEnd {
@@ -318,7 +360,7 @@ impl AgentOutbound {
             tier,
             class,
             state: StepState::Held,
-            approval: Some(approval.clamped()),
+            approval: Some(Box::new(approval.clamped())),
             ts,
         }
     }
@@ -348,7 +390,9 @@ mod tests {
         let json = r#"{"kind":"agent_command","runId":"run-1","text":"open Safari","ts":5}"#;
         let msg: AgentInbound = serde_json::from_str(json).unwrap();
         match msg {
-            AgentInbound::AgentCommand { run_id, text, ts } => {
+            AgentInbound::AgentCommand {
+                run_id, text, ts, ..
+            } => {
                 assert_eq!(run_id, "run-1");
                 assert_eq!(text, "open Safari");
                 assert_eq!(ts, 5);
@@ -448,6 +492,7 @@ mod tests {
                 source: source.into(),
             }),
             writable_paths: paths,
+            readable_paths: Vec::new(),
             network,
             target: None,
         }
@@ -560,6 +605,7 @@ mod tests {
             purpose: "\u{e9}".repeat(MAX_SUMMARY_LEN),
             script: None,
             writable_paths: vec!["\u{4e16}".repeat(MAX_PATH_LEN)],
+            readable_paths: vec!["\u{4e16}".repeat(MAX_PATH_LEN)],
             network: false,
             target: Some(ApprovalTarget {
                 role: "AXButton".into(),
@@ -569,6 +615,7 @@ mod tests {
         .clamped();
         assert!(approval.purpose.len() <= MAX_SUMMARY_LEN);
         assert!(approval.writable_paths[0].len() <= MAX_PATH_LEN);
+        assert!(approval.readable_paths[0].len() <= MAX_PATH_LEN);
         assert!(approval.target.unwrap().label.len() <= MAX_PATH_LEN);
     }
 
@@ -580,10 +627,14 @@ mod tests {
             writable_paths: (0..MAX_WRITABLE_PATHS + 20)
                 .map(|i| format!("/p/{i}"))
                 .collect(),
+            readable_paths: (0..MAX_WRITABLE_PATHS + 20)
+                .map(|i| format!("/r/{i}"))
+                .collect(),
             network: false,
             target: None,
         }
         .clamped();
         assert_eq!(approval.writable_paths.len(), MAX_WRITABLE_PATHS);
+        assert_eq!(approval.readable_paths.len(), MAX_WRITABLE_PATHS);
     }
 }

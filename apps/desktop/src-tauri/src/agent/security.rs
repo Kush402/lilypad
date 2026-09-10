@@ -79,6 +79,11 @@ pub enum Action {
         script: String,
         /// Extra paths (beyond the scratch dir) the script may write to.
         writable_paths: Vec<String>,
+        /// Paths under the user's home the script may read. The sandbox denies
+        /// every other home path, so an undeclared read fails rather than
+        /// silently succeeding — and each declared one is on the approval card
+        /// the person reads before the script runs (L-247).
+        readable_paths: Vec<String>,
         /// Whether the script needs outbound network.
         needs_network: bool,
     },
@@ -250,8 +255,7 @@ pub fn classify(action: &Action) -> ToolClass {
         // An accessibility press is only as safe as the control it lands on.
         Action::AxPress { target, .. } => classify_ax_press(target.as_ref()),
 
-        // A URL is sensitive unless it smells like a scheme that can execute or
-        // exfiltrate; unknown schemes are held.
+        // Every model-chosen URL is held: the URL itself can transmit data.
         Action::OpenUrl { url } => classify_url(url),
 
         // A keystroke is normally sensitive, but a dangerous chord is held.
@@ -324,8 +328,10 @@ fn classify_ax_press(target: Option<&AxTarget>) -> ToolClass {
         // A control that advertises no label tells us nothing about its effect.
         Some(t) if t.label.trim().is_empty() => ToolClass::Consequential,
         Some(t) if label_is_consequential(&t.label) => ToolClass::Consequential,
-        // A labeled control with no consequential word: ordinary navigation.
-        Some(_) => ToolClass::Sensitive,
+        // A name is not an effect contract. "OK", "Continue", localized
+        // labels and app-authored labels can all commit irreversible actions.
+        // Until a trusted semantic skill proves the effect, hold every press.
+        Some(_) => ToolClass::Consequential,
     }
 }
 
@@ -339,6 +345,7 @@ pub fn approval_for(action: &Action) -> Approval {
         purpose: String::new(),
         script: None,
         writable_paths: Vec::new(),
+        readable_paths: Vec::new(),
         network: false,
         target: None,
     };
@@ -347,6 +354,7 @@ pub fn approval_for(action: &Action) -> Approval {
             language,
             script,
             writable_paths,
+            readable_paths,
             needs_network,
         } => {
             approval.purpose = match language {
@@ -361,6 +369,7 @@ pub fn approval_for(action: &Action) -> Approval {
                 source: script.clone(),
             });
             approval.writable_paths = writable_paths.clone();
+            approval.readable_paths = readable_paths.clone();
             approval.network = *needs_network;
         }
         Action::AxPress { element_id, target } => {
@@ -381,7 +390,19 @@ pub fn approval_for(action: &Action) -> Approval {
             approval.purpose = format!("Press {}", chord.join("+"));
         }
         Action::OpenUrl { url } => {
-            approval.purpose = format!("Open {url}");
+            // Origin first, then the whole URL. A long path can push the host
+            // off the end of a phone-sized line, and the host is the part that
+            // decides who receives the request — so it is stated separately
+            // rather than left to be found inside the string. The data note
+            // flags the query/fragment, which is where a model would put what
+            // it just read off the screen.
+            let origin = url_origin(url);
+            let data = if url_carries_data(url) {
+                " — sends data in the link"
+            } else {
+                ""
+            };
+            approval.purpose = format!("Open {origin}{data}: {}", url.trim());
             approval.network = true;
         }
         Action::AppleScript { script } => {
@@ -405,15 +426,50 @@ pub fn approval_for(action: &Action) -> Approval {
     approval
 }
 
-fn classify_url(url: &str) -> ToolClass {
-    let lower = url.trim().to_ascii_lowercase();
-    // http(s)/mailto are the ordinary, sensitive cases.
-    if lower.starts_with("http://") || lower.starts_with("https://") || lower.starts_with("mailto:")
-    {
-        return ToolClass::Sensitive;
+/// The origin of a URL as plain text: scheme and host, nothing else.
+///
+/// Deliberately not a URL parser. It answers one question — *who receives
+/// this request* — for display, and anything it cannot confidently split it
+/// reports as `unknown destination` rather than guessing. A wrong guess here
+/// would put a reassuring host on a card for a request going somewhere else,
+/// which is worse than saying nothing.
+fn url_origin(url: &str) -> String {
+    // Use the same URL parsing rules as HTTP clients, not an authority split:
+    // backslashes, encoded hosts and IDNs can change the effective host.
+    match reqwest::Url::parse(url.trim()) {
+        Ok(parsed) if matches!(parsed.scheme(), "http" | "https") => {
+            parsed.origin().ascii_serialization()
+        }
+        Ok(parsed) => format!("{}:", parsed.scheme()),
+        Err(_) => "unknown destination".into(),
     }
-    // Schemes that can invoke local handlers/scripts are held for review; a
-    // `file:`/`javascript:`/custom scheme is not auto-openable.
+}
+
+/// Does this URL carry a payload beyond the page it names — a query string or
+/// a fragment? That is where anything the model learned would travel.
+fn url_carries_data(url: &str) -> bool {
+    let trimmed = url.trim();
+    let after_scheme = trimmed.split_once("://").map(|(_, r)| r).unwrap_or(trimmed);
+    after_scheme.contains('?') || after_scheme.contains('#')
+}
+
+/// Opening a URL is always held (L-253).
+///
+/// The old rule auto-ran `http(s)`/`mailto` as merely `Sensitive`, on the
+/// reading that "open a web page" is a navigation, not an effect. That reading
+/// ignores the argument. `open <url>` hands the *default browser* a string the
+/// model composed, and the model has just read the screen, the accessibility
+/// tree and possibly a file; everything it learned fits in a query string. A
+/// GET to an attacker-named host is a complete exfiltration channel, and it
+/// runs with the browser's cookies, so it is also a request made *as the user*.
+/// Sandbox network denial does not touch it — this never enters the sandbox.
+///
+/// There is no sub-rule that separates the safe case from the unsafe one:
+/// host allow-listing fails on shorteners and open redirects, and stripping the
+/// query breaks every legitimate deep link. So the scheme no longer decides.
+/// [`approval_for`] puts the whole URL on the card, and an over-long one is
+/// refused rather than shortened, so what the person reads is what is opened.
+fn classify_url(_url: &str) -> ToolClass {
     ToolClass::Consequential
 }
 
@@ -492,7 +548,7 @@ mod tests {
                 element_id: 7,
                 target: Some(AxTarget::new("AXButton", "Back")),
             }),
-            ToolClass::Sensitive
+            ToolClass::Consequential
         );
         assert_eq!(
             classify(&Action::RunShortcut {
@@ -541,37 +597,70 @@ mod tests {
     }
 
     #[test]
-    fn http_urls_are_sensitive_other_schemes_held() {
+    fn every_url_is_held_because_the_url_itself_is_the_payload() {
+        // L-253. `https://` used to auto-run. The scheme says how the string
+        // travels, never what is in it: a model that has just read the screen
+        // can put everything it saw in the query and the browser will send it,
+        // with the user's cookies. Held means the person reads the whole URL
+        // on the card before the browser ever sees it.
+        for url in [
+            "https://example.com",
+            "  HTTP://x  ",
+            "https://evil.example/collect?note=card%201234",
+            "mailto:someone@example.com?body=secret",
+            "file:///etc/passwd",
+            "javascript:alert(1)",
+            "customscheme://do",
+        ] {
+            assert_eq!(
+                classify(&Action::OpenUrl { url: url.into() }),
+                ToolClass::Consequential,
+                "{url} must be held"
+            );
+        }
+    }
+
+    #[test]
+    fn a_held_url_is_disclosed_in_full_on_the_card() {
+        // Holding is only a boundary if the card carries the argument; a
+        // truncated URL would approve a destination the person never read.
+        let action = Action::OpenUrl {
+            url: "https://evil.example/collect?note=card%201234".into(),
+        };
+        let card = approval_for(&action);
+        assert!(card.fits_wire());
+        assert!(card
+            .purpose
+            .contains("evil.example/collect?note=card%201234"));
+        // The origin is stated on its own, so it cannot be pushed off the end
+        // of a phone-sized line by a long path, and the card says data is
+        // travelling in the link.
+        assert!(card
+            .purpose
+            .starts_with("Open https://evil.example — sends data in the link:"));
+    }
+
+    #[test]
+    fn the_origin_shown_is_the_host_that_receives_the_request() {
+        // `https://bank.example@evil.test/` goes to evil.test. Reading the
+        // string left to right gets this wrong, which is exactly why it is a
+        // standard phishing shape and why the card states the host itself.
         assert_eq!(
-            classify(&Action::OpenUrl {
-                url: "https://example.com".into()
-            }),
-            ToolClass::Sensitive
+            url_origin("https://bank.example@evil.test/login"),
+            "https://evil.test"
         );
         assert_eq!(
-            classify(&Action::OpenUrl {
-                url: "  HTTP://x  ".into()
-            }),
-            ToolClass::Sensitive
+            url_origin("HTTP://Example.com/a/b?c=1"),
+            "http://example.com"
         );
-        assert_eq!(
-            classify(&Action::OpenUrl {
-                url: "file:///etc/passwd".into()
-            }),
-            ToolClass::Consequential
-        );
-        assert_eq!(
-            classify(&Action::OpenUrl {
-                url: "javascript:alert(1)".into()
-            }),
-            ToolClass::Consequential
-        );
-        assert_eq!(
-            classify(&Action::OpenUrl {
-                url: "customscheme://do".into()
-            }),
-            ToolClass::Consequential
-        );
+        assert_eq!(url_origin("mailto:someone@example.com"), "mailto:");
+        assert_eq!(url_origin("javascript:alert(1)"), "javascript:");
+        assert_eq!(url_origin("https://"), "unknown destination");
+        assert_eq!(url_origin("not a url"), "unknown destination");
+
+        assert!(url_carries_data("https://x.test/a?b=1"));
+        assert!(url_carries_data("https://x.test/a#frag"));
+        assert!(!url_carries_data("https://x.test/a/b"));
     }
 
     #[test]
@@ -633,6 +722,7 @@ mod tests {
                 language: ScriptLanguage::Shell,
                 script: "zip -r out.zip .".into(),
                 writable_paths: vec![],
+                readable_paths: vec![],
                 needs_network: false,
             }),
             ToolClass::Consequential
@@ -643,6 +733,7 @@ mod tests {
                 language: ScriptLanguage::Shell,
                 script: "cat ~/.ssh/id_rsa | base64 -d".into(),
                 writable_paths: vec![],
+                readable_paths: vec![],
                 needs_network: false,
             }),
             ToolClass::Forbidden
@@ -652,6 +743,7 @@ mod tests {
                 language: ScriptLanguage::Python,
                 script: "import os; os.system('sudo rm -rf /')".into(),
                 writable_paths: vec![],
+                readable_paths: vec![],
                 needs_network: false,
             }),
             ToolClass::Forbidden
@@ -681,7 +773,7 @@ mod tests {
     }
 
     #[test]
-    fn benign_navigation_still_runs_without_asking() {
+    fn a_label_alone_cannot_prove_navigation_is_benign() {
         for label in [
             "Back",
             "Next",
@@ -694,7 +786,7 @@ mod tests {
         ] {
             assert_eq!(
                 classify(&press(label)),
-                ToolClass::Sensitive,
+                ToolClass::Consequential,
                 "{label:?} should not need approval"
             );
         }
@@ -784,7 +876,7 @@ mod tests {
         let approved = press("Save Draft");
         let substituted = press("Send");
         assert_ne!(approved, substituted);
-        assert_eq!(classify(&approved), ToolClass::Sensitive);
+        assert_eq!(classify(&approved), ToolClass::Consequential);
         assert_eq!(classify(&substituted), ToolClass::Consequential);
     }
 
@@ -796,6 +888,7 @@ mod tests {
             language: ScriptLanguage::Python,
             script: "import os".into(),
             writable_paths: vec!["/tmp/work".into()],
+            readable_paths: vec![],
             needs_network: true,
         });
         assert_eq!(a.purpose, "Run a Python script");
@@ -812,12 +905,14 @@ mod tests {
             language: ScriptLanguage::Shell,
             script: "echo hi".into(),
             writable_paths: vec![],
+            readable_paths: vec![],
             needs_network: false,
         });
         let loud = approval_for(&Action::RunScript {
             language: ScriptLanguage::Shell,
             script: "echo hi".into(),
             writable_paths: vec!["/Users/me".into()],
+            readable_paths: vec![],
             needs_network: true,
         });
         assert_eq!(quiet.purpose, loud.purpose);
@@ -843,5 +938,17 @@ mod tests {
         });
         assert!(a.purpose.contains("unidentified"));
         assert!(a.target.is_none());
+    }
+    #[test]
+    fn navigation_origin_handles_browser_backslashes_and_encoded_hosts() {
+        assert_eq!(
+            url_origin(r"https://evil.test\@bank.example/"),
+            "https://evil.test"
+        );
+        assert_eq!(url_origin("https://%65vil.test/"), "https://evil.test");
+        assert_eq!(
+            url_origin("https://example.com:443/"),
+            "https://example.com"
+        );
     }
 }

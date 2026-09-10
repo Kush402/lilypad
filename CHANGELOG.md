@@ -19,6 +19,62 @@ All notable changes to Lilypad are documented here. The format follows
   estimate below the encoder's own floor is now discarded rather than believed;
   packet loss and send-queue congestion still lower the bitrate as before.
 
+### Security
+
+- Ask scripts now request explicit file-read grants on their approval cards,
+  and each grant is tied to the file itself rather than to its name. A name can
+  be pointed at something else between your tap and the script running, so
+  Lilypad records which file you approved and refuses if it changed. Runtime
+  permissions exclude broad temporary and application-data directories. Hard
+  links out of a granted folder are refused by the sandbox — measured, not
+  assumed. Not yet a promise about every channel: the inter-process lookup
+  service a script can reach has not been narrowed, and startup on a Mac with
+  no developer tools installed has not been exercised.
+- Model-chosen links require approval. The card includes the full URL and a
+  normalized origin using standard URL parsing, including backslash and encoded
+  host handling. Browser redirects can still change the final destination.
+- Ask protocol version 2 requires both peers to support the same read/navigation
+  disclosures. Older peers retain manual control but cannot start Ask work.
+- Ask execution ownership now persists across task replacement, drain timeouts
+  and reconnect-created controllers. A new runner waits for the old owner's
+  lease; an already-issued OS effect cannot be recalled by this mechanism.
+- Creating a folder can no longer be redirected out of your home folder.
+  Lilypad used to check the path and then hand that text to `mkdir`, which
+  looks it up again — and a link placed in the way between those two steps sent
+  the folder elsewhere. The folder is now created relative to a directory
+  Lilypad opened itself, one step at a time, following no links, so there is no
+  gap to slip into.
+- **"Open this file" and "show in Finder" are unavailable in this build.** Both
+  work by handing a path to macOS to launch, and macOS looks that path up
+  again, so nothing checked beforehand can be tied to the file that actually
+  opens — and a launch cannot be taken back. We would rather drop a small
+  convenience than keep one we cannot make a promise about. Opening apps,
+  creating folders, and everything you do by hand are unaffected. This note
+  will change when the feature returns on a footing that holds.
+- Files an Ask run leaves behind are now bounded and private to you. Every run
+  kept its script and its captured output forever, and captured output is
+  whatever you allowed the script to read. The store is owner-only and expires
+  by count, size and age.
+
+### Reliability
+
+- Recovery uses bounded cursor scanning and validates stored scope, identity,
+  timestamp and schema version before admitting a room, and every read is now
+  bounded in time rather than only the loop around them. A Redis that stops
+  answering mid-read used to leave the backend starting forever, with a healthy
+  connection and nothing in the log; it now gives up and starts with whatever
+  it recovered. A byte bound on a hostile reply is still follow-up work.
+- Non-ASCII script output is truncated without splitting a UTF-8 character.
+- A single unreadable record in the backend's session store no longer stops the
+  server from starting. Recovery trusted whatever was stored; a `null` left
+  behind by a bad write crashed the boot sequence, and stayed crashed on every
+  restart, because the record was still there. Invalid records are now skipped
+  one by one, and a good record alongside them still recovers.
+- Assistant runs hold on to less memory: screenshots older than the last two
+  are released rather than kept for the whole task, under an explicit size
+  ceiling as well as a count, and repeated approve/deny taps from the phone are
+  bounded instead of queueing without limit.
+
 ## [0.1.32] — 2026-09-08
 
 ### Fixed

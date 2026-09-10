@@ -21,7 +21,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use anyhow::Result;
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc::{Receiver, UnboundedSender};
 use tokio::sync::Notify;
 
 use crate::agent::protocol::{
@@ -77,7 +77,7 @@ impl FinishReason {
 
 /// The outcome of executing one action, fed back to the brain as context for
 /// its next decision.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Observation {
     /// What happened, in words the model can reason over.
     pub summary: String,
@@ -202,6 +202,66 @@ impl Cancel {
     }
 }
 
+/// How many approve/deny frames may be queued for a run at once (L-248).
+///
+/// The queue used to be unbounded. The receiver is only drained while the
+/// runner is *waiting on a held step*; during a model call or a sandboxed
+/// script nothing reads it, so a phone that repeats a decision — a retry loop,
+/// a stuck finger, a hostile client — grows desktop memory without limit and
+/// nothing upstream notices. A run has at most one outstanding question, so a
+/// handful of frames is every legitimate case (a retry, a race with a stale
+/// step id); beyond that the frames are duplicates by construction.
+///
+/// Bound: `DECISION_QUEUE_CAPACITY` frames per active run, one active run per
+/// session — the desktop's decision backlog is O(sessions), not O(taps).
+/// Overflow is dropped at the sender with a warning, never silently buffered.
+pub const DECISION_QUEUE_CAPACITY: usize = 16;
+
+/// How many screenshots the run history keeps in full (L-249).
+///
+/// `llm::retain_recent_images` prunes the *provider* copy, which is what goes
+/// over the network. It does not touch this history, which owns the original
+/// base64 and lives for the whole run: forty vision steps is forty full-screen
+/// PNGs held at once, tens of megabytes per run, all but the last two of which
+/// no longer reach the model. Prune at the source instead, so the bound is on
+/// the memory as well as on the request.
+///
+/// The text of every observation is kept — the model still knows a screenshot
+/// was taken and what it showed; only the pixels of the older ones go.
+const RETAINED_HISTORY_IMAGES: usize = 2;
+
+/// The byte ceiling those retained images share.
+///
+/// A count is not a bound. Two screenshots of a 6K display are an order of
+/// magnitude larger than two of a laptop panel, and the count-based rule
+/// reports the same "2" for both. This is what actually caps the memory: even
+/// the newest image is dropped rather than exceed it. 24 MiB of base64 is
+/// roughly two full-resolution 6K PNGs with room to spare, and comfortably
+/// more than any provider will accept in one request anyway.
+const RETAINED_HISTORY_IMAGE_BYTES: usize = 24 * 1024 * 1024;
+
+/// Drop the image payload of every observation older than the newest
+/// [`RETAINED_HISTORY_IMAGES`] image-bearing ones, and of any image that would
+/// push the retained total past [`RETAINED_HISTORY_IMAGE_BYTES`]. Idempotent.
+fn retain_recent_images(history: &mut [Observation]) {
+    let mut kept = 0;
+    let mut bytes = 0usize;
+    for obs in history.iter_mut().rev() {
+        let Some(image) = obs.image_png_base64.as_ref() else {
+            continue;
+        };
+        kept += 1;
+        let over_count = kept > RETAINED_HISTORY_IMAGES;
+        let over_bytes = bytes + image.len() > RETAINED_HISTORY_IMAGE_BYTES;
+        if over_count || over_bytes {
+            obs.image_png_base64 = None;
+            obs.summary.push_str(" [screenshot no longer retained]");
+        } else {
+            bytes += image.len();
+        }
+    }
+}
+
 /// Tuning for one run.
 #[derive(Debug, Clone)]
 pub struct RunnerConfig {
@@ -304,17 +364,33 @@ where
         outcome
     }
 
+    fn timed_out(&mut self, run_id: &str) -> RunOutcome {
+        let sid = self.next_step_id(run_id);
+        self.emit(
+            run_id,
+            &sid,
+            StepKind::Error,
+            "The task ran out of time before finishing",
+            None,
+            None,
+            StepState::Failed,
+        );
+        self.end(run_id, RunOutcome::Failed)
+    }
+
     /// Run one task to completion, cancellation, or failure. Returns the
     /// terminal outcome (also emitted as an `agent_run_end` on the feed).
     pub async fn run(
         &mut self,
         run_id: &str,
         task: &str,
-        decisions_rx: &mut UnboundedReceiver<AgentInbound>,
+        decisions_rx: &mut Receiver<AgentInbound>,
         cancel: &Cancel,
     ) -> RunOutcome {
         let mut history: Vec<Observation> = Vec::new();
         let started_ms = (self.now_ms)();
+        let deadline =
+            tokio::time::Instant::now() + std::time::Duration::from_millis(self.config.max_run_ms);
 
         for _ in 0..self.config.max_steps {
             if cancel.is_cancelled() {
@@ -340,6 +416,7 @@ where
             let decision = tokio::select! {
                 biased;
                 _ = cancel.wait() => return self.end(run_id, RunOutcome::Stopped),
+                _ = tokio::time::sleep_until(deadline) => return self.timed_out(run_id),
                 d = self.brain.next(task, &history) => d,
             };
             let decision = match decision {
@@ -408,6 +485,21 @@ where
                     continue;
                 }
                 Gate::Hold(class) => {
+                    let approval = crate::agent::security::approval_for(&action);
+                    if !approval.fits_wire() {
+                        let message = "Action exceeds approval limits; shorten it without hiding any code or permissions";
+                        self.emit(
+                            run_id,
+                            &step_id,
+                            StepKind::Error,
+                            message,
+                            Some(tier),
+                            Some(class),
+                            StepState::Failed,
+                        );
+                        history.push(Observation::fail(message));
+                        continue;
+                    }
                     // The card must show what is actually being granted, not a
                     // generic label: "Run shell script" is the same sentence
                     // for a script that lists a directory and one that uploads
@@ -418,7 +510,7 @@ where
                         summary.clone(),
                         Some(tier),
                         Some(class),
-                        crate::agent::security::approval_for(&action),
+                        approval,
                         (self.now_ms)(),
                     ));
                     let approved = tokio::select! {
@@ -428,6 +520,7 @@ where
                                 Some(tier), Some(class), StepState::Denied);
                             return self.end(run_id, RunOutcome::Stopped);
                         }
+                        _ = tokio::time::sleep_until(deadline) => return self.timed_out(run_id),
                         a = Self::await_decision(decisions_rx, run_id, &step_id) => a,
                     };
                     if !approved {
@@ -461,6 +554,7 @@ where
             let result = tokio::select! {
                 biased;
                 _ = cancel.wait() => return self.end(run_id, RunOutcome::Stopped),
+                _ = tokio::time::sleep_until(deadline) => return self.timed_out(run_id),
                 r = self.executor.execute(&action) => r,
             };
             match result {
@@ -479,6 +573,7 @@ where
                         },
                     );
                     history.push(obs);
+                    retain_recent_images(&mut history);
                 }
                 Err(err) => {
                     self.emit(
@@ -513,7 +608,7 @@ where
     /// decisions (wrong run/step) and any non-decision inbound. A closed
     /// channel (phone gone) resolves as a deny — fail safe.
     async fn await_decision(
-        decisions_rx: &mut UnboundedReceiver<AgentInbound>,
+        decisions_rx: &mut Receiver<AgentInbound>,
         run_id: &str,
         step_id: &str,
     ) -> bool {
@@ -633,10 +728,69 @@ mod tests {
         );
     }
 
+    #[test]
+    fn only_the_two_newest_screenshots_keep_their_pixels() {
+        // L-249. `llm::retain_recent_images` prunes the provider copy — the
+        // bytes that go over the network. The run's own history kept every
+        // original for the whole run: forty vision steps is forty full-screen
+        // PNGs resident at once, none of which the model can still see. Prune
+        // at the source, and say so in the text so the model is not told a
+        // screenshot exists that it cannot look at.
+        let mut history = vec![
+            Observation::ok_with_image("first", "AAA".into()),
+            Observation::ok("no image here"),
+            Observation::ok_with_image("second", "BBB".into()),
+            Observation::ok_with_image("third", "CCC".into()),
+        ];
+        retain_recent_images(&mut history);
+        assert_eq!(history[0].image_png_base64, None);
+        assert!(history[0].summary.contains("no longer retained"));
+        assert_eq!(history[1].image_png_base64, None); // never had one
+        assert!(!history[1].summary.contains("no longer retained"));
+        assert_eq!(history[2].image_png_base64.as_deref(), Some("BBB"));
+        assert_eq!(history[3].image_png_base64.as_deref(), Some("CCC"));
+
+        // Idempotent: running again neither drops more nor re-annotates.
+        let before = history.clone();
+        retain_recent_images(&mut history);
+        assert_eq!(history, before);
+    }
+
+    #[test]
+    fn the_retained_screenshots_are_bounded_in_bytes_not_only_in_count() {
+        // A count is not a bound: two screenshots of a 6K display are an order
+        // of magnitude bigger than two of a laptop panel, and "2" describes
+        // both. Forty large steps must leave a bounded number of bytes behind.
+        let big = "z".repeat(RETAINED_HISTORY_IMAGE_BYTES / 2 + 1);
+        let mut history: Vec<Observation> = (0..40)
+            .map(|i| Observation::ok_with_image(format!("step {i}"), big.clone()))
+            .collect();
+        retain_recent_images(&mut history);
+
+        let retained: usize = history
+            .iter()
+            .filter_map(|o| o.image_png_base64.as_ref().map(|s| s.len()))
+            .sum();
+        assert!(
+            retained <= RETAINED_HISTORY_IMAGE_BYTES,
+            "retained {retained} bytes, over the {RETAINED_HISTORY_IMAGE_BYTES} cap"
+        );
+        // Two of these do not fit, so only the newest survives — the cap wins
+        // over the count, which is the whole point.
+        assert_eq!(
+            history
+                .iter()
+                .filter(|o| o.image_png_base64.is_some())
+                .count(),
+            1
+        );
+        assert!(history[39].image_png_base64.is_some(), "the newest is kept");
+    }
+
     #[tokio::test]
     async fn runs_a_safe_action_then_finishes_completed() {
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let (_dtx, mut drx) = mpsc::unbounded_channel();
+        let (_dtx, mut drx) = mpsc::channel(DECISION_QUEUE_CAPACITY);
         let exec = RecordingExecutor::default();
         let executed = exec.executed.clone();
         let mut runner = AgentRunner::new(
@@ -663,7 +817,7 @@ mod tests {
     #[tokio::test]
     async fn forbidden_action_is_refused_and_never_executed() {
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let (_dtx, mut drx) = mpsc::unbounded_channel();
+        let (_dtx, mut drx) = mpsc::channel(DECISION_QUEUE_CAPACITY);
         let exec = RecordingExecutor::default();
         let executed = exec.executed.clone();
         let mut runner = AgentRunner::new(
@@ -692,7 +846,7 @@ mod tests {
     #[tokio::test]
     async fn consequential_action_holds_then_runs_on_approve() {
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let (dtx, mut drx) = mpsc::unbounded_channel();
+        let (dtx, mut drx) = mpsc::channel(DECISION_QUEUE_CAPACITY);
         let exec = RecordingExecutor::default();
         let executed = exec.executed.clone();
         let mut runner = AgentRunner::new(
@@ -708,7 +862,7 @@ mod tests {
         // Approve the first held step (id "r-1") shortly after the run starts.
         let approver = tokio::spawn(async move {
             tokio::task::yield_now().await;
-            dtx.send(AgentInbound::AgentDecision {
+            dtx.try_send(AgentInbound::AgentDecision {
                 run_id: "r".into(),
                 step_id: "r-1".into(),
                 approve: true,
@@ -730,7 +884,7 @@ mod tests {
     #[tokio::test]
     async fn consequential_action_is_skipped_on_deny() {
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let (dtx, mut drx) = mpsc::unbounded_channel();
+        let (dtx, mut drx) = mpsc::channel(DECISION_QUEUE_CAPACITY);
         let exec = RecordingExecutor::default();
         let executed = exec.executed.clone();
         let mut runner = AgentRunner::new(
@@ -744,7 +898,7 @@ mod tests {
 
         let denier = tokio::spawn(async move {
             tokio::task::yield_now().await;
-            dtx.send(AgentInbound::AgentDecision {
+            dtx.try_send(AgentInbound::AgentDecision {
                 run_id: "r".into(),
                 step_id: "r-1".into(),
                 approve: false,
@@ -767,7 +921,7 @@ mod tests {
     #[tokio::test]
     async fn cancellation_stops_the_run_promptly() {
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let (_dtx, mut drx) = mpsc::unbounded_channel();
+        let (_dtx, mut drx) = mpsc::channel(DECISION_QUEUE_CAPACITY);
         // A long script the runner should never finish because we cancel first.
         let script = (0..100)
             .map(|_| {
@@ -795,7 +949,7 @@ mod tests {
     #[tokio::test]
     async fn cancel_while_holding_denies_and_stops() {
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let (_dtx, mut drx) = mpsc::unbounded_channel();
+        let (_dtx, mut drx) = mpsc::channel(DECISION_QUEUE_CAPACITY);
         let exec = RecordingExecutor::default();
         let executed = exec.executed.clone();
         let mut runner = AgentRunner::new(
@@ -835,7 +989,7 @@ mod tests {
             reason: FinishReason::Incomplete,
         }]);
         let mut runner = AgentRunner::new(brain, RecordingExecutor::default(), tx, || 1);
-        let (_dtx, mut drx) = mpsc::unbounded_channel();
+        let (_dtx, mut drx) = mpsc::channel(DECISION_QUEUE_CAPACITY);
         let outcome = runner.run("r1", "task", &mut drx, &Cancel::new()).await;
         assert_eq!(outcome, RunOutcome::Failed);
 
@@ -857,7 +1011,7 @@ mod tests {
             reason: FinishReason::NeedsInput,
         }]);
         let mut runner = AgentRunner::new(brain, RecordingExecutor::default(), tx, || 1);
-        let (_dtx, mut drx) = mpsc::unbounded_channel();
+        let (_dtx, mut drx) = mpsc::channel(DECISION_QUEUE_CAPACITY);
         assert_eq!(
             runner.run("r1", "task", &mut drx, &Cancel::new()).await,
             RunOutcome::NeedsInput
@@ -872,7 +1026,7 @@ mod tests {
             reason: FinishReason::Completed,
         }]);
         let mut runner = AgentRunner::new(brain, RecordingExecutor::default(), tx, || 1);
-        let (_dtx, mut drx) = mpsc::unbounded_channel();
+        let (_dtx, mut drx) = mpsc::channel(DECISION_QUEUE_CAPACITY);
         assert_eq!(
             runner.run("r1", "task", &mut drx, &Cancel::new()).await,
             RunOutcome::Completed
@@ -907,7 +1061,7 @@ mod tests {
                 max_run_ms: 2_000,
             },
         );
-        let (_dtx, mut drx) = mpsc::unbounded_channel();
+        let (_dtx, mut drx) = mpsc::channel(DECISION_QUEUE_CAPACITY);
         assert_eq!(
             runner.run("r1", "task", &mut drx, &Cancel::new()).await,
             RunOutcome::Failed
@@ -932,10 +1086,79 @@ mod tests {
         );
         let cancel = Cancel::new();
         cancel.cancel();
-        let (_dtx, mut drx) = mpsc::unbounded_channel();
+        let (_dtx, mut drx) = mpsc::channel(DECISION_QUEUE_CAPACITY);
         assert_eq!(
             runner.run("r1", "task", &mut drx, &cancel).await,
             RunOutcome::Stopped
         );
+    }
+    #[tokio::test]
+    async fn run_budget_interrupts_a_held_approval() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let brain = ScriptedBrain::new(vec![Decision::Act {
+            summary: "held".into(),
+            tier: AgentTier::Sandbox,
+            action: Action::RunScript {
+                language: crate::agent::security::ScriptLanguage::Shell,
+                script: "true".into(),
+                writable_paths: vec![],
+                readable_paths: vec![],
+                needs_network: false,
+            },
+        }]);
+        let mut runner = AgentRunner::with_config(
+            brain,
+            RecordingExecutor::default(),
+            tx,
+            || 0,
+            RunnerConfig {
+                max_steps: 40,
+                max_run_ms: 20,
+            },
+        );
+        let (_dtx, mut drx) = mpsc::channel(DECISION_QUEUE_CAPACITY);
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            runner.run("r", "task", &mut drx, &Cancel::new()),
+        )
+        .await;
+        assert_eq!(
+            outcome.expect("approval wait exceeded whole-run budget"),
+            RunOutcome::Failed
+        );
+    }
+
+    #[tokio::test]
+    async fn approval_limits_reject_full_actions_instead_of_hiding_the_tail() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let brain = ScriptedBrain::new(vec![Decision::Act {
+            summary: "oversized".into(),
+            tier: AgentTier::Sandbox,
+            action: Action::RunScript {
+                language: crate::agent::security::ScriptLanguage::Shell,
+                script: "#".repeat(9000),
+                writable_paths: vec![],
+                readable_paths: vec![],
+                needs_network: false,
+            },
+        }]);
+        let mut runner = AgentRunner::new(brain, RecordingExecutor::default(), tx, || 0);
+        let (_dtx, mut drx) = mpsc::channel(DECISION_QUEUE_CAPACITY);
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            runner.run("r", "task", &mut drx, &Cancel::new()),
+        )
+        .await
+        .unwrap();
+        assert!(runner.executor.executed.lock().unwrap().is_empty());
+        while let Ok(message) = rx.try_recv() {
+            if let AgentOutbound::AgentStep { state, .. } = message {
+                assert_ne!(
+                    state,
+                    StepState::Held,
+                    "a partial approval must never be offered"
+                );
+            }
+        }
     }
 }

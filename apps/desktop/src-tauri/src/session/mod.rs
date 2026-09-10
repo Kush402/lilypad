@@ -773,6 +773,7 @@ impl SessionRunner {
                 // Phone backgrounded (or user paused) — stop sending video
                 // without tearing down ICE/DataChannel, so resuming is instant.
                 self.viewer_paused = true;
+                self.agent.cancel_active();
                 self.sync_media_pause();
             }
             "resume" => {
@@ -1075,8 +1076,9 @@ impl SessionRunner {
             // here on the desktop (authoritative) so a dropped message can't
             // strand the agent in control.
             if let Some(inbound) = agent::parse_inbound(bytes) {
+                let authorized = self.interactive_authorized();
                 self.agent
-                    .handle_inbound(inbound, self.granted_control, self.peer.clone());
+                    .handle_inbound(inbound, authorized, self.peer.clone());
             } else {
                 self.agent.on_human_input();
                 self.gate.handle_message(bytes.clone());
@@ -1459,7 +1461,7 @@ impl SessionRunner {
         Ok(())
     }
 
-    fn clipboard_authorized(&self) -> bool {
+    fn interactive_authorized(&self) -> bool {
         self.granted_control
             && self.input_channel_open
             && !self.input_channel_closed
@@ -1471,7 +1473,7 @@ impl SessionRunner {
     /// authorized peer's reliable encrypted DataChannel. No API/LAN-signaling
     /// fallback, including when the DataChannel cannot accept the write.
     async fn poll_clipboard(&mut self) {
-        if !self.clipboard_authorized() {
+        if !self.interactive_authorized() {
             return;
         }
         let Some(peer) = self.peer.as_ref() else {
@@ -1746,7 +1748,7 @@ pub async fn run_session(
                 }
             }
 
-            _ = clipboard_poll.tick(), if runner.clipboard_authorized() => {
+            _ = clipboard_poll.tick(), if runner.interactive_authorized() => {
                 runner.poll_clipboard().await;
             }
         }
@@ -1888,40 +1890,40 @@ mod tests {
     }
 
     #[test]
-    fn clipboard_requires_control_a_live_current_channel_and_an_unpaused_viewer() {
+    fn ask_and_clipboard_require_control_a_live_channel_and_an_unpaused_viewer() {
         let (events, _rx) = mpsc::unbounded_channel();
         let mut runner = SessionRunner::new("clipboard-scope".into(), events, None);
         runner.input_channel_open = true;
         runner.peer_connected = true;
         assert!(
-            !runner.clipboard_authorized(),
+            !runner.interactive_authorized(),
             "view-only must not read the Mac clipboard"
         );
         runner.granted_control = true;
-        assert!(runner.clipboard_authorized());
+        assert!(runner.interactive_authorized());
         runner.media.set_paused(true);
         assert!(
-            !runner.clipboard_authorized(),
+            !runner.interactive_authorized(),
             "backgrounded viewer must not receive clipboard"
         );
         runner.media.set_paused(false);
         runner.input_channel_open = false;
-        assert!(!runner.clipboard_authorized());
+        assert!(!runner.interactive_authorized());
         runner.input_channel_open = true;
         runner.input_channel_closed = true;
         runner.last_peer_traffic = Some(Instant::now());
         assert!(
-            !runner.clipboard_authorized(),
+            !runner.interactive_authorized(),
             "fresh RTCP cannot revive closed control"
         );
         runner.input_channel_closed = false;
         runner.peer_connected = false;
         assert!(
-            runner.clipboard_authorized(),
+            runner.interactive_authorized(),
             "fresh traffic still outvotes a bad FSM"
         );
         runner.last_peer_traffic = None;
-        assert!(!runner.clipboard_authorized());
+        assert!(!runner.interactive_authorized());
     }
 
     #[tokio::test]

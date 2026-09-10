@@ -1,6 +1,6 @@
 import React from 'react';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react-native';
-import { AgentPanel } from './AgentPanel';
+import { AgentPanel, describeForScreenReader, readsLabel } from './AgentPanel';
 import type { AgentFeedState, AgentStepView } from '../lib/agentFeed';
 
 /**
@@ -118,6 +118,73 @@ describe('the approval card', () => {
   });
 });
 
+describe('what the card says about reading (L-247)', () => {
+  const withApproval = (readablePaths: string[] | undefined) =>
+    feed({
+      running: true,
+      steps: [
+        step({
+          state: 'held',
+          toolClass: 'consequential',
+          summary: 'Run a script',
+          approval: {
+            purpose: 'Run a shell script',
+            script: { language: 'shell', source: 'cat notes.txt' },
+            writablePaths: [],
+            readablePaths,
+            network: false,
+          },
+        }),
+      ],
+    });
+
+  it('names the files a script may read, because reading is disclosure', async () => {
+    // A sandboxed script's stdout is folded back into the model prompt and
+    // sent to the provider, so a read grant leaves the Mac just as surely as a
+    // write does. The card has to name it before the tap, not after.
+    render(
+      <AgentPanel
+        feed={withApproval(['/Users/me/Documents/notes.txt'])}
+        onSend={noop}
+        onStop={noop}
+        onDecide={noop}
+      />,
+    );
+    await shown('agent-panel');
+    expect(screen.getByText('/Users/me/Documents/notes.txt')).toBeTruthy();
+  });
+
+  it('distinguishes "reads nothing" from "this Mac did not say"', async () => {
+    // An older desktop has no `readablePaths` field and grants broad read
+    // access. Rendering absent as "none of your files" would state the exact
+    // opposite of the truth, which is the defect this list exists to fix.
+    expect(readsLabel([])).toBe('reads none of your files');
+    expect(readsLabel(undefined)).toBe('reads not disclosed by this Mac');
+    expect(readsLabel(['/Users/me/a.txt'])).toBe('can read /Users/me/a.txt');
+
+    render(
+      <AgentPanel feed={withApproval(undefined)} onSend={noop} onStop={noop} onDecide={noop} />,
+    );
+    await shown('agent-panel');
+    expect(screen.getByText('not disclosed by this Mac')).toBeTruthy();
+  });
+
+  it('says the same thing to a screen reader as it shows on the card', () => {
+    const spoken = describeForScreenReader(
+      step({
+        state: 'held',
+        approval: {
+          purpose: 'Run a shell script',
+          writablePaths: [],
+          readablePaths: ['/Users/me/Documents/notes.txt'],
+          network: false,
+        },
+      }),
+    );
+    expect(spoken).toContain('can read /Users/me/Documents/notes.txt');
+  });
+});
+
 describe('sending a task', () => {
   it('refuses to send whitespace, and clears the box on send', async () => {
     const onSend = jest.fn();
@@ -208,9 +275,38 @@ describe('before a screen may be sent to a model', () => {
       hasAiConsent: jest.Mock;
     };
     hasAiConsent.mockRejectedValueOnce(new Error('keychain unavailable'));
-    hasAiConsent.mockResolvedValueOnce(false);
 
     render(<AgentPanel feed={feed()} onSend={noop} onStop={noop} onDecide={noop} />);
     await shown('agent-consent');
   });
+});
+
+describe('withdrawal while desktop state is uncertain', () => {
+  it('keeps Stop reachable and prevents re-enabling while the old run may act', async () => {
+    const stop = jest.fn();
+    const props = { onSend: noop, onStop: stop, onDecide: noop };
+    const view = render(<AgentPanel {...props} feed={feed({ phase: 'running' })} />);
+    await shown('agent-panel');
+    fireEvent.press(screen.getByTestId('agent-consent-withdraw'));
+    expect(stop).toHaveBeenCalledTimes(1);
+    view.rerender(<AgentPanel {...props} feed={feed({ phase: 'stop_unconfirmed' })} />);
+    await shown('agent-withdrawal-pending');
+    fireEvent.press(screen.getByTestId('agent-withdrawal-stop'));
+    expect(stop).toHaveBeenCalledTimes(2);
+    fireEvent.press(screen.getByTestId('agent-consent-allow'));
+    expect(screen.queryByTestId('agent-panel')).toBeNull();
+    view.rerender(<AgentPanel {...props} feed={feed({ phase: 'ended', outcome: 'stopped' })} />);
+    expect(screen.queryByTestId('agent-withdrawal-pending')).toBeNull();
+  });
+});
+
+it('preserves the same command through repeated failed sends', async () => {
+  const send = jest.fn(() => false);
+  render(<AgentPanel feed={feed()} onSend={send} onStop={noop} onDecide={noop} />);
+  await shown('agent-command-input');
+  fireEvent.changeText(screen.getByTestId('agent-command-input'), 'Open Safari');
+  fireEvent.press(screen.getByTestId('agent-send'));
+  fireEvent.press(screen.getByTestId('agent-send'));
+  expect(send).toHaveBeenCalledTimes(2);
+  expect(screen.getByTestId('agent-command-input').props.value).toBe('Open Safari');
 });

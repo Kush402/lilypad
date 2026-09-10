@@ -447,7 +447,9 @@ export class SignalingHub {
    * deployment. */
   async resurrectRoomsFromStore(): Promise<number> {
     if (!this.deps.roomStore) return 0;
-    const records = await this.deps.roomStore.loadAll();
+    // Bounded by the same cap the registry enforces, so recovery never decodes
+    // more rooms than this instance could hold (L-251).
+    const records = await this.deps.roomStore.loadAll(this.maxRooms);
     let count = 0;
     for (const record of records) {
       if (TERMINAL_STATES.includes(record.fsmState)) continue; // already over — nothing to resurrect
