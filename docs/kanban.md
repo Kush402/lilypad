@@ -933,6 +933,35 @@ than quietly re-running:
 A local gap this exposed: I had been running `cargo test --lib`, which never
 covers `tests/*.rs`. CI does.
 
+### Signed builds for gate 4, without a tag
+
+Gate 4 wants signed hardware testing; signed artifacts only exist after a
+build. Both release workflows accept `workflow_dispatch`, so the circularity
+breaks without tagging anything. Dispatched on `codex/ask-release-readiness` at
+`0495773` (the branch head `737e842` is docs-only, so these binaries carry all
+of the code):
+
+- desktop — [run 34421131205](https://github.com/Kush402/lilypad/actions/runs/34421131205),
+  success. Published the GitHub release `v0.0.0-dispatch.42`
+  (`Lilypad_0.1.32_universal.dmg`, sha256 `20764444…ac84243`).
+- iOS — [run 34421133498](https://github.com/Kush402/lilypad/actions/runs/34421133498),
+  success. TestFlight build **35** under 0.1.32.
+
+**No v0.1.33 tag exists and the website is untouched** — it still serves the
+real 0.1.32, so no user is affected and the updater has nothing new to offer.
+
+The version was deliberately not bumped, which has a consequence for gate 4
+that is easy to miss: both halves report **0.1.32**, the same string the
+shipping build reports, so the test build cannot be identified by version at
+all. `docs/manual-device-test.md` now opens the gate-4 sheet with the exact
+artifact URL, the DMG hash and the TestFlight build number.
+
+It also blocks one row outright. **Sheet row 3 (the updater, L-226) cannot be
+tested on this build**: an untagged build is not newer than itself, so no
+update will ever be offered. L-226 stays unverified until a real v0.1.33 is on
+the website — which is after gate 4, not before it. Recorded here so a passing
+sheet is not read as covering it.
+
 ### What a release would and would not carry
 
 Ask's shape changes in this build, and the change is a _reduction_: `open_file`

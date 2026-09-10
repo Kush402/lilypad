@@ -562,6 +562,43 @@ Two facts that shape the test before you start:
 - **Ask is smaller.** "Open this file" and "reveal in Finder" are gone. Asking
   for them should produce a clear refusal, not a hang or a crash.
 
+### Install the exact build this sheet is about
+
+Both halves still call themselves **0.1.32** — the version was deliberately not
+bumped, because nothing is tagged. So the test build is indistinguishable from
+the shipping 0.1.32 by name, in About, or by the DMG filename. Install from
+these exact sources, and check the hash:
+
+- **Mac** — [Lilypad_0.1.32_universal.dmg](https://github.com/Kush402/lilypad/releases/download/v0.0.0-dispatch.42/Lilypad_0.1.32_universal.dmg)
+  from the `v0.0.0-dispatch.42` release. Verify before opening:
+
+  ```
+  shasum -a 256 ~/Downloads/Lilypad_0.1.32_universal.dmg
+  # 20764444ce9b7b92ec3abe31b362631fc6543c899228554e2e5753f43ac84243
+  ```
+
+- **iPhone** — TestFlight, build **35** under version 0.1.32. Any lower build
+  number is the old code.
+
+Two consequences of the shared version number, both worth knowing before you
+start:
+
+- The built-in updater compares 0.1.32 against the website's 0.1.32 and will
+  **not** offer to move you off this build. **Row 3 therefore cannot be tested
+  on this build at all** — an untagged build cannot be newer than itself. Mark
+  it blocked, not passed; the updater fix stays unverified until a real
+  v0.1.33 is on the website.
+- Nothing will ever tell you you are on the test build. **When you are done
+  testing, reinstall from the website** to get back to the real 0.1.32.
+
+The functional tell that you are on the right build: ask the Mac to open a
+file. The new build refuses and explains why; 0.1.32 opens it.
+
+If you already ran Lilypad on this Mac, do the full clean-state wipe in
+[§ 1. Installation](#1-installation) first — the device key especially. The
+signature has not changed, so the privacy grants and the old identity both
+carry straight over and you would not be testing as a new user.
+
 ### The user-reported failures this release claims to fix
 
 | #   | Scenario                                                                                                           | Expected                                                                                                  | Why it is here                                              |
