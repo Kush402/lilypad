@@ -42,12 +42,48 @@ function nth(elements: HTMLElement[], index: number): HTMLElement {
 /** Permissions live behind step 1 now, so any test that wants to see a
  * permission row has to be signed in first. Mirrors what `AccountSignIn`
  * reports upward via `onChange`. */
+/** The provider presets, as `list_provider_presets` returns them. */
+function presets() {
+  return [
+    {
+      id: 'anthropic',
+      displayName: 'Anthropic',
+      dialect: 'anthropic',
+      defaultBaseUrl: 'https://api.anthropic.com',
+      authHint: 'An Anthropic API key.',
+      modelDiscovery: true,
+      requiresKey: true,
+      note: '',
+    },
+  ];
+}
+
+/** A Mac with no provider set up yet. */
+function agentConfig() {
+  return {
+    providerKind: null,
+    profileId: null,
+    model: null,
+    baseUrl: null,
+    origin: null,
+    vision: null,
+    tools: null,
+    verifiedAt: null,
+    hasKey: false,
+    readiness: 'unconfigured',
+    problem: null,
+    source: 'none',
+  };
+}
+
 function mockSignedIn(link: 'linked' | 'unlinked' | 'unknown' = 'unlinked') {
   vi.mocked(invoke).mockImplementation(async (cmd: string) => {
     if (cmd === 'get_permission_status') return status();
     if (cmd === 'get_link_state') return { state: link };
     if (cmd === 'get_account_state')
       return { signedIn: true, email: 'ada@example.com', userId: 'user-1' };
+    if (cmd === 'list_provider_presets') return presets();
+    if (cmd === 'get_agent_config') return agentConfig();
     return undefined;
   });
 }

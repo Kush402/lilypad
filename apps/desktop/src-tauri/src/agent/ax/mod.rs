@@ -35,7 +35,7 @@ mod stub {
     pub fn describe_live(_handle: &()) -> Option<(String, String)> {
         None
     }
-    pub fn read_focused_tree() -> Result<AxSnapshot> {
+    pub fn read_focused_tree(_display: Option<u32>) -> Result<AxSnapshot> {
         bail!("the accessibility tier is only available on macOS")
     }
 }

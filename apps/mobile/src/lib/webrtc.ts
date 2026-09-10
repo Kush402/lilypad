@@ -23,6 +23,7 @@ import {
   type DisplayInfo,
   type AgentStep,
   type AgentRunEnd,
+  type AgentDestination,
 } from '@lilypad/protocol';
 import { MobileSignaling, type SignalingLifecycleEvent } from './signaling';
 import { isLanPinTarget } from './lanTls';
@@ -78,7 +79,7 @@ export interface ViewerCallbacks {
   /** The AI agent emitted a step on its live feed (desktop → phone over the
    * reliable input channel). Optional — a viewer that doesn't surface the
    * agent simply omits it. See docs/m5.3-ai-executor-plan.md §6. */
-  onAgentReady?: () => void;
+  onAgentReady?: (destination?: AgentDestination) => void;
   onAgentStep?: (step: AgentStep) => void;
   /** The AI agent run ended (completed/stopped/denied/failed). */
   onAgentRunEnd?: (end: AgentRunEnd) => void;
@@ -454,7 +455,11 @@ export class ViewerConnection {
     if (parsed.data.kind === 'agent_ready') {
       if (parsed.data.runId === this.askProbe) {
         this.askReady = true;
-        this.cb.onAgentReady?.();
+        // Where this Mac would send observations, straight through to the
+        // caller. `undefined` when the Mac disclosed nothing, and it stays
+        // `undefined` — an unstated destination must not inherit the last
+        // one this phone saw (L-265).
+        this.cb.onAgentReady?.(parsed.data.destination);
       }
       return;
     }

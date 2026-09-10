@@ -19,6 +19,23 @@ use core_foundation::string::{CFString, CFStringRef};
 
 use super::tree::{AxNode, MAX_DEPTH, MAX_NODES};
 
+/// Longest label or value copied out of one element (L-270).
+///
+/// The cap used to be applied when the tree was serialized, which is after
+/// every string has already been copied out of the app. A document whose
+/// AXValue is its whole text is one allocation of that size, and there is no
+/// bound on how many such elements a tree has. Clip at the copy, so the
+/// memory is never held in the first place.
+const MAX_STRING_BYTES: usize = 512;
+
+/// Longest child array retained from one element (L-270).
+///
+/// `AXChildren` on a table with a hundred thousand rows returns a hundred
+/// thousand retained references before the walk's own `MAX_NODES` check gets a
+/// chance to look at any of them. The node cap has to reach the acquisition,
+/// not only the loop that consumes it.
+const MAX_CHILDREN_PER_ELEMENT: usize = 512;
+
 #[allow(non_camel_case_types)]
 type AXUIElementRef = CFTypeRef;
 #[allow(non_camel_case_types)]
@@ -35,6 +52,24 @@ extern "C" {
     ) -> AXError;
     fn AXUIElementCopyActionNames(element: AXUIElementRef, names: *mut CFTypeRef) -> AXError;
     fn AXUIElementPerformAction(element: AXUIElementRef, action: CFStringRef) -> AXError;
+    /// Unwrap an `AXValue` (a boxed CGPoint/CGSize) into a plain struct.
+    fn AXValueGetValue(value: CFTypeRef, the_type: u32, out: *mut c_void) -> u8;
+}
+
+const AX_VALUE_CG_POINT: u32 = 1;
+const AX_VALUE_CG_SIZE: u32 = 2;
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct CGPointRaw {
+    x: f64,
+    y: f64,
+}
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct CGSizeRaw {
+    width: f64,
+    height: f64,
 }
 
 #[link(name = "CoreFoundation", kind = "framework")]
@@ -167,15 +202,50 @@ fn is_pressable(element: AXUIElementRef) -> bool {
     false
 }
 
+/// Clip a copied AX string to [`MAX_STRING_BYTES`] on a character boundary.
+fn clip(mut s: String) -> String {
+    if s.len() <= MAX_STRING_BYTES {
+        return s;
+    }
+    let mut end = MAX_STRING_BYTES;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    s.truncate(end);
+    s.push('…');
+    s
+}
+
+/// Is this element a password field?
+///
+/// macOS marks these either by role or by subrole depending on the toolkit.
+/// Both are checked, because getting it wrong once means a password in an
+/// observation, and an observation is sent to the model provider.
+fn is_secure(element: AXUIElementRef, role: &str) -> bool {
+    if role == "AXSecureTextField" {
+        return true;
+    }
+    copy_string_attribute(element, "AXSubrole").is_some_and(|sub| sub == "AXSecureTextField")
+}
+
 /// Read one element into an `AxNode` (without its children).
 fn describe(element: AXUIElementRef, id: usize, depth: usize) -> AxNode {
     let role = copy_string_attribute(element, "AXRole").unwrap_or_else(|| "AXUnknown".into());
     let label = copy_string_attribute(element, "AXTitle")
         .or_else(|| copy_string_attribute(element, "AXDescription"))
-        .filter(|s| !s.is_empty());
+        .filter(|s| !s.is_empty())
+        .map(clip);
     // AXValue is rendered only when textual (field contents); numeric/geometry
-    // AXValues aren't useful to the model as text.
-    let value = copy_string_attribute(element, "AXValue").filter(|s| !s.is_empty());
+    // AXValues aren't useful to the model as text. A secure field's value is
+    // never copied at all — the model is told a password field is there, which
+    // is all it needs to reason about the form (L-267).
+    let value = if is_secure(element, &role) {
+        Some("‹password field›".to_string())
+    } else {
+        copy_string_attribute(element, "AXValue")
+            .filter(|s| !s.is_empty())
+            .map(clip)
+    };
     AxNode {
         id,
         depth,
@@ -186,8 +256,14 @@ fn describe(element: AXUIElementRef, id: usize, depth: usize) -> AxNode {
     }
 }
 
-/// Children of an element as retained handles.
-fn children(element: AXUIElementRef) -> Vec<AxHandle> {
+/// Children of an element as retained handles, at most `budget` of them.
+///
+/// `budget` is what the walk still has room for, so a single enormous element
+/// cannot make this allocate a table the walk was never going to use (L-270).
+fn children(element: AXUIElementRef, budget: usize) -> Vec<AxHandle> {
+    if budget == 0 {
+        return Vec::new();
+    }
     let Some(arr) = copy_attribute(element, "AXChildren") else {
         return Vec::new();
     };
@@ -195,10 +271,11 @@ fn children(element: AXUIElementRef) -> Vec<AxHandle> {
         if CFGetTypeID(arr.0) != CFArrayGetTypeID() {
             return Vec::new();
         }
-        let count = CFArrayGetCount(arr.0);
-        let mut out = Vec::with_capacity(count.max(0) as usize);
-        for i in 0..count {
-            let raw = CFArrayGetValueAtIndex(arr.0, i);
+        let count = CFArrayGetCount(arr.0).max(0) as usize;
+        let keep = count.min(budget).min(MAX_CHILDREN_PER_ELEMENT);
+        let mut out = Vec::with_capacity(keep);
+        for i in 0..keep {
+            let raw = CFArrayGetValueAtIndex(arr.0, i as isize);
             if !raw.is_null() {
                 // The array holds a borrowed (get-rule) reference; retain so
                 // our handle owns its own +1 beyond the array's lifetime.
@@ -210,14 +287,72 @@ fn children(element: AXUIElementRef) -> Vec<AxHandle> {
     }
 }
 
-/// Read the focused application's AX tree into a bounded snapshot. Depth-first
-/// with a stable preorder id, capped at [`MAX_NODES`]/[`MAX_DEPTH`].
+/// The windows of an application element, as retained handles.
+fn windows_of(app: AXUIElementRef) -> Vec<AxHandle> {
+    let Some(arr) = copy_attribute(app, "AXWindows") else {
+        return Vec::new();
+    };
+    unsafe {
+        if CFGetTypeID(arr.0) != CFArrayGetTypeID() {
+            return Vec::new();
+        }
+        let count = CFArrayGetCount(arr.0).max(0) as usize;
+        let mut out = Vec::with_capacity(count.min(MAX_CHILDREN_PER_ELEMENT));
+        for i in 0..count.min(MAX_CHILDREN_PER_ELEMENT) {
+            let raw = CFArrayGetValueAtIndex(arr.0, i as isize);
+            if !raw.is_null() {
+                CFRetain(raw);
+                out.push(AxHandle { raw });
+            }
+        }
+        out
+    }
+}
+
+/// A window's global rectangle, if it exposes one.
+fn window_frame(window: AXUIElementRef) -> Option<(f64, f64, f64, f64)> {
+    let position = copy_attribute(window, "AXPosition")?;
+    let size = copy_attribute(window, "AXSize")?;
+    let mut point = CGPointRaw { x: 0.0, y: 0.0 };
+    let mut extent = CGSizeRaw {
+        width: 0.0,
+        height: 0.0,
+    };
+    unsafe {
+        if AXValueGetValue(position.0, AX_VALUE_CG_POINT, &mut point as *mut _ as *mut c_void) == 0
+        {
+            return None;
+        }
+        if AXValueGetValue(size.0, AX_VALUE_CG_SIZE, &mut extent as *mut _ as *mut c_void) == 0 {
+            return None;
+        }
+    }
+    Some((point.x, point.y, extent.width, extent.height))
+}
+
+/// Read the focused application's AX tree into a bounded snapshot, restricted
+/// to the windows on the display the session is sharing. Depth-first with a
+/// stable preorder id, capped at [`MAX_NODES`]/[`MAX_DEPTH`].
+///
+/// ### Why the root is a window and not the application (L-267)
+///
+/// This used to start at `AXFocusedApplication` and walk every child. An
+/// application's AX tree is all of its windows, and windows live on whichever
+/// monitor the person put them on. The screenshot path was already restricted
+/// to the shared display; this path was not, so on a two-monitor Mac the model
+/// could be handed the text of a document on the monitor the phone was not
+/// watching — and that text goes to the provider. "Only the shared screen is
+/// visible" was true of the video and false of the observation.
+///
+/// So the walk is rooted at windows, and a window is included only when its
+/// frame overlaps the shared display. A window that will not say where it is
+/// is excluded: an unplaceable window is not evidence of being in scope.
 ///
 /// Synchronous blocking FFI (~tens of ms). Called directly (not on a blocking
 /// pool) because the handle table it returns is `!Sync` and cheap enough that
 /// briefly occupying the agent step's worker is fine — the agent does one
 /// action at a time.
-pub fn read_focused_tree() -> Result<AxSnapshot> {
+pub fn read_focused_tree(display: Option<u32>) -> Result<AxSnapshot> {
     let system = unsafe { AXUIElementCreateSystemWide() };
     if system.is_null() {
         bail!("AXUIElementCreateSystemWide returned null (accessibility not available)");
@@ -230,9 +365,19 @@ pub fn read_focused_tree() -> Result<AxSnapshot> {
         raw: unsafe { CFRetain(app.0) },
     };
 
+    let bounds = shared_display_bounds(display);
+    let roots = scoped_roots(&app_handle, bounds);
+    if roots.is_empty() {
+        bail!(
+            "the focused app has no window on the shared display — move it to the screen \
+             you are sharing, or share the screen it is on"
+        );
+    }
+
     let mut nodes = Vec::new();
     let mut handles: Vec<AxHandle> = Vec::new();
-    let mut stack: Vec<(AxHandle, usize)> = vec![(app_handle, 0)];
+    // Reversed so the first scoped window pops first and keeps id 0.
+    let mut stack: Vec<(AxHandle, usize)> = roots.into_iter().rev().map(|h| (h, 0)).collect();
     while let Some((handle, depth)) = stack.pop() {
         if nodes.len() >= MAX_NODES {
             break;
@@ -242,13 +387,61 @@ pub fn read_focused_tree() -> Result<AxSnapshot> {
         nodes.push(describe(raw, id, depth));
         handles.push(handle); // handles[id] == the element for nodes[id]
         if depth < MAX_DEPTH {
+            let room = MAX_NODES.saturating_sub(nodes.len() + stack.len());
             // Reversed so natural document order pops first.
-            for kid in children(raw).into_iter().rev() {
+            for kid in children(raw, room).into_iter().rev() {
                 stack.push((kid, depth + 1));
             }
         }
     }
     Ok(AxSnapshot { nodes, handles })
+}
+
+/// The global rectangle of the display the session shares, or the main
+/// display's when none was chosen or the chosen one has gone away — the same
+/// rule the input backend uses to place a click.
+fn shared_display_bounds(display: Option<u32>) -> (f64, f64, f64, f64) {
+    use core_graphics::display::CGDisplay;
+    let rect = display
+        .map(CGDisplay::new)
+        .map(|d| d.bounds())
+        .filter(|b| b.size.width > 0.0 && b.size.height > 0.0)
+        .unwrap_or_else(|| CGDisplay::main().bounds());
+    (
+        rect.origin.x,
+        rect.origin.y,
+        rect.size.width,
+        rect.size.height,
+    )
+}
+
+/// Do two global rectangles overlap at all?
+fn overlaps(a: (f64, f64, f64, f64), b: (f64, f64, f64, f64)) -> bool {
+    a.0 < b.0 + b.2 && b.0 < a.0 + a.2 && a.1 < b.1 + b.3 && b.1 < a.1 + a.3
+}
+
+/// The windows of `app` that lie on the shared display.
+///
+/// An app with no `AXWindows` at all (a menu-bar extra, say) falls back to its
+/// focused window, and to nothing if it has none. It deliberately does not
+/// fall back to the application element: that is the unscoped walk this
+/// function exists to prevent.
+fn scoped_roots(app: &AxHandle, bounds: (f64, f64, f64, f64)) -> Vec<AxHandle> {
+    let mut scoped: Vec<AxHandle> = windows_of(app.raw)
+        .into_iter()
+        .filter(|w| window_frame(w.raw).is_some_and(|frame| overlaps(frame, bounds)))
+        .collect();
+    if scoped.is_empty() {
+        if let Some(focused) = copy_attribute(app.raw, "AXFocusedWindow") {
+            let handle = AxHandle {
+                raw: unsafe { CFRetain(focused.0) },
+            };
+            if window_frame(handle.raw).is_some_and(|frame| overlaps(frame, bounds)) {
+                scoped.push(handle);
+            }
+        }
+    }
+    scoped
 }
 
 /// Re-read a live element's role and label, for confirming that the control
@@ -287,7 +480,7 @@ mod tests {
     /// signed app) the same call returns a populated tree.
     #[test]
     fn read_focused_tree_links_and_returns_cleanly() {
-        match read_focused_tree() {
+        match read_focused_tree(None) {
             Ok(snap) => {
                 // If we happen to be trusted, ids must be a dense 0..n range.
                 for (i, node) in snap.nodes.iter().enumerate() {

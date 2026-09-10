@@ -1,9 +1,17 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Keyboard, View, Text, TextInput, Pressable, ScrollView, StyleSheet } from 'react-native';
 import { theme } from '../theme';
 import { heldStep, type AgentFeedState, type AgentStepView } from '../lib/agentFeed';
 import { CheckGlyph, CrossGlyph, IdleGlyph, PauseGlyph, RunningGlyph } from '../components/Glyph';
-import { grantAiConsent, hasAiConsent, revokeAiConsent } from '../lib/aiConsent';
+import {
+  grantAiConsent,
+  hasAiConsent,
+  hasUnresolvedRevocation,
+  retryRevocation,
+  revokeAiConsent,
+  targetFor,
+} from '../lib/aiConsent';
+import type { AgentDestination } from '@lilypad/protocol';
 
 /**
  * The "Ask" panel — command entry + the AI agent's live step feed, with an
@@ -24,6 +32,30 @@ export interface AgentPanelProps {
   unsentCommand?: string | null;
   compatible?: boolean;
   onCheckCompatibility?: () => void;
+  /** Which Mac this session is with — the phone's own pairing record. */
+  desktopDeviceId?: string | null;
+  /** Where that Mac says Ask observations go. `undefined` means it did not
+   * say, which is a state of its own: not a reason to reuse an older
+   * agreement (L-265). */
+  destination?: AgentDestination;
+}
+
+/**
+ * The sentence that tells the customer where their screen goes.
+ *
+ * The old copy named "Anthropic or OpenAI" in fixed text while the Mac would
+ * accept any endpoint. Whatever this returns comes from what the Mac actually
+ * disclosed this session.
+ */
+export function destinationSentence(destination: AgentDestination | undefined): string {
+  if (!destination) {
+    return 'This Mac has not said which AI provider it would send your screen to. Set one up on the Mac, then check again.';
+  }
+  const model = destination.model ? ` (${destination.model})` : '';
+  if (destination.local) {
+    return `This Mac runs its model locally at ${destination.origin}${model}. Your screen is read on the Mac and does not leave it.`;
+  }
+  return `This Mac sends to ${destination.providerName} at ${destination.origin}${model}. Your screen leaves your Mac and your phone for that provider. Lilypad never sees it.`;
 }
 
 /** The one honest sentence for each transport state (L-233). */
@@ -133,6 +165,8 @@ export function AgentPanel({
   unsentCommand,
   compatible = true,
   onCheckCompatibility,
+  desktopDeviceId,
+  destination,
 }: AgentPanelProps): React.JSX.Element | null {
   const [text, setText] = useState('');
   const held = heldStep(feed);
@@ -155,24 +189,37 @@ export function AgentPanel({
    * window does while it decides which mode it is in, and it avoids showing a
    * consent card to somebody who agreed weeks ago. */
   const [consented, setConsented] = useState<boolean | null>(null);
+  const [revocationStuck, setRevocationStuck] = useState(false);
+  /* The consent question is about a destination, so the answer is re-read
+   * whenever the destination changes. A Mac that switched provider between
+   * sessions gets asked again rather than inheriting the old yes (L-265). */
+  /* Memoized so its identity is stable: an effect that depends on a freshly
+   * built object would re-read the keychain on every render. */
+  const target = useMemo(
+    () => targetFor(desktopDeviceId ?? '', destination),
+    [desktopDeviceId, destination],
+  );
   useEffect(() => {
     let alive = true;
-    void hasAiConsent()
+    setConsented(null);
+    void hasAiConsent(target)
       .then((v) => {
-        if (alive) setConsented(v);
+        if (!alive) return;
+        setConsented(v);
+        setRevocationStuck(hasUnresolvedRevocation());
       })
-      /* Fail CLOSED. `hasAiConsent` swallows its own keychain errors today, so
-       * this is unreachable through it — but the alternative to catching here
-       * is a panel that renders nothing forever, and the alternative to
-       * failing closed is sending a screen to a third party because a phone
-       * was locked. */
+      /* Fail CLOSED. `hasAiConsent` swallows its own keychain errors, so this
+       * is unreachable through it — but the alternative to catching here is a
+       * panel that renders nothing forever, and the alternative to failing
+       * closed is sending a screen to a third party because a phone was
+       * locked. */
       .catch(() => {
         if (alive) setConsented(false);
       });
     return () => {
       alive = false;
     };
-  }, []);
+  }, [target]);
 
   const submit = () => {
     const t = text.trim();
@@ -194,16 +241,39 @@ export function AgentPanel({
   if (!consented) {
     return (
       <View style={styles.panel} testID="agent-consent">
-        <Text style={styles.consentTitle}>Ask sends your screen to an AI model</Text>
+        <Text style={styles.consentTitle}>
+          {destination?.local
+            ? 'Ask reads your screen on this Mac'
+            : 'Ask sends your screen to an AI model'}
+        </Text>
+        <Text style={styles.consentBody} testID="agent-consent-destination">
+          {destinationSentence(destination)}
+        </Text>
         <Text style={styles.consentBody}>
-          To answer, Lilypad sends what is on your Mac&apos;s screen, including window titles and
-          any text that is visible, to the AI provider set up on that Mac (Anthropic or OpenAI). It
-          leaves your Mac and your phone. Lilypad never sees it.
+          What it reads is what is on the shared screen: window titles and any visible text.
         </Text>
         <Text style={styles.consentBody}>
           Nothing else in Lilypad does this. A normal session streams only between this phone and
           your Mac.
         </Text>
+        {revocationStuck ? (
+          <View testID="agent-consent-revocation-stuck">
+            <Text accessibilityRole="alert" accessibilityLiveRegion="polite">
+              Your last withdrawal could not be saved on this phone. Sharing is blocked while
+              Lilypad is open, but it may not stay blocked after a restart.
+            </Text>
+            <Pressable
+              testID="agent-consent-revocation-retry"
+              onPress={() => {
+                void retryRevocation().then((ok) => setRevocationStuck(!ok));
+              }}
+              accessibilityRole="button"
+              accessibilityLabel="Try saving the withdrawal again"
+            >
+              <Text>Try again</Text>
+            </Pressable>
+          </View>
+        ) : null}
         {inFlight ? (
           <View testID="agent-withdrawal-pending">
             <Text accessibilityRole="alert" accessibilityLiveRegion="polite">
@@ -226,7 +296,12 @@ export function AgentPanel({
           <Pressable
             testID="agent-consent-decline"
             style={[styles.btn, styles.declineBtn]}
-            onPress={() => void revokeAiConsent().then(() => setConsented(false))}
+            onPress={() =>
+              void revokeAiConsent(target).then((durable) => {
+                setConsented(false);
+                setRevocationStuck(!durable);
+              })
+            }
             accessibilityRole="button"
             accessibilityLabel="Not now. Do not send my screen to an AI model"
           >
@@ -235,10 +310,12 @@ export function AgentPanel({
           <Pressable
             testID="agent-consent-allow"
             style={[styles.btn, styles.approveBtn]}
-            disabled={inFlight}
-            accessibilityState={{ disabled: inFlight }}
+            disabled={inFlight || !target}
+            accessibilityState={{ disabled: inFlight || !target }}
             onPress={() => {
-              if (!inFlight) void grantAiConsent().then(() => setConsented(true));
+              // No target means the Mac did not disclose a destination. There
+              // is nothing to agree to, so there is nothing to record.
+              if (!inFlight && target) void grantAiConsent(target).then(() => setConsented(true));
             }}
             accessibilityRole="button"
             accessibilityLabel="Allow Lilypad to send my screen to an AI model"
@@ -501,7 +578,10 @@ export function AgentPanel({
         // wording does not pretend otherwise.
         onPress={() => {
           if (inFlight) onStop();
-          void revokeAiConsent().then(() => setConsented(false));
+          void revokeAiConsent(target).then((durable) => {
+            setConsented(false);
+            setRevocationStuck(!durable);
+          });
         }}
         accessibilityRole="button"
         accessibilityLabel="Stop the running task and stop sending my screen to an AI model"

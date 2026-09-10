@@ -19,7 +19,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc::{channel, unbounded_channel, Sender};
 use tokio::task::JoinHandle;
 
-use crate::agent::llm::{AnyProvider, ProviderChoice, NOT_CONFIGURED_MESSAGE};
+use crate::agent::llm::resolver::Readiness;
+use crate::agent::llm::{AnyProvider, NOT_CONFIGURED_MESSAGE};
 use crate::agent::protocol::{
     AgentInbound, AgentOutbound, RunOutcome, StepKind, StepState, ASK_PROTOCOL_VERSION,
 };
@@ -96,6 +97,9 @@ pub struct AgentController {
     // Bounded for the lifetime of this session; a repeated command ID never
     // becomes a second execution, even after the original run ended.
     runs: HashMap<String, Arc<Mutex<Option<RunOutcome>>>>,
+    /// Publishes the resolved provider from a background task, so the keychain
+    /// is never read on this event path (L-271).
+    provider: crate::agent::llm::resolver::ProviderResolver,
 }
 
 // One Mac is the effectful resource. A reconnect can create a new controller
@@ -112,13 +116,18 @@ impl Default for AgentController {
             ),
             display: SharedDisplay::default(),
             runs: HashMap::new(),
+            provider: crate::agent::llm::resolver::ProviderResolver::new(),
         }
     }
 }
 
 impl AgentController {
     pub fn new() -> Self {
-        Self::default()
+        let controller = Self::default();
+        // Start resolving now, while nobody is waiting: by the time a command
+        // arrives the answer is usually already published.
+        controller.provider.warm();
+        controller
     }
 
     /// Point Ask's perception at the display the session now shares. Called
@@ -151,6 +160,10 @@ impl AgentController {
                     let msg = AgentOutbound::AgentReady {
                         run_id,
                         protocol_version: ASK_PROTOCOL_VERSION,
+                        // Disclosed on every hello, so a destination that
+                        // changed between sessions is visible on the phone
+                        // before anything is asked (L-265).
+                        destination: crate::agent::llm::current_destination(),
                         ts: now_ms(),
                     };
                     tokio::spawn(async move {
@@ -295,7 +308,14 @@ impl AgentController {
             return;
         };
 
-        let choice = ProviderChoice::resolve();
+        // Non-blocking: whatever the last background resolution published.
+        // A keychain that is locked or waiting on a dialog now shows up as a
+        // sentence rather than as a session that stops answering (L-271).
+        let readiness = self.provider.peek();
+        let choice = match &readiness {
+            Readiness::Ready(choice) => Some((**choice).clone()),
+            _ => None,
+        };
         match authorize_command(control_scoped, choice.is_some()) {
             CommandGate::DenyNoControl => {
                 Self::send_refusal(
@@ -306,7 +326,16 @@ impl AgentController {
                 return;
             }
             CommandGate::DenyNoProvider => {
-                Self::send_refusal(&peer, &run_id, NOT_CONFIGURED_MESSAGE);
+                let reason = match readiness {
+                    Readiness::Unavailable(why) => why,
+                    // A resolution that has not finished is not "no provider".
+                    // Saying so lets the person retry instead of going to
+                    // settings that are already correct.
+                    Readiness::Unknown => "Still checking this Mac's AI setup. Try again in a moment."
+                        .to_string(),
+                    _ => NOT_CONFIGURED_MESSAGE.to_string(),
+                };
+                Self::send_refusal(&peer, &run_id, &reason);
                 return;
             }
             CommandGate::Run => {}

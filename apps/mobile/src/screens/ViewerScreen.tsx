@@ -25,7 +25,7 @@ import { useKeepAwake } from '@sayem314/react-native-keep-awake';
 import Clipboard from '@react-native-clipboard/clipboard';
 import { journalText } from '../lib/journal';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
-import type { Modifier, CaptureMode, DisplayInfo } from '@lilypad/protocol';
+import type { Modifier, CaptureMode, DisplayInfo, AgentDestination } from '@lilypad/protocol';
 import type { RootStackParamList } from '../types';
 import { theme } from '../theme';
 import { ViewerConnection, type ViewerState, type RecoveryDetail } from '../lib/webrtc';
@@ -191,6 +191,10 @@ export function ViewerScreen({ route, navigation }: Props) {
   const [trayOpen, setTrayOpen] = useState(false);
   const [askOpen, setAskOpen] = useState(false);
   const [askCompatible, setAskCompatible] = useState(false);
+  /** Where this Mac says Ask observations go. `undefined` until it says, and
+   * cleared on disconnect so a reconnect cannot reuse the previous answer
+   * (L-265). */
+  const [askDestination, setAskDestination] = useState<AgentDestination | undefined>(undefined);
   const [agentFeed, dispatchAgent] = useReducer(agentFeedReducer, INITIAL_AGENT_FEED);
   // Source video pixel size, from the desktop's `frame-size` signal. `null`
   // until it arrives (full-bleed fallback) — see Finding 1.
@@ -317,6 +321,7 @@ export function ViewerScreen({ route, navigation }: Props) {
             next === 'denied'
           ) {
             setAskCompatible(false);
+            setAskDestination(undefined);
             resetKeyboard();
             for (const repeater of toolbarRepeatersRef.current.values()) repeater.stop();
             if (longPressTimer.current) clearTimeout(longPressTimer.current);
@@ -361,8 +366,10 @@ export function ViewerScreen({ route, navigation }: Props) {
             CLIPBOARD_TOAST_MS,
           );
         },
-        onAgentReady: () => {
-          if (active) setAskCompatible(true);
+        onAgentReady: (destination) => {
+          if (!active) return;
+          setAskCompatible(true);
+          setAskDestination(destination);
         },
         onAgentStep: (step) => {
           if (active) dispatchAgent({ type: 'step', step });
@@ -1017,6 +1024,8 @@ export function ViewerScreen({ route, navigation }: Props) {
         <AgentPanel
           feed={agentFeed}
           compatible={askCompatible}
+          desktopDeviceId={desktopDeviceId}
+          destination={askDestination}
           onCheckCompatibility={() => connRef.current?.prepareAsk()}
           onSend={sendAgentCommand}
           onStop={stopAgent}

@@ -67,7 +67,14 @@ use std::path::{Path, PathBuf};
 /// denied — reads included.
 #[derive(Debug, Clone)]
 pub struct SandboxPolicy {
-    /// The per-run scratch dir: always writable.
+    /// The host-owned run directory. The script text, the generated profile
+    /// and the captured-output record live here, and the script may **read**
+    /// them — it is how the interpreter reaches its own script. It may never
+    /// write here (L-260): audit evidence a script can replace is not
+    /// evidence, and a host-authority write to a script-chosen name is a
+    /// write to whatever the script pointed that name at.
+    pub run_dir: PathBuf,
+    /// The per-run scratch dir: always writable. A subdirectory of `run_dir`.
     pub scratch_dir: PathBuf,
     /// Extra paths (beyond scratch) the script may write to — home-jailed by
     /// the executor before it reaches here (e.g. a plan-named output folder).
@@ -83,9 +90,13 @@ pub struct SandboxPolicy {
 }
 
 impl SandboxPolicy {
-    pub fn read_only(scratch_dir: PathBuf) -> Self {
+    /// A policy over one run directory, granting nothing beyond it. The
+    /// writable scratch is a subdirectory, so the run's own audit artifacts
+    /// sit outside everything the script can modify.
+    pub fn read_only(run_dir: PathBuf) -> Self {
         SandboxPolicy {
-            scratch_dir,
+            scratch_dir: run_dir.join("scratch"),
+            run_dir,
             writable_paths: Vec::new(),
             readable_paths: Vec::new(),
             allow_network: false,
@@ -162,6 +173,96 @@ const SYSTEM_READ_ROOTS: &[&str] = &[
 
 /// System keychain locations (outside home) that must also never be read.
 const SYSTEM_SECRET_DENY: &[&str] = &["/Library/Keychains", "/private/var/db/SystemKey"];
+
+// ── protected writes (L-261) ─────────────────────────────────────────────
+//
+// Reads and writes were treated as different problems, and only reads got a
+// boundary. A reproduction under the released profile made that concrete: a
+// disposable `~/.ssh/config` was *unreadable* to the script and freely
+// **rewritten** by it, under a write grant alone. The line it wrote was a
+// `ProxyCommand`, which is to say the next `git push` would have run the
+// script's chosen program. Nothing in the script text is a forbidden keyword,
+// so the classifier had nothing to catch either.
+//
+// A credential file is not dangerous only when it is read. Config that names a
+// program to run, anything a login shell sources, and anything that survives a
+// reboot are all "write here and you are me". So writes need their own
+// protected list, covering create, modify, delete, rename, link and metadata —
+// `file-write*` is all of those — and it has to be enforced in Rust for the
+// same reason the read list is: a grant naming a file *inside* a denied
+// subtree is the more specific filter, and would win.
+
+/// Objects a sandboxed script may never create, modify, delete, rename, link
+/// or re-permission, whatever the person approved. Everything on the read list
+/// is here too — a key that cannot be read can still be replaced with one the
+/// script knows — plus the places where writing means executing later.
+fn protected_write_subpaths(home: &Path) -> Vec<PathBuf> {
+    let mut paths = sensitive_deny_subpaths(home);
+    paths.extend(
+        [
+            // Sourced by a login shell: a line here runs as the person, with
+            // no sandbox, the next time they open a terminal.
+            ".zshrc",
+            ".zshenv",
+            ".zprofile",
+            ".zlogin",
+            ".bashrc",
+            ".bash_profile",
+            ".profile",
+            ".zsh",
+            // Persistence and per-app configuration.
+            "Library/LaunchAgents",
+            "Library/Preferences",
+            "Library/Services",
+            "Library/ScriptingAdditions",
+            "Library/Application Scripts",
+            "Library/Containers",
+            "Library/Group Containers",
+            // Our own run store. The run's scratch dir is a more specific
+            // allow and still works; its siblings, and the audit records
+            // beside them, do not. A script must not be able to edit the
+            // record of what it did, or of what an earlier run did.
+            "Library/Caches/Lilypad",
+            // Config that names a program to run (`core.pager`, hooks).
+            ".gitconfig",
+            ".gitignore_global",
+        ]
+        .iter()
+        .map(|s| home.join(s)),
+    );
+    paths
+}
+
+/// Write-protected locations outside home. Grants are home-jailed before they
+/// reach here, so these are unreachable by construction; they are emitted as
+/// SBPL denies anyway, as the layer that does not depend on that jail holding.
+const SYSTEM_PROTECTED_WRITE: &[&str] = &[
+    "/Library/LaunchAgents",
+    "/Library/LaunchDaemons",
+    "/Library/Keychains",
+    "/Library/Preferences",
+    "/System",
+    "/usr",
+    "/bin",
+    "/sbin",
+    "/etc",
+    "/private/etc",
+    "/private/var/db",
+];
+
+/// Is writing to `path` forbidden outright, regardless of any approval?
+///
+/// Same shape and same reason as [`is_denied_read`]: applied in code, before a
+/// path can reach the profile, because SBPL would let a specific enough
+/// `allow` outrank the broader `deny`.
+pub fn is_protected_write(path: &Path, home: &Path) -> bool {
+    protected_write_subpaths(home)
+        .iter()
+        .any(|deny| path == deny || path.starts_with(deny))
+        || SYSTEM_PROTECTED_WRITE
+            .iter()
+            .any(|deny| path == Path::new(deny) || path.starts_with(deny))
+}
 
 /// SBPL string-literal escaping: wrap in double quotes, escape `\` and `"`.
 /// Is reading `path` forbidden outright, regardless of any approval?
@@ -249,11 +350,11 @@ pub(super) fn build_profile_with_runtime_roots(
     }
     // Python's hash seed needs entropy, not blanket access to device nodes.
     p.push_str("(allow file-read* (literal \"/dev/urandom\") (literal \"/dev/random\") (literal \"/dev/null\"))\n");
-    // The run's own scratch dir — the script itself lives there, and the
-    // interpreter has to read it to run it.
+    // The run directory — the script itself lives there, and the interpreter
+    // has to read it to run it. Readable, not writable: see `run_dir`.
     p.push_str(&format!(
         "(allow file-read* (subpath {}))\n",
-        sbpl_quote(&policy.scratch_dir)
+        sbpl_quote(&policy.run_dir)
     ));
     // Everything the person explicitly granted for this script, and nothing
     // else under their home — minus anything on the secret list, which no
@@ -269,11 +370,32 @@ pub(super) fn build_profile_with_runtime_roots(
     // ── writes ───────────────────────────────────────────────────────────
     // The scratch dir, any explicitly-granted (approved, home-jailed) output
     // paths, plus the stdio devices. Nothing else.
+    //
+    // Protected denies come first for reading order only; precedence here is
+    // by specificity, not by order or verb (see this module's notes). That is
+    // what lets the scratch allow keep working inside the `Library/Caches/
+    // Lilypad` deny while its sibling runs stay untouchable — and it is also
+    // why the grant filter below has to exist rather than trusting these.
+    for deny in protected_write_subpaths(home) {
+        p.push_str(&format!(
+            "(deny file-write* (subpath {}))\n",
+            sbpl_quote(&deny)
+        ));
+    }
+    for deny in SYSTEM_PROTECTED_WRITE {
+        p.push_str(&format!(
+            "(deny file-write* (subpath {}))\n",
+            sbpl_quote(Path::new(deny))
+        ));
+    }
     p.push_str(&format!(
         "(allow file-write* (subpath {}))\n",
         sbpl_quote(&policy.scratch_dir)
     ));
     for w in &policy.writable_paths {
+        if is_protected_write(w, home) {
+            continue;
+        }
         p.push_str(&format!(
             "(allow file-write* (subpath {}))\n",
             sbpl_quote(w)
@@ -318,26 +440,119 @@ mod tests {
     #[test]
     fn scratch_is_writable_and_by_default_nothing_else_is() {
         let prof = profile(&SandboxPolicy::read_only("/tmp/run-xyz".into()));
-        assert!(prof.contains("(allow file-write* (subpath \"/tmp/run-xyz\"))"));
+        assert!(prof.contains("(allow file-write* (subpath \"/tmp/run-xyz/scratch\"))"));
         // The only other write allowance is the stdio devices — no home, no /.
-        let write_lines: Vec<&str> = prof.lines().filter(|l| l.contains("file-write")).collect();
-        assert_eq!(write_lines.len(), 2);
-        assert!(write_lines.iter().all(|l| l.contains("/tmp/run-xyz")
+        let write_lines: Vec<&str> = prof
+            .lines()
+            .filter(|l| l.starts_with("(allow file-write"))
+            .collect();
+        assert_eq!(write_lines.len(), 2, "{write_lines:?}");
+        assert!(write_lines.iter().all(|l| l.contains("/tmp/run-xyz/scratch")
             || l.contains("/dev/null")
             || l.contains("/dev/stdout")
             || l.contains("/dev/stderr")));
     }
 
     #[test]
+    fn the_run_dir_is_readable_but_not_writable() {
+        // L-260. The script has to read its own script file, which lives in
+        // the run dir beside the profile and the captured-output record. None
+        // of those may be writable: an audit trail the subject can edit is not
+        // an audit trail, and a host-authority write to a name the script
+        // controls is a write to whatever the script aimed it at.
+        let prof = profile(&SandboxPolicy::read_only("/tmp/run-xyz".into()));
+        assert!(prof.contains("(allow file-read* (subpath \"/tmp/run-xyz\"))"));
+        assert!(
+            !prof.contains("(allow file-write* (subpath \"/tmp/run-xyz\"))"),
+            "the run dir is writable again:\n{prof}"
+        );
+    }
+
+    #[test]
     fn granted_writable_paths_are_added_to_the_write_jail() {
         let policy = SandboxPolicy {
-            scratch_dir: "/tmp/r".into(),
+            run_dir: "/tmp/r".into(),
+            scratch_dir: "/tmp/r/scratch".into(),
             writable_paths: vec!["/Users/kush/Downloads".into()],
             readable_paths: Vec::new(),
             allow_network: false,
         };
         let prof = profile(&policy);
         assert!(prof.contains("(allow file-write* (subpath \"/Users/kush/Downloads\"))"));
+    }
+
+    #[test]
+    fn a_grant_cannot_open_a_protected_path_for_writing() {
+        // L-261, the write-side twin of `a_grant_cannot_reopen_a_secret_path`.
+        // Reproduced before this existed: a disposable `~/.ssh/config` was
+        // unreadable to the script and rewritten by it under a write grant,
+        // with a `ProxyCommand` line that would run on the next `git push`.
+        let mut policy = SandboxPolicy::read_only("/tmp/r".into());
+        policy.writable_paths = vec![
+            PathBuf::from("/Users/kush/.ssh/config"),
+            PathBuf::from("/Users/kush/.zshrc"),
+            PathBuf::from("/Users/kush/Library/LaunchAgents/x.plist"),
+            PathBuf::from("/Users/kush/Library/Caches/Lilypad/ask-runs/run-1"),
+            PathBuf::from("/Users/kush/Downloads/out.txt"),
+        ];
+        let prof = profile(&policy);
+        for protected in [
+            "/Users/kush/.ssh/config",
+            "/Users/kush/.zshrc",
+            "/Users/kush/Library/LaunchAgents/x.plist",
+            "/Users/kush/Library/Caches/Lilypad/ask-runs/run-1",
+        ] {
+            assert!(
+                !prof.contains(&format!("(allow file-write* (subpath \"{protected}\"))")),
+                "a grant opened {protected} for writing:\n{prof}"
+            );
+            assert!(is_protected_write(Path::new(protected), &home()));
+        }
+        // The ordinary grant in the same list still works.
+        assert!(prof.contains("(allow file-write* (subpath \"/Users/kush/Downloads/out.txt\"))"));
+        assert!(!is_protected_write(
+            Path::new("/Users/kush/Downloads/out.txt"),
+            &home()
+        ));
+    }
+
+    #[test]
+    fn protected_write_denies_cover_credentials_persistence_and_our_own_store() {
+        let prof = profile(&SandboxPolicy::read_only("/tmp/r".into()));
+        for protected in [
+            "/Users/kush/.ssh",
+            "/Users/kush/.aws",
+            "/Users/kush/.zshrc",
+            "/Users/kush/.gitconfig",
+            "/Users/kush/Library/LaunchAgents",
+            "/Users/kush/Library/Caches/Lilypad",
+            "/Library/LaunchDaemons",
+        ] {
+            assert!(
+                prof.contains(&format!("(deny file-write* (subpath \"{protected}\"))")),
+                "missing write deny for {protected}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_runs_scratch_still_works_inside_the_denied_store() {
+        // The run store is write-denied as a subtree, and the run's own
+        // scratch lives inside it. That combination is only safe because a
+        // more specific `subpath` allow outranks a broader `subpath` deny —
+        // measured, and the opposite of what this module first assumed. If
+        // that ever changes, every sandboxed script stops being able to write
+        // anything, which is the failure direction we can live with.
+        let policy = SandboxPolicy::read_only(
+            "/Users/kush/Library/Caches/Lilypad/ask-runs/run-7".into(),
+        );
+        let prof = profile(&policy);
+        assert!(prof.contains(
+            "(allow file-write* (subpath \"/Users/kush/Library/Caches/Lilypad/ask-runs/run-7/scratch\"))"
+        ));
+        assert!(
+            prof.contains("(deny file-write* (subpath \"/Users/kush/Library/Caches/Lilypad\"))")
+        );
     }
 
     #[test]
@@ -436,7 +651,7 @@ mod tests {
     }
 
     #[test]
-    fn the_scratch_dir_is_readable_so_the_script_can_be_run_at_all() {
+    fn the_run_dir_is_readable_so_the_script_can_be_run_at_all() {
         let prof = profile(&SandboxPolicy::read_only("/tmp/run-xyz".into()));
         assert!(prof.contains("(allow file-read* (subpath \"/tmp/run-xyz\"))"));
     }

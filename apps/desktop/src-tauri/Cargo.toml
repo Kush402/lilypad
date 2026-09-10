@@ -25,6 +25,10 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# Origin parsing for credential-to-destination binding (L-262). Already in the
+# lock via reqwest; named here because a security boundary should not depend
+# on a transitive dependency staying transitive.
+url = "2"
 thiserror = "2"
 anyhow = "1"
 log = "0.4"

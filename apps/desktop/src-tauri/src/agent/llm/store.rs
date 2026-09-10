@@ -6,8 +6,33 @@
 //!
 //! The keychain wrapper shells out to `/usr/bin/security` in **interactive
 //! mode** (commands over stdin) so the secret never appears in an argv that
-//! `ps` could observe. Service name is fixed; the account is the provider
-//! kind, so each provider keeps its own key.
+//! `ps` could observe. Service name is fixed; the account names the
+//! **destination** the credential belongs to.
+//!
+//! ### Why the account is a destination and not a provider kind (L-262)
+//!
+//! It used to be the API dialect: one keychain account, `openai_compat`, for
+//! every OpenAI-shaped service in existence. Dialect and destination are
+//! different things, and only one of them is who you are trusting. The
+//! consequence was direct — the settings form kept the stored key when the key
+//! field was left blank, accepted any base URL, and the adapter then sent that
+//! key as `Authorization: Bearer` to the new host. Paste an OpenAI key, later
+//! point the base URL at a gateway, and the key goes to the gateway. Nothing
+//! in the flow ever said so, because nothing in the storage model knew the two
+//! settings were related.
+//!
+//! So a credential is filed under `kind@origin`, where origin is scheme, host
+//! and port. Change the origin and the lookup misses: the new destination
+//! simply has no key until someone provides one for it. That is the whole
+//! mechanism, and it is deliberately not a warning or a confirmation dialog —
+//! a key that cannot be found cannot be sent by mistake.
+//!
+//! One migration consequence, stated plainly: a key stored under the old
+//! dialect account is adopted only when the effective origin is that dialect's
+//! own default (`api.openai.com`, `api.anthropic.com`). A key that was saved
+//! against a custom base URL is *not* carried over, because the old storage
+//! cannot tell us which destination it was ever meant for. Those setups
+//! re-enter the key once.
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -22,13 +47,33 @@ const KEYCHAIN_SERVICE: &str = "Lilypad Agent";
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentSettings {
-    /// "anthropic" | "openai_compat" — matches `ProviderChoice` arms.
+    /// "anthropic" | "openai_compat" — matches `ProviderChoice` arms. This is
+    /// the API dialect: how to talk, not who to. See `profile_id`.
     pub provider_kind: Option<String>,
+    /// Stable id of the preset the person chose ("openai", "gemini",
+    /// "ollama", "custom"…). Display name and default endpoint come from the
+    /// preset table; this is what the UI and both devices name.
+    #[serde(default)]
+    pub profile_id: Option<String>,
     pub model: Option<String>,
     pub base_url: Option<String>,
     /// Whether the selected model accepts image input (tier-3 gate).
+    ///
+    /// `None` means *never verified*, which is not the same as "no" and very
+    /// much not the same as "yes" (L-263). Old settings files stored a bare
+    /// bool and deserialize into `Some`, which is correct: that value was a
+    /// real answer at the time. The runner treats `None` as no capability, so
+    /// an unverified model is text-only rather than optimistically visual.
     #[serde(default)]
-    pub vision: bool,
+    pub vision: Option<bool>,
+    /// Whether one complete tool-call round trip has been observed. Same
+    /// three-state meaning as `vision`.
+    #[serde(default)]
+    pub tools: Option<bool>,
+    /// When the capabilities above were last verified, RFC 3339. `None` while
+    /// they are untested.
+    #[serde(default)]
+    pub verified_at: Option<String>,
 }
 
 fn settings_path() -> Result<PathBuf> {
@@ -56,6 +101,147 @@ pub fn save_settings(settings: &AgentSettings) -> Result<()> {
     let raw = serde_json::to_string_pretty(settings)?;
     std::fs::write(&path, raw).with_context(|| format!("writing {}", path.display()))?;
     Ok(())
+}
+
+// ── credential destinations (L-262) ──────────────────────────────────────
+
+/// The endpoint a dialect talks to when no base URL is given.
+pub fn default_base_url(kind: &str) -> Option<&'static str> {
+    match kind {
+        "anthropic" => Some(super::anthropic::DEFAULT_BASE_URL),
+        "openai_compat" => Some(super::openai_compat::DEFAULT_BASE_URL),
+        _ => None,
+    }
+}
+
+/// Scheme, host and port of `base_url`, with no path, lowercased and with the
+/// default port elided — the identity of a destination.
+///
+/// Path is deliberately excluded: `/v1` versus `/v1/` versus `/openai/v1` on
+/// one host is the same party holding the same key. Host is not: that is a
+/// different party entirely.
+pub fn origin_of(base_url: &str) -> Result<String> {
+    let parsed = url::Url::parse(base_url.trim())
+        .map_err(|_| anyhow!("`{base_url}` is not a valid URL"))?;
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| anyhow!("`{base_url}` has no host"))?;
+    let scheme = parsed.scheme().to_ascii_lowercase();
+    if scheme != "https" && scheme != "http" {
+        anyhow::bail!("`{base_url}` must be an http or https address");
+    }
+    Ok(match parsed.port() {
+        Some(port) => format!("{scheme}://{}:{port}", host.to_ascii_lowercase()),
+        None => format!("{scheme}://{}", host.to_ascii_lowercase()),
+    })
+}
+
+/// Is this destination on the loopback interface?
+///
+/// The one case where plain HTTP is legitimate: a local model. `localhost`
+/// included, because that is what Ollama's own documentation tells people to
+/// type, and a name that does not resolve to loopback is not accepted.
+pub fn is_local_origin(origin: &str) -> bool {
+    is_loopback(origin)
+}
+
+fn is_loopback(origin: &str) -> bool {
+    let Ok(parsed) = url::Url::parse(origin) else {
+        return false;
+    };
+    match parsed.host() {
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        Some(url::Host::Domain(name)) => {
+            let name = name.to_ascii_lowercase();
+            name == "localhost" || name.ends_with(".localhost")
+        }
+        None => false,
+    }
+}
+
+/// Refuse to bind a credential to a destination that cannot protect it.
+///
+/// A key sent over plain HTTP to a host that is not this machine is a key
+/// handed to whatever is between them. Local transport stays allowed and
+/// explicit, which is the documented keyless/local-model case — it is not a
+/// licence to reuse a hosted key there.
+pub fn check_transport(origin: &str) -> Result<()> {
+    if origin.starts_with("https://") || is_loopback(origin) {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "{origin} is a plain http address that is not on this Mac.          An API key sent there is readable in transit — use https, or a local model on localhost."
+    )
+}
+
+/// The keychain account a credential for (`kind`, `base_url`) lives under.
+pub fn credential_account(kind: &str, base_url: Option<&str>) -> Result<String> {
+    let effective = base_url
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .or_else(|| default_base_url(kind).map(str::to_string))
+        .ok_or_else(|| anyhow!("unknown provider kind `{kind}`"))?;
+    let origin = origin_of(&effective)?;
+    check_transport(&origin)?;
+    Ok(format!("{kind}@{origin}"))
+}
+
+/// Was this destination the dialect's own default? Only then may a key stored
+/// under the pre-L-262 dialect account be adopted — see the module notes.
+fn is_default_destination(kind: &str, base_url: Option<&str>) -> bool {
+    let Some(default) = default_base_url(kind) else {
+        return false;
+    };
+    let Ok(default_origin) = origin_of(default) else {
+        return false;
+    };
+    match base_url.map(str::trim).filter(|s| !s.is_empty()) {
+        None => true,
+        Some(given) => origin_of(given).is_ok_and(|origin| origin == default_origin),
+    }
+}
+
+/// The key for this exact destination, or `None`.
+pub fn credential_for(kind: &str, base_url: Option<&str>) -> Option<String> {
+    let account = credential_account(kind, base_url).ok()?;
+    if let Some(key) = keychain_get(&account) {
+        return Some(key);
+    }
+    // One-time adoption of a pre-L-262 key, and only at the default endpoint.
+    is_default_destination(kind, base_url)
+        .then(|| keychain_get(kind))
+        .flatten()
+}
+
+/// Store a key for this exact destination.
+pub fn store_credential(kind: &str, base_url: Option<&str>, api_key: &str) -> Result<()> {
+    let account = credential_account(kind, base_url)?;
+    keychain_set(&account, api_key)
+}
+
+/// Forget the key for this destination, and the legacy dialect-wide item it
+/// may have been adopted from — a disconnect that leaves a usable copy behind
+/// is not a disconnect (L-274).
+pub fn forget_credential(kind: &str, base_url: Option<&str>) -> Result<()> {
+    let mut first_error = None;
+    if let Ok(account) = credential_account(kind, base_url) {
+        if keychain_get(&account).is_some() {
+            if let Err(e) = keychain_delete(&account) {
+                first_error = Some(e);
+            }
+        }
+    }
+    if keychain_get(kind).is_some() {
+        if let Err(e) = keychain_delete(kind) {
+            first_error = first_error.or(Some(e));
+        }
+    }
+    match first_error {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
 }
 
 /// Run one `security(1)` interactive command, feeding the command line over
@@ -190,14 +376,103 @@ mod tests {
     fn settings_round_trip_serde() {
         let s = AgentSettings {
             provider_kind: Some("openai_compat".into()),
+            profile_id: Some("ollama".into()),
             model: Some("some-model".into()),
             base_url: Some("http://localhost:11434/v1".into()),
-            vision: true,
+            vision: Some(true),
+            tools: Some(true),
+            verified_at: Some("2026-09-09T00:00:00Z".into()),
         };
         let raw = serde_json::to_string(&s).unwrap();
         assert!(raw.contains("providerKind"));
         let back: AgentSettings = serde_json::from_str(&raw).unwrap();
         assert_eq!(back, s);
+    }
+
+    /// A settings file written before capabilities were three-state still says
+    /// what it said. `vision: false` was an answer, not an absence.
+    #[test]
+    fn a_pre_capability_settings_file_keeps_its_answer() {
+        let old: AgentSettings = serde_json::from_str(
+            r#"{"providerKind":"anthropic","model":"m","vision":true}"#,
+        )
+        .unwrap();
+        assert_eq!(old.vision, Some(true));
+        assert_eq!(old.tools, None, "tools was never recorded, so it is untested");
+        let never: AgentSettings =
+            serde_json::from_str(r#"{"providerKind":"anthropic"}"#).unwrap();
+        assert_eq!(never.vision, None);
+    }
+
+    #[test]
+    fn an_origin_is_scheme_host_and_port_only() {
+        for (input, want) in [
+            ("https://api.openai.com/v1", "https://api.openai.com"),
+            ("https://API.OpenAI.com/v1/", "https://api.openai.com"),
+            ("https://api.openai.com/openai/v1", "https://api.openai.com"),
+            ("http://localhost:11434/v1", "http://localhost:11434"),
+            ("https://gw.example.com:8443/x", "https://gw.example.com:8443"),
+        ] {
+            assert_eq!(origin_of(input).unwrap(), want, "for {input}");
+        }
+        assert!(origin_of("not a url").is_err());
+        assert!(origin_of("ftp://example.com").is_err());
+    }
+
+    /// L-262. The account is the destination, so the same key cannot follow a
+    /// changed base URL to a different host.
+    #[test]
+    fn a_credential_account_changes_when_the_destination_does() {
+        let openai = credential_account("openai_compat", None).unwrap();
+        assert_eq!(openai, "openai_compat@https://api.openai.com");
+        // Same dialect, different party: a different account, so the lookup
+        // for the gateway simply finds nothing.
+        let gateway =
+            credential_account("openai_compat", Some("https://gw.example.com/v1")).unwrap();
+        assert_ne!(openai, gateway);
+        // Same party, different path: the same account.
+        assert_eq!(
+            credential_account("openai_compat", Some("https://api.openai.com/v1/")).unwrap(),
+            openai
+        );
+        // Anthropic keeps its own destination even though both are "hosted".
+        assert_ne!(
+            credential_account("anthropic", None).unwrap(),
+            credential_account("openai_compat", None).unwrap()
+        );
+    }
+
+    #[test]
+    fn a_key_is_never_bound_to_a_destination_that_cannot_protect_it() {
+        assert!(check_transport("https://api.openai.com").is_ok());
+        assert!(check_transport("http://localhost:11434").is_ok());
+        assert!(check_transport("http://127.0.0.1:8080").is_ok());
+        assert!(check_transport("http://[::1]:8080").is_ok());
+        let err = check_transport("http://gw.example.com")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("plain http"), "{err}");
+        assert!(credential_account("openai_compat", Some("http://gw.example.com/v1")).is_err());
+    }
+
+    /// The migration rule, stated as a test so it cannot drift: a pre-L-262
+    /// key is adopted at the dialect's own default endpoint and nowhere else.
+    #[test]
+    fn a_legacy_key_is_adopted_only_at_the_default_endpoint() {
+        assert!(is_default_destination("openai_compat", None));
+        assert!(is_default_destination(
+            "openai_compat",
+            Some("https://api.openai.com/v1")
+        ));
+        assert!(!is_default_destination(
+            "openai_compat",
+            Some("https://gw.example.com/v1")
+        ));
+        assert!(!is_default_destination(
+            "openai_compat",
+            Some("http://localhost:11434/v1")
+        ));
+        assert!(is_default_destination("anthropic", None));
     }
 
     #[test]

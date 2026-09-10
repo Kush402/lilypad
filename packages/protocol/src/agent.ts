@@ -84,11 +84,63 @@ const agentCommand = WithTs.extend({
   protocolVersion: z.literal(ASK_PROTOCOL_VERSION).optional(),
 });
 
+/**
+ * Where this Mac's Ask observations actually go (L-265).
+ *
+ * Consent used to be one boolean on the phone, and the phone's own wording
+ * named Anthropic and OpenAI — while the desktop would accept any
+ * OpenAI-compatible base URL its owner typed. So "I agree to send my screen to
+ * a model provider" was recorded against a provider the person was never
+ * shown, and changing Macs or endpoints changed nothing about the recorded
+ * answer. Consent has to name a destination or it is not informed.
+ *
+ * Nothing secret travels here. `origin` is scheme, host and port — the same
+ * value the credential is filed under on the Mac — and there is deliberately
+ * no field a key could be put in.
+ *
+ * There is also no "which Mac" field: the phone is the party that knows which
+ * desktop it paired with, and a Mac asserting its own identity to the device
+ * deciding whether to trust it would add nothing. Consent is keyed on the
+ * phone by the desktop it already knows plus the destination disclosed here.
+ */
+export const AgentDestinationSchema = z.object({
+  /** Preset id ("openai", "ollama", …), or null for settings that predate them. */
+  profileId: z.string().max(64).nullable(),
+  /** Display name for the preset, for the phone's copy. */
+  providerName: z.string().max(64),
+  /** scheme://host[:port] — never a path, never a credential. */
+  origin: z.string().max(256),
+  model: z.string().max(128).nullable(),
+  /**
+   * True when the destination is on the Mac itself (a local model). The
+   * difference between "this leaves your Mac" and "this does not" is the most
+   * important sentence on the consent screen, and it cannot be guessed from a
+   * provider name.
+   */
+  local: z.boolean(),
+  /** Revision of the consent wording this destination was disclosed under. */
+  consentPolicy: z.number().int().min(1).max(1_000_000),
+});
+export type AgentDestination = z.infer<typeof AgentDestinationSchema>;
+
+/**
+ * Current revision of the consent wording. Bump when what the customer is
+ * agreeing to changes materially; a stored grant against an older revision is
+ * not a grant for the new one.
+ */
+export const AI_CONSENT_POLICY = 1 as const;
+
 const agentHello = WithTs.extend({ kind: z.literal('agent_hello'), runId: RunId });
 const agentReady = WithTs.extend({
   kind: z.literal('agent_ready'),
   runId: RunId,
   protocolVersion: z.literal(ASK_PROTOCOL_VERSION),
+  /**
+   * Optional on the wire only so a malformed or partial frame is not a parse
+   * failure. Absent means the Mac did not disclose a destination, which the
+   * phone must treat as "unknown" — never as "the one you agreed to before".
+   */
+  destination: AgentDestinationSchema.optional(),
 });
 
 const agentStop = WithTs.extend({

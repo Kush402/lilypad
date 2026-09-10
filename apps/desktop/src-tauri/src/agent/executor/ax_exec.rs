@@ -23,6 +23,24 @@ pub struct AxExecutor {
     /// The most recent read's snapshot — the id→handle table a press resolves
     /// against. `None` until the first `read_ax_tree`.
     last: Option<AxSnapshot>,
+    /// The display the session is sharing. Perception is scoped to it, for the
+    /// same reason the screenshot path already is: an observation of a window
+    /// on an unshared monitor still goes to the model provider (L-267).
+    display: crate::agent::executor::SharedDisplay,
+    /// The display the last snapshot was read on. A session that switches
+    /// monitors invalidates the snapshot rather than pressing an element that
+    /// was chosen from a screen the phone is no longer watching.
+    read_on: Option<u32>,
+}
+
+impl AxExecutor {
+    pub fn new(display: crate::agent::executor::SharedDisplay) -> Self {
+        AxExecutor {
+            last: None,
+            display,
+            read_on: None,
+        }
+    }
 }
 
 impl Executor for AxExecutor {
@@ -31,7 +49,12 @@ impl Executor for AxExecutor {
             Action::ReadAxTree => {
                 // Reading the AX tree is a blocking FFI walk; keep it off the
                 // async worker.
-                let snapshot = match tokio::task::spawn_blocking(ax::read_focused_tree).await {
+                let display = self.display.get();
+                let snapshot = match tokio::task::spawn_blocking(move || {
+                    ax::read_focused_tree(display)
+                })
+                .await
+                {
                     Ok(Ok(s)) => s,
                     Ok(Err(e)) => {
                         return Ok(Observation::fail(format!(
@@ -42,6 +65,7 @@ impl Executor for AxExecutor {
                 };
                 let text = tree::serialize(&snapshot.nodes);
                 self.last = Some(snapshot);
+                self.read_on = display;
                 Ok(Observation::ok(format!("Accessibility tree:\n{text}")))
             }
             Action::AxPress { element_id, target } => self.press(*element_id, target.as_ref()),
@@ -77,6 +101,15 @@ impl AxExecutor {
                 "no accessibility tree has been read yet — call read_ax_tree first",
             ));
         };
+        // The session can move to another monitor between the read and the
+        // press. The ids in the old snapshot describe windows on the old
+        // screen, so they are no longer a description of what the person is
+        // watching (L-267).
+        if self.read_on != self.display.get() {
+            return Ok(Observation::fail(
+                "the shared screen changed since this tree was read — read it again",
+            ));
+        }
         // Reject a bad or non-actionable id before touching the live element.
         match tree::pressable_by_id(&snapshot.nodes, element_id) {
             None => {
@@ -104,7 +137,7 @@ impl AxExecutor {
             // Ask the live element what it is before pressing it; the snapshot
             // cannot answer, because it is a copy of what we already believed.
             if let Some(approved) = approved {
-                let fresh = ax::read_focused_tree()?;
+                let fresh = ax::read_focused_tree(self.display.get())?;
                 if !snapshot.same_context(&fresh) {
                     return Ok(Observation::fail(
                         "The app or its contents changed since this action was chosen. Read again and request fresh approval."
@@ -162,8 +195,11 @@ mod tests {
     // exercised by the on-device smoke test.
 
     fn snapshot(nodes: Vec<tree::AxNode>) -> AxExecutor {
+        let display = crate::agent::executor::SharedDisplay::default();
         AxExecutor {
             last: Some(AxSnapshot::for_test(nodes)),
+            read_on: display.get(),
+            display,
         }
     }
 
@@ -176,6 +212,19 @@ mod tests {
             value: None,
             pressable: true,
         }
+    }
+
+    /// L-267. A tree read while one screen was shared does not describe the
+    /// screen that is shared now, so a press chosen from it is refused.
+    #[tokio::test]
+    async fn a_display_switch_invalidates_the_last_read() {
+        let executor = snapshot(vec![node(0, "AXButton", Some("Send"))]);
+        executor.display.set(Some(7));
+        let obs = executor
+            .press(0, Some(&AxTarget::new("AXButton", "Send")))
+            .unwrap();
+        assert!(!obs.ok);
+        assert!(obs.summary.contains("shared screen changed"), "{}", obs.summary);
     }
 
     #[test]

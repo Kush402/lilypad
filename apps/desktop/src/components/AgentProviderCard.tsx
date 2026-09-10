@@ -1,143 +1,464 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+
+/** Kept in step with `commands.rs::ReadinessState`. */
+type Readiness = 'unconfigured' | 'savedUnverified' | 'ready' | 'needsAttention';
 
 interface AgentConfigDto {
   providerKind: string | null;
+  profileId: string | null;
   model: string | null;
   baseUrl: string | null;
-  vision: boolean;
+  origin: string | null;
+  vision: boolean | null;
+  tools: boolean | null;
+  verifiedAt: string | null;
   hasKey: boolean;
+  readiness: Readiness;
+  problem: string | null;
   source: 'env' | 'settings' | 'none';
 }
 
+interface Preset {
+  id: string;
+  displayName: string;
+  dialect: string;
+  defaultBaseUrl: string;
+  authHint: string;
+  modelDiscovery: boolean;
+  requiresKey: boolean;
+  note: string;
+}
+
+type Capability = 'supported' | 'unsupported' | 'untested';
+
+interface ProbeReport {
+  ok: boolean;
+  tools: Capability;
+  vision: Capability;
+  message: string | null;
+  failure: string | null;
+  origin: string;
+  model: string;
+}
+
+/** `Choose provider → Connect → Choose model → Test`. Back and forward both
+ * work, and a draft survives a failure. */
+type Step = 'provider' | 'connect' | 'model' | 'test';
+
+const READINESS_LABEL: Record<Readiness, string> = {
+  unconfigured: 'Not set up',
+  savedUnverified: 'Saved, not tested',
+  ready: 'Ready',
+  needsAttention: 'Needs attention',
+};
+
 /**
- * The Ask assistant's provider settings — lives in the Setup window beside the
- * permission cards. Non-secret selection persists in the app-support JSON;
- * the API key goes straight to the macOS keychain and is never echoed back
- * (only `hasKey`). An active env override ("dev mode") is surfaced instead of
- * silently ignoring what the user types here.
+ * The Ask assistant's provider setup.
+ *
+ * ### What this replaced, and why
+ *
+ * The previous card was one form with a two-item dropdown, a free-text base
+ * URL and a Save button, and it reported "Configured" whenever a key existed
+ * anywhere. Four separate defects lived in that:
+ *
+ *   - It sent `vision: null` on every save, which the Rust side read as
+ *     `false`. Editing the model silently turned screenshots off (L-263).
+ *   - `configured` was `config?.source !== 'none'`, and `undefined !== 'none'`
+ *     is true, so it said Configured before it had loaded anything (L-264).
+ *   - Save validated nothing. A wrong key, a retired model and an endpoint
+ *     that cannot call tools all looked exactly like success (L-264).
+ *   - There was no way to remove a key at all; blank meant keep (L-274).
+ *
+ * So the flow is now stepped, every state has a name, and "Ready" is something
+ * a round trip established rather than something a stored string implied.
  */
 export function AgentProviderCard() {
   const [config, setConfig] = useState<AgentConfigDto | null>(null);
-  const [kind, setKind] = useState('anthropic');
+  const [presets, setPresets] = useState<Preset[]>([]);
+  const [loadError, setLoadError] = useState('');
+  const [step, setStep] = useState<Step>('provider');
+
+  // Draft. Kept across a failed save or test — retyping a key because the
+  // network blipped is its own small insult.
+  const [profileId, setProfileId] = useState('anthropic');
   const [model, setModel] = useState('');
   const [baseUrl, setBaseUrl] = useState('');
   const [apiKey, setApiKey] = useState('');
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState('');
+  const [wantVision, setWantVision] = useState(false);
 
-  useEffect(() => {
-    invoke<AgentConfigDto>('get_agent_config')
-      .then((c) => {
-        setConfig(c);
-        if (c.providerKind) setKind(c.providerKind);
-        setModel(c.model ?? '');
-        setBaseUrl(c.baseUrl ?? '');
-      })
-      .catch(() => {
-        /* not running inside Tauri */
-      });
+  const [models, setModels] = useState<string[] | null>(null);
+  const [modelsError, setModelsError] = useState('');
+  const [busy, setBusy] = useState<'' | 'saving' | 'testing' | 'listing' | 'removing'>('');
+  const [error, setError] = useState('');
+  const [report, setReport] = useState<ProbeReport | null>(null);
+
+  const preset = presets.find((p) => p.id === profileId);
+  const dialect = preset?.dialect ?? 'anthropic';
+
+  const load = useCallback(async () => {
+    // Explicit loading and explicit failure. Swallowing the error here is how
+    // an unreadable settings file used to render as a working setup.
+    const c = await invoke<AgentConfigDto>('get_agent_config');
+    if (!c || typeof c !== 'object') throw new Error('the AI settings could not be read');
+    setConfig(c);
+    if (c.profileId) setProfileId(c.profileId);
+    setModel(c.model ?? '');
+    setBaseUrl(c.baseUrl ?? '');
+    setWantVision(c.vision === true);
+    setStep(c.readiness === 'unconfigured' ? 'provider' : 'test');
   }, []);
 
-  const save = async () => {
-    setSaving(true);
+  useEffect(() => {
+    void (async () => {
+      try {
+        // Defensive about the shape, not only about the throw: this card lives
+        // inside the Setup window, and a command that answered with something
+        // unexpected used to take the whole window down with it rather than
+        // just this section.
+        const list = await invoke<Preset[]>('list_provider_presets');
+        setPresets(Array.isArray(list) ? list : []);
+        await load();
+      } catch (err) {
+        setLoadError(String(err));
+      }
+    })();
+  }, [load]);
+
+  /** Changing provider clears what belonged to the old one. A base URL or
+   * model from another origin is not a default for this one. */
+  const chooseProvider = (id: string) => {
+    const next = presets.find((p) => p.id === id);
+    setProfileId(id);
+    setBaseUrl(next?.defaultBaseUrl ?? '');
+    setModel('');
+    setApiKey('');
+    setModels(null);
+    setReport(null);
+    setError('');
+    setStep('connect');
+  };
+
+  const save = async (): Promise<AgentConfigDto | null> => {
+    setBusy('saving');
     setError('');
     try {
       const next = await invoke<AgentConfigDto>('set_agent_config', {
         args: {
-          providerKind: kind,
+          providerKind: dialect,
+          profileId,
           model: model.trim() || null,
           baseUrl: baseUrl.trim() || null,
-          vision: null,
+          // Only ever sent as a real answer. Omitting it preserves whatever
+          // is stored, which is what the old `null` should always have meant.
+          vision: wantVision,
           apiKey: apiKey.trim() || null,
         },
       });
       setConfig(next);
       setApiKey(''); // never keep the secret in component state post-save
+      return next;
     } catch (err) {
       setError(String(err));
+      return null;
     } finally {
-      setSaving(false);
+      setBusy('');
     }
   };
 
-  const configured = config?.source !== 'none';
+  const listModels = async () => {
+    setBusy('listing');
+    setModelsError('');
+    try {
+      const ids = await invoke<string[]>('list_agent_models', {
+        args: {
+          providerKind: dialect,
+          baseUrl: baseUrl.trim() || null,
+          apiKey: apiKey.trim() || null,
+        },
+      });
+      setModels(ids);
+      if (ids.length === 0) setModelsError('This endpoint listed no models. Type the id instead.');
+    } catch (err) {
+      setModels(null);
+      setModelsError(`${String(err)}. You can still type the model id.`);
+    } finally {
+      setBusy('');
+    }
+  };
+
+  const test = async () => {
+    setBusy('testing');
+    setError('');
+    setReport(null);
+    try {
+      const r = await invoke<ProbeReport>('test_agent_connection', {
+        args: {
+          providerKind: dialect,
+          model: model.trim() || null,
+          baseUrl: baseUrl.trim() || null,
+          vision: wantVision,
+          apiKey: apiKey.trim() || null,
+        },
+      });
+      setReport(r);
+      await load();
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setBusy('');
+    }
+  };
+
+  const disconnect = async () => {
+    setBusy('removing');
+    setError('');
+    try {
+      const next = await invoke<AgentConfigDto>('disconnect_agent_provider');
+      setConfig(next);
+      setReport(null);
+      setModels(null);
+      setApiKey('');
+      setStep('provider');
+    } catch (err) {
+      // A removal that failed says so. Reporting success while the key is
+      // still in the keychain would be the worst possible outcome here.
+      setError(`The key could not be removed: ${String(err)}`);
+    } finally {
+      setBusy('');
+    }
+  };
+
+  if (loadError) {
+    return (
+      <section className="control__approve" data-testid="agent-provider-card">
+        <p className="control__approve-title">
+          <strong>AI Assistant (Ask)</strong>
+        </p>
+        <p className="error" data-testid="agent-provider-load-error">
+          Lilypad could not read its AI settings: {loadError}
+        </p>
+        <button className="btn" onClick={() => void load()}>
+          Try again
+        </button>
+      </section>
+    );
+  }
+
+  if (!config) {
+    return (
+      <section className="control__approve" data-testid="agent-provider-card">
+        <p className="control__approve-title">
+          <strong>AI Assistant (Ask)</strong>
+          <span className="chip" data-testid="agent-provider-readiness">
+            Checking…
+          </span>
+        </p>
+      </section>
+    );
+  }
 
   return (
     <section className="control__approve" data-testid="agent-provider-card">
       <p className="control__approve-title">
         <strong>AI Assistant (Ask)</strong>
-        {configured ? <span className="chip">Configured</span> : null}
-      </p>
-      <p className="muted">
-        Powers the phone&apos;s Ask feature. Your API key is stored in the macOS keychain, never in
-        a file.
-      </p>
-      {/* What the card used to say was true and incomplete: it explained where
-          the KEY is kept and never mentioned where the SCREEN goes. Ask is the
-          only part of Lilypad that sends anything to a third party, and the
-          person setting it up is the one who should be told, on the screen
-          where they decide. The phone asks for consent separately
-          (`lib/aiConsent`, Guideline 5.1.2(i)); this is the other half. */}
-      <p className="muted">
-        When someone uses Ask, what is on this Mac&apos;s screen, including window titles and any
-        visible text, is sent to the provider below to work out what to do. Nothing else in Lilypad
-        sends anything anywhere: an ordinary session streams only between this Mac and your phone.
+        <span className="chip" data-testid="agent-provider-readiness">
+          {READINESS_LABEL[config.readiness]}
+        </span>
       </p>
 
-      {config?.source === 'env' ? (
-        <p className="muted">
+      {/* Where the SCREEN goes, not only where the key is kept. The phone asks
+          for consent separately (`lib/aiConsent`, Guideline 5.1.2(i)); this is
+          the other half, on the screen where the choice is actually made. */}
+      <p className="muted">
+        When someone uses Ask, what is on this Mac&apos;s screen (window titles and visible text) is
+        sent to the provider below to work out what to do. An ordinary session sends nothing
+        anywhere: it streams only between this Mac and your phone.
+      </p>
+      <p className="muted">Your API key is stored in the macOS keychain, never in a file.</p>
+
+      {config.origin ? (
+        <p className="muted" data-testid="agent-provider-origin">
+          Requests go to <code>{config.origin}</code>
+          {config.model ? ` using ${config.model}` : ''}.
+        </p>
+      ) : null}
+
+      {config.source === 'env' ? (
+        <p className="muted" data-testid="agent-provider-env">
           <em>
-            A developer environment override is active. It takes precedence over these settings.
+            A developer environment override is active. It decides which provider Ask actually uses;
+            saving below changes the stored settings but not the running configuration.
           </em>
         </p>
       ) : null}
 
+      {config.problem ? (
+        <p className="error" data-testid="agent-provider-problem">
+          {config.problem}
+        </p>
+      ) : null}
+
+      {/* ── step 1: provider ───────────────────────────────────────────── */}
       <div className="row">
-        <label className="muted" htmlFor="agent-kind">
+        <label className="muted" htmlFor="agent-preset">
           Provider
         </label>
-        <select id="agent-kind" value={kind} onChange={(e) => setKind(e.target.value)}>
-          <option value="anthropic">Anthropic</option>
-          <option value="openai_compat">OpenAI-compatible (OpenAI, Ollama, OpenRouter…)</option>
+        <select
+          id="agent-preset"
+          value={profileId}
+          onChange={(e) => chooseProvider(e.target.value)}
+        >
+          {presets.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.displayName}
+            </option>
+          ))}
         </select>
       </div>
-      <div className="row">
-        <input
-          aria-label="Model, blank for the provider default"
-          placeholder="Model (blank = provider default)"
-          value={model}
-          onChange={(e) => setModel(e.target.value)}
-        />
-      </div>
-      {kind === 'openai_compat' ? (
-        <div className="row">
-          <input
-            aria-label="Base URL"
-            placeholder="Base URL, e.g. http://localhost:11434/v1"
-            value={baseUrl}
-            onChange={(e) => setBaseUrl(e.target.value)}
-          />
-        </div>
+
+      {preset ? <p className="muted">{preset.authHint}</p> : null}
+      {preset?.note ? <p className="muted">{preset.note}</p> : null}
+
+      {/* ── step 2: connect ────────────────────────────────────────────── */}
+      {step !== 'provider' ? (
+        <>
+          <div className="row">
+            <input
+              aria-label="Endpoint address"
+              placeholder="Endpoint address"
+              value={baseUrl}
+              onChange={(e) => setBaseUrl(e.target.value)}
+            />
+          </div>
+          <div className="row">
+            <input
+              type="password"
+              aria-label="API key"
+              placeholder={
+                config.hasKey
+                  ? 'A key is saved for this endpoint. Enter a new one to replace it'
+                  : preset?.requiresKey
+                    ? 'API key'
+                    : 'API key (not needed for a local model)'
+              }
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+              autoComplete="off"
+            />
+          </div>
+
+          {/* ── step 3: model ────────────────────────────────────────────── */}
+          <div className="row">
+            <input
+              aria-label="Model"
+              placeholder="Model (blank = provider default)"
+              value={model}
+              onChange={(e) => setModel(e.target.value)}
+              list="agent-model-options"
+            />
+            {preset?.modelDiscovery ? (
+              <button className="btn" disabled={busy !== ''} onClick={() => void listModels()}>
+                {busy === 'listing' ? 'Listing…' : 'List models'}
+              </button>
+            ) : null}
+          </div>
+          {models ? (
+            <datalist id="agent-model-options">
+              {models.map((id) => (
+                <option key={id} value={id} />
+              ))}
+            </datalist>
+          ) : null}
+          {modelsError ? (
+            <p className="muted" data-testid="agent-provider-models-error">
+              {modelsError}
+            </p>
+          ) : null}
+
+          <div className="row">
+            <label className="muted">
+              <input
+                type="checkbox"
+                checked={wantVision}
+                onChange={(e) => setWantVision(e.target.checked)}
+              />{' '}
+              Let Ask take screenshots when it needs to see the screen
+            </label>
+          </div>
+          <p className="muted">
+            {/* A listing says a name is accepted; it does not say the model
+                reads images. Only the test answers that. */}
+            Screenshot support is confirmed by testing, not by the model name.{' '}
+            {capabilitySentence(config)}
+          </p>
+
+          {/* ── step 4: test ─────────────────────────────────────────────── */}
+          {error ? <p className="error">{error}</p> : null}
+          {report ? (
+            <p
+              className={report.ok ? 'muted' : 'error'}
+              data-testid="agent-provider-test-result"
+              role="status"
+            >
+              {reportSentence(report)}
+            </p>
+          ) : null}
+
+          <div className="row">
+            <button
+              className="btn btn--primary"
+              disabled={busy !== ''}
+              onClick={() =>
+                void (async () => {
+                  if ((await save()) !== null) await test();
+                })()
+              }
+            >
+              {busy === 'saving' ? 'Saving…' : busy === 'testing' ? 'Testing…' : 'Save and test'}
+            </button>
+            <button className="btn" disabled={busy !== ''} onClick={() => void save()}>
+              Save without testing
+            </button>
+            {config.hasKey || config.providerKind ? (
+              <button
+                className="btn"
+                disabled={busy !== ''}
+                onClick={() => void disconnect()}
+                data-testid="agent-provider-disconnect"
+              >
+                {busy === 'removing' ? 'Removing…' : 'Disconnect'}
+              </button>
+            ) : null}
+          </div>
+          <p className="muted">
+            Disconnecting removes the saved key for this endpoint and forgets the provider. Manual
+            remote control keeps working, because it never used a provider.
+          </p>
+        </>
       ) : null}
-      <div className="row">
-        <input
-          type="password"
-          aria-label="API key"
-          placeholder={config?.hasKey ? 'API key saved. Enter a new one to replace it' : 'API key'}
-          value={apiKey}
-          onChange={(e) => setApiKey(e.target.value)}
-          autoComplete="off"
-        />
-      </div>
-
-      {error ? <p className="error">{error}</p> : null}
-
-      <div className="row">
-        <button className="btn btn--primary" disabled={saving} onClick={() => void save()}>
-          {saving ? 'Saving…' : 'Save'}
-        </button>
-      </div>
     </section>
   );
+}
+
+/** What is known about capabilities, in one sentence, three-state. */
+export function capabilitySentence(config: AgentConfigDto): string {
+  if (config.tools === null && config.vision === null) return 'Nothing has been tested yet.';
+  const parts: string[] = [];
+  parts.push(config.tools === true ? 'Tool calling works' : 'Tool calling did not work');
+  if (config.vision === true) parts.push('screenshots work');
+  else if (config.vision === false) parts.push('screenshots did not work, so Ask stays text-only');
+  else parts.push('screenshots untested');
+  const when = config.verifiedAt ? ` (checked ${config.verifiedAt.slice(0, 10)})` : '';
+  return `${parts.join('; ')}${when}.`;
+}
+
+/** The test result as something to act on. */
+export function reportSentence(report: ProbeReport): string {
+  if (report.message) return report.message;
+  if (report.ok && report.vision === 'supported') {
+    return `Connected to ${report.origin}. ${report.model} calls tools and reads images.`;
+  }
+  if (report.ok) return `Connected to ${report.origin}. ${report.model} calls tools.`;
+  return `Could not use ${report.origin}.`;
 }

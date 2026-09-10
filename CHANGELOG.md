@@ -4,6 +4,96 @@ All notable changes to Lilypad are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+Work from the v0.1.33 product review. Not released, not tagged, not on any
+device yet.
+
+### Security
+
+- **A script could redirect one of Lilypad's own writes onto a file it was
+  never granted.** Every Ask run leaves its script, its sandbox profile and its
+  captured output on disk so that what happened can be checked afterwards.
+  Those files sat in the same folder the script itself could write to, and a
+  script could replace the output file's name with a link pointing anywhere in
+  your home folder. Lilypad then wrote its record through that link, with its
+  own permissions rather than the script's. The audit files now live outside
+  everything a script can touch, and Lilypad refuses to write through a link.
+- **A script could rewrite files it was not even allowed to read.** Reading
+  your keys, tokens and browser data was already blocked. Writing to them was
+  not, so a script that was given permission to save a file somewhere could
+  point that at your SSH configuration and put a command in it that would run
+  the next time you used git. Credential files, anything your shell loads at
+  login, startup items and Lilypad's own records are now protected against
+  being changed, not only against being read.
+- **A key you saved for one provider could be sent to a different one.** Keys
+  were filed by the kind of API rather than by the service, so changing the
+  address in the settings pointed Lilypad at a new server while still sending
+  the old key to it. A key now belongs to the exact address it was saved for,
+  and an address with no key of its own simply has none. If you had saved a key
+  against a custom address you will be asked for it once more.
+- **Ask could read windows on a screen you were not sharing.** Screenshots were
+  already limited to the shared display; reading the screen's contents through
+  accessibility was not, so on a Mac with two monitors Ask could read a
+  document on the other one and send it to your model provider. It is now
+  limited to windows on the screen you are sharing, and password fields are
+  never read at all.
+- **Your phone's agreement to share screens is now tied to what it agreed to.**
+  It was one yes, forever, for any Mac and any provider, while the phone's own
+  wording named two companies the Mac was not obliged to use. It now names the
+  provider and address your Mac actually reports, and asks again if either
+  changes or if you connect a different Mac.
+- **Withdrawing that agreement now survives a restart.** If the phone could not
+  delete the stored answer, the next launch read it back and carried on
+  sharing. Withdrawal is now recorded separately, and if it cannot be saved at
+  all the phone says so and offers to try again instead of reporting success.
+
+### Added
+
+- **Provider setup you can follow.** Named choices for Anthropic, OpenAI,
+  Google Gemini, OpenRouter and a local model through Ollama, plus an entry for
+  any other OpenAI-compatible address, each with its own address filled in and
+  a plain sentence about which credential it takes. A subscription login is not
+  an API key, and the setup screen now says so before you try one.
+- **A Test connection button that actually tests something.** It asks the model
+  to use a tool and, if you turned screenshots on, to read an image Lilypad
+  generates in memory. Your screen is never captured to check a key. Saved,
+  tested and ready are now three different words, and only the last one means
+  Ask will work.
+- **Disconnect.** You can remove a saved key and forget a provider. If the
+  removal fails, it says so rather than claiming to have worked. Remote control
+  keeps working either way, because it never used a provider.
+- **List models.** Where the provider supports it, the model can be picked from
+  a list instead of typed. A model appearing in that list is not a promise that
+  it can use tools or read images; only the test answers that.
+
+### Fixed
+
+- Stopping a task now reports whether it was confirmed. A script could start a
+  process that detached itself and outlived being stopped; macOS gives Lilypad
+  no way to guarantee that cannot happen, so it now checks afterwards and never
+  calls a task finished when the check does not come back clean.
+- Setting up a provider can no longer freeze a session. Reading the key from
+  the keychain happened on the same path as your keyboard, mouse and the Stop
+  button, so a keychain waiting for a permission box took all of them with it.
+- Saving a change to your provider settings no longer silently turns
+  screenshots off.
+- The setup card no longer says "Configured" before it has read anything.
+- A failing provider now says what failed. An HTML error page from a gateway
+  used to end the request at "response was not JSON", losing the rate limit or
+  outage underneath it. Oversized replies are refused rather than loaded.
+- A model asking for several actions at once is refused rather than having all
+  but the first quietly dropped, which used to leave it convinced work had
+  happened that never did.
+- Ask no longer holds an unbounded amount of memory while reading a very large
+  window.
+
+### Changed
+
+- The website now says plainly that Ask sends what it reads to the provider you
+  chose, and that a local model keeps it on the Mac. "Runs on the Mac" was true
+  of the actions and easy to read as a claim about the data.
+
 ## [0.1.33] — 2026-09-09
 
 ### Fixed

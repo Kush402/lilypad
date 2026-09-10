@@ -20,7 +20,9 @@ use anyhow::{anyhow, bail, Result};
 
 use crate::agent::executor::verify::{self, resolve_user_path, FileId};
 use crate::agent::runner::{Executor, Observation};
-use crate::agent::sandbox::{self, is_denied_read, SandboxLimits, SandboxPolicy};
+use crate::agent::sandbox::{
+    self, is_denied_read, is_protected_write, SandboxLimits, SandboxPolicy,
+};
 use crate::agent::security::ScriptLanguage;
 use crate::agent::Action;
 
@@ -221,6 +223,18 @@ impl Executor for SandboxExecutor {
         for w in writable_paths {
             match resolve_user_path(w) {
                 Ok(p) => {
+                    // Refuse rather than quietly drop, for the same reason the
+                    // read side does: the approval card named this path.
+                    // A write here is not a smaller version of a read — a
+                    // `~/.ssh/config` the script cannot read is one it can
+                    // still replace, and the replacement runs as the person
+                    // (L-261).
+                    if is_protected_write(&p, &self.home) {
+                        return Ok(Observation::fail(format!(
+                            "writing to {} is never permitted, with or without approval",
+                            p.display()
+                        )));
+                    }
                     if let Err(e) = self.grant_still_matches(&p) {
                         return Ok(Observation::fail(format!("writable path rejected: {e}")));
                     }
@@ -257,17 +271,27 @@ impl Executor for SandboxExecutor {
             }
         }
 
-        let scratch = self.next_run_dir();
+        // Two directories, not one (L-260). `run_dir` holds the audit record —
+        // the script text, the profile it ran under, the captured output — and
+        // the sandbox may read it but never write it. `scratch` is the part the
+        // script owns. They used to be the same directory, and a reproduction
+        // showed what that cost: the script replaced `output.txt` with a
+        // symlink and the executor's own unsandboxed write followed it into a
+        // file nobody had granted.
+        let run_dir = self.next_run_dir();
+        let scratch = run_dir.join("scratch");
         tokio::fs::create_dir_all(&scratch).await?;
         // The store holds captured output, which is the person's data. Owner
         // only — the default umask would leave it group- and world-readable on
         // a Mac with more than one account.
         restrict(&self.runs_root);
+        restrict(&run_dir);
         restrict(&scratch);
-        let script_path = scratch.join(format!("script.{ext}"));
-        tokio::fs::write(&script_path, script).await?;
+        let script_path = run_dir.join(format!("script.{ext}"));
+        write_new_no_follow(&script_path, script.as_bytes())?;
 
         let policy = SandboxPolicy {
+            run_dir: run_dir.clone(),
             scratch_dir: scratch.clone(),
             writable_paths: jailed_writables,
             readable_paths: jailed_readables,
@@ -282,23 +306,45 @@ impl Executor for SandboxExecutor {
         )
         .await?;
 
-        // Persist a summary beside the script + profile for audit.
-        let _ = tokio::fs::write(
-            scratch.join("output.txt"),
+        // Persist a summary beside the script + profile for audit. In the run
+        // dir, created exclusively and without following a link: this write
+        // carries host authority, so it must land on a file this process made,
+        // never on a name something else chose.
+        let _ = write_new_no_follow(
+            &run_dir.join("output.txt"),
             format!(
-                "exit_code={:?}\ntimed_out={}\n--- stdout ---\n{}\n--- stderr ---\n{}\n",
-                outcome.exit_code, outcome.timed_out, outcome.stdout, outcome.stderr
-            ),
-        )
-        .await;
+                "exit_code={:?}\ntimed_out={}\ncleanup_confirmed={}\n--- stdout ---\n{}\n--- stderr ---\n{}\n",
+                outcome.exit_code, outcome.timed_out, outcome.cleanup_confirmed,
+                outcome.stdout, outcome.stderr
+            )
+            .as_bytes(),
+        );
 
         // Retention runs after the audit record is written, and is told which
         // directory is live so it can never delete the run that just finished
         // (or, with concurrent runs, one still going).
-        prune_run_store(&self.runs_root, &scratch, SystemTime::now());
+        prune_run_store(&self.runs_root, &run_dir, SystemTime::now());
 
         Ok(observation_from(&outcome))
     }
+}
+
+/// Write a file that must not already exist and must not be a symbolic link.
+///
+/// `create_new` is `O_CREAT|O_EXCL`, which already refuses to follow a link at
+/// the final component; `O_NOFOLLOW` says so explicitly so the intent survives
+/// a future edit. Together they are what stops a host-authority write from
+/// being aimed at a file the script picked (L-260).
+pub(crate) fn write_new_no_follow(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .mode(0o600)
+        .open(path)?;
+    file.write_all(contents)
 }
 
 /// Make a path readable only by its owner. Best-effort: a store that could not
@@ -413,6 +459,17 @@ fn truncate(s: &str) -> String {
 
 /// Turn a sandbox result into an [`Observation`] the brain can reason over.
 fn observation_from(outcome: &sandbox::SandboxOutcome) -> Observation {
+    // Report this before anything else, including before success. A run whose
+    // descendants could not be confirmed stopped is not a run that finished —
+    // something of it may still be executing, and saying "completed" would be
+    // the specific lie L-277 is about.
+    if !outcome.cleanup_confirmed {
+        return Observation::fail(format!(
+            "the script was stopped but its cleanup could not be confirmed — a process \
+             it started may still be running. Output captured before the stop:\n{}",
+            truncate(&outcome.stdout)
+        ));
+    }
     if outcome.timed_out {
         return Observation::fail(format!(
             "script exceeded the time limit and was killed. Partial output:\n{}",
@@ -697,6 +754,7 @@ mod tests {
             stdout: "hello world".into(),
             stderr: String::new(),
             timed_out: false,
+            cleanup_confirmed: true,
         };
         let obs = observation_from(&outcome);
         assert!(obs.ok);
@@ -710,6 +768,7 @@ mod tests {
             stdout: String::new(),
             stderr: "boom".into(),
             timed_out: false,
+            cleanup_confirmed: true,
         };
         let obs = observation_from(&outcome);
         assert!(!obs.ok);
@@ -723,10 +782,27 @@ mod tests {
             stdout: "partial".into(),
             stderr: String::new(),
             timed_out: true,
+            cleanup_confirmed: true,
         };
         let obs = observation_from(&outcome);
         assert!(!obs.ok);
         assert!(obs.summary.contains("time limit"));
+    }
+
+    #[test]
+    fn an_unconfirmed_cleanup_is_never_reported_as_success() {
+        // L-277. Exit code 0 with a descendant possibly still running is not a
+        // completed run, and saying so is the whole defect.
+        let outcome = sandbox::SandboxOutcome {
+            exit_code: Some(0),
+            stdout: "partial".into(),
+            stderr: String::new(),
+            timed_out: false,
+            cleanup_confirmed: false,
+        };
+        let obs = observation_from(&outcome);
+        assert!(!obs.ok);
+        assert!(obs.summary.contains("could not be confirmed"), "{}", obs.summary);
     }
 
     #[test]

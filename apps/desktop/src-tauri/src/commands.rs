@@ -1203,14 +1203,50 @@ pub fn apply_bubble_visibility(app: &AppHandle, visible: bool) {
 // Non-secret selection persists in the app-support JSON; the API key goes to
 // the macOS keychain and NEVER to disk or back out to the UI (only `has_key`).
 
+/// What the setup screen is allowed to conclude about the stored provider.
+///
+/// "Configured" used to be computed from the presence of a stored key, and the
+/// card treated a config it had not finished loading as configured too — an
+/// `undefined !== "none"` comparison that is true before anything is known
+/// (L-264). Those are four different situations and they need four different
+/// words, because the recovery action differs for each.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ReadinessState {
+    /// Nothing has been set up on this Mac.
+    Unconfigured,
+    /// Settings and a credential exist; nothing has been verified against the
+    /// provider. Ask may still fail on the first real task.
+    SavedUnverified,
+    /// A capability probe passed. This is the only value that means usable.
+    Ready,
+    /// Settings exist but cannot work as they stand — no key for this
+    /// destination, or a probe that failed.
+    NeedsAttention,
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentConfigDto {
     pub provider_kind: Option<String>,
+    /// Which preset was chosen ("openai", "ollama", …). `None` for settings
+    /// written before presets existed.
+    pub profile_id: Option<String>,
     pub model: Option<String>,
     pub base_url: Option<String>,
-    pub vision: bool,
+    /// The destination requests actually go to — scheme, host and port of the
+    /// effective base URL. Shown on both devices so "where does this go" is
+    /// never inferred from a provider name (L-262, L-265).
+    pub origin: Option<String>,
+    /// Three-state: `None` is untested, which is not the same as false.
+    pub vision: Option<bool>,
+    pub tools: Option<bool>,
+    pub verified_at: Option<String>,
+    /// Whether a key is stored **for this exact destination**.
     pub has_key: bool,
+    pub readiness: ReadinessState,
+    /// Present when the stored settings cannot work; names what to fix.
+    pub problem: Option<String>,
     /// Which source currently wins: "env" (dev override active — settings
     /// below are stored but ignored), "settings", or "none" (agent inert).
     pub source: &'static str,
@@ -1220,11 +1256,31 @@ pub struct AgentConfigDto {
 pub fn get_agent_config() -> AgentConfigDto {
     use crate::agent::llm::{store, ProviderChoice};
     let settings = store::load_settings();
-    let has_key = settings
-        .provider_kind
+    let kind = settings.provider_kind.clone();
+    let base = settings.base_url.clone();
+
+    let (origin, mut problem) = match kind.as_deref() {
+        Some(kind) => {
+            let effective = base
+                .clone()
+                .or_else(|| store::default_base_url(kind).map(str::to_string));
+            match effective.as_deref().map(store::origin_of) {
+                Some(Ok(origin)) => match store::check_transport(&origin) {
+                    Ok(()) => (Some(origin), None),
+                    Err(e) => (Some(origin), Some(e.to_string())),
+                },
+                Some(Err(e)) => (None, Some(e.to_string())),
+                None => (None, Some(format!("unknown provider kind `{kind}`"))),
+            }
+        }
+        None => (None, None),
+    };
+
+    let has_key = kind
         .as_deref()
-        .map(|k| store::keychain_get(k).is_some())
+        .map(|k| store::credential_for(k, base.as_deref()).is_some())
         .unwrap_or(false);
+
     let source = if ProviderChoice::from_env().is_some() {
         "env"
     } else if ProviderChoice::from_settings().is_some() {
@@ -1232,22 +1288,68 @@ pub fn get_agent_config() -> AgentConfigDto {
     } else {
         "none"
     };
+
+    let requires_key = settings
+        .profile_id
+        .as_deref()
+        .and_then(crate::agent::llm::presets::find)
+        .map(|p| p.requires_key)
+        .unwrap_or(true);
+    if problem.is_none() && kind.is_some() && requires_key && !has_key {
+        problem = Some(
+            "No key is saved for this endpoint. If you changed the address, the previous \
+             key was not carried over — enter one for the new destination."
+                .to_string(),
+        );
+    }
+
+    // Readiness is derived, never stored: a stale "ready" flag is exactly the
+    // thing L-264 is about.
+    let readiness = if kind.is_none() {
+        ReadinessState::Unconfigured
+    } else if problem.is_some() {
+        ReadinessState::NeedsAttention
+    } else if settings.tools == Some(true) {
+        ReadinessState::Ready
+    } else if settings.tools == Some(false) {
+        ReadinessState::NeedsAttention
+    } else {
+        ReadinessState::SavedUnverified
+    };
+
     AgentConfigDto {
         provider_kind: settings.provider_kind,
+        profile_id: settings.profile_id,
         model: settings.model,
         base_url: settings.base_url,
+        origin,
         vision: settings.vision,
+        tools: settings.tools,
+        verified_at: settings.verified_at,
         has_key,
+        readiness,
+        problem,
         source,
     }
+}
+
+/// The selectable providers, from the one table that defines them.
+#[tauri::command]
+pub fn list_provider_presets() -> &'static [crate::agent::llm::presets::Preset] {
+    crate::agent::llm::presets::PRESETS
 }
 
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SetAgentConfigArgs {
     pub provider_kind: String,
+    pub profile_id: Option<String>,
     pub model: Option<String>,
     pub base_url: Option<String>,
+    /// Omitted means "leave whatever is stored alone" — it does NOT mean
+    /// false. The card used to send `null` on every save and the command
+    /// turned that into `false`, so editing the model silently disabled
+    /// screenshots (L-263).
     pub vision: Option<bool>,
     /// When present and non-empty, stored in the keychain; never echoed back.
     pub api_key: Option<String>,
@@ -1259,23 +1361,292 @@ pub fn set_agent_config(args: SetAgentConfigArgs) -> Result<AgentConfigDto, Stri
     if !matches!(args.provider_kind.as_str(), "anthropic" | "openai_compat") {
         return Err(format!("unknown provider kind `{}`", args.provider_kind));
     }
+    let previous = store::load_settings();
+    let base_url = args.base_url.filter(|s| !s.trim().is_empty());
+
+    // Refuse before storing anything: a destination that cannot hold a
+    // credential safely should not be saved as though it could.
+    let account_ok = store::credential_account(&args.provider_kind, base_url.as_deref())
+        .map_err(|e| e.to_string())?;
+    debug_assert!(!account_ok.is_empty());
+
     if let Some(key) = args
         .api_key
         .as_deref()
         .map(str::trim)
         .filter(|k| !k.is_empty())
     {
-        store::keychain_set(&args.provider_kind, key).map_err(|e| e.to_string())?;
+        store::store_credential(&args.provider_kind, base_url.as_deref(), key)
+            .map_err(|e| e.to_string())?;
     }
+
+    // Did this save change where requests go, or which dialect speaks? Either
+    // one invalidates what was verified about the old destination.
+    let destination_changed = previous.provider_kind.as_deref() != Some(args.provider_kind.as_str())
+        || previous.base_url != base_url
+        || previous.model != args.model.clone().filter(|s| !s.trim().is_empty());
+
     let settings = store::AgentSettings {
         provider_kind: Some(args.provider_kind),
+        profile_id: args.profile_id.filter(|s| !s.trim().is_empty()),
         model: args.model.filter(|s| !s.trim().is_empty()),
-        base_url: args.base_url.filter(|s| !s.trim().is_empty()),
-        vision: args.vision.unwrap_or(false),
+        base_url,
+        vision: if destination_changed {
+            None
+        } else {
+            args.vision.or(previous.vision)
+        },
+        tools: if destination_changed {
+            None
+        } else {
+            previous.tools
+        },
+        verified_at: if destination_changed {
+            None
+        } else {
+            previous.verified_at
+        },
     };
     store::save_settings(&settings).map_err(|e| e.to_string())?;
     log::info!(target: "lilypad::audit", "agent_provider_configured — settings saved");
     Ok(get_agent_config())
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TestAgentConfigArgs {
+    pub provider_kind: String,
+    pub model: Option<String>,
+    pub base_url: Option<String>,
+    /// Whether to check image input as well as tools.
+    pub vision: Option<bool>,
+    /// A key typed on the setup screen but not saved yet. When absent, the
+    /// stored key for this destination is used, so a person can re-test an
+    /// existing setup without retyping anything.
+    pub api_key: Option<String>,
+}
+
+/// Run the capability probe and record what it found.
+///
+/// Nothing here touches the screen or any of the person's files: the probe
+/// sends its own generated image. A key given here is used and dropped; it is
+/// stored only by `set_agent_config`.
+#[tauri::command]
+pub async fn test_agent_connection(
+    args: TestAgentConfigArgs,
+) -> Result<crate::agent::llm::probe::ProbeReport, String> {
+    use crate::agent::llm::{probe, store, AnyProvider, ProviderChoice};
+
+    let base_url = args.base_url.filter(|s| !s.trim().is_empty());
+    let origin = store::credential_account(&args.provider_kind, base_url.as_deref())
+        .map_err(|e| e.to_string())?
+        .split_once('@')
+        .map(|(_, origin)| origin.to_string())
+        .unwrap_or_default();
+
+    let key = args
+        .api_key
+        .map(|k| k.trim().to_string())
+        .filter(|k| !k.is_empty())
+        .or_else(|| store::credential_for(&args.provider_kind, base_url.as_deref()));
+
+    let want_vision = args.vision.unwrap_or(false);
+    let choice = match args.provider_kind.as_str() {
+        "anthropic" => {
+            let model = args
+                .model
+                .clone()
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or_else(|| crate::agent::llm::anthropic::DEFAULT_MODEL.to_string());
+            let key = key.ok_or_else(|| "Enter an API key first.".to_string())?;
+            let mut c = crate::agent::llm::anthropic::AnthropicConfig::new(key, model);
+            if let Some(base) = base_url.clone() {
+                c.base_url = base;
+            }
+            c.vision = want_vision;
+            ProviderChoice::Anthropic(c)
+        }
+        "openai_compat" => {
+            let model = args
+                .model
+                .clone()
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or_else(|| crate::agent::llm::openai_compat::DEFAULT_MODEL.to_string());
+            let mut c = crate::agent::llm::openai_compat::OpenAiCompatConfig::new(
+                key.unwrap_or_else(|| "none".into()),
+                model,
+            );
+            if let Some(base) = base_url.clone() {
+                c.base_url = base;
+            }
+            c.vision = want_vision;
+            ProviderChoice::OpenAiCompat(c)
+        }
+        other => return Err(format!("unknown provider kind `{other}`")),
+    };
+
+    let model = match &choice {
+        ProviderChoice::Anthropic(c) => c.model.clone(),
+        ProviderChoice::OpenAiCompat(c) => c.model.clone(),
+    };
+    let provider = AnyProvider::new(choice);
+    let report = probe::run(&provider, origin, model, want_vision).await;
+
+    // Record the result against the stored settings only when it describes the
+    // stored settings. A probe of an unsaved draft proves nothing about what
+    // is on disk.
+    let stored = store::load_settings();
+    let same_target = stored.provider_kind.as_deref() == Some(args.provider_kind.as_str())
+        && stored.base_url == base_url
+        && stored.model == args.model.clone().filter(|s| !s.trim().is_empty());
+    if same_target {
+        let mut next = stored;
+        next.tools = Some(report.tools == probe::Capability::Supported);
+        next.vision = match report.vision {
+            probe::Capability::Supported => Some(true),
+            probe::Capability::Unsupported => Some(false),
+            probe::Capability::Untested => next.vision,
+        };
+        next.verified_at = Some(now_rfc3339());
+        let _ = store::save_settings(&next);
+    }
+    Ok(report)
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListModelsArgs {
+    pub provider_kind: String,
+    pub base_url: Option<String>,
+    pub api_key: Option<String>,
+}
+
+/// Model ids the endpoint says it has.
+///
+/// A listing is a catalogue, not a capability statement — it says a name is
+/// accepted, not that the model behind it calls tools or reads images. That is
+/// what `test_agent_connection` is for. Discovery exists so nobody has to
+/// retype an id they could have picked, and a gateway with no `/models` route
+/// is not an error: the id can always be typed.
+#[tauri::command]
+pub async fn list_agent_models(args: ListModelsArgs) -> Result<Vec<String>, String> {
+    use crate::agent::llm::{http, store};
+
+    let base_url = args
+        .base_url
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| store::default_base_url(&args.provider_kind).map(str::to_string))
+        .ok_or_else(|| format!("unknown provider kind `{}`", args.provider_kind))?;
+    let origin = store::origin_of(&base_url).map_err(|e| e.to_string())?;
+    store::check_transport(&origin).map_err(|e| e.to_string())?;
+
+    let key = args
+        .api_key
+        .map(|k| k.trim().to_string())
+        .filter(|k| !k.is_empty())
+        .or_else(|| store::credential_for(&args.provider_kind, Some(base_url.as_str())));
+
+    let trimmed = base_url.trim_end_matches('/');
+    let (url, request) = match args.provider_kind.as_str() {
+        "anthropic" => {
+            let client = reqwest::Client::new();
+            let url = format!("{trimmed}/v1/models");
+            let mut req = client.get(&url).header("anthropic-version", "2023-06-01");
+            if let Some(key) = key {
+                req = req.header("x-api-key", key);
+            }
+            (url, req)
+        }
+        "openai_compat" => {
+            let client = reqwest::Client::new();
+            let url = format!("{trimmed}/models");
+            let mut req = client.get(&url);
+            if let Some(key) = key {
+                req = req.header("authorization", format!("Bearer {key}"));
+            }
+            (url, req)
+        }
+        other => return Err(format!("unknown provider kind `{other}`")),
+    };
+    let _ = url;
+
+    let resp = request
+        .send()
+        .await
+        .map_err(|e| http::classify_transport(&e).message)?;
+    let status = resp.status();
+    // Same order as every other provider call: status, bounded body, then
+    // parse (L-275, L-276).
+    let raw = http::collect_bounded(resp).await.map_err(|e| e.to_string())?;
+    if !status.is_success() {
+        return Err(http::classify(status.as_u16(), &raw).message);
+    }
+    let json = http::parse_success(&raw).map_err(|e| e.message)?;
+    let mut ids: Vec<String> = json
+        .get("data")
+        .and_then(|d| d.as_array())
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|row| row.get("id").and_then(|v| v.as_str()))
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    ids.sort();
+    ids.dedup();
+    Ok(ids)
+}
+
+/// Remove the credential for the configured destination and forget the
+/// provider selection (L-274).
+///
+/// Manual remote control is untouched — it never needed a provider — and the
+/// failure is reported rather than swallowed: a disconnect that says it
+/// worked while the key is still in the keychain is the worse outcome.
+#[tauri::command]
+pub fn disconnect_agent_provider() -> Result<AgentConfigDto, String> {
+    use crate::agent::llm::store;
+    let settings = store::load_settings();
+    let Some(kind) = settings.provider_kind.clone() else {
+        return Ok(get_agent_config());
+    };
+    store::forget_credential(&kind, settings.base_url.as_deref()).map_err(|e| e.to_string())?;
+    store::save_settings(&store::AgentSettings::default()).map_err(|e| e.to_string())?;
+    log::info!(target: "lilypad::audit", "agent_provider_disconnected");
+    Ok(get_agent_config())
+}
+
+fn now_rfc3339() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    // Enough for "when was this last verified" without pulling in a date
+    // library for one string.
+    let days = secs / 86_400;
+    let (y, m, d) = civil_from_days(days as i64);
+    let rest = secs % 86_400;
+    format!(
+        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z",
+        rest / 3600,
+        (rest % 3600) / 60,
+        rest % 60
+    )
+}
+
+/// Howard Hinnant's days-from-civil, inverted. Public-domain algorithm.
+fn civil_from_days(z: i64) -> (i64, u32, u32) {
+    let z = z + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    (if m <= 2 { y + 1 } else { y }, m, d)
 }
 
 // ── Trusted devices dashboard (M5.4) ────────────────────────────────────────

@@ -157,15 +157,31 @@
         <div class="band__inner">
           <h2>Ask it to do things</h2>
           <p class="lede">
-            Ask is an assistant that drives your Mac. It runs <strong>on the Mac itself</strong>,
-            not in our cloud.
+            Ask is an assistant that drives your Mac. The actions happen
+            <strong>on the Mac itself</strong>, never in our cloud.
           </p>
+          <!-- "Runs on the Mac" was true of the actions and easy to read as a
+               claim about the data. It is not one: to work out what to do, Ask
+               reads the shared screen and sends what it read to the model
+               provider you chose. Saying only the first half is the kind of
+               sentence a customer discovers the meaning of later. -->
           <ul class="ticks">
+            <li>
+              <strong>Where your screen goes.</strong> Ask reads the screen you are sharing and
+              sends what it reads to the AI provider you set up on your Mac, so it can work out what
+              to do. Choose a local model and nothing leaves the Mac at all. Either way Lilypad
+              never sees it, and your phone asks you before the first time.
+            </li>
             <li>It asks your phone before it does anything consequential.</li>
             <li>You can take over at any moment.</li>
             <li>
-              Bring your own API key from Anthropic, or any OpenAI-compatible endpoint. Your key
-              stays in your Mac's keychain.
+              Bring your own API key: Anthropic, OpenAI, Google Gemini, OpenRouter, a local model
+              through Ollama, or another OpenAI-compatible endpoint. Your key stays in your Mac's
+              keychain, and it is tied to the endpoint you saved it for.
+            </li>
+            <li>
+              Set up on both: a Mac with Lilypad and an API key, and this app on your phone. A phone
+              on its own is not a configured Mac.
             </li>
           </ul>
         </div>
@@ -376,6 +392,17 @@
               On your own network and on a direct connection it never passes through our servers at
               all. On the relayed path it does pass through, and stays end-to-end encrypted in
               transit the whole way. We carry bytes we cannot read.
+            </dd>
+
+            <dt>Does anything leave my Mac when I use Ask?</dt>
+            <dd>
+              Yes, and this is the one part of Lilypad where that is true. To decide what to do, Ask
+              reads what is on the screen you are sharing (window titles and visible text) and sends
+              it to the AI provider you configured on your Mac. That provider is your choice and
+              your account; Lilypad is not in the middle of it and never stores it. If you point Ask
+              at a model running on the Mac itself, nothing leaves. Your phone asks you before the
+              first request and names the exact provider and address, and you can withdraw that at
+              any time.
             </dd>
 
             <dt>Do I need an account?</dt>

@@ -14,7 +14,11 @@
 //! tool's result on the next turn.
 
 pub mod anthropic;
+pub mod http;
 pub mod openai_compat;
+pub mod presets;
+pub mod probe;
+pub mod resolver;
 pub mod store;
 
 use anyhow::{anyhow, bail, Result};
@@ -135,6 +139,7 @@ pub trait LlmProvider {
 /// The configured provider, resolved from settings/env. This enum — not any
 /// concrete adapter — is the ONLY provider surface the engine (controller/
 /// runner/executors) is allowed to touch.
+#[derive(Debug, Clone)]
 pub enum ProviderChoice {
     Anthropic(anthropic::AnthropicConfig),
     OpenAiCompat(openai_compat::OpenAiCompatConfig),
@@ -156,7 +161,10 @@ impl ProviderChoice {
     pub fn from_settings() -> Option<Self> {
         let settings = store::load_settings();
         let kind = settings.provider_kind.as_deref()?;
-        let api_key = store::keychain_get(kind);
+        // Bound to the destination this configuration actually points at, so
+        // changing the base URL cannot carry the previous host's key with it
+        // (L-262).
+        let api_key = store::credential_for(kind, settings.base_url.as_deref());
         match kind {
             "anthropic" => {
                 let model = settings
@@ -166,7 +174,8 @@ impl ProviderChoice {
                 if let Some(base) = settings.base_url {
                     c.base_url = base;
                 }
-                c.vision = settings.vision;
+                // `None` is untested, and untested is not a capability.
+                c.vision = settings.vision.unwrap_or(false);
                 Some(ProviderChoice::Anthropic(c))
             }
             "openai_compat" => {
@@ -186,7 +195,7 @@ impl ProviderChoice {
                 if let Some(base) = settings.base_url {
                     c.base_url = base;
                 }
-                c.vision = settings.vision;
+                c.vision = settings.vision.unwrap_or(false);
                 Some(ProviderChoice::OpenAiCompat(c))
             }
             _ => None,
@@ -197,6 +206,44 @@ impl ProviderChoice {
     pub fn resolve() -> Option<Self> {
         Self::from_env().or_else(Self::from_settings)
     }
+}
+
+/// The non-secret description of where this Mac's Ask observations would go.
+///
+/// Read from the stored settings rather than from a resolved provider: this is
+/// called on the session event path, and the whole point of [`resolver`] is
+/// that the keychain is never read there. A destination is a settings fact —
+/// the key's presence is a separate question the phone does not need answered.
+///
+/// It lives here rather than in the controller because it names providers, and
+/// the engine is not allowed to (see `engine_is_provider_blind`). That rule
+/// caught this function sitting in `controller.rs`, which is exactly what it is
+/// for.
+pub fn current_destination() -> Option<crate::agent::protocol::AgentDestination> {
+    use crate::agent::protocol::AgentDestination;
+    let settings = store::load_settings();
+    let kind = settings.provider_kind.as_deref()?;
+    let effective = settings
+        .base_url
+        .clone()
+        .or_else(|| store::default_base_url(kind).map(str::to_string))?;
+    let origin = store::origin_of(&effective).ok()?;
+    let preset = settings.profile_id.as_deref().and_then(presets::find);
+    Some(AgentDestination {
+        profile_id: settings.profile_id.clone(),
+        provider_name: preset
+            .map(|p| p.display_name.to_string())
+            // Settings written before presets existed still have to name
+            // something truthful; the origin is the honest fallback.
+            .unwrap_or_else(|| origin.clone()),
+        // `local` is derived from the origin, never from the provider name: a
+        // preset called "Ollama" pointed at a remote host is not local, and
+        // that sentence is the most consequential one on the consent screen.
+        local: store::is_local_origin(&origin),
+        origin,
+        model: settings.model.clone(),
+        consent_policy: crate::agent::protocol::AI_CONSENT_POLICY,
+    })
 }
 
 /// Transient provider statuses worth retrying: rate limits (429) and server

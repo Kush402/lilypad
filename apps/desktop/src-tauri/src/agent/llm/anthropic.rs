@@ -5,7 +5,7 @@
 //! against fixtures without a network. [`AnthropicProvider::complete`] is the
 //! thin HTTP shell around them (exercised live on-device).
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Value};
 
 use super::{
@@ -13,7 +13,7 @@ use super::{
 };
 
 const ANTHROPIC_VERSION: &str = "2023-06-01";
-const DEFAULT_BASE_URL: &str = "https://api.anthropic.com";
+pub const DEFAULT_BASE_URL: &str = "https://api.anthropic.com";
 const DEFAULT_MAX_TOKENS: u32 = 1024;
 
 /// Config for the Anthropic backend. `model` is caller-selected (settings);
@@ -163,18 +163,25 @@ pub fn build_body(
             })
         })
         .collect();
-    json!({
+    let mut body = json!({
         "model": model,
         "max_tokens": max_tokens,
         "system": system,
         "messages": msgs,
         "tools": tool_defs,
-    })
+    });
+    if !tool_defs.is_empty() {
+        // One action per step (L-269); see the note on `parse_reply`.
+        body["tool_choice"] = json!({ "type": "auto", "disable_parallel_tool_use": true });
+    }
+    body
 }
 
-/// Parse a Messages API response into an [`AssistantReply`]. Pure. Takes the
-/// first `tool_use` block (the agent acts one step at a time) and concatenates
-/// any `text` blocks as the prose.
+/// Parse a Messages API response into an [`AssistantReply`]. Pure.
+///
+/// Exactly one `tool_use` block is expected — the agent acts one step at a
+/// time — and a reply carrying several is refused rather than trimmed to the
+/// first (L-269). `text` blocks are concatenated as the prose.
 pub fn parse_reply(body: &Value) -> Result<AssistantReply> {
     let content = body
         .get("content")
@@ -191,7 +198,18 @@ pub fn parse_reply(body: &Value) -> Result<AssistantReply> {
                     text_parts.push(t.to_string());
                 }
             }
-            Some("tool_use") if tool_call.is_none() => {
+            Some("tool_use") if tool_call.is_some() => {
+                let name = block
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("another action");
+                bail!(
+                    "the model asked for more than one action at once (including `{name}`). \
+                     Lilypad runs one action per step, each with its own approval — ask for \
+                     them one at a time."
+                );
+            }
+            Some("tool_use") => {
                 let id = block
                     .get("id")
                     .and_then(|v| v.as_str())
@@ -240,7 +258,7 @@ impl LlmProvider for AnthropicProvider {
         // with backoff instead of failing the user's run on the first one.
         let mut attempt: u32 = 0;
         loop {
-            let resp = self
+            let resp = match self
                 .client
                 .post(&url)
                 .header("x-api-key", &self.config.api_key)
@@ -249,18 +267,19 @@ impl LlmProvider for AnthropicProvider {
                 .json(&body)
                 .send()
                 .await
-                .context("Anthropic request failed")?;
+            {
+                Ok(resp) => resp,
+                Err(err) => return Err(super::http::classify_transport(&err).into()),
+            };
 
+            // Status and headers first, body second, JSON last (L-275, L-276).
             let status = resp.status();
             let retry_after = resp
                 .headers()
                 .get("retry-after")
                 .and_then(|v| v.to_str().ok())
                 .and_then(|s| s.trim().parse::<u64>().ok());
-            let json: Value = resp
-                .json()
-                .await
-                .context("Anthropic response was not JSON")?;
+            let raw = super::http::collect_bounded(resp).await?;
             if !status.is_success() {
                 if super::is_retryable_status(status.as_u16()) && attempt < super::MAX_RETRIES {
                     let delay = super::retry_delay(attempt, retry_after);
@@ -271,9 +290,9 @@ impl LlmProvider for AnthropicProvider {
                     tokio::time::sleep(delay).await;
                     continue;
                 }
-                let msg = super::provider_error_message(&json);
-                return Err(anyhow!("Anthropic API error ({status}): {msg}"));
+                return Err(super::http::classify(status.as_u16(), &raw).into());
             }
+            let json = super::http::parse_success(&raw)?;
             return parse_reply(&json);
         }
     }
@@ -302,6 +321,35 @@ mod tests {
             role: Role::User,
             blocks: vec![Block::Text(text.into())],
         }
+    }
+
+    #[test]
+    fn two_tool_use_blocks_are_refused_rather_than_silently_trimmed() {
+        // L-269, the Anthropic half.
+        let body = serde_json::json!({ "content": [
+            { "type": "tool_use", "id": "a", "name": "open_app", "input": {} },
+            { "type": "tool_use", "id": "b", "name": "run_script", "input": {} }
+        ]});
+        let err = parse_reply(&body).unwrap_err().to_string();
+        assert!(err.contains("more than one action"), "{err}");
+        assert!(err.contains("run_script"), "{err}");
+    }
+
+    #[test]
+    fn a_single_tool_use_block_still_parses() {
+        let body = serde_json::json!({ "content": [
+            { "type": "text", "text": "opening it" },
+            { "type": "tool_use", "id": "a", "name": "open_app", "input": {"name": "Safari"} }
+        ]});
+        let reply = parse_reply(&body).unwrap();
+        assert_eq!(reply.tool_call.unwrap().name, "open_app");
+        assert_eq!(reply.text.as_deref(), Some("opening it"));
+    }
+
+    #[test]
+    fn the_request_disables_parallel_tool_use() {
+        let body = build_body(SYSTEM_PROMPT, &[user("t")], &base_tools(), "m", 512);
+        assert_eq!(body["tool_choice"]["disable_parallel_tool_use"], true);
     }
 
     #[test]
@@ -366,19 +414,22 @@ mod tests {
     }
 
     #[test]
-    fn parse_reply_extracts_first_tool_use_and_text() {
+    fn parse_reply_extracts_the_tool_use_and_text() {
+        // This used to send two `tool_use` blocks and assert that the second
+        // was dropped. That behaviour was the defect (L-269), so the case now
+        // carries one action, and the two-block case is refused in
+        // `two_tool_use_blocks_are_refused_rather_than_silently_trimmed`.
         let body = json!({
             "content": [
                 { "type": "text", "text": "Opening Safari." },
-                { "type": "tool_use", "id": "tu_1", "name": "open_app", "input": { "name": "Safari" } },
-                { "type": "tool_use", "id": "tu_2", "name": "finish", "input": {} }
+                { "type": "tool_use", "id": "tu_1", "name": "open_app", "input": { "name": "Safari" } }
             ],
             "stop_reason": "tool_use"
         });
         let reply = parse_reply(&body).unwrap();
         assert_eq!(reply.text.as_deref(), Some("Opening Safari."));
         let call = reply.tool_call.unwrap();
-        assert_eq!(call.id, "tu_1"); // first tool_use only
+        assert_eq!(call.id, "tu_1");
         assert_eq!(call.name, "open_app");
         assert_eq!(call.input["name"], "Safari");
     }

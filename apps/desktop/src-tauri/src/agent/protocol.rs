@@ -272,6 +272,35 @@ impl Approval {
     }
 }
 
+/// The non-secret identity of the model destination, disclosed to the phone so
+/// consent can be bound to it (L-265).
+///
+/// There is deliberately no field here a credential could occupy: the origin
+/// is scheme, host and port, which is exactly what the key is filed under on
+/// this side and exactly what the person needs in order to decide.
+///
+/// No "which Mac" field: the phone knows which desktop it paired with, and it
+/// is the side deciding. A Mac asserting its own identity here would be the
+/// party under review vouching for itself.
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentDestination {
+    #[serde(rename = "profileId")]
+    pub profile_id: Option<String>,
+    #[serde(rename = "providerName")]
+    pub provider_name: String,
+    pub origin: String,
+    pub model: Option<String>,
+    /// True when the endpoint is on this Mac, so nothing leaves it.
+    pub local: bool,
+    #[serde(rename = "consentPolicy")]
+    pub consent_policy: u32,
+}
+
+/// Revision of the consent wording. Must match `AI_CONSENT_POLICY` in
+/// `@lilypad/protocol`; a stored grant against an older revision is not a
+/// grant for this one.
+pub const AI_CONSENT_POLICY: u32 = 1;
+
 /// Messages the desktop agent sends to the phone (desktop → phone). Built on
 /// this side, so summaries are truncated at construction rather than rejected.
 #[allow(clippy::enum_variant_names)]
@@ -283,6 +312,11 @@ pub enum AgentOutbound {
         run_id: String,
         #[serde(rename = "protocolVersion")]
         protocol_version: u32,
+        /// Where this Mac's observations would go (L-265). Omitted only when
+        /// nothing is configured — the phone renders that as "not disclosed",
+        /// never as the destination it agreed to last time.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        destination: Option<AgentDestination>,
         ts: u64,
     },
     AgentStep {

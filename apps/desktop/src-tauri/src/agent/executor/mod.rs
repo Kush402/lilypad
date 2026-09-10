@@ -86,7 +86,7 @@ impl TieredExecutor {
         Ok(TieredExecutor {
             skills: SkillsExecutor,
             sandbox: SandboxExecutor::from_env()?,
-            ax: AxExecutor::default(),
+            ax: AxExecutor::new(display.clone()),
             vision: VisionExecutor::new(display),
         })
     }

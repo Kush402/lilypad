@@ -8,14 +8,14 @@
 //! functions ([`build_body`] / [`parse_reply`]) unit-tested against fixtures;
 //! [`OpenAiCompatProvider::complete`] is the thin HTTP shell.
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Value};
 
 use super::{
     AssistantReply, Block, ChatMessage, LlmProvider, ProviderCaps, Role, ToolCall, ToolSpec,
 };
 
-const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
+pub const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
 pub const DEFAULT_MODEL: &str = "gpt-4o-mini";
 const DEFAULT_MAX_TOKENS: u32 = 1024;
 
@@ -219,17 +219,31 @@ pub fn build_body(
             })
         })
         .collect();
-    json!({
+    let mut body = json!({
         "model": model,
         "max_tokens": max_tokens,
         "messages": msgs,
         "tools": tool_defs,
-    })
+    });
+    if !tool_defs.is_empty() {
+        // Ask for one call at a time (L-269). The agent executes a single
+        // action per step, each with its own approval, and a batch it silently
+        // discarded the tail of is a batch the model believed had run. Ask
+        // first, then check the answer below — a gateway that ignores this
+        // field is exactly why the check exists.
+        body["parallel_tool_calls"] = json!(false);
+    }
+    body
 }
 
-/// Parse a chat-completions response into an [`AssistantReply`]. Pure. Takes
-/// the first tool call (the agent acts one step at a time); `arguments`
-/// arrives as a JSON string and malformed JSON is an error (never guessed at).
+/// Parse a chat-completions response into an [`AssistantReply`]. Pure.
+///
+/// The agent acts one step at a time, so exactly one tool call is expected.
+/// More than one is refused rather than trimmed (L-269): dropping the tail
+/// leaves the model's next turn reasoning about work that never happened, and
+/// with consequential actions that is a step the person never saw and never
+/// approved. `arguments` arrives as a JSON string; malformed JSON is an error,
+/// never guessed at.
 pub fn parse_reply(body: &Value) -> Result<AssistantReply> {
     let message = body
         .get("choices")
@@ -244,11 +258,22 @@ pub fn parse_reply(body: &Value) -> Result<AssistantReply> {
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string());
 
-    let tool_call = match message
-        .get("tool_calls")
-        .and_then(|t| t.as_array())
-        .and_then(|t| t.first())
-    {
+    let calls = message.get("tool_calls").and_then(|t| t.as_array());
+    if let Some(calls) = calls {
+        if calls.len() > 1 {
+            let names: Vec<&str> = calls
+                .iter()
+                .filter_map(|c| c.get("function")?.get("name")?.as_str())
+                .collect();
+            bail!(
+                "the model asked for {} actions at once ({}). Lilypad runs one action per step, \
+                 each with its own approval — ask for them one at a time.",
+                calls.len(),
+                names.join(", ")
+            );
+        }
+    }
+    let tool_call = match calls.and_then(|t| t.first()) {
         Some(call) => {
             let id = call
                 .get("id")
@@ -307,7 +332,7 @@ impl LlmProvider for OpenAiCompatProvider {
         // request errors (other 4xx) fail immediately.
         let mut attempt: u32 = 0;
         loop {
-            let resp = self
+            let resp = match self
                 .client
                 .post(&url)
                 .header("authorization", format!("Bearer {}", self.config.api_key))
@@ -315,18 +340,19 @@ impl LlmProvider for OpenAiCompatProvider {
                 .json(&body)
                 .send()
                 .await
-                .context("chat-completions request failed")?;
+            {
+                Ok(resp) => resp,
+                Err(err) => return Err(super::http::classify_transport(&err).into()),
+            };
 
+            // Status and headers first, body second, JSON last (L-275, L-276).
             let status = resp.status();
             let retry_after = resp
                 .headers()
                 .get("retry-after")
                 .and_then(|v| v.to_str().ok())
                 .and_then(|s| s.trim().parse::<u64>().ok());
-            let json: Value = resp
-                .json()
-                .await
-                .context("chat-completions response was not JSON")?;
+            let raw = super::http::collect_bounded(resp).await?;
             if !status.is_success() {
                 if super::is_retryable_status(status.as_u16()) && attempt < super::MAX_RETRIES {
                     let delay = super::retry_delay(attempt, retry_after);
@@ -337,9 +363,9 @@ impl LlmProvider for OpenAiCompatProvider {
                     tokio::time::sleep(delay).await;
                     continue;
                 }
-                let msg = super::provider_error_message(&json);
-                return Err(anyhow!("provider API error ({status}): {msg}"));
+                return Err(super::http::classify(status.as_u16(), &raw).into());
             }
+            let json = super::http::parse_success(&raw)?;
             return parse_reply(&json);
         }
     }
@@ -367,6 +393,38 @@ mod tests {
             role: Role::User,
             blocks: vec![Block::Text(text.into())],
         }
+    }
+
+    #[test]
+    fn two_tool_calls_are_refused_rather_than_silently_trimmed() {
+        // L-269. The tail used to be dropped, which left the model's next turn
+        // reasoning about an action nobody ran and nobody approved.
+        let body = serde_json::json!({
+            "choices": [{ "message": { "tool_calls": [
+                { "id": "a", "function": { "name": "open_app", "arguments": "{}" } },
+                { "id": "b", "function": { "name": "run_script", "arguments": "{}" } }
+            ]}}]
+        });
+        let err = parse_reply(&body).unwrap_err().to_string();
+        assert!(err.contains("2 actions at once"), "{err}");
+        assert!(err.contains("open_app") && err.contains("run_script"), "{err}");
+    }
+
+    #[test]
+    fn a_single_tool_call_still_parses() {
+        let body = serde_json::json!({
+            "choices": [{ "message": { "tool_calls": [
+                { "id": "a", "function": { "name": "open_app", "arguments": "{\"name\":\"Safari\"}" } }
+            ]}}]
+        });
+        let reply = parse_reply(&body).unwrap();
+        assert_eq!(reply.tool_call.unwrap().name, "open_app");
+    }
+
+    #[test]
+    fn the_request_asks_for_one_call_at_a_time() {
+        let body = build_body(SYSTEM_PROMPT, &[user("t")], &base_tools(), "m", 512);
+        assert_eq!(body["parallel_tool_calls"], false);
     }
 
     #[test]
@@ -496,7 +554,9 @@ mod tests {
     }
 
     #[test]
-    fn parse_reply_extracts_first_tool_call_and_parses_arguments() {
+    fn parse_reply_extracts_the_tool_call_and_parses_arguments() {
+        // Was two calls with an assertion that the second was discarded; that
+        // discard was L-269. One call here, refusal covered separately.
         let body = json!({
             "choices": [{
                 "message": {
@@ -504,9 +564,7 @@ mod tests {
                     "content": "Opening Safari.",
                     "tool_calls": [
                         { "id": "c1", "type": "function",
-                          "function": { "name": "open_app", "arguments": "{\"name\":\"Safari\"}" } },
-                        { "id": "c2", "type": "function",
-                          "function": { "name": "finish", "arguments": "{}" } }
+                          "function": { "name": "open_app", "arguments": "{\"name\":\"Safari\"}" } }
                     ]
                 }
             }]
@@ -514,7 +572,7 @@ mod tests {
         let reply = parse_reply(&body).unwrap();
         assert_eq!(reply.text.as_deref(), Some("Opening Safari."));
         let call = reply.tool_call.unwrap();
-        assert_eq!(call.id, "c1"); // first call only
+        assert_eq!(call.id, "c1");
         assert_eq!(call.input["name"], "Safari");
     }
 
