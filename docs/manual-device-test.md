@@ -547,6 +547,54 @@ them as blocked rather than failed:
 - Mac → Sign in → _Forgot password_ → expect a code by email.
 - Enter the code plus a new password → expect to be signed in.
 
+## v0.1.33 gate-4 sheet — what to check on the signed build
+
+The general procedure above still applies. This section is the _short_ list for
+this release: the things that changed, and the failures a real user actually
+reported. Record pass/fail per row in [Results](#results).
+
+Two facts that shape the test before you start:
+
+- **Ask needs both halves.** Ask is protocol version 2 and both peers must
+  agree. A phone on 0.1.32 will refuse to start an Ask task against a
+  0.1.33 Mac, and say so. That is correct behaviour, not a bug to report.
+  Manual control works across the mismatch.
+- **Ask is smaller.** "Open this file" and "reveal in Finder" are gone. Asking
+  for them should produce a clear refusal, not a hang or a crash.
+
+### The user-reported failures this release claims to fix
+
+| #   | Scenario                                                                                                           | Expected                                                                                                  | Why it is here                                              |
+| --- | ------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
+| 1   | Type a long sentence, with Unicode/emoji, an IME if you use one, paste, backspace, and hold a key until it repeats | Every character arrives once, in order. No duplicated committed text, no stuck modifier, nothing replayed | L-225. The keyboard fix has never met a device              |
+| 2   | Tap the Mac's screen mid-typing, then keep typing                                                                  | The software keyboard stays up and the buffer is intact                                                   | L-225                                                       |
+| 3   | Leave the Mac running for a while with only the floating bubble open                                               | An available update appears on the bubble itself; installing it is still a deliberate click               | L-226. The updater fix has never met a device               |
+| 4   | Watch a screen over cellular for a few minutes                                                                     | Picture stays readable. It must not collapse to a blur and stay there                                     | L-227. This is the failure that started this whole sequence |
+| 5   | Wi-Fi → cellular → Wi-Fi, mid-session                                                                              | Video recovers each way; status text tells the truth throughout                                           | L-227 sibling                                               |
+| 6   | Background the phone, wait, foreground it                                                                          | Session resumes or ends honestly. No "connected" over a dead stream                                       |                                                             |
+| 7   | Sleep the Mac, wake it                                                                                             | Same                                                                                                      |                                                             |
+| 8   | Switch the Mac between two displays mid-session                                                                    | The phone follows the shared display. Ask's screenshots must follow it too                                | L-230                                                       |
+| 9   | A session that actually selects a TURN relay pair                                                                  | Relay is genuinely selected — check the selected candidate pair, not an advertised TURN URL               | Never once verified                                         |
+
+### The Ask changes
+
+| #   | Scenario                                                        | Expected                                                                                                                                                        |
+| --- | --------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 10  | Ask the assistant to open a file                                | A clear refusal naming why, not a hang                                                                                                                          |
+| 11  | Ask it to open a web page                                       | An approval card appears. It names the receiving site separately from the rest of the link, and says so when the link carries data. Nothing opens until you tap |
+| 12  | Ask for something needing a script that reads one of your files | The card lists that exact file under "can read". Approving runs it; the script cannot read anything else of yours                                               |
+| 13  | Approve a script, and tell it to make a folder                  | The folder is created where you asked                                                                                                                           |
+| 14  | Start a task, then start a second one before the first finishes | The second waits for the first to stop, or says the previous task is still stopping. Never both acting at once                                                  |
+| 15  | Withdraw AI-sharing consent mid-run                             | The run stops. Stop stays reachable while it is stopping                                                                                                        |
+
+### What this build does _not_ claim
+
+- The inter-process lookup channel a sandboxed script can reach has not been
+  narrowed. Reads are bounded; this channel is not.
+- Script startup on a Mac with **no Xcode installed** has not been exercised.
+  If you have such a Mac, item 12 there is worth more than anywhere else.
+- Redis recovery is covered by fake-store tests, not a real Redis.
+
 ## Results
 
 Copy this in and fill it out. "Not run" is a legitimate answer; a guess is not.
