@@ -6,8 +6,18 @@
 //! names, enum variants (snake_case), and length caps match the zod schema
 //! exactly so the wire format never drifts between the mobile app and here.
 
-/// Must match @lilypad/protocol: version 2 discloses read and navigation grants.
-pub const ASK_PROTOCOL_VERSION: u32 = 2;
+/// Must match @lilypad/protocol.
+///
+/// Version 2 disclosed read and navigation grants. **Version 3** binds a
+/// command to the destination the phone was told about: `agent_ready` carries a
+/// `consentRevision` and every `agent_command` echoes it, so a Mac whose
+/// provider changed after the disclosure refuses the command instead of
+/// sending the screen somewhere the person never agreed to (L-265).
+///
+/// A version-2 phone cannot echo a revision it was never sent, which is why
+/// this is a version bump rather than an optional field: accepting those
+/// commands would leave exactly the hole the field exists to close.
+pub const ASK_PROTOCOL_VERSION: u32 = 3;
 
 use serde::{Deserialize, Deserializer, Serialize};
 
@@ -127,6 +137,12 @@ pub enum AgentInbound {
         text: String,
         #[serde(default, rename = "protocolVersion")]
         protocol_version: Option<u32>,
+        /// The `consentRevision` the phone was disclosed and the person agreed
+        /// to (L-265). Optional on the wire so an older frame parses and can be
+        /// refused with an explanation rather than a deserialization error; a
+        /// command carrying none is not run.
+        #[serde(default, rename = "consentRevision")]
+        consent_revision: Option<String>,
         ts: u64,
     },
     AgentStop {
@@ -294,6 +310,15 @@ pub struct AgentDestination {
     pub local: bool,
     #[serde(rename = "consentPolicy")]
     pub consent_policy: u32,
+    /// Digest of everything above plus the wording revision. The phone echoes
+    /// it on every command so the desktop can refuse one aimed at a
+    /// destination that has since changed (L-265).
+    #[serde(rename = "consentRevision")]
+    pub consent_revision: String,
+    /// "env" or "settings" — which source decided this. A developer override
+    /// pointing somewhere else is a different destination, and the person is
+    /// entitled to see that it is in force.
+    pub source: String,
 }
 
 /// Revision of the consent wording. Must match `AI_CONSENT_POLICY` in

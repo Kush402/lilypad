@@ -1,46 +1,67 @@
-//! Provider resolution, off the session's event path (L-271).
+//! Provider resolution, off the session's event path and bounded (L-271, L-278).
 //!
-//! Resolving a provider means reading the macOS keychain, and reading the
-//! keychain means `security(1)`, which can sit for as long as a person leaves
-//! an authorization dialog on screen — or forever, on a locked keychain nobody
-//! is looking at. That call used to happen inline in the controller's command
-//! handler. While it waited, the controller handled nothing else: not the
-//! heartbeat that keeps the session alive, not input, and not Stop. The one
-//! control a person reaches for when something looks wrong was behind the
-//! thing that was wrong.
+//! Resolving means reading the macOS keychain, and reading the keychain means
+//! `security(1)`, which can sit for as long as a person leaves an authorization
+//! dialog on screen — or forever, on a locked keychain nobody is looking at.
+//! That call used to happen inline in the controller's command handler. While
+//! it waited, the controller handled nothing else: not the heartbeat that keeps
+//! the session alive, not input, and not Stop. The one control a person reaches
+//! for when something looks wrong was behind the thing that was wrong.
 //!
-//! So the keychain is never touched on the caller's thread. A refresh runs on
-//! the blocking pool under a deadline and publishes a typed outcome; callers
-//! read the last published answer, which is always immediate. The outcomes are
-//! deliberately distinct — "nothing is set up" and "the keychain did not
-//! answer" need different words in front of a person, and collapsing them into
-//! `Option::None` is how the second one became invisible.
+//! ### What the first version of this file got wrong
+//!
+//! It moved the work to `spawn_blocking` under a `tokio::time::timeout`, and
+//! called that bounded. It is not. Timing out a join **abandons** the task; the
+//! `security` process is still there, still holding whatever it was holding,
+//! and the next refresh starts another one. A permanently blocked secret store
+//! would accumulate one stuck process and one stuck pool thread per refresh
+//! until the blocking pool was full — at which point every other
+//! `spawn_blocking` in the process, including the sandbox's, stops too. A
+//! deadline that abandons work is a deadline on *waiting*, not on the work.
+//!
+//! It also published unconditionally. A resolution of provider A could finish
+//! after the settings changed to B and install `Ready(A)` with a fresh
+//! timestamp, so the next twenty seconds of requests used A while the phone had
+//! been told B (L-278).
+//!
+//! So: exactly **one** worker thread for the whole process, which does its own
+//! subprocess reaping, and a published answer that carries the generation it
+//! was resolved for and is discarded if that generation is no longer current.
 
-use std::sync::{Arc, Mutex};
+use std::sync::mpsc::{sync_channel, SyncSender, TrySendError};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use super::{store::AgentSettings, ProviderChoice};
+use super::effective::EffectiveConfig;
+use super::{anthropic, openai_compat, ProviderChoice};
 
 /// How long a resolution is trusted before it is refreshed. Short, because the
-/// person may have just added a key in another window; long enough that a
-/// burst of commands does not mean a burst of keychain reads.
+/// person may have just added a key in another window; long enough that a burst
+/// of commands does not mean a burst of keychain reads.
 const FRESH_FOR: Duration = Duration::from_secs(20);
 
-/// How long the keychain gets to answer before the attempt is abandoned.
-/// Abandoning is safe: the task is on the blocking pool and its result is
-/// simply discarded, and the next refresh tries again.
-const KEYCHAIN_DEADLINE: Duration = Duration::from_secs(5);
+// The secret store's own deadline lives in `store::SECRET_STORE_DEADLINE`,
+// applied per `security(1)` invocation by killing and reaping the child. It is
+// deliberately not enforced here: a timeout at this level could only abandon
+// the work, which is what the first version of this file did wrong.
 
 /// What the last completed resolution found.
 #[derive(Debug, Clone)]
 pub enum Readiness {
     /// No resolution has completed yet.
     Unknown,
-    Ready(Box<ProviderChoice>),
+    Ready(Box<Resolved>),
     /// Settings name no provider, or name one with no usable credential.
     NotConfigured,
     /// The secret store could not be consulted — locked, denied, or too slow.
     Unavailable(String),
+}
+
+/// A usable provider plus the exact configuration it came from.
+#[derive(Debug, Clone)]
+pub struct Resolved {
+    pub choice: ProviderChoice,
+    pub config: EffectiveConfig,
 }
 
 impl Readiness {
@@ -49,11 +70,28 @@ impl Readiness {
     }
 }
 
+/// Bumped whenever something invalidates the cached answer: a settings write, a
+/// disconnect, a key replacement. A resolution that started before the bump may
+/// not publish after it.
+static EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// Tell every resolver that what it knows is out of date.
+///
+/// Called on any write that could change where requests go or which credential
+/// is used — including a key rotation, which no settings-file comparison would
+/// notice (L-278).
+pub fn invalidate() {
+    EPOCH.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+}
+
+fn epoch() -> u64 {
+    EPOCH.load(std::sync::atomic::Ordering::SeqCst)
+}
+
 struct Cached {
     readiness: Readiness,
-    /// Non-secret settings the cached answer belongs to. When these change the
-    /// answer is about a different destination and must not be reused (L-262).
-    fingerprint: AgentSettings,
+    /// The epoch the cached answer was resolved under.
+    epoch: u64,
     at: Option<Instant>,
     in_flight: bool,
 }
@@ -69,7 +107,7 @@ impl Default for ProviderResolver {
         ProviderResolver {
             inner: Arc::new(Mutex::new(Cached {
                 readiness: Readiness::Unknown,
-                fingerprint: AgentSettings::default(),
+                epoch: 0,
                 at: None,
                 in_flight: false,
             })),
@@ -82,20 +120,22 @@ impl ProviderResolver {
         Self::default()
     }
 
-    /// The last published answer. Never blocks, never touches the keychain.
+    /// The last published answer. Never blocks, never touches the keychain, and
+    /// never touches the filesystem.
     ///
-    /// Reading the settings file is a small local read and is done here so a
-    /// changed destination invalidates immediately rather than after the TTL.
+    /// Reading the settings file here was the remaining synchronous I/O on the
+    /// session path; it now happens on the worker, and staleness is decided by
+    /// the epoch counter instead.
     pub fn peek(&self) -> Readiness {
-        let settings = super::store::load_settings();
+        let now_epoch = epoch();
         let mut cached = self.inner.lock().unwrap();
-        let stale = cached.fingerprint != settings
-            || cached.at.is_none_or(|at| at.elapsed() > FRESH_FOR);
-        if cached.fingerprint != settings {
+        if cached.epoch != now_epoch {
+            // Something changed. What we know describes a configuration that is
+            // no longer in force, so it is not an answer about the current one.
             cached.readiness = Readiness::Unknown;
-            cached.fingerprint = settings;
             cached.at = None;
         }
+        let stale = cached.at.is_none_or(|at| at.elapsed() > FRESH_FOR);
         let readiness = cached.readiness.clone();
         let should_start = stale && !cached.in_flight;
         if should_start {
@@ -103,7 +143,7 @@ impl ProviderResolver {
         }
         drop(cached);
         if should_start {
-            self.spawn_refresh();
+            self.request_refresh(now_epoch);
         }
         readiness
     }
@@ -114,38 +154,111 @@ impl ProviderResolver {
         let _ = self.peek();
     }
 
-    fn spawn_refresh(&self) {
+    fn request_refresh(&self, for_epoch: u64) {
         let inner = Arc::clone(&self.inner);
-        // `spawn` needs a runtime; outside one (unit tests constructing a
-        // resolver directly) there is nothing to refresh onto and the cached
-        // answer stays `Unknown`, which is the honest value.
-        let Ok(handle) = tokio::runtime::Handle::try_current() else {
-            inner.lock().unwrap().in_flight = false;
-            return;
+        let job = Job {
+            for_epoch,
+            reply: Box::new(move |readiness, resolved_epoch| {
+                let mut cached = inner.lock().unwrap();
+                cached.in_flight = false;
+                // L-278: publish only if this answer is still about the
+                // configuration that is current. Otherwise drop it; `peek` will
+                // ask again.
+                if resolved_epoch == epoch() {
+                    cached.readiness = readiness;
+                    cached.epoch = resolved_epoch;
+                    cached.at = Some(Instant::now());
+                }
+            }),
         };
-        handle.spawn(async move {
-            let resolved = tokio::time::timeout(
-                KEYCHAIN_DEADLINE,
-                tokio::task::spawn_blocking(ProviderChoice::resolve),
-            )
-            .await;
-            let readiness = match resolved {
-                Ok(Ok(Some(choice))) => Readiness::Ready(Box::new(choice)),
-                Ok(Ok(None)) => Readiness::NotConfigured,
-                Ok(Err(join)) => Readiness::Unavailable(format!(
-                    "checking the saved AI settings failed: {join}"
-                )),
-                Err(_) => Readiness::Unavailable(
-                    "The macOS keychain did not answer. If a permission box is waiting on the \
-                     Mac, allow it, then try again."
+        if let Err(rejected) = worker().try_send(job) {
+            // The queue is one deep on purpose: a second pending resolution
+            // would answer the same question. Mark the attempt finished so the
+            // next `peek` can try again rather than believing one is running.
+            let job = match rejected {
+                TrySendError::Full(job) | TrySendError::Disconnected(job) => job,
+            };
+            (job.reply)(
+                Readiness::Unavailable(
+                    "Lilypad is still checking the saved AI settings. Try again in a moment."
                         .to_string(),
                 ),
-            };
-            let mut cached = inner.lock().unwrap();
-            cached.readiness = readiness;
-            cached.at = Some(Instant::now());
+                0, // never current, so this is not cached as an answer
+            );
+            let mut cached = self.inner.lock().unwrap();
             cached.in_flight = false;
-        });
+        }
+    }
+}
+
+type Reply = Box<dyn FnOnce(Readiness, u64) + Send>;
+
+struct Job {
+    for_epoch: u64,
+    reply: Reply,
+}
+
+/// The single resolver worker for the whole process.
+///
+/// One thread, one queue slot. However many sessions, controllers or settings
+/// screens ask, there is never more than one `security(1)` child alive, so a
+/// secret store that never answers costs one blocked thread rather than a
+/// growing pile of them.
+fn worker() -> &'static SyncSender<Job> {
+    static WORKER: OnceLock<SyncSender<Job>> = OnceLock::new();
+    WORKER.get_or_init(|| {
+        let (tx, rx) = sync_channel::<Job>(1);
+        std::thread::Builder::new()
+            .name("lilypad-provider-resolver".into())
+            .spawn(move || {
+                while let Ok(job) = rx.recv() {
+                    let readiness = resolve_once();
+                    (job.reply)(readiness, job.for_epoch);
+                }
+            })
+            .expect("spawn provider resolver worker");
+        tx
+    })
+}
+
+/// Resolve on the worker thread, with the keychain call bounded by killing it.
+fn resolve_once() -> Readiness {
+    // The deadline lives inside the keychain calls themselves, where it can
+    // kill the process it is a deadline for — see `store::wait_bounded`.
+    match EffectiveConfig::resolve_blocking() {
+        Err(unavailable) => Readiness::Unavailable(unavailable.0),
+        Ok(None) => Readiness::NotConfigured,
+        Ok(Some((config, key))) => match build_choice(&config, key) {
+            Some(choice) => Readiness::Ready(Box::new(Resolved { choice, config })),
+            None => Readiness::NotConfigured,
+        },
+    }
+}
+
+fn build_choice(config: &EffectiveConfig, key: String) -> Option<ProviderChoice> {
+    let settings = super::store::load_settings();
+    let vision = settings.vision.unwrap_or(false);
+    let model = config.model.clone();
+    match config.dialect {
+        "anthropic" => {
+            let mut c = anthropic::AnthropicConfig::new(
+                key,
+                model.unwrap_or_else(|| anthropic::DEFAULT_MODEL.to_string()),
+            );
+            c.base_url = config.base_url.clone();
+            c.vision = vision;
+            Some(ProviderChoice::Anthropic(c))
+        }
+        "openai_compat" => {
+            let mut c = openai_compat::OpenAiCompatConfig::new(
+                if key.is_empty() { "none".into() } else { key },
+                model.unwrap_or_else(|| openai_compat::DEFAULT_MODEL.to_string()),
+            );
+            c.base_url = config.base_url.clone();
+            c.vision = vision;
+            Some(ProviderChoice::OpenAiCompat(c))
+        }
+        _ => None,
     }
 }
 
@@ -155,8 +268,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_first_look_is_unknown_and_never_blocks() {
-        // The property under test is the one L-271 broke: asking costs nothing
-        // on the caller's thread, whatever the keychain is doing.
+        // The property L-271 broke: asking costs nothing on the caller's
+        // thread, whatever the keychain is doing.
         let resolver = ProviderResolver::new();
         let start = Instant::now();
         let first = resolver.peek();
@@ -175,22 +288,62 @@ mod tests {
     async fn a_refresh_eventually_publishes_an_answer() {
         let resolver = ProviderResolver::new();
         resolver.warm();
-        // Whatever this machine's settings say, a completed resolution must
-        // stop being `Unknown` — including on a Mac with nothing configured,
-        // where the answer is `NotConfigured` rather than silence.
-        for _ in 0..100 {
+        for _ in 0..200 {
             if !matches!(resolver.peek(), Readiness::Unknown) {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        panic!("no resolution was published within 5s");
+        panic!("no resolution was published within 10s");
+    }
+
+    #[tokio::test]
+    async fn invalidating_discards_what_was_known() {
+        let resolver = ProviderResolver::new();
+        resolver.warm();
+        for _ in 0..200 {
+            if !matches!(resolver.peek(), Readiness::Unknown) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        invalidate();
+        // L-278: an answer resolved under the previous epoch is not an answer
+        // about the current one, however recent it is.
+        assert!(matches!(resolver.peek(), Readiness::Unknown));
     }
 
     #[test]
-    fn outside_a_runtime_the_answer_stays_unknown_rather_than_blocking() {
+    fn a_stale_generation_is_discarded_rather_than_published() {
+        // The exact shape of L-278: a resolution of A completes after the
+        // configuration has moved on to B.
         let resolver = ProviderResolver::new();
-        assert!(matches!(resolver.peek(), Readiness::Unknown));
-        assert!(!resolver.inner.lock().unwrap().in_flight);
+        let stale_epoch = epoch();
+        invalidate(); // the world moved on while "A" was in flight
+        {
+            let mut cached = resolver.inner.lock().unwrap();
+            cached.in_flight = true;
+        }
+        // Deliver A's answer under the epoch it started in.
+        let inner = Arc::clone(&resolver.inner);
+        let reply: Reply = Box::new(move |readiness, resolved_epoch| {
+            let mut cached = inner.lock().unwrap();
+            cached.in_flight = false;
+            if resolved_epoch == epoch() {
+                cached.readiness = readiness;
+                cached.epoch = resolved_epoch;
+                cached.at = Some(Instant::now());
+            }
+        });
+        reply(
+            Readiness::Unavailable("stale answer about A".into()),
+            stale_epoch,
+        );
+        let cached = resolver.inner.lock().unwrap();
+        assert!(
+            matches!(cached.readiness, Readiness::Unknown),
+            "a resolution from a previous epoch was published"
+        );
+        assert!(cached.at.is_none());
     }
 }

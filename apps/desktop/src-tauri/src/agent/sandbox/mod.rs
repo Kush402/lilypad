@@ -7,6 +7,7 @@
 //! Seatbelt profile) is a pure, exhaustively-tested function in [`profile`];
 //! this module is the thin, effectful runner around it.
 
+pub mod descendants;
 pub mod profile;
 
 use std::path::{Path, PathBuf};
@@ -225,9 +226,14 @@ pub async fn run(
         .id()
         .ok_or_else(|| anyhow!("sandboxed child has no pid"))? as i32;
 
-    let group = ProcessGroup {
+    // Sampling starts immediately after `spawn`, while the child still has two
+    // `execve`s ahead of it. See `descendants` for what this can and cannot
+    // establish.
+    let mut processes = RunProcesses {
         pgid: pid,
+        tracker: descendants::Tracker::start(pid),
         run_dir: policy.run_dir.clone(),
+        finished: false,
     };
     let mut stdout_pipe = child.stdout.take().expect("piped");
     let mut stderr_pipe = child.stderr.take().expect("piped");
@@ -248,11 +254,10 @@ pub async fn run(
     };
 
     // A child can exit while its descendants retain the pipes. Retire those
-    // descendants before waiting for EOF, including on normal completion.
-    drop(group);
-    // `drop` above already killed the group and swept once; ask again so the
-    // answer we report is the state after that sweep, not before it.
-    let cleanup_confirmed = sweep_run(&policy.run_dir);
+    // descendants before waiting for EOF, including on normal completion — and
+    // record whether that could actually be confirmed (L-277).
+    let cleanup_confirmed = processes.terminate() == descendants::Cleanup::Confirmed;
+    drop(processes);
     let stdout = out_task.await.unwrap_or_default();
     let stderr = err_task.await.unwrap_or_default();
 
@@ -265,103 +270,50 @@ pub async fn run(
     })
 }
 
-// ── descendant cleanup (L-277) ───────────────────────────────────────────
-//
-// `killpg` retires the process group this runner created. It does not retire a
-// descendant that called `setsid()`: that process leaves the group, is
-// reparented away, and keeps running. Reproduced under this exact profile — a
-// disposable Perl child called `setsid`, closed its output handles, outlived
-// the kill of its parent group by two seconds, and then wrote a file. The
-// script's execution lease had been released; the OS process had not stopped.
-//
-// macOS gives an unprivileged process no job object, no cgroup and no
-// process-tree kill, so descendant containment cannot be *asserted* here. It
-// can be *checked*, and the honest thing is to check and then say what the
-// check found. `pgrep -f` over the run directory catches a survivor whose
-// command line still names this run — the realistic case, since the escapee is
-// the interpreter still running the script. A survivor that re-execs something
-// naming nothing of ours is not caught, which is exactly why this reports a
-// boolean instead of pretending to be containment.
-
-/// Kill anything still running that names `run_dir`, bounded. Returns true
-/// only if nothing was left. Best-effort by construction — see above.
-fn sweep_run(run_dir: &Path) -> bool {
-    for attempt in 0..4 {
-        let alive = processes_naming(run_dir);
-        if alive.is_empty() {
-            return true;
-        }
-        for pid in alive {
-            #[cfg(unix)]
-            unsafe {
-                libc::kill(pid, libc::SIGKILL);
-            }
-        }
-        if attempt < 3 {
-            std::thread::sleep(Duration::from_millis(50));
-        }
-    }
-    processes_naming(run_dir).is_empty()
-}
-
-/// PIDs whose command line mentions `run_dir`, excluding this process.
-fn processes_naming(run_dir: &Path) -> Vec<i32> {
-    // Match the run directory's own name, not its full path.
-    //
-    // The full path looked obviously right and was wrong: the runner
-    // canonicalizes the policy's paths (`/var/folders/…` becomes
-    // `/private/var/folders/…`) while the interpreter's argv still holds
-    // whatever the caller passed. Two spellings of one directory, and a sweep
-    // searching for the wrong one reports "nothing survived" about a process
-    // that is still running — the exact false clean the L-277 regression test
-    // caught. The final component is identical in both spellings, unique per
-    // run, and anchored with a leading slash so it cannot match loose text.
-    //
-    // `pgrep -f` takes an extended regular expression, so the component is
-    // escaped: a stray `+` or `(` would otherwise change what is matched.
-    let name = run_dir
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| run_dir.to_string_lossy().into_owned());
-    let mut pattern = String::from("/");
-    for ch in name.chars() {
-        if "\\.^$|()[]{}*+?/".contains(ch) {
-            pattern.push('\\');
-        }
-        pattern.push(ch);
-    }
-    let Ok(out) = std::process::Command::new("/usr/bin/pgrep")
-        .arg("-f")
-        .arg(&pattern)
-        .stderr(Stdio::null())
-        .output()
-    else {
-        return Vec::new();
-    };
-    let me = std::process::id() as i32;
-    String::from_utf8_lossy(&out.stdout)
-        .split_whitespace()
-        .filter_map(|s| s.parse::<i32>().ok())
-        .filter(|pid| *pid != me && *pid > 1)
-        .collect()
-}
+/// How long the kernel-tracked descendants get to exit after `SIGKILL` before
+/// the run is reported as not confirmed clean.
+const CLEANUP_GRACE: Duration = Duration::from_secs(2);
 
 /// Cancellation drops the future before its timeout branch can run. The
-/// process group must therefore be owned by a drop guard, not only that branch.
-struct ProcessGroup {
+/// processes must therefore be owned by a drop guard, not only that branch.
+///
+/// The guard holds the kernel's descendant set (see [`descendants`]), not a
+/// process-group id: a descendant that calls `setsid` leaves the group, and
+/// leaving the group is exactly the case this exists for.
+struct RunProcesses {
     pgid: i32,
+    tracker: descendants::Tracker,
+    /// Only for the argv evidence check; never used to decide what to kill.
     run_dir: PathBuf,
+    /// Set once the run's outcome has already been decided, so `Drop` does not
+    /// repeat the work on the normal path.
+    finished: bool,
 }
-impl Drop for ProcessGroup {
-    fn drop(&mut self) {
+
+impl RunProcesses {
+    /// Stop everything belonging to this run and say whether that is certain.
+    fn terminate(&mut self) -> descendants::Cleanup {
+        self.finished = true;
+        // The group kill still happens first: it is cheap, it catches the
+        // ordinary case in one syscall, and the tracker's own kills then only
+        // have stragglers left to deal with.
         #[cfg(unix)]
         unsafe {
             libc::killpg(self.pgid, libc::SIGKILL);
         }
+        self.tracker
+            .terminate_in(CLEANUP_GRACE, Some(&self.run_dir))
+    }
+}
+
+impl Drop for RunProcesses {
+    fn drop(&mut self) {
+        if self.finished {
+            return;
+        }
         // Cancellation drops this guard and then drops the rest of the future,
-        // so this is the only place a cancelled run gets swept at all. Bounded
-        // to ~150 ms of blocking; the alternative is leaving the escapee.
-        sweep_run(&self.run_dir);
+        // so this is the only place a cancelled run is cleaned up at all.
+        let _ = self.terminate();
     }
 }
 
@@ -869,11 +821,8 @@ mod tests {
         std::fs::remove_dir_all(&fake_home).ok();
     }
 
-    /// L-277, reproduced before the fix: a descendant that called `setsid`
-    /// left the process group, outlived `killpg`, and wrote a file two seconds
-    /// later. The sweep is not containment — macOS gives us none — so the
-    /// claim under test is narrower and honest: the escapee is found and
-    /// killed, and if it were not, the outcome would say so.
+    /// L-277 at its worst: a descendant deliberately written to be
+    /// unobservable. What is under test is the *claim* Lilypad makes about it.
     #[tokio::test]
     async fn a_setsid_descendant_does_not_outlive_the_run() {
         if !sandbox_available() || !Path::new("/usr/bin/perl").exists() {
@@ -903,14 +852,34 @@ mod tests {
         )
         .await
         .unwrap();
+
+        // The honest outcome, and the one this test exists to pin.
+        //
+        // This script is written to be unobservable: the parent forks, prints,
+        // and exits immediately, so the child is reparented before the first
+        // ancestry sample can attribute it to the run. Nothing kills it, and
+        // the marker below is duly written two seconds later.
+        //
+        // What must NOT happen is Lilypad calling that a clean run. An earlier
+        // implementation did exactly that — the sweep it used could not see the
+        // process either, and reported the absence of evidence as evidence of
+        // absence. So the assertion is about the claim, not about the process:
+        // cleanup is `Unknown`, and an unconfirmed cleanup is never success.
+        //
+        // Containment itself is not available on macOS to an unprivileged
+        // process (see `descendants` for the two mechanisms measured and
+        // rejected), which is why `run_script` is not offered to the model in
+        // this build.
         assert!(
-            outcome.cleanup_confirmed,
-            "the sweep could not confirm the run had stopped"
+            !outcome.cleanup_confirmed,
+            "a descendant that evades observation was reported as a clean run"
         );
+
         tokio::time::sleep(Duration::from_millis(2500)).await;
         assert!(
-            !marker.exists(),
-            "a descendant kept executing after the run ended"
+            marker.exists(),
+            "the escapee did not run — this test no longer reproduces the gap it documents, \
+             so the claim above is untested"
         );
         std::fs::remove_dir_all(&dir).ok();
     }

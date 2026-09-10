@@ -52,6 +52,10 @@ pub enum FailureKind {
     Transport,
     /// A success status carrying something that is not the expected JSON.
     Malformed,
+    /// The endpoint answered with a redirect to somewhere else. Not followed
+    /// (L-284): the person agreed to an origin, and a redirect is that origin
+    /// naming a different one.
+    Redirected,
 }
 
 impl FailureKind {
@@ -173,6 +177,39 @@ pub(crate) fn classify(status: u16, body: &[u8]) -> ProviderFailure {
     }
 }
 
+/// Describe a redirect this client refused to follow.
+///
+/// Named, not swallowed: "the address you configured is redirecting elsewhere"
+/// is something a person can act on, and it is the only honest thing to say
+/// when the alternative is carrying their key to a host they never chose.
+pub(crate) fn refused_redirect(status: u16, location: Option<&str>) -> ProviderFailure {
+    let message = match location {
+        Some(target) => format!(
+            "That address redirects to {target}, which is a different destination from the one \
+             you set up. Lilypad does not follow it, because your key and what Ask read from \
+             your screen would go there too. If the endpoint really has moved, enter the new \
+             address yourself."
+        ),
+        None => "That address answered with a redirect but did not say where to. Lilypad does \
+                 not follow redirects for provider requests."
+            .to_string(),
+    };
+    ProviderFailure {
+        kind: FailureKind::Redirected,
+        status: Some(status),
+        message,
+    }
+}
+
+/// The `Location` of a response, when it has a usable one.
+pub(crate) fn location_of(resp: &reqwest::Response) -> Option<String> {
+    resp.headers()
+        .get(reqwest::header::LOCATION)?
+        .to_str()
+        .ok()
+        .map(|s| s.chars().take(200).collect())
+}
+
 /// Classify a connection-level error, which never reached a status.
 pub(crate) fn classify_transport(err: &reqwest::Error) -> ProviderFailure {
     ProviderFailure {
@@ -250,6 +287,16 @@ mod tests {
         let quoted = quotable(&huge);
         assert!(quoted.len() <= MAX_QUOTED_ERROR_BYTES + 4, "{}", quoted.len());
         assert!(quoted.ends_with('…'));
+    }
+
+    #[test]
+    fn a_refused_redirect_names_where_it_wanted_to_go() {
+        let failure = refused_redirect(301, Some("https://elsewhere.example/v1"));
+        assert_eq!(failure.kind, FailureKind::Redirected);
+        assert!(failure.message.contains("elsewhere.example"), "{}", failure.message);
+        assert!(!failure.kind.is_transient(), "retrying the same address will redirect again");
+        // A redirect with no Location still refuses rather than guessing.
+        assert_eq!(refused_redirect(302, None).kind, FailureKind::Redirected);
     }
 
     #[test]

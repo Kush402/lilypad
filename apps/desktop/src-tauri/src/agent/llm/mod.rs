@@ -14,10 +14,13 @@
 //! tool's result on the next turn.
 
 pub mod anthropic;
+pub mod effective;
 pub mod http;
 pub mod openai_compat;
 pub mod presets;
 pub mod probe;
+#[cfg(test)]
+mod redirect_tests;
 pub mod resolver;
 pub mod store;
 
@@ -163,8 +166,10 @@ impl ProviderChoice {
         let kind = settings.provider_kind.as_deref()?;
         // Bound to the destination this configuration actually points at, so
         // changing the base URL cannot carry the previous host's key with it
-        // (L-262).
-        let api_key = store::credential_for(kind, settings.base_url.as_deref());
+        // (L-262). A store that will not answer is treated as no key here —
+        // callers that need to tell those apart use the resolver, which keeps
+        // `Unavailable` as its own outcome (L-271).
+        let api_key = store::credential_for(kind, settings.base_url.as_deref()).ok().flatten();
         match kind {
             "anthropic" => {
                 let model = settings
@@ -206,44 +211,6 @@ impl ProviderChoice {
     pub fn resolve() -> Option<Self> {
         Self::from_env().or_else(Self::from_settings)
     }
-}
-
-/// The non-secret description of where this Mac's Ask observations would go.
-///
-/// Read from the stored settings rather than from a resolved provider: this is
-/// called on the session event path, and the whole point of [`resolver`] is
-/// that the keychain is never read there. A destination is a settings fact —
-/// the key's presence is a separate question the phone does not need answered.
-///
-/// It lives here rather than in the controller because it names providers, and
-/// the engine is not allowed to (see `engine_is_provider_blind`). That rule
-/// caught this function sitting in `controller.rs`, which is exactly what it is
-/// for.
-pub fn current_destination() -> Option<crate::agent::protocol::AgentDestination> {
-    use crate::agent::protocol::AgentDestination;
-    let settings = store::load_settings();
-    let kind = settings.provider_kind.as_deref()?;
-    let effective = settings
-        .base_url
-        .clone()
-        .or_else(|| store::default_base_url(kind).map(str::to_string))?;
-    let origin = store::origin_of(&effective).ok()?;
-    let preset = settings.profile_id.as_deref().and_then(presets::find);
-    Some(AgentDestination {
-        profile_id: settings.profile_id.clone(),
-        provider_name: preset
-            .map(|p| p.display_name.to_string())
-            // Settings written before presets existed still have to name
-            // something truthful; the origin is the honest fallback.
-            .unwrap_or_else(|| origin.clone()),
-        // `local` is derived from the origin, never from the provider name: a
-        // preset called "Ollama" pointed at a remote host is not local, and
-        // that sentence is the most consequential one on the consent screen.
-        local: store::is_local_origin(&origin),
-        origin,
-        model: settings.model.clone(),
-        consent_policy: crate::agent::protocol::AI_CONSENT_POLICY,
-    })
 }
 
 /// Transient provider statuses worth retrying: rate limits (429) and server
@@ -364,8 +331,39 @@ pub fn agent_tools(caps: ProviderCaps) -> Vec<ToolSpec> {
 }
 
 /// Tools available to every provider (vision-independent). `finish` last.
+/// Is arbitrary script execution offered to the model?
+///
+/// **No, in this build (L-277).** A sandboxed script can `fork` a child that
+/// calls `setsid`, leaves the process group, is reparented, and outlives Stop.
+/// Two possible boundaries were measured and neither is available:
+///
+///   - `kqueue`'s `NOTE_TRACK`, which would let the kernel name every forked
+///     descendant, returns `ENOTSUP` on this macOS.
+///   - Denying `process-fork` in the Seatbelt profile removes descendants
+///     entirely, but stops the Python interpreter from starting at all and
+///     reduces `/bin/sh` to its builtins.
+///
+/// What remains is observation (see [`sandbox::descendants`]), and observation
+/// has a sampling gap a script could be written to slip through. An escapee is
+/// still confined by the profile — write-jailed, read-jailed — so what cannot
+/// be bounded is its *lifetime*, not its authority. That is a narrower problem
+/// than it sounds and still not one to leave running under a capability the
+/// model chooses to use.
+///
+/// The rest of Ask is unaffected: opening apps, creating folders, reading the
+/// accessibility tree, pressing controls and screenshots all still work.
+///
+/// This is one constant on purpose. Turning scripts back on when the boundary
+/// exists is a one-line change, and the executor, sandbox and every regression
+/// around them stay live and tested in the meantime.
+const SCRIPTS_OFFERED_TO_MODEL: bool = false;
+
+/// Why `run_script` is refused, in the words the model and the person see.
+pub const SCRIPTS_WITHDRAWN_MESSAGE: &str =
+    "running scripts is unavailable in this build: a script can start a background process      that outlives Stop, and macOS gives Lilypad no way to guarantee it has ended. Opening      apps, creating folders, reading the screen and pressing controls all still work.";
+
 fn base_tools() -> Vec<ToolSpec> {
-    vec![
+    let mut tools = vec![
         ToolSpec {
             name: "open_app",
             description: "Launch or focus a macOS application by its name, e.g. \"Safari\".",
@@ -476,7 +474,14 @@ fn base_tools() -> Vec<ToolSpec> {
                 "required": ["summary"],
             }),
         },
-    ]
+    ];
+    if !SCRIPTS_OFFERED_TO_MODEL {
+        // Withdrawn rather than left advertised and refused: a tool in the list
+        // is a promise, and a model that plans around one it cannot use wastes
+        // the person's turn discovering that.
+        tools.retain(|t| t.name != "run_script");
+    }
+    tools
 }
 
 /// How long to wait for a provider to accept a TCP/TLS connection.
@@ -491,7 +496,8 @@ pub const PROVIDER_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::f
 /// on a request that never finishes (L-236).
 pub const PROVIDER_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
-/// The HTTP client both provider adapters use, with both deadlines applied.
+/// The HTTP client every provider, probe and discovery request uses, with both
+/// deadlines and the redirect boundary applied.
 pub fn provider_client() -> reqwest::Client {
     client_with(PROVIDER_CONNECT_TIMEOUT, PROVIDER_REQUEST_TIMEOUT)
 }
@@ -506,6 +512,23 @@ pub fn client_with(
     reqwest::Client::builder()
         .connect_timeout(connect)
         .timeout(whole_request)
+        // ── the redirect boundary (L-284) ────────────────────────────────
+        //
+        // Off, not "handled carefully". reqwest's own redirect policy strips
+        // `authorization`, `cookie` and `proxy-authorization` when the host
+        // changes — and nothing else. Anthropic authenticates with `x-api-key`,
+        // which is not on that list, so a 301 from a configured endpoint to
+        // another origin would have carried the person's key to a host they
+        // never agreed to. A 307 or 308 carries the request **body** too, and
+        // for a provider request the body is the observation: window titles and
+        // screen text.
+        //
+        // The person's decision is about a destination (L-262, L-265). A
+        // redirect is that destination naming a different one, and there is no
+        // version of following it that keeps the decision intact. If an
+        // endpoint really has moved, the honest outcome is an error naming the
+        // new location so it can be configured deliberately.
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         // Only fails if the TLS backend cannot initialize, in which case no
         // provider would work at all. Falling back to a default client would
@@ -586,6 +609,7 @@ pub fn decision_from_tool_call(call: &ToolCall) -> Result<Decision> {
                 },
             })
         }
+        "run_script" if !SCRIPTS_OFFERED_TO_MODEL => bail!("{SCRIPTS_WITHDRAWN_MESSAGE}"),
         "run_script" => {
             let language = match call.input.get("language").and_then(|v| v.as_str()) {
                 Some("shell") => ScriptLanguage::Shell,
@@ -888,7 +912,47 @@ mod tests {
     }
 
     #[test]
-    fn maps_run_script_to_sandbox_tier() {
+    fn scripts_are_withdrawn_from_the_model_in_this_build() {
+        // L-277. A sandboxed script can fork a child that calls `setsid`,
+        // leaves the process group and outlives Stop, and macOS offers an
+        // unprivileged process no way to guarantee otherwise — both candidate
+        // mechanisms were measured and rejected (see `sandbox::descendants`).
+        //
+        // Withdrawn, not advertised-and-refused: a tool in the list is a
+        // promise, and a model that plans around one it cannot use spends the
+        // person's turn finding that out.
+        assert!(
+            !base_tools().iter().any(|t| t.name == "run_script"),
+            "run_script is still offered to the model"
+        );
+        let refused = decision_from_tool_call(&ToolCall {
+            id: "1".into(),
+            name: "run_script".into(),
+            input: json!({ "language": "python", "script": "print(1+1)" }),
+            extra: None,
+        })
+        .unwrap_err()
+        .to_string();
+        assert!(refused.contains("unavailable in this build"), "{refused}");
+        // The refusal says what still works, so the model can replan rather
+        // than repeat itself.
+        assert!(refused.contains("Opening"), "{refused}");
+        // Everything else Ask can do is untouched.
+        for still_offered in ["open_app", "new_folder", "read_ax_tree", "ax_press", "finish"] {
+            assert!(
+                base_tools().iter().any(|t| t.name == still_offered),
+                "{still_offered} went missing"
+            );
+        }
+    }
+
+    /// The sandbox tier still maps correctly, so turning `SCRIPTS_OFFERED_TO_MODEL`
+    /// back on when the boundary exists does not also need this rebuilt.
+    #[test]
+    fn the_sandbox_mapping_is_intact_behind_the_switch() {
+        if !SCRIPTS_OFFERED_TO_MODEL {
+            return;
+        }
         let d = decision_from_tool_call(&ToolCall {
             id: "1".into(),
             name: "run_script".into(),
@@ -922,14 +986,6 @@ mod tests {
             }
             _ => panic!("wrong decision"),
         }
-        // Unknown language is rejected, not guessed.
-        assert!(decision_from_tool_call(&ToolCall {
-            id: "1".into(),
-            name: "run_script".into(),
-            input: json!({ "language": "ruby", "script": "puts 1" }),
-            extra: None,
-        })
-        .is_err());
     }
 
     #[test]

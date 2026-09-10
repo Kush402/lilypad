@@ -181,6 +181,29 @@ async function startConnected(cb: ViewerCallbacks) {
   return { conn, sig, peer };
 }
 
+/** An `agent_ready` as a current desktop sends it: protocol 3, with the
+ * destination disclosed so the phone can bind consent and echo the revision
+ * back on every command (L-265). */
+function readyFrame(runId: string, over: Record<string, unknown> = {}) {
+  return JSON.stringify({
+    kind: 'agent_ready',
+    runId,
+    protocolVersion: 3,
+    destination: {
+      profileId: 'openai',
+      providerName: 'OpenAI',
+      origin: 'https://api.openai.com',
+      model: 'gpt-4o-mini',
+      local: false,
+      consentPolicy: 1,
+      consentRevision: 'rev-abc',
+      source: 'settings',
+    },
+    ts: 1,
+    ...over,
+  });
+}
+
 describe('ViewerConnection', () => {
   beforeEach(() => {
     rtcMock.__mockPeerInstances.length = 0;
@@ -1531,19 +1554,17 @@ describe('ViewerConnection', () => {
       expect(critical.send).not.toHaveBeenCalled();
       conn.prepareAsk();
       const probe = JSON.parse(critical.send.mock.calls[0][0]);
-      critical.emitMessage(
-        JSON.stringify({ kind: 'agent_ready', runId: 'stale-probe', protocolVersion: 2, ts: 1 }),
-      );
+      critical.emitMessage(readyFrame('stale-probe'));
       expect(conn.sendAgentCommand('delete a file').sent).toBe(false);
-      critical.emitMessage(
-        JSON.stringify({ kind: 'agent_ready', runId: probe.runId, protocolVersion: 1, ts: 1 }),
-      );
+      critical.emitMessage(readyFrame(probe.runId, { protocolVersion: 1 }));
       expect(conn.sendAgentCommand('delete a file').sent).toBe(false);
-      critical.emitMessage(
-        JSON.stringify({ kind: 'agent_ready', runId: probe.runId, protocolVersion: 2, ts: 1 }),
-      );
+      critical.emitMessage(readyFrame(probe.runId));
       expect(conn.sendAgentCommand('open Safari').sent).toBe(true);
-      expect(JSON.parse(critical.send.mock.calls[1][0]).protocolVersion).toBe(2);
+      const command = JSON.parse(critical.send.mock.calls[1][0]);
+      expect(command.protocolVersion).toBe(3);
+      // The destination the Mac disclosed, echoed back, so the Mac can refuse a
+      // command aimed at one that has since changed (L-265).
+      expect(command.consentRevision).toBe('rev-abc');
     });
 
     it('sends an agent_command frame and returns a runId', async () => {
@@ -1553,9 +1574,7 @@ describe('ViewerConnection', () => {
 
       conn.prepareAsk();
       const probe = JSON.parse(critical.send.mock.calls[0][0]);
-      critical.emitMessage(
-        JSON.stringify({ kind: 'agent_ready', runId: probe.runId, protocolVersion: 2, ts: 1 }),
-      );
+      critical.emitMessage(readyFrame(probe.runId));
       critical.send.mockClear();
       const { runId, sent: didSend } = conn.sendAgentCommand('open Safari');
 
@@ -1577,9 +1596,7 @@ describe('ViewerConnection', () => {
 
       conn.prepareAsk();
       const probe = JSON.parse(critical.send.mock.calls[0][0]);
-      critical.emitMessage(
-        JSON.stringify({ kind: 'agent_ready', runId: probe.runId, protocolVersion: 2, ts: 1 }),
-      );
+      critical.emitMessage(readyFrame(probe.runId));
       critical.send.mockClear();
       conn.sendAgentCommand('open Safari');
 

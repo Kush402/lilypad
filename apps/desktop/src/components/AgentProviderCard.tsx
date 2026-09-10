@@ -77,6 +77,7 @@ export function AgentProviderCard() {
   const [config, setConfig] = useState<AgentConfigDto | null>(null);
   const [presets, setPresets] = useState<Preset[]>([]);
   const [loadError, setLoadError] = useState('');
+  const [loading, setLoading] = useState(true);
   const [step, setStep] = useState<Step>('provider');
 
   // Draft. Kept across a failed save or test — retyping a key because the
@@ -96,33 +97,47 @@ export function AgentProviderCard() {
   const preset = presets.find((p) => p.id === profileId);
   const dialect = preset?.dialect ?? 'anthropic';
 
+  /**
+   * The one way this card loads, used for the first render and for Try again
+   * (L-280).
+   *
+   * The previous Try again called a function that read the configuration and
+   * never touched `loadError`, so a retry that *succeeded* left the error
+   * screen on display — and it never re-fetched the presets, so a failure in
+   * that half could not be recovered from at all. Reproduced in a browser
+   * fixture: first read rejects, second resolves, error still there.
+   *
+   * So: clear, load both, and let a failure set the error again.
+   */
   const load = useCallback(async () => {
-    // Explicit loading and explicit failure. Swallowing the error here is how
-    // an unreadable settings file used to render as a working setup.
-    const c = await invoke<AgentConfigDto>('get_agent_config');
-    if (!c || typeof c !== 'object') throw new Error('the AI settings could not be read');
-    setConfig(c);
-    if (c.profileId) setProfileId(c.profileId);
-    setModel(c.model ?? '');
-    setBaseUrl(c.baseUrl ?? '');
-    setWantVision(c.vision === true);
-    setStep(c.readiness === 'unconfigured' ? 'provider' : 'test');
+    setLoadError('');
+    setLoading(true);
+    try {
+      // Defensive about the shape, not only about the throw: this card lives
+      // inside the Setup window, and a command that answered with something
+      // unexpected used to take the whole window down with it.
+      const list = await invoke<Preset[]>('list_provider_presets');
+      const presetList = Array.isArray(list) ? list : [];
+      const c = await invoke<AgentConfigDto>('get_agent_config');
+      if (!c || typeof c !== 'object') throw new Error('the AI settings could not be read');
+      setPresets(presetList);
+      setConfig(c);
+      if (c.profileId) setProfileId(c.profileId);
+      setModel(c.model ?? '');
+      setBaseUrl(c.baseUrl ?? '');
+      setWantVision(c.vision === true);
+      // A configured Mac opens on the last step; an unconfigured one starts at
+      // the beginning, with the default preset already usable (L-279).
+      setStep(c.readiness === 'unconfigured' ? 'provider' : 'test');
+    } catch (err) {
+      setLoadError(String(err));
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
   useEffect(() => {
-    void (async () => {
-      try {
-        // Defensive about the shape, not only about the throw: this card lives
-        // inside the Setup window, and a command that answered with something
-        // unexpected used to take the whole window down with it rather than
-        // just this section.
-        const list = await invoke<Preset[]>('list_provider_presets');
-        setPresets(Array.isArray(list) ? list : []);
-        await load();
-      } catch (err) {
-        setLoadError(String(err));
-      }
-    })();
+    void load();
   }, [load]);
 
   /** Changing provider clears what belonged to the old one. A base URL or
@@ -135,6 +150,23 @@ export function AgentProviderCard() {
     setApiKey('');
     setModels(null);
     setReport(null);
+    setError('');
+  };
+
+  /**
+   * Move on with whatever provider is selected (L-279).
+   *
+   * The first version advanced only from the `onChange` of the select, and the
+   * select starts on Anthropic. A clean install therefore showed the provider
+   * row and nothing else — no key field, no save, no way forward — unless the
+   * person happened to pick a different provider and change back. Reproduced in
+   * a browser fixture against the unchanged component.
+   */
+  const continueFromProvider = () => {
+    const chosen = presets.find((p) => p.id === profileId);
+    // Fill the preset's defaults on the way through, so this is the same state
+    // choosing it from the list would have produced.
+    if (chosen && !baseUrl) setBaseUrl(chosen.defaultBaseUrl);
     setError('');
     setStep('connect');
   };
@@ -238,14 +270,14 @@ export function AgentProviderCard() {
         <p className="error" data-testid="agent-provider-load-error">
           Lilypad could not read its AI settings: {loadError}
         </p>
-        <button className="btn" onClick={() => void load()}>
-          Try again
+        <button className="btn" disabled={loading} onClick={() => void load()}>
+          {loading ? 'Trying…' : 'Try again'}
         </button>
       </section>
     );
   }
 
-  if (!config) {
+  if (loading || !config) {
     return (
       <section className="control__approve" data-testid="agent-provider-card">
         <p className="control__approve-title">
@@ -319,6 +351,18 @@ export function AgentProviderCard() {
 
       {preset ? <p className="muted">{preset.authHint}</p> : null}
       {preset?.note ? <p className="muted">{preset.note}</p> : null}
+
+      {step === 'provider' ? (
+        <div className="row">
+          <button
+            className="btn btn--primary"
+            data-testid="agent-provider-continue"
+            onClick={continueFromProvider}
+          >
+            Continue
+          </button>
+        </div>
+      ) : null}
 
       {/* ── step 2: connect ────────────────────────────────────────────── */}
       {step !== 'provider' ? (

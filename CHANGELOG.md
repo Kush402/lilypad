@@ -6,11 +6,45 @@ All notable changes to Lilypad are documented here. The format follows
 
 ## [Unreleased]
 
-Work from the v0.1.33 product review. Not released, not tagged, not on any
-device yet.
+Work from the v0.1.33 product review and its 2026-09-10 follow-up. Not released,
+not tagged, not on any device yet.
+
+### Removed
+
+- **Ask can no longer run scripts.** A script could start a background process
+  that detached itself and kept running after you pressed Stop, and macOS gives
+  Lilypad no way to guarantee it has ended: the two mechanisms that would have
+  provided one were both tried and neither works on current macOS. Rather than
+  leave a capability whose Stop cannot be trusted, this build does not offer it.
+  Everything else Ask does is unchanged: opening apps, creating folders, reading
+  the screen, pressing buttons and taking screenshots. Such a process was always
+  confined to the same restricted sandbox, so what could not be guaranteed was
+  when it stopped, not what it could reach.
+
+### Changed
+
+- **Ask needs the current version on both your Mac and your phone.** Your phone
+  now tells your Mac which AI destination it agreed to, and your Mac refuses a
+  task aimed at a different one. An older phone cannot do that, so it will say
+  it needs updating rather than sending the task.
 
 ### Security
 
+- **A provider address could redirect your key and your screen to someone
+  else.** If the endpoint you configured answered with a redirect, Lilypad
+  followed it — and while the usual authorization header is dropped when the
+  destination host changes, the header Anthropic uses is not, so the key went
+  with it. A redirect that preserves the request body would have carried what
+  Ask read from your screen too. Lilypad no longer follows redirects for
+  anything to do with your AI provider; it tells you where the address wanted to
+  send you, and you decide.
+- **Your Mac could tell your phone one AI provider and use another.** A
+  developer environment override took priority when the request was actually
+  made, while the disclosure your phone saw came from the saved settings. They
+  are now the same answer, resolved once. Your phone also confirms which
+  destination it agreed to on every task, and your Mac refuses a task if that no
+  longer matches — so changing the provider on the Mac asks you again rather
+  than quietly redirecting what leaves it.
 - **A script could redirect one of Lilypad's own writes onto a file it was
   never granted.** Every Ask run leaves its script, its sandbox profile and its
   captured output on disk so that what happened can be checked afterwards.
@@ -69,6 +103,23 @@ device yet.
 
 ### Fixed
 
+- Testing a provider now tests what a real task does: it asks the model to use
+  a tool, sends the result back, and requires it to carry on. An endpoint that
+  accepted the first step and rejected the second used to pass setup and fail on
+  your first real task.
+- A test result is now tied to the exact key it was run with, so testing a key
+  you have not saved yet can no longer mark a different saved key as working,
+  and replacing a key clears what was verified about the old one. If the result
+  cannot be saved, it says so instead of appearing to have been.
+- Setting up the default provider on a new Mac now has a Continue button. It was
+  possible to reach a first screen with no way forward at all.
+- Try again on a failed settings load now actually retries, and clears the error
+  when it succeeds. It previously left the same error on screen.
+- Listing models now gives up if the endpoint stops responding, instead of
+  leaving Listing running indefinitely.
+- A locked keychain no longer leaves a stuck helper process behind each time
+  Lilypad asks it, and a keychain that will not answer is no longer reported as
+  "no provider configured".
 - Stopping a task now reports whether it was confirmed. A script could start a
   process that detached itself and outlived being stopped; macOS gives Lilypad
   no way to guarantee that cannot happen, so it now checks afterwards and never

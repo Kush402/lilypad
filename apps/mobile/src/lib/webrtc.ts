@@ -202,6 +202,8 @@ export class ViewerConnection {
   /** Monotonic suffix for run ids minted by `sendAgentCommand`. */
   private askReady = false;
   private askProbe: string | null = null;
+  /** The destination the Mac disclosed on the last `agent_ready`. */
+  private askDestination: AgentDestination | undefined;
   private agentRunCounter = 0;
   private dataChannel: DataChannelLike | null = null;
   /** The unreliable move channel — separate from `dataChannel` above since
@@ -459,6 +461,7 @@ export class ViewerConnection {
         // caller. `undefined` when the Mac disclosed nothing, and it stays
         // `undefined` — an unstated destination must not inherit the last
         // one this phone saw (L-265).
+        this.askDestination = parsed.data.destination;
         this.cb.onAgentReady?.(parsed.data.destination);
       }
       return;
@@ -502,6 +505,11 @@ export class ViewerConnection {
         runId,
         text,
         protocolVersion: ASK_PROTOCOL_VERSION,
+        // The destination this phone was told about, echoed back so the Mac can
+        // refuse a command aimed at one that has since changed (L-265). Taken
+        // from the last `agent_ready` rather than from anything the caller
+        // passes, so it always describes what the person was actually shown.
+        consentRevision: this.askDestination?.consentRevision,
         ts: Date.now(),
       });
     return { runId, sent };
@@ -760,6 +768,7 @@ export class ViewerConnection {
     this.dataChannel = null;
     this.askReady = false;
     this.askProbe = null;
+    this.askDestination = undefined;
     this.moveDataChannel = null;
     this.peerConnected = false;
     try {
@@ -1290,6 +1299,7 @@ export class ViewerConnection {
     this.dataChannel = null;
     this.askReady = false;
     this.askProbe = null;
+    this.askDestination = undefined;
     this.moveDataChannel = null;
     this.peerConnected = false;
   }

@@ -114,6 +114,11 @@ pub struct ProbeReport {
     /// the effective endpoint is never a matter of trust.
     pub origin: String,
     pub model: String,
+    /// Whether this result was filed against the saved configuration. `false`
+    /// when a draft was tested, or when persistence failed — which the message
+    /// then explains (L-282).
+    #[serde(default)]
+    pub recorded: bool,
 }
 
 impl ProbeReport {
@@ -126,6 +131,7 @@ impl ProbeReport {
             failure: Some(failure.kind),
             origin,
             model,
+            recorded: false,
         }
     }
 }
@@ -140,9 +146,10 @@ fn probe_tool() -> ToolSpec {
             "properties": {
                 "count": { "type": "integer", "description": "How many squares are in the image." },
                 "colour": { "type": "string", "description": "The colour of the squares." },
-                "ready": { "type": "boolean", "description": "Set to true." }
+                "ready": { "type": "boolean", "description": "Set to true." },
+                "echo": { "type": "string", "description": "Copy the exact value you were asked to echo." }
             },
-            "required": ["ready"]
+            "required": []
         }),
     }
 }
@@ -153,9 +160,23 @@ const PROBE_SYSTEM: &str = "You are being checked for connectivity. \
 /// Run the check against an already-built provider.
 ///
 /// Takes the provider rather than the settings so the caller decides what is
-/// being tested — an unsaved draft on the setup screen, most of the time,
-/// which is the whole point: nobody should have to commit a configuration to
-/// find out whether it works.
+/// being tested — an unsaved draft on the setup screen, most of the time, which
+/// is the whole point: nobody should have to commit a configuration to find out
+/// whether it works.
+///
+/// ### Why there are always two turns (L-283)
+///
+/// The first version returned "tools supported" as soon as a call named
+/// `probe_report` came back, and did not look at its arguments. That tests less
+/// than it appears to. Ask does not merely *send* tools; every step feeds the
+/// previous action's result back as a tool result and expects the model to keep
+/// going. An endpoint that emits a tool call and then rejects tool-result input
+/// on the next turn — a real failure mode for gateways with partial
+/// compatibility — passed setup and failed on the person's first real task.
+///
+/// So the probe always completes a round trip: it validates the arguments of
+/// the first call, sends a tool result carrying a nonce (or the test image),
+/// and requires a correct follow-up call before it will say tools work.
 pub async fn run<P: LlmProvider>(
     provider: &P,
     origin: String,
@@ -164,7 +185,7 @@ pub async fn run<P: LlmProvider>(
 ) -> ProbeReport {
     let tools = [probe_tool()];
 
-    // 1. Tool round trip.
+    // ── turn 1: does it call the tool it was given, correctly? ───────────
     let ask = ChatMessage {
         role: Role::User,
         blocks: vec![Block::Text(
@@ -173,56 +194,47 @@ pub async fn run<P: LlmProvider>(
     };
     let reply = match provider.complete(PROBE_SYSTEM, &[ask.clone()], &tools).await {
         Ok(reply) => reply,
-        Err(err) => {
-            let failure = downcast(&err);
-            return ProbeReport::failed(origin, model, &failure);
-        }
+        Err(err) => return ProbeReport::failed(origin, model, &downcast(&err)),
     };
     let Some(call) = reply.tool_call.filter(|c| c.name == "probe_report") else {
-        return ProbeReport {
-            ok: false,
-            tools: Capability::Unsupported,
-            vision: Capability::Untested,
-            message: Some(
-                "The endpoint answered, but this model did not call the tool it was given. \
-                 Ask needs tool calling — choose a model that supports it."
-                    .to_string(),
-            ),
-            failure: Some(FailureKind::BadRequest),
+        return no_tools(
             origin,
             model,
-        };
+            "The endpoint answered, but this model did not call the tool it was given. \
+             Ask needs tool calling — choose a model that supports it.",
+        );
     };
-
-    if !want_vision {
-        return ProbeReport {
-            ok: true,
-            tools: Capability::Supported,
-            vision: Capability::Untested,
-            message: None,
-            failure: None,
+    // The arguments are the answer. A call with the right name and the wrong
+    // contents is a model that is not really following the schema.
+    if call.input.get("ready").and_then(|v| v.as_bool()) != Some(true) {
+        return no_tools(
             origin,
             model,
-        };
+            "This model called the tool but did not fill in what it was asked for, so Ask \
+             cannot rely on it to follow a tool's schema.",
+        );
     }
 
-    // 2. Image round trip, on the same conversation: the image travels as the
-    // result of the tool call the model just made, which is exactly how a real
-    // Ask observation reaches it.
-    let shapes = Shapes::pick();
-    let image = match shapes.png_base64() {
-        Ok(image) => image,
-        Err(err) => {
-            return ProbeReport {
-                ok: true,
-                tools: Capability::Supported,
-                vision: Capability::Untested,
-                message: Some(format!("Could not build the test image: {err}")),
-                failure: None,
-                origin,
-                model,
-            }
+    // ── turn 2: does it accept a tool result and keep going? ─────────────
+    let shapes = want_vision.then(Shapes::pick);
+    let image = match shapes.as_ref().map(|s| s.png_base64()) {
+        Some(Ok(image)) => Some(image),
+        None => None,
+        Some(Err(err)) => {
+            // The image could not be built here, which says nothing about the
+            // provider. Fall back to the text round trip and say so.
+            log::warn!(target: "lilypad::agent", "probe image could not be built: {err}");
+            None
         }
+    };
+    // A nonce the model cannot know without reading the tool result we send.
+    let nonce = format!("{:04x}", std::process::id() ^ (call.id.len() as u32) << 3);
+    let instruction = match &shapes {
+        Some(_) if image.is_some() => format!(
+            "Here is an image. Call `probe_report` again with the number of squares as \
+             `count`, their colour as `colour`, and `echo` set to \"{nonce}\"."
+        ),
+        _ => format!("Call `probe_report` again with `echo` set to \"{nonce}\"."),
     };
     let assistant = ChatMessage {
         role: Role::Assistant,
@@ -233,70 +245,112 @@ pub async fn run<P: LlmProvider>(
             extra: call.extra.clone(),
         }],
     };
-    let with_image = ChatMessage {
+    let result_turn = ChatMessage {
         role: Role::User,
-        blocks: vec![
-            Block::ToolResult {
-                tool_use_id: call.id.clone(),
-                content: "Here is an image. Call `probe_report` again with the number of \
-                          squares as `count` and their colour as `colour`."
-                    .to_string(),
-                is_error: false,
-                image_base64: Some(image),
-            },
-        ],
+        blocks: vec![Block::ToolResult {
+            tool_use_id: call.id.clone(),
+            content: instruction,
+            is_error: false,
+            image_base64: image.clone(),
+        }],
     };
-    let reply = match provider
-        .complete(PROBE_SYSTEM, &[ask, assistant, with_image], &tools)
-        .await
-    {
+    let second = provider
+        .complete(PROBE_SYSTEM, &[ask, assistant, result_turn], &tools)
+        .await;
+
+    let second = match second {
         Ok(reply) => reply,
         Err(err) => {
             let failure = downcast(&err);
+            // This is the failure mode the second turn exists to catch: the
+            // endpoint took the tools but will not take a tool result back.
             return ProbeReport {
-                ok: true,
-                tools: Capability::Supported,
-                vision: Capability::Unsupported,
+                ok: false,
+                tools: Capability::Unsupported,
+                vision: Capability::Untested,
                 message: Some(format!(
-                    "Text works, but this model rejected an image: {}",
+                    "This endpoint accepted a tool call but rejected the tool result Ask sends \
+                     back on the next step: {}",
                     failure.message
                 )),
                 failure: Some(failure.kind),
                 origin,
                 model,
+                recorded: false,
             };
         }
     };
-    let saw = reply
-        .tool_call
-        .as_ref()
-        .map(|c| {
-            let count = c.input.get("count").and_then(|v| v.as_u64());
-            let colour = c
+    let Some(follow_up) = second.tool_call.filter(|c| c.name == "probe_report") else {
+        return no_tools(
+            origin,
+            model,
+            "This model stopped calling tools after the first result was sent back, so Ask \
+             could not carry a task past its first step.",
+        );
+    };
+    let echoed = follow_up
+        .input
+        .get("echo")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    if echoed != nonce {
+        return no_tools(
+            origin,
+            model,
+            "This model did not read the result Ask sent back to it, so it cannot follow what \
+             happens between steps.",
+        );
+    }
+
+    // Tools are proven. Vision is a separate question, and only asked when the
+    // person asked for it.
+    let vision = match (&shapes, &image) {
+        (Some(shapes), Some(_)) => {
+            let count = follow_up.input.get("count").and_then(|v| v.as_u64());
+            let colour = follow_up
                 .input
                 .get("colour")
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_ascii_lowercase();
-            count == Some(shapes.count as u64) && colour.contains(shapes.colour)
-        })
-        .unwrap_or(false);
+            if count == Some(shapes.count as u64) && colour.contains(shapes.colour) {
+                Capability::Supported
+            } else {
+                Capability::Unsupported
+            }
+        }
+        _ => Capability::Untested,
+    };
     ProbeReport {
         ok: true,
         tools: Capability::Supported,
-        vision: if saw {
-            Capability::Supported
-        } else {
-            Capability::Unsupported
+        vision,
+        message: match vision {
+            Capability::Unsupported => Some(
+                "Text works, but this model did not read the test image correctly. Ask will \
+                 use it without screenshots."
+                    .to_string(),
+            ),
+            _ => None,
         },
-        message: (!saw).then(|| {
-            "Text works, but this model did not read the test image correctly. \
-             Ask will use it without screenshots."
-                .to_string()
-        }),
         failure: None,
         origin,
         model,
+        recorded: false,
+    }
+}
+
+/// A provider that answered but cannot drive Ask.
+fn no_tools(origin: String, model: String, message: &str) -> ProbeReport {
+    ProbeReport {
+        ok: false,
+        tools: Capability::Unsupported,
+        vision: Capability::Untested,
+        message: Some(message.to_string()),
+        failure: Some(FailureKind::BadRequest),
+        origin,
+        model,
+        recorded: false,
     }
 }
 
@@ -316,33 +370,83 @@ mod tests {
     use super::*;
     use crate::agent::llm::{AssistantReply, ProviderCaps, ToolCall};
 
-    /// A provider that answers from a script, so the probe's own logic is what
-    /// is under test rather than any network.
-    struct Scripted {
-        replies: std::sync::Mutex<Vec<Result<AssistantReply, String>>>,
+    /// How the scripted provider behaves on the second turn — the one that
+    /// carries a tool result back.
+    #[derive(Clone, Copy)]
+    enum SecondTurn {
+        /// Echo the nonce it was sent, like a working model.
+        EchoNonce,
+        /// Echo the nonce and answer the image question with these values.
+        EchoWithImage(u32, &'static str),
+        /// Answer without reading the result it was sent.
+        IgnoreResult,
+        /// Reject tool-result input entirely — the gateway failure L-283 is
+        /// about, invisible to a one-turn probe.
+        RejectToolResult,
+        /// Stop calling tools.
+        Prose,
     }
-    impl Scripted {
-        fn new(replies: Vec<Result<AssistantReply, String>>) -> Self {
-            Scripted {
-                replies: std::sync::Mutex::new(replies),
+
+    struct Scripted {
+        first: AssistantReply,
+        second: SecondTurn,
+    }
+
+    /// Pull the nonce back out of the instruction, the way a model that
+    /// actually read the tool result would.
+    fn nonce_from(messages: &[ChatMessage]) -> String {
+        for message in messages {
+            for block in &message.blocks {
+                if let Block::ToolResult { content, .. } = block {
+                    if let Some(start) = content.find('"') {
+                        if let Some(end) = content[start + 1..].find('"') {
+                            return content[start + 1..start + 1 + end].to_string();
+                        }
+                    }
+                }
             }
         }
+        String::new()
     }
+
+    fn has_tool_result(messages: &[ChatMessage]) -> bool {
+        messages
+            .iter()
+            .any(|m| m.blocks.iter().any(|b| matches!(b, Block::ToolResult { .. })))
+    }
+
     impl LlmProvider for Scripted {
         async fn complete(
             &self,
             _system: &str,
-            _messages: &[ChatMessage],
+            messages: &[ChatMessage],
             _tools: &[ToolSpec],
         ) -> Result<AssistantReply> {
-            let next = self.replies.lock().unwrap().remove(0);
-            next.map_err(|e| {
-                anyhow::Error::new(ProviderFailure {
-                    kind: FailureKind::Auth,
-                    status: Some(401),
-                    message: e,
-                })
-            })
+            if !has_tool_result(messages) {
+                return Ok(self.first.clone());
+            }
+            match self.second {
+                SecondTurn::RejectToolResult => Err(anyhow::Error::new(ProviderFailure {
+                    kind: FailureKind::BadRequest,
+                    status: Some(400),
+                    message: "messages: tool result blocks are not supported".into(),
+                })),
+                SecondTurn::Prose => Ok(AssistantReply {
+                    text: Some("All done!".into()),
+                    tool_call: None,
+                }),
+                SecondTurn::IgnoreResult => {
+                    Ok(call(serde_json::json!({ "echo": "not-the-nonce" })))
+                }
+                SecondTurn::EchoNonce => Ok(call(
+                    serde_json::json!({ "echo": nonce_from(messages) }),
+                )),
+                SecondTurn::EchoWithImage(count, colour) => Ok(call(serde_json::json!({
+                    "echo": nonce_from(messages),
+                    "count": count,
+                    "colour": colour,
+                }))),
+            }
         }
         fn caps(&self) -> ProviderCaps {
             ProviderCaps::default()
@@ -361,45 +465,122 @@ mod tests {
         }
     }
 
+    fn ready_first() -> AssistantReply {
+        call(serde_json::json!({ "ready": true }))
+    }
+
+    fn probe(first: AssistantReply, second: SecondTurn, vision: bool) -> Scripted {
+        let _ = vision;
+        Scripted { first, second }
+    }
+
     #[tokio::test]
     async fn a_rejected_key_is_reported_as_a_key_problem() {
-        let p = Scripted::new(vec![Err("Incorrect API key provided".into())]);
-        let report = run(&p, "https://api.openai.com".into(), "m".into(), false).await;
+        struct Failing;
+        impl LlmProvider for Failing {
+            async fn complete(
+                &self,
+                _s: &str,
+                _m: &[ChatMessage],
+                _t: &[ToolSpec],
+            ) -> Result<AssistantReply> {
+                Err(anyhow::Error::new(ProviderFailure {
+                    kind: FailureKind::Auth,
+                    status: Some(401),
+                    message: "Incorrect API key provided".into(),
+                }))
+            }
+            fn caps(&self) -> ProviderCaps {
+                ProviderCaps::default()
+            }
+        }
+        let report = run(&Failing, "https://api.openai.com".into(), "m".into(), false).await;
         assert!(!report.ok);
         assert_eq!(report.failure, Some(FailureKind::Auth));
         assert_eq!(report.tools, Capability::Untested);
     }
 
-    /// The case a status code cannot catch: HTTP 200, and no tool call.
+    /// HTTP 200, and no tool call. A status code cannot catch this.
     #[tokio::test]
     async fn prose_instead_of_a_tool_call_is_a_failure() {
-        let p = Scripted::new(vec![Ok(AssistantReply {
-            text: Some("Sure! I am ready.".into()),
-            tool_call: None,
-        })]);
+        let p = probe(
+            AssistantReply {
+                text: Some("Sure! I am ready.".into()),
+                tool_call: None,
+            },
+            SecondTurn::EchoNonce,
+            false,
+        );
         let report = run(&p, "https://x".into(), "m".into(), false).await;
         assert!(!report.ok);
         assert_eq!(report.tools, Capability::Unsupported);
         assert!(report.message.unwrap().contains("tool calling"));
     }
 
+    /// L-283. The call arrives with the right name and the wrong contents.
     #[tokio::test]
-    async fn tools_pass_without_touching_vision_unless_it_was_asked_for() {
-        let p = Scripted::new(vec![Ok(call(serde_json::json!({"ready": true})))]);
+    async fn a_tool_call_with_wrong_arguments_is_not_a_pass() {
+        for bad in [
+            serde_json::json!({}),
+            serde_json::json!({ "ready": false }),
+            serde_json::json!({ "ready": "yes" }),
+        ] {
+            let p = probe(call(bad.clone()), SecondTurn::EchoNonce, false);
+            let report = run(&p, "https://x".into(), "m".into(), false).await;
+            assert!(!report.ok, "accepted {bad}");
+            assert_eq!(report.tools, Capability::Unsupported, "accepted {bad}");
+        }
+    }
+
+    /// L-283, the case the old one-turn probe could not see: the endpoint
+    /// emits a tool call and then refuses the tool result Ask sends back.
+    #[tokio::test]
+    async fn an_endpoint_that_rejects_tool_results_does_not_pass_setup() {
+        let p = probe(ready_first(), SecondTurn::RejectToolResult, false);
+        let report = run(&p, "https://gw.example".into(), "m".into(), false).await;
+        assert!(!report.ok);
+        assert_eq!(report.tools, Capability::Unsupported);
+        assert!(
+            report.message.unwrap().contains("rejected the tool result"),
+            "the failure should name the step that failed"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_model_that_stops_calling_tools_after_a_result_does_not_pass() {
+        let p = probe(ready_first(), SecondTurn::Prose, false);
         let report = run(&p, "https://x".into(), "m".into(), false).await;
-        assert!(report.ok);
+        assert!(!report.ok);
+        assert_eq!(report.tools, Capability::Unsupported);
+    }
+
+    #[tokio::test]
+    async fn a_model_that_does_not_read_the_result_does_not_pass() {
+        let p = probe(ready_first(), SecondTurn::IgnoreResult, false);
+        let report = run(&p, "https://x".into(), "m".into(), false).await;
+        assert!(!report.ok);
+        assert_eq!(report.tools, Capability::Unsupported);
+    }
+
+    #[tokio::test]
+    async fn a_full_round_trip_passes_without_touching_vision_unless_asked() {
+        let p = probe(ready_first(), SecondTurn::EchoNonce, false);
+        let report = run(&p, "https://x".into(), "m".into(), false).await;
+        assert!(report.ok, "{:?}", report.message);
         assert_eq!(report.tools, Capability::Supported);
-        assert_eq!(report.vision, Capability::Untested, "vision was never asked about");
+        assert_eq!(
+            report.vision,
+            Capability::Untested,
+            "vision was never asked about"
+        );
+        assert!(!report.recorded, "the caller decides what is recorded");
     }
 
     /// A model that answers the image question wrongly is not a model that can
     /// see. Vision is downgraded; text still works, and the report says both.
     #[tokio::test]
     async fn a_wrong_image_answer_downgrades_vision_without_failing_the_setup() {
-        let p = Scripted::new(vec![
-            Ok(call(serde_json::json!({"ready": true}))),
-            Ok(call(serde_json::json!({"count": 99, "colour": "purple"}))),
-        ]);
+        let p = probe(ready_first(), SecondTurn::EchoWithImage(99, "purple"), true);
         let report = run(&p, "https://x".into(), "m".into(), true).await;
         assert!(report.ok, "text still works");
         assert_eq!(report.tools, Capability::Supported);
@@ -424,7 +605,8 @@ mod tests {
         let mut inside = false;
         for x in 0..decoded.width() {
             let px = decoded.get_pixel(x, y);
-            let coloured = px[0] == shapes.rgb[0] && px[1] == shapes.rgb[1] && px[2] == shapes.rgb[2];
+            let coloured =
+                px[0] == shapes.rgb[0] && px[1] == shapes.rgb[1] && px[2] == shapes.rgb[2];
             if coloured && !inside {
                 runs += 1;
             }

@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 /** Increment when older peers cannot disclose or enforce the same authority. */
-export const ASK_PROTOCOL_VERSION = 2 as const;
+export const ASK_PROTOCOL_VERSION = 3 as const;
 
 /**
  * AI-agent protocol — carried over the SAME WebRTC DataChannel as input
@@ -82,6 +82,8 @@ const agentCommand = WithTs.extend({
   /** The natural-language task. */
   text: z.string().min(1).max(MAX_COMMAND_LEN),
   protocolVersion: z.literal(ASK_PROTOCOL_VERSION).optional(),
+  /** The `consentRevision` the person agreed to, echoed back. */
+  consentRevision: z.string().max(64).optional(),
 });
 
 /**
@@ -120,6 +122,20 @@ export const AgentDestinationSchema = z.object({
   local: z.boolean(),
   /** Revision of the consent wording this destination was disclosed under. */
   consentPolicy: z.number().int().min(1).max(1_000_000),
+  /**
+   * Digest of everything above. The phone echoes it on every command, and the
+   * Mac refuses a command whose revision is no longer current — which is what
+   * stops a provider change made after the disclosure from redirecting the
+   * screen without another decision (L-265).
+   */
+  consentRevision: z.string().min(1).max(64),
+  /**
+   * Which source decided this: `settings`, or `env` for a developer override.
+   * The override used to win at execution time while the phone was told what
+   * the settings file said, so the two answers could differ with nothing
+   * comparing them.
+   */
+  source: z.string().max(32),
 });
 export type AgentDestination = z.infer<typeof AgentDestinationSchema>;
 

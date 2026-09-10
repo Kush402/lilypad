@@ -1276,10 +1276,15 @@ pub fn get_agent_config() -> AgentConfigDto {
         None => (None, None),
     };
 
-    let has_key = kind
+    // Three outcomes, not two: a key, no key, or a store that would not say.
+    // The last one used to read as "no key configured" (L-271).
+    let key_lookup = kind
         .as_deref()
-        .map(|k| store::credential_for(k, base.as_deref()).is_some())
-        .unwrap_or(false);
+        .map(|k| store::credential_for(k, base.as_deref()));
+    let has_key = matches!(key_lookup, Some(Ok(Some(_))));
+    if let Some(Err(unavailable)) = &key_lookup {
+        problem = Some(unavailable.0.clone());
+    }
 
     let source = if ProviderChoice::from_env().is_some() {
         "env"
@@ -1380,11 +1385,19 @@ pub fn set_agent_config(args: SetAgentConfigArgs) -> Result<AgentConfigDto, Stri
             .map_err(|e| e.to_string())?;
     }
 
-    // Did this save change where requests go, or which dialect speaks? Either
-    // one invalidates what was verified about the old destination.
+    // Did this save change anything a verification result depends on? Where
+    // requests go, which dialect speaks, which model — **or which key** (L-282).
+    // A replaced credential was previously invisible here, so a Ready earned by
+    // the old key survived onto the new one.
+    let replaced_key = args
+        .api_key
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|k| !k.is_empty());
     let destination_changed = previous.provider_kind.as_deref() != Some(args.provider_kind.as_str())
         || previous.base_url != base_url
-        || previous.model != args.model.clone().filter(|s| !s.trim().is_empty());
+        || previous.model != args.model.clone().filter(|s| !s.trim().is_empty())
+        || replaced_key;
 
     let settings = store::AgentSettings {
         provider_kind: Some(args.provider_kind),
@@ -1446,9 +1459,12 @@ pub async fn test_agent_connection(
 
     let key = args
         .api_key
+        .clone()
         .map(|k| k.trim().to_string())
         .filter(|k| !k.is_empty())
-        .or_else(|| store::credential_for(&args.provider_kind, base_url.as_deref()));
+        .or_else(|| store::credential_for(&args.provider_kind, base_url.as_deref()).ok().flatten());
+    // The exact credential this probe used, so the result can be bound to it.
+    let probed_key = key.clone();
 
     let want_vision = args.vision.unwrap_or(false);
     let choice = match args.provider_kind.as_str() {
@@ -1491,24 +1507,80 @@ pub async fn test_agent_connection(
     };
     let provider = AnyProvider::new(choice);
     let report = probe::run(&provider, origin, model, want_vision).await;
+    let report_tools_supported = report.tools == probe::Capability::Supported;
+    let report_vision = report.vision;
 
     // Record the result against the stored settings only when it describes the
     // stored settings. A probe of an unsaved draft proves nothing about what
     // is on disk.
-    let stored = store::load_settings();
-    let same_target = stored.provider_kind.as_deref() == Some(args.provider_kind.as_str())
-        && stored.base_url == base_url
-        && stored.model == args.model.clone().filter(|s| !s.trim().is_empty());
-    if same_target {
+    // L-282: a probe result may only be filed against the exact configuration
+    // it tested, credential included. Comparing kind, base and model was not
+    // enough — a valid draft key could mark a *different* saved key Ready, and
+    // a probe that finished late could overwrite newer state.
+    //
+    // Both snapshots are built on the blocking pool, because resolving the
+    // saved one reads the keychain.
+    let dialect: &'static str = match args.provider_kind.as_str() {
+        "anthropic" => "anthropic",
+        _ => "openai_compat",
+    };
+    let tested_base = base_url.clone();
+    let tested_model = args.model.clone().filter(|s| !s.trim().is_empty());
+    let tested_key = probed_key.clone();
+    let persisted = tokio::task::spawn_blocking(move || {
+        let stored = store::load_settings();
+        let Some(saved) = crate::agent::llm::effective::EffectiveConfig::resolve_blocking()
+            .ok()
+            .flatten()
+            .map(|(config, _)| config)
+        else {
+            return Err("this Mac has no saved AI configuration to record the result against");
+        };
+        let Some(tested) = crate::agent::llm::effective::EffectiveConfig::draft(
+            dialect,
+            stored.profile_id.clone(),
+            tested_base.clone().unwrap_or_else(|| {
+                store::default_base_url(dialect).unwrap_or_default().to_string()
+            }),
+            tested_model.clone(),
+            tested_key,
+        ) else {
+            return Err("the tested configuration could not be resolved");
+        };
+        if !saved.same_target(&tested) {
+            // Perfectly normal: the person is testing a draft before saving it.
+            // The result is still returned to them; it just is not filed
+            // against a configuration it does not describe.
+            return Ok(false);
+        }
         let mut next = stored;
-        next.tools = Some(report.tools == probe::Capability::Supported);
-        next.vision = match report.vision {
+        next.tools = Some(report_tools_supported);
+        next.vision = match report_vision {
             probe::Capability::Supported => Some(true),
             probe::Capability::Unsupported => Some(false),
             probe::Capability::Untested => next.vision,
         };
         next.verified_at = Some(now_rfc3339());
-        let _ = store::save_settings(&next);
+        // Reported, not swallowed: a Ready the person can see but that was
+        // never written down is a lie the next launch tells.
+        store::save_settings(&next)
+            .map(|()| true)
+            .map_err(|_| "the result could not be saved to this Mac's settings")
+    })
+    .await
+    .unwrap_or(Err("the check could not be completed"));
+
+    let mut report = report;
+    match persisted {
+        Ok(true) => report.recorded = true,
+        Ok(false) => report.recorded = false,
+        Err(reason) => {
+            report.recorded = false;
+            report.message = Some(match report.message.take() {
+                Some(existing) => format!("{existing} ({reason})"),
+                None => reason.to_string(),
+            });
+        }
     }
     Ok(report)
 }
@@ -1544,36 +1616,50 @@ pub async fn list_agent_models(args: ListModelsArgs) -> Result<Vec<String>, Stri
         .api_key
         .map(|k| k.trim().to_string())
         .filter(|k| !k.is_empty())
-        .or_else(|| store::credential_for(&args.provider_kind, Some(base_url.as_str())));
+        .or_else(|| {
+            store::credential_for(&args.provider_kind, Some(base_url.as_str()))
+                .ok()
+                .flatten()
+        });
 
     let trimmed = base_url.trim_end_matches('/');
-    let (url, request) = match args.provider_kind.as_str() {
+    // The same bounded, redirect-refusing client every other provider request
+    // uses (L-281, L-284). A fresh `Client::new()` here had no connect or
+    // whole-request deadline, so an endpoint that accepted the connection and
+    // then stalled left "Listing…" running forever — a body-size limit does not
+    // bound a peer that never finishes its headers — and it followed redirects,
+    // which is how a discovery call could have carried the key to another host.
+    let client = crate::agent::llm::provider_client();
+    let request = match args.provider_kind.as_str() {
         "anthropic" => {
-            let client = reqwest::Client::new();
-            let url = format!("{trimmed}/v1/models");
-            let mut req = client.get(&url).header("anthropic-version", "2023-06-01");
+            let mut req = client
+                .get(format!("{trimmed}/v1/models"))
+                .header("anthropic-version", "2023-06-01");
             if let Some(key) = key {
                 req = req.header("x-api-key", key);
             }
-            (url, req)
+            req
         }
         "openai_compat" => {
-            let client = reqwest::Client::new();
-            let url = format!("{trimmed}/models");
-            let mut req = client.get(&url);
+            let mut req = client.get(format!("{trimmed}/models"));
             if let Some(key) = key {
                 req = req.header("authorization", format!("Bearer {key}"));
             }
-            (url, req)
+            req
         }
         other => return Err(format!("unknown provider kind `{other}`")),
     };
-    let _ = url;
 
     let resp = request
         .send()
         .await
         .map_err(|e| http::classify_transport(&e).message)?;
+    // A refused redirect arrives as an ordinary 3xx. Say where it wanted to go
+    // rather than reporting a bare status nobody can act on.
+    if resp.status().is_redirection() {
+        let location = http::location_of(&resp);
+        return Err(http::refused_redirect(resp.status().as_u16(), location.as_deref()).message);
+    }
     let status = resp.status();
     // Same order as every other provider call: status, bounded body, then
     // parse (L-275, L-276).

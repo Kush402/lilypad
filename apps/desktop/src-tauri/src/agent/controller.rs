@@ -157,13 +157,23 @@ impl AgentController {
         match inbound {
             AgentInbound::AgentHello { run_id, .. } => {
                 if let Some(peer) = peer {
+                    // Disclosed from the same resolved snapshot execution will
+                    // use (L-265). It used to be rebuilt from the settings file
+                    // while `ProviderChoice::resolve` preferred an environment
+                    // override, so a Mac with `LILYPAD_*` set told the phone one
+                    // destination and sent the screen to another.
+                    let destination = match self.provider.peek() {
+                        Readiness::Ready(resolved) => Some(resolved.config.destination()),
+                        // Not yet resolved, not configured, or the keychain did
+                        // not answer: all three mean this Mac cannot state a
+                        // destination right now, and the phone renders that as
+                        // "not disclosed" rather than reusing an older one.
+                        _ => None,
+                    };
                     let msg = AgentOutbound::AgentReady {
                         run_id,
                         protocol_version: ASK_PROTOCOL_VERSION,
-                        // Disclosed on every hello, so a destination that
-                        // changed between sessions is visible on the phone
-                        // before anything is asked (L-265).
-                        destination: crate::agent::llm::current_destination(),
+                        destination,
                         ts: now_ms(),
                     };
                     tokio::spawn(async move {
@@ -175,6 +185,7 @@ impl AgentController {
                 run_id,
                 text,
                 protocol_version,
+                consent_revision,
                 ..
             } => {
                 if protocol_version != Some(ASK_PROTOCOL_VERSION) {
@@ -187,7 +198,7 @@ impl AgentController {
                     }
                     return;
                 }
-                self.start_command(run_id, text, control_scoped, peer);
+                self.start_command(run_id, text, consent_revision, control_scoped, peer);
             }
             AgentInbound::AgentStop { run_id, .. } => {
                 if self.active.as_ref().is_some_and(|a| a.run_id == run_id) {
@@ -268,6 +279,7 @@ impl AgentController {
         &mut self,
         run_id: String,
         text: String,
+        consent_revision: Option<String>,
         control_scoped: bool,
         peer: Option<Arc<WebRtcPeer>>,
     ) {
@@ -312,10 +324,29 @@ impl AgentController {
         // A keychain that is locked or waiting on a dialog now shows up as a
         // sentence rather than as a session that stops answering (L-271).
         let readiness = self.provider.peek();
-        let choice = match &readiness {
-            Readiness::Ready(choice) => Some((**choice).clone()),
+        let resolved = match &readiness {
+            Readiness::Ready(resolved) => Some((**resolved).clone()),
             _ => None,
         };
+
+        // The command has to be for the destination the person was told about
+        // (L-265). A settings change between the disclosure and the command
+        // would otherwise send the screen somewhere they never agreed to, and
+        // nothing on either device would have said so.
+        if let Some(resolved) = &resolved {
+            let expected = &resolved.config.consent_revision;
+            if consent_revision.as_deref() != Some(expected.as_str()) {
+                Self::send_refusal(
+                    &peer,
+                    &run_id,
+                    "This Mac's AI setup changed since your phone last checked. Open Ask again \
+                     to see where requests would go, then send the task once more.",
+                );
+                return;
+            }
+        }
+
+        let choice = resolved.as_ref().map(|r| r.choice.clone());
         match authorize_command(control_scoped, choice.is_some()) {
             CommandGate::DenyNoControl => {
                 Self::send_refusal(
@@ -605,7 +636,7 @@ mod tests {
             task: tokio::spawn(async {}),
             _forwarder: tokio::spawn(async {}),
         });
-        controller.start_command("new".into(), "do a thing".into(), false, None);
+        controller.start_command("new".into(), "do a thing".into(), None, false, None);
         assert!(
             !cancel.is_cancelled(),
             "a command that was never admitted cancelled the live run"
@@ -662,7 +693,7 @@ mod tests {
             "old".into(),
             Arc::new(Mutex::new(Some(RunOutcome::Completed))),
         );
-        controller.start_command("old".into(), "execute again".into(), true, None);
+        controller.start_command("old".into(), "execute again".into(), None, true, None);
         assert!(
             !cancel.is_cancelled(),
             "a replay must not supersede the live task"

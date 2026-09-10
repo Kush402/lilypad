@@ -36,9 +36,22 @@ jest.mock('react-native-keychain', () => ({
   }),
 }));
 
-const MAC_A = { desktopDeviceId: 'mac-a', origin: 'https://api.openai.com' };
-const MAC_A_ELSEWHERE = { desktopDeviceId: 'mac-a', origin: 'https://gw.example.com' };
-const MAC_B = { desktopDeviceId: 'mac-b', origin: 'https://api.openai.com' };
+function target(over: Partial<Parameters<typeof grantAiConsent>[0]> = {}) {
+  return {
+    desktopDeviceId: 'mac-a',
+    origin: 'https://api.openai.com',
+    model: 'gpt-4o-mini',
+    local: false,
+    policy: 1,
+    revision: 'abc123',
+    ...over,
+  };
+}
+
+const MAC_A = target();
+const MAC_A_ELSEWHERE = target({ origin: 'https://gw.example.com' });
+const MAC_B = target({ desktopDeviceId: 'mac-b' });
+const MAC_A_OTHER_MODEL = target({ model: 'gpt-4o' });
 
 beforeEach(() => {
   mockItems.clear();
@@ -76,6 +89,42 @@ describe('consent is bound to a destination (L-265)', () => {
       JSON.stringify([{ ...MAC_A, policy: 0, grantedAt: '2026-01-01T00:00:00Z' }]),
     );
     expect(await hasAiConsent(MAC_A)).toBe(false);
+  });
+
+  it('asks again when the Mac switches model under the same endpoint', async () => {
+    // The card named a model. A different one is a different statement, even
+    // though the provider and origin are unchanged.
+    await grantAiConsent(MAC_A);
+    resetAiConsentCache();
+    expect(await hasAiConsent(MAC_A)).toBe(true);
+    expect(await hasAiConsent(MAC_A_OTHER_MODEL)).toBe(false);
+  });
+
+  it('refuses a disclosure made under wording this phone does not have', async () => {
+    // `targetFor` returns null, so there is nothing to agree to. The phone
+    // would otherwise show its own copy while the Mac meant something else.
+    expect(
+      targetFor('mac-a', {
+        profileId: 'openai',
+        providerName: 'OpenAI',
+        origin: 'https://api.openai.com',
+        model: 'gpt-4o-mini',
+        local: false,
+        consentPolicy: 99,
+        consentRevision: 'r',
+        source: 'settings',
+      }),
+    ).toBeNull();
+  });
+
+  it("carries the Mac's revision through without keying on it", async () => {
+    // The grant must not depend on a digest the other device computes: a Mac
+    // that reported a stale revision could otherwise reuse an old agreement.
+    await grantAiConsent(target({ revision: 'first' }));
+    resetAiConsentCache();
+    expect(await hasAiConsent(target({ revision: 'second' }))).toBe(true);
+    // But a change the person would have SEEN still asks again.
+    expect(await hasAiConsent(target({ revision: 'second', local: true }))).toBe(false);
   });
 });
 

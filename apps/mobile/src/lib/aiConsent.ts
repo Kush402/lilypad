@@ -67,14 +67,45 @@ export type ConsentTarget = {
   desktopDeviceId: string;
   /** scheme://host[:port] the Mac disclosed. */
   origin: string;
+  /** The model that was named on the card, or '' when none was. */
+  model: string;
+  /** Whether the card said the model runs on the Mac. */
+  local: boolean;
+  /** Which wording revision the Mac disclosed under. */
+  policy: number;
+  /**
+   * The Mac's own digest of the destination, echoed back on every command so
+   * the Mac can refuse one aimed at a destination that has since changed.
+   *
+   * The phone does not trust this for change detection — it keys grants on the
+   * fields it actually showed the person, above. This is carried so the two
+   * devices can agree on which disclosure a command belongs to.
+   */
+  revision: string;
 };
 
-type Grant = ConsentTarget & { policy: number; grantedAt: string };
+type Grant = Omit<ConsentTarget, 'revision'> & { grantedAt: string };
 
-/** Key for one destination. Two Macs pointed at the same provider are still
- * two separate decisions. */
-function keyOf(target: ConsentTarget): string {
-  return `${target.desktopDeviceId}|${target.origin}`;
+/**
+ * Key for one destination.
+ *
+ * Built from exactly what the consent card said: which Mac, which endpoint,
+ * which model, whether it was local, and under which wording. Two Macs pointed
+ * at the same provider are still two separate decisions, and a Mac that
+ * switches model has made a different statement than the one agreed to.
+ *
+ * Deliberately not the Mac's `revision` digest: this phone should be able to
+ * detect a changed destination from what it was shown, without depending on
+ * the other device to compute a digest honestly.
+ */
+function keyOf(target: Omit<ConsentTarget, 'revision'>): string {
+  return [
+    target.desktopDeviceId,
+    target.origin,
+    target.model,
+    target.local ? 'local' : 'remote',
+    String(target.policy),
+  ].join('|');
 }
 
 /**
@@ -89,7 +120,17 @@ export function targetFor(
   destination: AgentDestination | undefined,
 ): ConsentTarget | null {
   if (!destination || !destination.origin) return null;
-  return { desktopDeviceId, origin: destination.origin };
+  // A Mac disclosing under wording this phone does not have cannot be agreed
+  // to: the card would be describing something other than what was sent.
+  if (destination.consentPolicy !== AI_CONSENT_POLICY) return null;
+  return {
+    desktopDeviceId,
+    origin: destination.origin,
+    model: destination.model ?? '',
+    local: destination.local,
+    policy: destination.consentPolicy,
+    revision: destination.consentRevision,
+  };
 }
 
 type Cache = {
@@ -159,7 +200,9 @@ export async function hasAiConsent(target: ConsentTarget | null): Promise<boolea
   if (state.revokedUnknown || unresolvedRevocation) return false;
   const key = keyOf(target);
   if (state.revoked.includes(key)) return false;
-  return state.grants.some((g) => keyOf(g) === key && g.policy === AI_CONSENT_POLICY);
+  // The key already carries the policy revision, so an agreement made under
+  // older wording simply does not match.
+  return state.grants.some((g) => keyOf(g) === key);
 }
 
 /** Record that the person said yes, to this Mac and this destination. */
@@ -169,9 +212,10 @@ export async function grantAiConsent(target: ConsentTarget): Promise<boolean> {
   // Granting clears the tombstone for this destination only — agreeing again
   // is allowed, and it is the one thing that should lift a withdrawal.
   const revoked = state.revoked.filter((k) => k !== key);
+  const { revision: _revision, ...stored } = target;
   const grants = [
     ...state.grants.filter((g) => keyOf(g) !== key),
-    { ...target, policy: AI_CONSENT_POLICY, grantedAt: new Date().toISOString() },
+    { ...stored, grantedAt: new Date().toISOString() },
   ].slice(-MAX_GRANTS);
   try {
     await writeTombstones(revoked);

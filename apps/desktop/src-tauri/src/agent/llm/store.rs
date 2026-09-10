@@ -94,6 +94,9 @@ pub fn load_settings() -> AgentSettings {
 }
 
 pub fn save_settings(settings: &AgentSettings) -> Result<()> {
+    // Anything cached about the previous settings is now about a configuration
+    // that is no longer in force.
+    super::resolver::invalidate();
     let path = settings_path()?;
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).context("creating settings dir")?;
@@ -203,22 +206,36 @@ fn is_default_destination(kind: &str, base_url: Option<&str>) -> bool {
     }
 }
 
-/// The key for this exact destination, or `None`.
-pub fn credential_for(kind: &str, base_url: Option<&str>) -> Option<String> {
-    let account = credential_account(kind, base_url).ok()?;
-    if let Some(key) = keychain_get(&account) {
-        return Some(key);
+/// The key for this exact destination.
+///
+/// `Ok(None)` is "no key for this destination"; `Err` is "the store did not
+/// answer". Collapsing the second into the first is what made a locked keychain
+/// look like an unconfigured Mac (L-271).
+pub fn credential_for(
+    kind: &str,
+    base_url: Option<&str>,
+) -> std::result::Result<Option<String>, SecretUnavailable> {
+    let Ok(account) = credential_account(kind, base_url) else {
+        return Ok(None);
+    };
+    if let Some(key) = keychain_get(&account)? {
+        return Ok(Some(key));
     }
     // One-time adoption of a pre-L-262 key, and only at the default endpoint.
-    is_default_destination(kind, base_url)
-        .then(|| keychain_get(kind))
-        .flatten()
+    if is_default_destination(kind, base_url) {
+        return keychain_get(kind);
+    }
+    Ok(None)
 }
 
 /// Store a key for this exact destination.
 pub fn store_credential(kind: &str, base_url: Option<&str>, api_key: &str) -> Result<()> {
     let account = credential_account(kind, base_url)?;
-    keychain_set(&account, api_key)
+    let result = keychain_set(&account, api_key);
+    // A rotated key changes nothing visible in the settings file, so nothing
+    // else would notice (L-278, L-282).
+    super::resolver::invalidate();
+    result
 }
 
 /// Forget the key for this destination, and the legacy dialect-wide item it
@@ -227,21 +244,90 @@ pub fn store_credential(kind: &str, base_url: Option<&str>, api_key: &str) -> Re
 pub fn forget_credential(kind: &str, base_url: Option<&str>) -> Result<()> {
     let mut first_error = None;
     if let Ok(account) = credential_account(kind, base_url) {
-        if keychain_get(&account).is_some() {
+        // A store that will not say whether the item is there is not a store
+        // that can be trusted to have removed it. Attempt the delete anyway and
+        // report what happens.
+        if !matches!(keychain_get(&account), Ok(None)) {
             if let Err(e) = keychain_delete(&account) {
                 first_error = Some(e);
             }
         }
     }
-    if keychain_get(kind).is_some() {
+    if !matches!(keychain_get(kind), Ok(None)) {
         if let Err(e) = keychain_delete(kind) {
             first_error = first_error.or(Some(e));
         }
     }
+    // Whatever happened, what any resolver believes about the credential is now
+    // wrong (L-278).
+    super::resolver::invalidate();
     match first_error {
         Some(e) => Err(e),
         None => Ok(()),
     }
+}
+
+// ── bounding the secret store (L-271) ────────────────────────────────────
+//
+// `security(1)` can block indefinitely: a locked keychain, or an
+// authorization dialog nobody is looking at. The first attempt at bounding
+// this wrapped the call in `tokio::time::timeout` around `spawn_blocking`,
+// which bounds *waiting* and not the work. The process stayed, the pool
+// thread stayed, and the next attempt started another one.
+//
+// A deadline has to be able to end the thing it is a deadline for. So the
+// child is spawned rather than run to completion, polled, and **killed and
+// reaped** when it overruns.
+
+/// How long one `security(1)` invocation may take before it is killed.
+pub const SECRET_STORE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The secret store could not answer. Distinct from "there is no key": one is
+/// a fact about the person's configuration, the other is a fact about this
+/// moment, and they need different words in front of them.
+#[derive(Debug, Clone)]
+pub struct SecretUnavailable(pub String);
+
+impl std::fmt::Display for SecretUnavailable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+impl std::error::Error for SecretUnavailable {}
+
+/// Run a child to completion, or kill it when it overruns `deadline`.
+#[cfg(target_os = "macos")]
+fn wait_bounded(
+    mut child: std::process::Child,
+    deadline: std::time::Duration,
+) -> std::result::Result<std::process::Output, SecretUnavailable> {
+    let start = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) => {}
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(SecretUnavailable(format!("the macOS keychain failed: {e}")));
+            }
+        }
+        if start.elapsed() >= deadline {
+            // Kill AND reap. Killing without waiting leaves a zombie, which is
+            // the same accumulation in a different form.
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(SecretUnavailable(
+                "The macOS keychain did not answer. If a permission box is waiting on the Mac, \
+                 allow it, then try again."
+                    .to_string(),
+            ));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    child
+        .wait_with_output()
+        .map_err(|e| SecretUnavailable(format!("the macOS keychain failed: {e}")))
 }
 
 /// Run one `security(1)` interactive command, feeding the command line over
@@ -261,9 +347,10 @@ fn security_interactive(command: &str) -> Result<String> {
         .ok_or_else(|| anyhow!("no stdin"))?
         .write_all(command.as_bytes())
         .context("writing to security(1)")?;
-    let out = child
-        .wait_with_output()
-        .context("waiting for security(1)")?;
+    // Close stdin so `security -i` sees end of input and exits rather than
+    // waiting for more commands.
+    drop(child.stdin.take());
+    let out = wait_bounded(child, SECRET_STORE_DEADLINE).map_err(|e| anyhow!("{e}"))?;
     if !out.status.success() {
         return Err(anyhow!(
             "security(1) failed: {}",
@@ -322,10 +409,15 @@ pub fn keychain_set(kind: &str, api_key: &str) -> Result<()> {
     })
 }
 
+/// The stored key for one account.
+///
+/// `Ok(None)` means the store answered and there is no such item.
+/// `Err` means the store did not answer, which is a different thing and must
+/// not be reported as "no key configured" (L-271).
 #[cfg(target_os = "macos")]
-pub fn keychain_get(kind: &str) -> Option<String> {
+pub fn keychain_get(kind: &str) -> std::result::Result<Option<String>, SecretUnavailable> {
     // `find-generic-password -w` prints the secret alone on stdout.
-    let out = Command::new("/usr/bin/security")
+    let child = Command::new("/usr/bin/security")
         .args([
             "find-generic-password",
             "-s",
@@ -334,13 +426,28 @@ pub fn keychain_get(kind: &str) -> Option<String> {
             kind,
             "-w",
         ])
-        .output()
-        .ok()?;
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| SecretUnavailable(format!("could not ask the macOS keychain: {e}")))?;
+    let out = wait_bounded(child, SECRET_STORE_DEADLINE)?;
     if !out.status.success() {
-        return None; // not found (or locked keychain) — treat as unset
+        // `security` exits non-zero both for "no such item" and for a refused
+        // read. The message distinguishes them; anything else is treated as an
+        // answer of "not there", which is the direction that fails closed.
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        if stderr.contains("interaction is not allowed") || stderr.contains("User canceled") {
+            return Err(SecretUnavailable(
+                "The macOS keychain refused to release the saved key. Unlock it, or allow the \
+                 permission box, then try again."
+                    .to_string(),
+            ));
+        }
+        return Ok(None);
     }
     let key = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    (!key.is_empty()).then_some(key)
+    Ok((!key.is_empty()).then_some(key))
 }
 
 #[cfg(target_os = "macos")]
@@ -360,8 +467,8 @@ pub fn keychain_set(_kind: &str, _api_key: &str) -> Result<()> {
     ))
 }
 #[cfg(not(target_os = "macos"))]
-pub fn keychain_get(_kind: &str) -> Option<String> {
-    None
+pub fn keychain_get(_kind: &str) -> std::result::Result<Option<String>, SecretUnavailable> {
+    Ok(None)
 }
 #[cfg(not(target_os = "macos"))]
 pub fn keychain_delete(_kind: &str) -> Result<()> {

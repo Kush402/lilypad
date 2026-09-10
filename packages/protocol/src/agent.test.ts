@@ -4,25 +4,54 @@ import { AgentInboundSchema, AgentOutboundSchema, AgentApprovalSchema } from './
 describe('Ask compatibility boundary', () => {
   it('round-trips a side-effect-free probe and versioned response', () => {
     const hello = { kind: 'agent_hello', runId: 'probe-1', ts: 1 };
-    const ready = { kind: 'agent_ready', runId: 'probe-1', protocolVersion: 2, ts: 2 };
+    const ready = { kind: 'agent_ready', runId: 'probe-1', protocolVersion: 3, ts: 2 };
     expect(AgentInboundSchema.parse(hello)).toEqual(hello);
     expect(AgentOutboundSchema.parse(ready)).toEqual(ready);
-    // Version 1 clients cannot disclose readable paths or navigation authority.
-    expect(AgentOutboundSchema.safeParse({ ...ready, protocolVersion: 1 }).success).toBe(false);
-    expect(AgentOutboundSchema.safeParse({ ...ready, protocolVersion: 3 }).success).toBe(false);
-    expect(AgentOutboundSchema.safeParse({ ...ready, protocolVersion: undefined }).success).toBe(
-      false,
-    );
+    // Neither an older nor an unknown version parses: version 2 could not
+    // disclose a destination, and version 1 could not disclose read grants.
+    for (const protocolVersion of [1, 2, 4, undefined]) {
+      expect(AgentOutboundSchema.safeParse({ ...ready, protocolVersion }).success).toBe(false);
+    }
+  });
+
+  it('carries the disclosed destination on a ready frame (L-265)', () => {
+    const ready = {
+      kind: 'agent_ready',
+      runId: 'probe-1',
+      protocolVersion: 3,
+      destination: {
+        profileId: 'openai',
+        providerName: 'OpenAI',
+        origin: 'https://api.openai.com',
+        model: 'gpt-4o-mini',
+        local: false,
+        consentPolicy: 1,
+        consentRevision: 'rev-abc',
+        source: 'settings',
+      },
+      ts: 2,
+    };
+    expect(AgentOutboundSchema.parse(ready)).toEqual(ready);
+    // There is deliberately nowhere for a credential to ride along.
+    expect(Object.keys(ready.destination)).not.toContain('apiKey');
+    // A Mac that discloses nothing still parses; the phone renders that as
+    // "not disclosed" rather than reusing an older destination.
+    const { destination: _omitted, ...bare } = ready;
+    expect(AgentOutboundSchema.safeParse(bare).success).toBe(true);
   });
 
   it('preserves legacy commands for an explicit desktop refusal, rejecting unknown versions', () => {
     const command = { kind: 'agent_command', runId: 'run-1', text: 'Open Safari', ts: 1 };
+    // An unversioned command still parses so the desktop can refuse it with an
+    // explanation rather than a deserialization error.
     expect(AgentInboundSchema.parse(command)).toEqual(command);
-    expect(AgentInboundSchema.parse({ ...command, protocolVersion: 2 })).toEqual({
-      ...command,
-      protocolVersion: 2,
-    });
-    expect(AgentInboundSchema.safeParse({ ...command, protocolVersion: 3 }).success).toBe(false);
+    expect(
+      AgentInboundSchema.parse({ ...command, protocolVersion: 3, consentRevision: 'rev-abc' }),
+    ).toEqual({ ...command, protocolVersion: 3, consentRevision: 'rev-abc' });
+    // A version-2 phone cannot echo a revision it was never sent, so its
+    // commands do not parse as current ones.
+    expect(AgentInboundSchema.safeParse({ ...command, protocolVersion: 2 }).success).toBe(false);
+    expect(AgentInboundSchema.safeParse({ ...command, protocolVersion: 4 }).success).toBe(false);
   });
 
   it('rejects disclosure overflow instead of silently truncating authority', () => {

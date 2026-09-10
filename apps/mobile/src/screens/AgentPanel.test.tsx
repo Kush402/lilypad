@@ -29,8 +29,27 @@ jest.mock('../lib/aiConsent', () => ({
   }),
   // The real one returns null when the Mac disclosed no destination, which is
   // the state several cases below depend on.
-  targetFor: jest.fn((desktopDeviceId: string, destination?: { origin: string }) =>
-    destination?.origin ? { desktopDeviceId, origin: destination.origin } : null,
+  targetFor: jest.fn(
+    (
+      desktopDeviceId: string,
+      destination?: {
+        origin: string;
+        model: string | null;
+        local: boolean;
+        consentPolicy: number;
+        consentRevision: string;
+      },
+    ) =>
+      destination?.origin
+        ? {
+            desktopDeviceId,
+            origin: destination.origin,
+            model: destination.model ?? '',
+            local: destination.local,
+            policy: destination.consentPolicy,
+            revision: destination.consentRevision,
+          }
+        : null,
   ),
 }));
 
@@ -43,6 +62,8 @@ const DESTINATION = {
   model: 'gpt-4o-mini',
   local: false,
   consentPolicy: 1,
+  consentRevision: 'rev-1',
+  source: 'settings',
 };
 const DISCLOSED = { desktopDeviceId: 'mac-1', destination: DESTINATION };
 
