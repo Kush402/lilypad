@@ -907,6 +907,32 @@ a task panic leaving the phone without a terminal frame — is not done.
 
 **Direction 5 — Gate 4.** Still with the user. Unchanged.
 
+### CI for this pass
+
+`6f88d3a` — [run 34420387716](https://github.com/Kush402/lilypad/actions/runs/34420387716):
+all four jobs green, which includes the full mobile suite (CI is where it runs
+authoritatively).
+
+The previous push, `d0594bb`, failed twice and both are worth recording rather
+than quietly re-running:
+
+- **docs-check crashed building a regex.** Mine, and the cause is a trap in the
+  tooling worth knowing: `docs-check` reads a row's status as everything after
+  the row's **last** pipe, so `openat(O_NOFOLLOW|O_DIRECTORY)` written in a
+  status cell silently redefined that row's status to "O_DIRECTORY)`,
+  refusing…" — which is not a valid regex. Escaping the pipe does not help; the
+  character is still there. Keep pipes out of a status cell entirely.
+- **`session_connect_lifecycle::set_capture_mode_request_rebuilds_the_pipeline_and_keeps_streaming`
+  failed**, then passed on the next run with nothing about it changed. That
+  test's own comment already documents this exact failure ("on a commit that
+  changed nothing but a markdown file"); it is a real ICE/SRTP timing flake,
+  not a regression from this work, which touches no WebRTC code. Recorded
+  rather than re-run silently, because "it passed the second time" is the
+  sentence a real regression also produces.
+
+A local gap this exposed: I had been running `cargo test --lib`, which never
+covers `tests/*.rs`. CI does.
+
 ### What a release would and would not carry
 
 Ask's shape changes in this build, and the change is a _reduction_: `open_file`
