@@ -185,15 +185,14 @@ impl EffectiveConfig {
                     Some(c.model.clone()),
                     c.api_key.clone(),
                 )
-            } else if let Some(c) = openai_compat::OpenAiCompatConfig::from_env() {
+            } else {
+                let c = openai_compat::OpenAiCompatConfig::from_env()?;
                 (
                     "openai_compat",
                     c.base_url.clone(),
                     Some(c.model.clone()),
                     c.api_key.clone(),
                 )
-            } else {
-                return None;
             };
         Self::assemble(
             ConfigSource::Environment,

@@ -197,7 +197,7 @@ pub async fn run<P: LlmProvider>(
         )],
     };
     let reply = match provider
-        .complete(PROBE_SYSTEM, &[ask.clone()], &tools)
+        .complete(PROBE_SYSTEM, std::slice::from_ref(&ask), &tools)
         .await
     {
         Ok(reply) => reply,

@@ -325,6 +325,9 @@ mod tests {
         panic!("no resolution was published within 10s");
     }
 
+    // The epoch is process-wide, so this test must hold the turn lock across
+    // its own polling sleeps; that is the point of the lock, not a mistake.
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn invalidating_discards_what_was_known() {
         let _turn = epoch_test_lock();

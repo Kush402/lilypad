@@ -45,13 +45,16 @@ not tagged, not on any device yet.
   the description promised otherwise. It now makes each missing level, still
   refusing to follow a link or replace a file on the way, and refuses a path
   more than 32 folders deep rather than making it.
-- **Approving an action no longer expires because a clock ticked.** The check
-  that runs before Ask presses a button compared the whole screen, so a clock,
-  a progress bar or an unread count in another window could reject the same
-  action over and over. It now compares the window the button is in and ignores
-  only a short, named list of things that change by themselves. A changed
-  amount, a changed recipient, a rearranged window or a different button still
-  asks you again.
+- **Approving an action no longer expires because another window's clock
+  ticked.** The check that runs before Ask presses a button compared the whole
+  screen, so a clock, a progress bar or an unread count in a different window
+  could reject the same action over and over. It now compares only the window
+  the button is in. Everything in that window is compared exactly: a changed
+  amount, a changed recipient, a changed tip or time, a rearranged window or a
+  different button all ask you again. An earlier version of this change also
+  ignored anything shaped like a clock or a percentage anywhere in the window,
+  which would have let a tip go from 5% to 95% under an approval you gave for
+  5%. That was wrong and is not in any released build.
 
 ### Security
 

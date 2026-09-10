@@ -41,108 +41,21 @@ pub const MAX_DEPTH: usize = 12;
 // approval the person had just given, for an action that had not changed at
 // all. A gate that fires on nothing is a gate people learn to work around.
 //
-// So the question is narrowed to what could change what pressing the button
-// *does*:
+// The scope is therefore narrowed to the window that contains the target: a
+// different window of the same app is not this decision, and its clock is not
+// either. Inside that window, everything is compared exactly — same nodes,
+// same roles, same depths, same actionability, same text.
 //
-//   - the same window (a different window of the same app is not this
-//     decision, and its clock is not either);
-//   - the same structure inside it — same nodes, same roles, same depths, same
-//     actionability, so an app that re-laid itself out is a fresh decision;
-//   - the same text, except for an explicit, enumerated list of forms that
-//     change by themselves.
-//
-// That last list is deliberately a list of *forms*, not a similarity measure.
-// "10:31" and "10:32" are both clocks. "$100" and "$200" are both money, and
-// money is the thing an approval is about — so no digit-shape rule is used
-// here, because one would make those two interchangeable.
-
-/// A text form that changes on its own while meaning the same thing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum VolatileForm {
-    /// `10:31`, `1:05:22`, `10:31 PM`.
-    Clock,
-    /// `45%`.
-    Percent,
-    /// `3 minutes ago`.
-    RelativeTime,
-    /// `4 of 27`.
-    Counter,
-}
-
-/// Which self-changing form this text is, if any.
-///
-/// Anything not on this list compares exactly. A recipient, an amount, a file
-/// name and a document title are all "anything else".
-pub fn volatile_form(text: &str) -> Option<VolatileForm> {
-    let t = text.trim();
-    if t.is_empty() {
-        return None;
-    }
-    // `10:31`, `10:31 PM`, `1:05:22`
-    let body = match t.rsplit_once(' ') {
-        Some((head, tail))
-            if tail.eq_ignore_ascii_case("am") || tail.eq_ignore_ascii_case("pm") =>
-        {
-            head
-        }
-        _ => t,
-    };
-    let parts: Vec<&str> = body.split(':').collect();
-    if (2..=3).contains(&parts.len())
-        && parts
-            .iter()
-            .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
-        && parts[0].len() <= 2
-        && parts[1..].iter().all(|p| p.len() == 2)
-    {
-        return Some(VolatileForm::Clock);
-    }
-    if let Some(num) = t.strip_suffix('%') {
-        let num = num.trim();
-        if !num.is_empty() && num.bytes().all(|b| b.is_ascii_digit() || b == b'.') {
-            return Some(VolatileForm::Percent);
-        }
-    }
-    if let Some(head) = t.strip_suffix(" ago") {
-        let mut it = head.split_whitespace();
-        if let (Some(n), Some(unit), None) = (it.next(), it.next(), it.next()) {
-            const UNITS: [&str; 7] = ["second", "minute", "hour", "day", "week", "month", "year"];
-            let unit = unit.trim_end_matches('s').to_ascii_lowercase();
-            if n.bytes().all(|b| b.is_ascii_digit()) && UNITS.contains(&unit.as_str()) {
-                return Some(VolatileForm::RelativeTime);
-            }
-        }
-    }
-    if let Some((a, b)) = t.split_once(" of ") {
-        if !a.is_empty()
-            && !b.is_empty()
-            && a.bytes().all(|c| c.is_ascii_digit())
-            && b.bytes().all(|c| c.is_ascii_digit())
-        {
-            return Some(VolatileForm::Counter);
-        }
-    }
-    None
-}
-
-/// Are these two texts the same decision?
-fn same_text(before: &Option<String>, after: &Option<String>) -> bool {
-    match (before, after) {
-        (Some(a), Some(b)) => {
-            if a == b {
-                return true;
-            }
-            // Only interchangeable when they are the same enumerated form.
-            match (volatile_form(a), volatile_form(b)) {
-                (Some(x), Some(y)) => x == y,
-                _ => false,
-            }
-        }
-        (None, None) => true,
-        // Text appearing or disappearing is a change, not a tick.
-        _ => false,
-    }
-}
+// An earlier pass also allowed enumerated "self-changing" text forms — a
+// clock, a percentage, a relative time, an `n of m` counter — to differ
+// inside the window. That was wrong, and reproduced as wrong: a tip field
+// going 5% → 95% and an appointment going 10:30 → 18:30 are both a pair of
+// same-form strings, and both change what pressing the button does. A
+// clock-shaped string is not evidence that it is a decorative clock. Text
+// shape cannot tell a decoration from a decision; only context and identity
+// can, and this comparison has neither. So the shape rule is gone. If a
+// specific element is later shown to be decorative, exclude that element —
+// not every string that looks like it.
 
 /// The slice of `nodes` covering the window that contains `id`.
 ///
@@ -164,7 +77,8 @@ pub fn window_subtree(nodes: &[AxNode], id: usize) -> Option<std::ops::Range<usi
 /// Does an approval given against `before` still describe pressing `id` in
 /// `after` (L-272)?
 ///
-/// Structure and text inside the target's own window, and nothing outside it.
+/// Structure and exact text inside the target's own window, and nothing
+/// outside it. No text form is exempt: see the note above `window_subtree`.
 pub fn same_material_context(before: &[AxNode], after: &[AxNode], id: usize) -> bool {
     let (Some(a), Some(b)) = (window_subtree(before, id), window_subtree(after, id)) else {
         return false;
@@ -177,8 +91,8 @@ pub fn same_material_context(before: &[AxNode], after: &[AxNode], id: usize) -> 
         x.depth == y.depth
             && x.role == y.role
             && x.pressable == y.pressable
-            && same_text(&x.label, &y.label)
-            && same_text(&x.value, &y.value)
+            && x.label == y.label
+            && x.value == y.value
     })
 }
 
@@ -278,27 +192,53 @@ mod material_context_tests {
 
     const SEND: usize = 4;
 
-    #[test]
-    fn a_ticking_clock_does_not_revoke_an_approval() {
-        // The defect: full equality meant a clock, a progress bar or a
-        // "3 minutes ago" label rejected the same action, repeatedly, and the
-        // person had no way to tell why.
-        let before = sheet("$40.00", "Rae", "10:31");
-        let after = sheet("$40.00", "Rae", "10:32");
-        assert!(same_material_context(&before, &after, SEND));
+    /// One consequential field and the button that acts on it.
+    fn decision(field: &str, value: &str, action: &str) -> Vec<AxNode> {
+        vec![
+            node(0, 0, "AXWindow", "Checkout", None),
+            node(1, 1, "AXStaticText", field, Some(value)),
+            node(2, 1, "AXButton", action, None),
+        ]
+    }
 
-        for (a, b) in [
-            ("45%", "80%"),
-            ("3 minutes ago", "4 minutes ago"),
-            ("1 of 27", "2 of 27"),
-            ("1:05:22", "1:05:23"),
-            ("10:31 PM", "10:32 PM"),
+    const ACT: usize = 2;
+
+    #[test]
+    fn a_self_changing_shape_in_a_consequential_field_is_still_a_change() {
+        // Reproduced 2026-09-10 against the enumerated-form rule, which let
+        // every one of these through: "5%" and "95%" are both percentages,
+        // "10:30" and "18:30" are both clocks, "1 of 10" and "9 of 10" are
+        // both counters. All of them change what pressing the button does.
+        for (field, before, after, action) in [
+            ("Tip", "5%", "95%", "Pay"),
+            ("Appointment", "10:30", "18:30", "Book"),
+            ("Discount", "10%", "90%", "Apply"),
+            ("APR", "3.9%", "29.9%", "Accept"),
+            ("Quantity", "1 of 10", "9 of 10", "Order"),
+            ("Due", "2 days ago", "9 days ago", "Pay now"),
+            ("Duration", "0:30", "8:00", "Start"),
         ] {
             assert!(
-                same_material_context(&sheet("$40.00", "Rae", a), &sheet("$40.00", "Rae", b), SEND),
-                "{a} -> {b} revoked an approval it should not have"
+                !same_material_context(
+                    &decision(field, before, action),
+                    &decision(field, after, action),
+                    ACT
+                ),
+                "{field} {before} -> {after} kept an approval given for {before}"
             );
         }
+    }
+
+    #[test]
+    fn a_decoration_sharing_the_deciding_window_costs_a_fresh_approval() {
+        // The accepted price of exactness, stated so it is not mistaken for an
+        // oversight: a clock in the *same* window as the button is asked
+        // again, because nothing here can tell it from the appointment time
+        // one row above it. Window scoping (below) is what keeps this from
+        // firing on everything.
+        let before = sheet("$40.00", "Rae", "10:31");
+        let after = sheet("$40.00", "Rae", "10:32");
+        assert!(!same_material_context(&before, &after, SEND));
     }
 
     #[test]
@@ -360,38 +300,6 @@ mod material_context_tests {
         let mut b = a.clone();
         b[inbox_button] = node(6, 1, "AXButton", "Archive all", None);
         assert!(!same_material_context(&a, &b, inbox_button));
-    }
-
-    #[test]
-    fn the_volatile_list_is_a_list_of_forms_not_a_similarity_measure() {
-        assert_eq!(volatile_form("10:31"), Some(VolatileForm::Clock));
-        assert_eq!(volatile_form("1:05:22"), Some(VolatileForm::Clock));
-        assert_eq!(volatile_form("10:31 pm"), Some(VolatileForm::Clock));
-        assert_eq!(volatile_form("45%"), Some(VolatileForm::Percent));
-        assert_eq!(
-            volatile_form("3 minutes ago"),
-            Some(VolatileForm::RelativeTime)
-        );
-        assert_eq!(volatile_form("4 of 27"), Some(VolatileForm::Counter));
-        // Everything that decides something is not on the list.
-        for decisive in [
-            "$40.00",
-            "Rae",
-            "Delete account",
-            "report-final.pdf",
-            "40",
-            "",
-        ] {
-            assert_eq!(
-                volatile_form(decisive),
-                None,
-                "{decisive} was treated as volatile"
-            );
-        }
-        // Two volatile values of *different* forms are still a change.
-        assert!(!same_text(&Some("10:31".into()), &Some("45%".into())));
-        // Text appearing is a change, not a tick.
-        assert!(!same_text(&None, &Some("10:31".into())));
     }
 
     #[test]
