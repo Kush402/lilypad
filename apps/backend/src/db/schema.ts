@@ -74,8 +74,75 @@ export const users = pgTable('users', {
    * unknown. Used for status display; the ASSN path is what actually drops
    * `tier` when Apple says the subscription is over. */
   subscriptionExpiresAt: timestamp('subscription_expires_at', { withTimezone: true }),
+  /**
+   * Whether a Sandbox (TestFlight) purchase may entitle this account (L-298).
+   *
+   * The verifier falls back to Sandbox in Production, because a TestFlight
+   * build posts Sandbox receipts and refusing them would make every tester's
+   * purchase look like a forgery. What it must not do is grant the same
+   * commercial tier to anyone who presents one. So the environment is kept on
+   * the subscription, and this column is the explicit, per-account policy that
+   * lets a tester use one.
+   */
+  isBillingTester: boolean('is_billing_tester').notNull().default(false),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
+
+// ── subscriptions (L-294 – L-299) ────────────────────────────────────────────
+/**
+ * One row per Apple subscription, which is a different thing from one row per
+ * account.
+ *
+ * `users.tier` used to carry four facts at once — ownership, period,
+ * environment and effective entitlement — and every one of the billing
+ * lifecycle defects came from that. Here ownership is a column that survives
+ * expiry, the period is a pair of timestamps that can be compared to a clock,
+ * the environment is kept as verified, and entitlement is **not stored at
+ * all**: it is derived in `services/subscription.ts` from this row plus the
+ * account's manual grant.
+ *
+ * Identity is `(environment, original_transaction_id)`. Both halves matter: a
+ * Sandbox and a Production subscription can share an original transaction id
+ * and they are not the same subscription.
+ */
+export const subscriptions = pgTable(
+  'subscriptions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    /** 'Production' | 'Sandbox', as verified — never inferred later. */
+    environment: text('environment').notNull(),
+    originalTransactionId: text('original_transaction_id').notNull(),
+    /**
+     * The account this subscription belongs to. Expiry does not clear it:
+     * losing it is what made a renewal after an expiry unroutable (L-296).
+     *
+     * NULL is a real state, not a missing value: Apple's first notification
+     * can arrive before the phone has posted its receipt, and the observed
+     * production SUBSCRIBED did exactly that. The event is kept, unowned,
+     * and claimed when the client submits — rather than acknowledged and
+     * forgotten.
+     */
+    ownerUserId: uuid('owner_user_id').references(() => users.id, { onDelete: 'cascade' }),
+    productId: text('product_id').notNull(),
+    /** 'active' | 'grace' | 'expired' | 'revoked'. */
+    status: text('status').notNull(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }),
+    graceExpiresAt: timestamp('grace_expires_at', { withTimezone: true }),
+    /** The newest transaction applied, and its own clock — the ordering key
+     *  that stops a replayed older receipt from winning (L-295). */
+    lastTransactionId: text('last_transaction_id'),
+    lastPurchaseDate: timestamp('last_purchase_date', { withTimezone: true }),
+    revokedAt: timestamp('revoked_at', { withTimezone: true }),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // The cross-account uniqueness binding, and the lookup a notification
+    // uses. UNIQUE is the security control: without it one payment could
+    // entitle two accounts.
+    uniqueIndex('subscriptions_identity_idx').on(t.environment, t.originalTransactionId),
+    index('subscriptions_owner_idx').on(t.ownerUserId),
+  ],
+);
 
 // ── oauth_identities (M8) ────────────────────────────────────────────────────
 /**

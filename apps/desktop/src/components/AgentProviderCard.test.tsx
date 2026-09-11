@@ -15,6 +15,18 @@ const PRESETS = [
     modelDiscovery: true,
     requiresKey: true,
     note: '',
+    defaultModel: 'claude-opus-4-8',
+  },
+  {
+    id: 'gemini',
+    displayName: 'Google Gemini',
+    dialect: 'openai_compat',
+    defaultBaseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+    authHint: 'A Gemini API key from Google AI Studio.',
+    modelDiscovery: true,
+    requiresKey: true,
+    note: "Uses Google's OpenAI-compatible endpoint.",
+    defaultModel: '',
   },
   {
     id: 'ollama',
@@ -25,6 +37,7 @@ const PRESETS = [
     modelDiscovery: true,
     requiresKey: false,
     note: 'Nothing you ask leaves this Mac.',
+    defaultModel: '',
   },
 ];
 
@@ -212,5 +225,130 @@ describe('screenshot permission is not a probe result (L-286)', () => {
       // pretend to answer for it.
       expect(args.vision).toBeUndefined();
     });
+  });
+});
+
+/** The catalogue the customer actually saw, as the backend now returns it. */
+const GEMINI_MODELS = [
+  { id: 'models/gemini-2.5-flash', suitability: 'usable', reason: '' },
+  {
+    id: 'models/gemini-2.5-flash-native-audio-preview-12-2025',
+    suitability: 'unsuitable',
+    reason:
+      'This is a Live model: it needs a continuous two-way audio connection, which Ask does not open. Choose a text model instead.',
+  },
+  {
+    id: 'models/text-embedding-004',
+    suitability: 'unsuitable',
+    reason:
+      'This model turns text into vectors for search. It does not hold a conversation, so Ask cannot use it.',
+  },
+];
+
+/** Drive the card to Gemini with a listed catalogue. */
+async function gemini(models: unknown = GEMINI_MODELS) {
+  vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+    if (cmd === 'list_provider_presets') return PRESETS;
+    if (cmd === 'get_agent_config') return UNCONFIGURED;
+    if (cmd === 'list_agent_models') return models;
+    throw new Error(`unexpected ${cmd}`);
+  });
+  render(<AgentProviderCard />);
+  await screen.findByLabelText('Provider');
+  fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'gemini' } });
+  // Choosing a provider does not advance on its own (L-279); Continue does.
+  fireEvent.click(screen.getByTestId('agent-provider-continue'));
+  await screen.findByLabelText('Model');
+  fireEvent.click(screen.getByRole('button', { name: 'List models' }));
+  await waitFor(() => expect(screen.getByTestId('agent-provider-models-filtered')).toBeTruthy());
+}
+
+describe('a model that cannot answer an Ask request (L-291)', () => {
+  it('does not offer the Live Audio model the customer chose', async () => {
+    await gemini();
+    const offered = Array.from(document.querySelectorAll('#agent-model-options option')).map(
+      (o) => (o as HTMLOptionElement).value,
+    );
+    expect(offered).toContain('models/gemini-2.5-flash');
+    expect(offered).not.toContain('models/gemini-2.5-flash-native-audio-preview-12-2025');
+    expect(offered).not.toContain('models/text-embedding-004');
+    expect(screen.getByTestId('agent-provider-models-filtered').textContent).toContain('2 of 3');
+  });
+
+  it('explains and refuses it when the id is typed by hand', async () => {
+    await gemini();
+    fireEvent.change(screen.getByLabelText('Model'), {
+      target: { value: 'models/gemini-2.5-flash-native-audio-preview-12-2025' },
+    });
+    expect(screen.getByTestId('agent-provider-model-unsuitable').textContent).toContain(
+      'Live model',
+    );
+    // Nothing is sent: this is the request that failed for the customer.
+    expect(screen.getByRole('button', { name: 'Save and test' })).toHaveProperty('disabled', true);
+    expect(screen.getByRole('button', { name: 'Save without testing' })).toHaveProperty(
+      'disabled',
+      true,
+    );
+  });
+
+  it('lets a suitable model through', async () => {
+    await gemini();
+    fireEvent.change(screen.getByLabelText('Model'), {
+      target: { value: 'models/gemini-2.5-flash' },
+    });
+    expect(screen.queryByTestId('agent-provider-model-unsuitable')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Save and test' })).toHaveProperty('disabled', false);
+  });
+
+  it('offers everything when the endpoint publishes no metadata', async () => {
+    // A local server knows nothing about methods. Silence must not empty the
+    // list — that would be worse than the defect.
+    await gemini([
+      { id: 'llama3.1:8b', suitability: 'unknown', reason: '' },
+      { id: 'qwen2.5-coder', suitability: 'unsuitable', reason: 'x' },
+    ]);
+    fireEvent.change(screen.getByLabelText('Model'), { target: { value: 'llama3.1:8b' } });
+    expect(screen.queryByTestId('agent-provider-model-unsuitable')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Save and test' })).toHaveProperty('disabled', false);
+  });
+});
+
+describe('a provider with no default model (L-292)', () => {
+  it("asks for a model instead of silently using another vendor's default", async () => {
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === 'list_provider_presets') return PRESETS;
+      if (cmd === 'get_agent_config') return UNCONFIGURED;
+      throw new Error(`unexpected ${cmd}`);
+    });
+    render(<AgentProviderCard />);
+    await screen.findByLabelText('Provider');
+    fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'gemini' } });
+    fireEvent.click(screen.getByTestId('agent-provider-continue'));
+    await screen.findByLabelText('Model');
+
+    expect(screen.getByTestId('agent-provider-model-required')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Save and test' })).toHaveProperty('disabled', true);
+
+    // Choosing one clears it.
+    fireEvent.change(screen.getByLabelText('Model'), {
+      target: { value: 'models/gemini-2.5-flash' },
+    });
+    expect(screen.queryByTestId('agent-provider-model-required')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Save and test' })).toHaveProperty('disabled', false);
+  });
+
+  it('leaves a provider that has a checked default alone', async () => {
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === 'list_provider_presets') return PRESETS;
+      if (cmd === 'get_agent_config') return UNCONFIGURED;
+      throw new Error(`unexpected ${cmd}`);
+    });
+    render(<AgentProviderCard />);
+    await screen.findByLabelText('Provider');
+    fireEvent.click(await screen.findByTestId('agent-provider-continue'));
+    await screen.findByLabelText('Model');
+    // Anthropic is the default selection and has a validated default model.
+    expect(screen.queryByTestId('agent-provider-model-required')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Save and test' })).toHaveProperty('disabled', false);
   });
 });

@@ -1251,6 +1251,10 @@ pub struct AgentConfigDto {
     pub readiness: ReadinessState,
     /// Present when the stored settings cannot work; names what to fix.
     pub problem: Option<String>,
+    /// The failure kind of the last check, when it failed (L-293). Lets the
+    /// card offer "Try again" for a rate limit and "Fix the setting" for a
+    /// rejected key, instead of one word for every cause.
+    pub last_failure: Option<String>,
     /// Which source currently wins: "env" (dev override active — settings
     /// below are stored but ignored), "settings", or "none" (agent inert).
     pub source: &'static str,
@@ -1312,6 +1316,48 @@ pub fn get_agent_config() -> AgentConfigDto {
         );
     }
 
+    // A blank model is only a working configuration where this provider has a
+    // default we have actually checked against it (L-292).
+    let model_chosen = settings
+        .model
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|m| !m.is_empty());
+    if problem.is_none() && !model_chosen {
+        if let Some(kind) = kind.as_deref() {
+            if crate::agent::llm::presets::default_model_for(
+                settings.profile_id.as_deref(),
+                kind,
+                base.as_deref(),
+            )
+            .is_none()
+            {
+                problem = Some(
+                    "Choose a model. This provider has no default we have checked, and \
+                     guessing one would send a request it cannot answer."
+                        .to_string(),
+                );
+            }
+        }
+    }
+
+    // What happened last, which is not what was proven (L-293). A check that
+    // failed leaves the configuration needing attention even though whatever
+    // was measured before it is still true.
+    let last_failure = settings.last_check.as_ref().and_then(|c| {
+        c.failure
+            .as_ref()
+            .map(|kind| (kind.clone(), c.message.clone()))
+    });
+    if problem.is_none() {
+        if let Some((_, message)) = &last_failure {
+            problem = Some(message.clone().unwrap_or_else(|| {
+                "The last check against this endpoint failed. Test the connection again."
+                    .to_string()
+            }));
+        }
+    }
+
     // Readiness is derived, never stored: a stale "ready" flag is exactly the
     // thing L-264 is about.
     let readiness = if kind.is_none() {
@@ -1339,6 +1385,7 @@ pub fn get_agent_config() -> AgentConfigDto {
         has_key,
         readiness,
         problem,
+        last_failure: last_failure.map(|(kind, _)| kind),
         source,
     }
 }
@@ -1435,6 +1482,15 @@ pub fn set_agent_config(args: SetAgentConfigArgs) -> Result<AgentConfigDto, Stri
         } else {
             previous.verified_at
         },
+        // A check's outcome is about the configuration it ran against, exactly
+        // as a capability is (L-293). Carrying a failure across a change of
+        // destination would keep showing the old endpoint's error on the new
+        // one; carrying a pass would be worse.
+        last_check: if destination_changed {
+            None
+        } else {
+            previous.last_check
+        },
     };
     store::save_settings(&settings).map_err(|e| e.to_string())?;
     log::info!(target: "lilypad::audit", "agent_provider_configured — settings saved");
@@ -1487,13 +1543,30 @@ pub async fn test_agent_connection(
     let probed_key = key.clone();
 
     let want_vision = args.vision.unwrap_or(false);
+    // Which model a blank field means, per provider (L-292). Asking is the
+    // honest outcome where this endpoint has no id we have validated: probing
+    // another vendor's default proves nothing and produces an error the person
+    // cannot act on.
+    let stored_profile = store::load_settings().profile_id;
+    let default_model = crate::agent::llm::presets::default_model_for(
+        stored_profile.as_deref(),
+        &args.provider_kind,
+        base_url.as_deref(),
+    );
+    let chosen_model = args.model.clone().filter(|s| !s.trim().is_empty());
+    let resolved_model = match chosen_model.clone() {
+        Some(model) => model,
+        None => default_model
+            .ok_or_else(|| {
+                "Choose a model for this provider first — there is no default we have \
+                 checked against this endpoint."
+                    .to_string()
+            })?
+            .to_string(),
+    };
     let choice = match args.provider_kind.as_str() {
         "anthropic" => {
-            let model = args
-                .model
-                .clone()
-                .filter(|s| !s.trim().is_empty())
-                .unwrap_or_else(|| crate::agent::llm::anthropic::DEFAULT_MODEL.to_string());
+            let model = resolved_model.clone();
             let key = key.ok_or_else(|| "Enter an API key first.".to_string())?;
             let mut c = crate::agent::llm::anthropic::AnthropicConfig::new(key, model);
             if let Some(base) = base_url.clone() {
@@ -1503,14 +1576,9 @@ pub async fn test_agent_connection(
             ProviderChoice::Anthropic(c)
         }
         "openai_compat" => {
-            let model = args
-                .model
-                .clone()
-                .filter(|s| !s.trim().is_empty())
-                .unwrap_or_else(|| crate::agent::llm::openai_compat::DEFAULT_MODEL.to_string());
             let mut c = crate::agent::llm::openai_compat::OpenAiCompatConfig::new(
                 key.unwrap_or_else(|| "none".into()),
-                model,
+                resolved_model.clone(),
             );
             if let Some(base) = base_url.clone() {
                 c.base_url = base;
@@ -1527,8 +1595,31 @@ pub async fn test_agent_connection(
     };
     let provider = AnyProvider::new(choice);
     let report = probe::run(&provider, origin, model, want_vision).await;
-    let report_tools_supported = report.tools == probe::Capability::Supported;
+    // Three states, exactly as for vision (L-293). `Untested` is what a probe
+    // returns when the request never reached a model — a rejected key, an
+    // exhausted quota, a dead network, an id the endpoint does not know. None
+    // of those measured tool calling, and recording `false` told people their
+    // model does not support a feature that was never asked about.
+    let report_tools = report.tools;
     let report_vision = report.vision;
+    // What happened, kept apart from what was proven.
+    let check = store::LastCheck {
+        at: now_rfc3339(),
+        failure: report
+            .failure
+            .map(|kind| {
+                serde_json::to_value(kind)
+                    .ok()
+                    .and_then(|v| v.as_str().map(str::to_string))
+                    .unwrap_or_else(|| format!("{kind:?}"))
+            })
+            .filter(|_| !report.ok),
+        message: if report.ok {
+            None
+        } else {
+            report.message.clone()
+        },
+    };
 
     // Record the result against the stored settings only when it describes the
     // stored settings. A probe of an unsaved draft proves nothing about what
@@ -1584,18 +1675,19 @@ pub async fn test_agent_connection(
         // previous version wrote back a whole settings snapshot taken before
         // the probe ran, so a save, key change or disconnect during the probe
         // was silently reverted (L-282).
-        let vision = match report_vision {
+        let measured = |capability: probe::Capability| match capability {
             probe::Capability::Supported => Some(true),
             probe::Capability::Unsupported => Some(false),
-            // A vision probe that was not asked for says nothing about images.
+            // Not asked, or asked and never reached. Either way nothing was
+            // measured, and nothing is written.
             probe::Capability::Untested => None,
         };
         match store::record_verification(
             committed,
             &tested,
-            Some(report_tools_supported),
-            vision,
-            now_rfc3339(),
+            measured(report_tools),
+            measured(report_vision),
+            check,
         ) {
             Ok(store::Verification::Recorded) => Ok(true),
             // Not an error: the person changed something while the check ran,
@@ -1630,15 +1722,69 @@ pub struct ListModelsArgs {
     pub api_key: Option<String>,
 }
 
-/// Model ids the endpoint says it has.
+/// Where a provider publishes what its models are *for*, and how to ask.
+///
+/// Google is the one that matters here: its OpenAI-compatible catalogue
+/// returns Live, embedding and image ids beside the chat ones with nothing to
+/// tell them apart, and its own metadata route says which is which (L-291).
+/// The request is pinned to the same origin the catalogue came from, so this
+/// can never become a second destination the key is sent to.
+fn method_metadata_url(base_url: &str) -> Option<String> {
+    let trimmed = base_url.trim_end_matches('/');
+    let origin = crate::agent::llm::store::origin_of(trimmed).ok()?;
+    if !origin.ends_with("://generativelanguage.googleapis.com") {
+        return None;
+    }
+    // `…/v1beta/openai` is the compatibility path; `…/v1beta/models` is the
+    // metadata beside it.
+    let root = trimmed.strip_suffix("/openai")?;
+    Some(format!("{root}/models"))
+}
+
+/// Ask Google what its models support. Any failure yields an empty index,
+/// which means "nothing known" — never "nothing supported" (see
+/// `models::google_method_index`).
+async fn fetch_method_index(
+    client: &reqwest::Client,
+    url: &str,
+    key: Option<&str>,
+) -> crate::agent::llm::models::MethodIndex {
+    use crate::agent::llm::{http, models};
+    let mut request = client.get(url);
+    if let Some(key) = key {
+        // A header, not a query parameter: a key in a URL ends up in logs.
+        request = request.header("x-goog-api-key", key);
+    }
+    let Ok(resp) = request.send().await else {
+        return models::MethodIndex::new();
+    };
+    if !resp.status().is_success() {
+        return models::MethodIndex::new();
+    }
+    let Ok(raw) = http::collect_bounded(resp).await else {
+        return models::MethodIndex::new();
+    };
+    match http::parse_success(&raw) {
+        Ok(json) => models::google_method_index(&json),
+        Err(_) => models::MethodIndex::new(),
+    }
+}
+
+/// The models the endpoint offers, each with what is known about whether Ask
+/// can use it (L-291).
 ///
 /// A listing is a catalogue, not a capability statement — it says a name is
 /// accepted, not that the model behind it calls tools or reads images. That is
-/// what `test_agent_connection` is for. Discovery exists so nobody has to
-/// retype an id they could have picked, and a gateway with no `/models` route
-/// is not an error: the id can always be typed.
+/// what `test_agent_connection` is for. What is added here is narrower and
+/// came from a real failure: where the provider publishes which methods a
+/// model supports, a model that cannot serve a chat request at all is marked
+/// unsuitable before anyone selects it. Everything else stays `unknown` and
+/// is offered as before — a gateway with no `/models` route is still not an
+/// error, because the id can always be typed.
 #[tauri::command]
-pub async fn list_agent_models(args: ListModelsArgs) -> Result<Vec<String>, String> {
+pub async fn list_agent_models(
+    args: ListModelsArgs,
+) -> Result<Vec<crate::agent::llm::models::ModelOption>, String> {
     use crate::agent::llm::{http, store};
 
     let base_url = args
@@ -1659,6 +1805,7 @@ pub async fn list_agent_models(args: ListModelsArgs) -> Result<Vec<String>, Stri
                 .flatten()
         });
 
+    let metadata_key = key.clone();
     let trimmed = base_url.trim_end_matches('/');
     // The same bounded, redirect-refusing client every other provider request
     // uses (L-281, L-284). A fresh `Client::new()` here had no connect or
@@ -1719,7 +1866,12 @@ pub async fn list_agent_models(args: ListModelsArgs) -> Result<Vec<String>, Stri
         .unwrap_or_default();
     ids.sort();
     ids.dedup();
-    Ok(ids)
+
+    let index = match method_metadata_url(&base_url) {
+        Some(url) => fetch_method_index(&client, &url, metadata_key.as_deref()).await,
+        None => crate::agent::llm::models::MethodIndex::new(),
+    };
+    Ok(crate::agent::llm::models::options(&ids, &index))
 }
 
 /// Remove the credential for the configured destination and forget the

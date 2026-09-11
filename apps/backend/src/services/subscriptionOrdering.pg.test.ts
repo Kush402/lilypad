@@ -1,0 +1,192 @@
+/**
+ * Subscription ordering against a **real** Postgres (L-295, L-296, L-298).
+ *
+ * The reducer tests next door prove what the rules are. They cannot prove that
+ * two writers arriving at once produce one of those outcomes rather than a
+ * torn mixture of both, because that is a property of the database and the
+ * transaction, not of the function. A client receipt and an App Store
+ * notification for the same subscription arrive concurrently by design, so
+ * this is not a hypothetical race.
+ *
+ * Skipped when `DATABASE_URL` is unset, so a laptop with no Postgres still
+ * runs the suite. CI has one, and the `Migrate the test database` step has
+ * already applied the migrations by the time this runs — a skipped run is
+ * reported as skipped rather than counted as a pass.
+ */
+import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { randomUUID } from 'node:crypto';
+import { and, eq, sql } from 'drizzle-orm';
+import postgres from 'postgres';
+import { drizzle, type PostgresJsDatabase } from 'drizzle-orm/postgres-js';
+import { subscriptions, users } from '../db/schema.js';
+import { applySubscriptionEvent } from './subscriptionStore.js';
+import type { SubscriptionEvent, SubscriptionState } from './subscription.js';
+
+const DATABASE_URL = process.env.DATABASE_URL;
+const PRO = 'com.takedia.lilypad.pro.monthly';
+const DAY = 24 * 60 * 60 * 1000;
+const T0 = Date.parse('2026-09-01T00:00:00Z');
+
+const describeWithDb = DATABASE_URL ? describe : describe.skip;
+
+describeWithDb('subscription ordering, against a real database', () => {
+  let queryClient: ReturnType<typeof postgres>;
+  let db: PostgresJsDatabase;
+  let userId: string;
+  let otherUserId: string;
+  let originalTransactionId: string;
+
+  beforeAll(() => {
+    // A small pool: this file opens real connections and CI's budget is
+    // shared with the rest of the suite.
+    queryClient = postgres(DATABASE_URL as string, { max: 4 });
+    db = drizzle(queryClient);
+  });
+
+  beforeEach(async () => {
+    // A fresh identity per test, so a failure cannot poison the next one and
+    // nothing depends on the order tests happen to run in.
+    originalTransactionId = `ot-${randomUUID()}`;
+    userId = randomUUID();
+    otherUserId = randomUUID();
+    for (const id of [userId, otherUserId]) {
+      await db.insert(users).values({ id, email: `${id}@example.test` });
+    }
+  });
+
+  function event(over: Partial<SubscriptionEvent> = {}): SubscriptionEvent {
+    return {
+      environment: 'Production',
+      originalTransactionId,
+      transactionId: 'tx-1',
+      productId: PRO,
+      purchaseDate: T0,
+      expiresAt: T0 + 30 * DAY,
+      revocationDate: null,
+      notificationType: null,
+      ...over,
+    };
+  }
+
+  /** The real thing the service calls — not a copy of it. */
+  async function apply(ev: SubscriptionEvent, claimant: string | null): Promise<SubscriptionState> {
+    const { state } = await applySubscriptionEvent(db as never, ev, claimant);
+    return state;
+  }
+
+  async function stored() {
+    const [row] = await db
+      .select()
+      .from(subscriptions)
+      .where(
+        and(
+          eq(subscriptions.environment, 'Production'),
+          eq(subscriptions.originalTransactionId, originalTransactionId),
+        ),
+      )
+      .limit(1);
+    return row;
+  }
+
+  it('a client receipt and a webhook arriving together leave one coherent row', async () => {
+    await apply(event(), userId);
+    const renewal = event({
+      transactionId: 'tx-2',
+      purchaseDate: T0 + 30 * DAY,
+      expiresAt: T0 + 60 * DAY,
+      notificationType: 'DID_RENEW',
+    });
+    // Both writers, at once, on the same identity. Without the row lock these
+    // interleave into a lost update; with it, one waits.
+    await Promise.all([apply(renewal, null), apply(renewal, userId)]);
+
+    const row = await stored();
+    expect(row).toBeDefined();
+    expect(row?.lastTransactionId).toBe('tx-2');
+    expect(row?.expiresAt?.getTime()).toBe(T0 + 60 * DAY);
+    expect(row?.ownerUserId).toBe(userId);
+    expect(row?.status).toBe('active');
+  });
+
+  it('a replayed older receipt racing a renewal does not win', async () => {
+    await apply(event(), userId);
+    const renewal = event({
+      transactionId: 'tx-2',
+      purchaseDate: T0 + 30 * DAY,
+      expiresAt: T0 + 60 * DAY,
+    });
+    const replayOfTheFirst = event();
+    await Promise.all([apply(renewal, userId), apply(replayOfTheFirst, userId)]);
+    await apply(replayOfTheFirst, userId);
+
+    const row = await stored();
+    expect(row?.lastTransactionId).toBe('tx-2');
+    expect(row?.expiresAt?.getTime()).toBe(T0 + 60 * DAY);
+  });
+
+  it('the same event delivered many times over produces one row and one state', async () => {
+    const duplicate = event({ transactionId: 'tx-1' });
+    await Promise.all(Array.from({ length: 8 }, () => apply(duplicate, userId)));
+    const rows = await db
+      .select()
+      .from(subscriptions)
+      .where(eq(subscriptions.originalTransactionId, originalTransactionId));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.lastTransactionId).toBe('tx-1');
+  });
+
+  it('expiry then renewal finds the same account', async () => {
+    await apply(event(), userId);
+    await apply(event({ notificationType: 'EXPIRED' }), null);
+    expect((await stored())?.status).toBe('expired');
+    // The account association is what a renewal is routed by, so it has to
+    // have survived the expiry (L-296).
+    expect((await stored())?.ownerUserId).toBe(userId);
+
+    await apply(
+      event({
+        transactionId: 'tx-3',
+        purchaseDate: T0 + 40 * DAY,
+        expiresAt: T0 + 70 * DAY,
+        notificationType: 'DID_RENEW',
+      }),
+      null,
+    );
+    const row = await stored();
+    expect(row?.status).toBe('active');
+    expect(row?.ownerUserId).toBe(userId);
+    expect(row?.expiresAt?.getTime()).toBe(T0 + 70 * DAY);
+  });
+
+  it('one Apple subscription cannot be held by two accounts', async () => {
+    await apply(event(), userId);
+    // The database, not the application, is what makes this true: a second
+    // row for the same identity is refused even if a caller tries.
+    await expect(
+      db.insert(subscriptions).values({
+        environment: 'Production',
+        originalTransactionId,
+        ownerUserId: otherUserId,
+        productId: PRO,
+        status: 'active',
+      }),
+    ).rejects.toThrow();
+  });
+
+  it('the same original transaction id in each environment is two subscriptions', async () => {
+    await apply(event(), userId);
+    await apply(event({ environment: 'Sandbox', transactionId: 'tx-s' }), otherUserId);
+    const rows = await db
+      .select()
+      .from(subscriptions)
+      .where(eq(subscriptions.originalTransactionId, originalTransactionId));
+    expect(rows).toHaveLength(2);
+    expect(new Set(rows.map((r) => r.environment))).toEqual(new Set(['Production', 'Sandbox']));
+  });
+
+  afterAll(async () => {
+    // Only what these tests made; the subscriptions cascade with them.
+    await db.execute(sql`DELETE FROM users WHERE email LIKE '%@example.test'`);
+    await queryClient?.end();
+  });
+});

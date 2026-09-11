@@ -77,9 +77,35 @@ pub struct AgentSettings {
     #[serde(default)]
     pub tools: Option<bool>,
     /// When the capabilities above were last verified, RFC 3339. `None` while
-    /// they are untested.
+    /// they are untested. Written only by a check that actually measured them.
     #[serde(default)]
     pub verified_at: Option<String>,
+    /// What the last check against this exact configuration concluded, pass or
+    /// fail — kept apart from the capabilities above (L-293).
+    ///
+    /// A request that never reached a model measured nothing. Folding "the key
+    /// was rejected" into `tools = false` told a person their model does not
+    /// support tool calling, which was neither true nor actionable, and it
+    /// survived a reload as a permanent verdict on a model that had never been
+    /// asked. Capability is what was proven; this is what happened last.
+    #[serde(default)]
+    pub last_check: Option<LastCheck>,
+}
+
+/// The outcome of the most recent connection check.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LastCheck {
+    /// RFC 3339, when it ran.
+    pub at: String,
+    /// The failure kind, as `FailureKind` serializes it. `None` means it
+    /// passed — which is the only state in which `tools`/`vision` were
+    /// written by that run.
+    #[serde(default)]
+    pub failure: Option<String>,
+    /// The provider's own words, already classified for the person.
+    #[serde(default)]
+    pub message: Option<String>,
 }
 
 fn settings_path() -> Result<PathBuf> {
@@ -231,10 +257,10 @@ pub fn record_verification(
     tested: &super::effective::EffectiveConfig,
     tools: Option<bool>,
     vision: Option<bool>,
-    at: String,
+    check: LastCheck,
 ) -> Result<Verification> {
     let path = settings_path()?;
-    record_verification_at(&path, committed, tested, tools, vision, at)
+    record_verification_at(&path, committed, tested, tools, vision, check)
 }
 
 fn record_verification_at(
@@ -243,7 +269,7 @@ fn record_verification_at(
     tested: &super::effective::EffectiveConfig,
     tools: Option<bool>,
     vision: Option<bool>,
-    at: String,
+    check: LastCheck,
 ) -> Result<Verification> {
     let _guard = settings_guard();
     if super::resolver::epoch() != committed {
@@ -261,7 +287,13 @@ fn record_verification_at(
     if let Some(vision) = vision {
         saved.vision = Some(vision);
     }
-    saved.verified_at = Some(at);
+    // `verified_at` answers "when was this last proven", so only a check that
+    // proved something moves it. A failure records itself below instead of
+    // overwriting the date a capability was actually demonstrated (L-293).
+    if check.failure.is_none() {
+        saved.verified_at = Some(check.at.clone());
+    }
+    saved.last_check = Some(check);
     write_at(path, &saved)?;
     Ok(Verification::Recorded)
 }
@@ -672,6 +704,11 @@ mod tests {
             vision: Some(true),
             tools: Some(true),
             verified_at: Some("2026-09-09T00:00:00Z".into()),
+            last_check: Some(LastCheck {
+                at: "2026-09-09T00:00:00Z".into(),
+                failure: Some("auth".into()),
+                message: Some("rejected".into()),
+            }),
         };
         let raw = serde_json::to_string(&s).unwrap();
         assert!(raw.contains("providerKind"));
@@ -940,6 +977,107 @@ mod tests {
 
     /// L-282, the exact interleaving the review named: a probe of A is still
     /// running when the person points the Mac at B. Releasing the probe must
+    /// L-293, as the customer met it. The model was wrong for the transport,
+    /// so Google refused the request and the probe measured nothing. The old
+    /// call site turned every non-`Supported` value into `tools = false`, and
+    /// the setup screen then said tool calling did not work — about a model
+    /// that had never been asked to call a tool.
+    #[test]
+    fn a_request_that_never_reached_a_model_records_no_capability() {
+        let _turn = epoch_test();
+        let path = scratch("failed-check");
+        // A configuration that HAD been proven, so a wrong write is visible.
+        let mut before = saved("https://x.example.com/v1", Some("m"));
+        before.tools = Some(true);
+        before.vision = Some(true);
+        before.verified_at = Some("2026-09-01T00:00:00Z".into());
+        write_at(&path, &before).unwrap();
+        let committed = super::super::resolver::epoch();
+        let tested = tested_config("https://x.example.com/v1", Some("m"));
+
+        let outcome = record_verification_at(
+            &path,
+            committed,
+            &tested,
+            // What `ProbeReport::failed` actually reports: nothing measured.
+            None,
+            None,
+            LastCheck {
+                at: "2026-09-11T00:00:00Z".into(),
+                failure: Some("auth".into()),
+                message: Some("The key was rejected.".into()),
+            },
+        )
+        .unwrap();
+        assert_eq!(outcome, Verification::Recorded);
+
+        let after = read_at(&path);
+        assert_eq!(
+            after.tools,
+            Some(true),
+            "a failed request was recorded as a model that cannot call tools"
+        );
+        assert_eq!(after.vision, Some(true));
+        assert_eq!(
+            after.verified_at.as_deref(),
+            Some("2026-09-01T00:00:00Z"),
+            "a failure moved the date a capability was last proven"
+        );
+        let check = after.last_check.expect("the failure itself is recorded");
+        assert_eq!(check.failure.as_deref(), Some("auth"));
+        assert_eq!(check.message.as_deref(), Some("The key was rejected."));
+        assert_eq!(check.at, "2026-09-11T00:00:00Z");
+    }
+
+    /// The other half: a check that passed clears the previous failure, so a
+    /// recovered setup does not keep showing the error it recovered from.
+    #[test]
+    fn a_passing_check_replaces_the_failure_it_recovered_from() {
+        let _turn = epoch_test();
+        let path = scratch("recovered");
+        let mut before = saved("https://y.example.com/v1", Some("m"));
+        before.last_check = Some(LastCheck {
+            at: "2026-09-10T00:00:00Z".into(),
+            failure: Some("auth".into()),
+            message: Some("The key was rejected.".into()),
+        });
+        write_at(&path, &before).unwrap();
+        let committed = super::super::resolver::epoch();
+        let tested = tested_config("https://y.example.com/v1", Some("m"));
+
+        record_verification_at(
+            &path,
+            committed,
+            &tested,
+            Some(true),
+            None,
+            LastCheck {
+                at: "2026-09-11T00:00:00Z".into(),
+                failure: None,
+                message: None,
+            },
+        )
+        .unwrap();
+
+        let after = read_at(&path);
+        assert_eq!(after.tools, Some(true));
+        assert_eq!(after.verified_at.as_deref(), Some("2026-09-11T00:00:00Z"));
+        let check = after.last_check.expect("recorded");
+        assert_eq!(check.failure, None, "the old failure survived a pass");
+        assert_eq!(check.message, None);
+    }
+
+    /// A settings file written before this field existed reads as "nothing has
+    /// been checked", not as a failure.
+    #[test]
+    fn a_settings_file_without_a_last_check_is_not_a_failed_one() {
+        let old: AgentSettings =
+            serde_json::from_str(r#"{"providerKind":"openai_compat","model":"m","tools":true}"#)
+                .unwrap();
+        assert_eq!(old.last_check, None);
+        assert_eq!(old.tools, Some(true));
+    }
+
     /// not revert B, and must not mark B verified on A's evidence.
     #[test]
     fn a_probe_that_finishes_after_the_endpoint_changed_cannot_overwrite_it() {
@@ -962,7 +1100,10 @@ mod tests {
             &tested,
             Some(true),
             Some(true),
-            "t".into(),
+            LastCheck {
+                at: "t".into(),
+                ..Default::default()
+            },
         )
         .unwrap();
         assert_eq!(outcome, Verification::Superseded);
@@ -1007,7 +1148,10 @@ mod tests {
             &tested,
             Some(true),
             Some(true),
-            "t".into(),
+            LastCheck {
+                at: "t".into(),
+                ..Default::default()
+            },
         )
         .unwrap();
         assert_eq!(
@@ -1038,7 +1182,10 @@ mod tests {
             &tested,
             Some(true),
             Some(true),
-            "t".into(),
+            LastCheck {
+                at: "t".into(),
+                ..Default::default()
+            },
         )
         .unwrap();
         assert_eq!(outcome, Verification::Recorded);

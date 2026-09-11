@@ -35,6 +35,18 @@ pub struct Preset {
     pub auth_hint: &'static str,
     /// Whether the endpoint can list its own models.
     pub model_discovery: bool,
+    /// The model used when the person leaves the field blank — and **empty
+    /// when this endpoint has none** (L-292).
+    ///
+    /// A default is a support commitment like the rest of this table: it means
+    /// this exact id has been exercised against this exact endpoint. Every
+    /// compatible provider used to inherit `openai_compat::DEFAULT_MODEL`,
+    /// so choosing Gemini and entering only a Gemini key sent `gpt-4o-mini`
+    /// to Google — the advertised flow led straight into a combination that
+    /// cannot work. Where there is nothing to promise this is empty, and the
+    /// setup screen asks rather than guessing. A local endpoint can only ever
+    /// be empty: what it serves depends on what has been pulled onto the Mac.
+    pub default_model: &'static str,
     /// Whether a key is required at all (a local model needs none).
     pub requires_key: bool,
     /// Shown under the endpoint field when there is something specific the
@@ -53,6 +65,7 @@ pub const PRESETS: &[Preset] = &[
         auth_hint: "An Anthropic API key from console.anthropic.com. \
                     A Claude.ai subscription is a different thing and will not work here.",
         model_discovery: true,
+        default_model: super::anthropic::DEFAULT_MODEL,
         requires_key: true,
         note: "",
     },
@@ -64,6 +77,7 @@ pub const PRESETS: &[Preset] = &[
         auth_hint: "An OpenAI API key from platform.openai.com. \
                     A ChatGPT Plus subscription is a different thing and will not work here.",
         model_discovery: true,
+        default_model: super::openai_compat::DEFAULT_MODEL,
         requires_key: true,
         note: "",
     },
@@ -77,6 +91,7 @@ pub const PRESETS: &[Preset] = &[
         default_base_url: "https://generativelanguage.googleapis.com/v1beta/openai",
         auth_hint: "A Gemini API key from Google AI Studio.",
         model_discovery: true,
+        default_model: "",
         requires_key: true,
         note: "Uses Google's OpenAI-compatible endpoint.",
     },
@@ -87,6 +102,7 @@ pub const PRESETS: &[Preset] = &[
         default_base_url: "https://openrouter.ai/api/v1",
         auth_hint: "An OpenRouter API key from openrouter.ai/keys.",
         model_discovery: true,
+        default_model: "",
         requires_key: true,
         note: "Model names are prefixed by their vendor, e.g. `anthropic/claude-sonnet-4`.",
     },
@@ -97,6 +113,7 @@ pub const PRESETS: &[Preset] = &[
         default_base_url: "http://localhost:11434/v1",
         auth_hint: "No key needed — Ollama runs on this Mac.",
         model_discovery: true,
+        default_model: "",
         requires_key: false,
         // Ollama documents compatibility with parts of the OpenAI API. What a
         // local setup can actually do depends on the model that is loaded, not
@@ -110,6 +127,7 @@ pub const PRESETS: &[Preset] = &[
         default_base_url: "",
         auth_hint: "Whatever credential your endpoint expects as a bearer token.",
         model_discovery: true,
+        default_model: "",
         requires_key: false,
         note: "Enterprise and gateway endpoints that need extra headers, a deployment id or a \
                different API version are not supported by this entry — they need their own adapter.",
@@ -118,6 +136,36 @@ pub const PRESETS: &[Preset] = &[
 
 pub fn find(id: &str) -> Option<&'static Preset> {
     PRESETS.iter().find(|p| p.id == id)
+}
+
+/// The model to use when the person left the field blank — or `None`, meaning
+/// this endpoint has no validated default and must be asked about (L-292).
+///
+/// `profile_id` is absent on settings written before presets existed. Those
+/// fall back to the dialect's own default **only when the destination really
+/// is that dialect's own service**: an old install pointed at a gateway is
+/// exactly the case where inheriting `gpt-4o-mini` sends the wrong id to the
+/// wrong endpoint, and there is nothing in those settings that says otherwise.
+pub fn default_model_for(
+    profile_id: Option<&str>,
+    dialect: &str,
+    base_url: Option<&str>,
+) -> Option<&'static str> {
+    if let Some(preset) = profile_id.and_then(find) {
+        return Some(preset.default_model).filter(|m| !m.is_empty());
+    }
+    let own_default = super::store::default_base_url(dialect)?;
+    let effective = base_url.unwrap_or(own_default);
+    let same_service =
+        super::store::origin_of(effective).ok() == super::store::origin_of(own_default).ok();
+    if !same_service {
+        return None;
+    }
+    match dialect {
+        "anthropic" => Some(super::anthropic::DEFAULT_MODEL),
+        "openai_compat" => Some(super::openai_compat::DEFAULT_MODEL),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -158,6 +206,72 @@ mod tests {
         let count = ids.len();
         ids.dedup();
         assert_eq!(ids.len(), count, "duplicate preset id");
+    }
+
+    /// L-292, as the customer met it: choose Gemini, enter only a Gemini key,
+    /// leave the model blank. Every compatible provider used to inherit
+    /// OpenAI's default id, so the advertised flow ended in a request Google
+    /// could not serve.
+    #[test]
+    fn only_a_provider_with_a_validated_default_supplies_one() {
+        assert_eq!(
+            default_model_for(Some("openai"), "openai_compat", None),
+            Some(super::super::openai_compat::DEFAULT_MODEL)
+        );
+        assert_eq!(
+            default_model_for(Some("anthropic"), "anthropic", None),
+            Some(super::super::anthropic::DEFAULT_MODEL)
+        );
+        for id in ["gemini", "openrouter", "ollama", "custom"] {
+            assert_eq!(
+                default_model_for(Some(id), "openai_compat", None),
+                None,
+                "{id} silently supplied a model it has never been tested with"
+            );
+        }
+    }
+
+    /// Settings written before presets existed still work, but only where the
+    /// destination is the dialect's own service. A pre-preset install pointed
+    /// at a gateway is precisely the case the inherited default got wrong.
+    #[test]
+    fn a_pre_preset_install_inherits_a_default_only_for_its_own_service() {
+        assert_eq!(
+            default_model_for(None, "openai_compat", None),
+            Some(super::super::openai_compat::DEFAULT_MODEL)
+        );
+        assert_eq!(
+            default_model_for(None, "openai_compat", Some("https://api.openai.com/v1")),
+            Some(super::super::openai_compat::DEFAULT_MODEL)
+        );
+        assert_eq!(
+            default_model_for(
+                None,
+                "openai_compat",
+                Some("https://generativelanguage.googleapis.com/v1beta/openai")
+            ),
+            None
+        );
+        assert_eq!(
+            default_model_for(None, "openai_compat", Some("http://localhost:11434/v1")),
+            None
+        );
+    }
+
+    /// A default is a support commitment: it has to be a model the adapter
+    /// that preset names can actually be pointed at.
+    #[test]
+    fn every_default_belongs_to_its_own_dialect() {
+        for p in PRESETS {
+            if p.default_model.is_empty() {
+                continue;
+            }
+            let expected = match p.dialect {
+                "anthropic" => super::super::anthropic::DEFAULT_MODEL,
+                _ => super::super::openai_compat::DEFAULT_MODEL,
+            };
+            assert_eq!(p.default_model, expected, "{} names a foreign model", p.id);
+        }
     }
 
     #[test]

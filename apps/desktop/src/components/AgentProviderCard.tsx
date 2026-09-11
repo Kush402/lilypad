@@ -31,6 +31,18 @@ interface Preset {
   modelDiscovery: boolean;
   requiresKey: boolean;
   note: string;
+  /** The model a blank field means, or '' when this provider has none we have
+   *  checked (L-292). Optional so an older backend still renders. */
+  defaultModel?: string;
+}
+
+/** What is known about whether Ask can use a model (L-291). */
+type Suitability = 'usable' | 'unsuitable' | 'unknown';
+
+interface ModelOption {
+  id: string;
+  suitability: Suitability;
+  reason: string;
 }
 
 type Capability = 'supported' | 'unsupported' | 'untested';
@@ -91,7 +103,7 @@ export function AgentProviderCard() {
   const [apiKey, setApiKey] = useState('');
   const [wantVision, setWantVision] = useState(false);
 
-  const [models, setModels] = useState<string[] | null>(null);
+  const [models, setModels] = useState<ModelOption[] | null>(null);
   const [modelsError, setModelsError] = useState('');
   const [busy, setBusy] = useState<'' | 'saving' | 'testing' | 'listing' | 'removing'>('');
   const [error, setError] = useState('');
@@ -99,6 +111,28 @@ export function AgentProviderCard() {
 
   const preset = presets.find((p) => p.id === profileId);
   const dialect = preset?.dialect ?? 'anthropic';
+
+  /**
+   * What is known about the model in the field right now (L-291).
+   *
+   * The customer picked a Live Audio id from this very list and every request
+   * afterwards failed, because that model is reached over a WebSocket and Ask
+   * sends chat completions. The endpoint's own metadata says which models can
+   * answer a chat request, so a choice that cannot is refused here — before a
+   * request is made, with the reason — rather than surfacing later as a
+   * provider error nobody can act on.
+   *
+   * A typed id is judged the same way, against the same metadata. An id the
+   * metadata has never heard of stays open: nothing is known, and the probe
+   * is what settles it.
+   */
+  const chosen = model.trim();
+  const chosenOption = chosen
+    ? (models?.find((m) => m.id === chosen || m.id.replace(/^.*\//, '') === chosen) ?? null)
+    : null;
+  const unsuitable = chosenOption?.suitability === 'unsuitable' ? chosenOption : null;
+  /** This provider has no default we have checked, so blank is not a choice. */
+  const needsExplicitModel = !chosen && preset?.defaultModel === '';
 
   /**
    * The one way this card loads, used for the first render and for Try again
@@ -208,15 +242,24 @@ export function AgentProviderCard() {
     setBusy('listing');
     setModelsError('');
     try {
-      const ids = await invoke<string[]>('list_agent_models', {
+      const listed = await invoke<ModelOption[]>('list_agent_models', {
         args: {
           providerKind: dialect,
           baseUrl: baseUrl.trim() || null,
           apiKey: apiKey.trim() || null,
         },
       });
-      setModels(ids);
-      if (ids.length === 0) setModelsError('This endpoint listed no models. Type the id instead.');
+      // Defensive about the shape: an older backend answered with bare ids.
+      const options: ModelOption[] = Array.isArray(listed)
+        ? listed.map((entry) =>
+            typeof entry === 'string'
+              ? { id: entry, suitability: 'unknown' as const, reason: '' }
+              : entry,
+          )
+        : [];
+      setModels(options);
+      if (options.length === 0)
+        setModelsError('This endpoint listed no models. Type the id instead.');
     } catch (err) {
       setModels(null);
       setModelsError(`${String(err)}. You can still type the model id.`);
@@ -415,10 +458,33 @@ export function AgentProviderCard() {
           </div>
           {models ? (
             <datalist id="agent-model-options">
-              {models.map((id) => (
-                <option key={id} value={id} />
-              ))}
+              {/* Only what Ask can actually use is offered. The rest are
+                  listed below with the reason, so a person looking for a name
+                  they saw in the provider's console is not left wondering
+                  where it went. */}
+              {models
+                .filter((m) => m.suitability !== 'unsuitable')
+                .map((m) => (
+                  <option key={m.id} value={m.id} />
+                ))}
             </datalist>
+          ) : null}
+          {models && models.some((m) => m.suitability === 'unsuitable') ? (
+            <p className="muted" data-testid="agent-provider-models-filtered">
+              {models.filter((m) => m.suitability === 'unsuitable').length} of {models.length}{' '}
+              models on this endpoint cannot answer an Ask request and are not offered.
+            </p>
+          ) : null}
+          {unsuitable ? (
+            <p className="warn" data-testid="agent-provider-model-unsuitable">
+              {unsuitable.reason}
+            </p>
+          ) : null}
+          {needsExplicitModel ? (
+            <p className="muted" data-testid="agent-provider-model-required">
+              Choose a model. This provider has no default we have checked, and guessing one would
+              send a request it cannot answer.
+            </p>
           ) : null}
           {modelsError ? (
             <p className="muted" data-testid="agent-provider-models-error">
@@ -456,9 +522,12 @@ export function AgentProviderCard() {
           ) : null}
 
           <div className="row">
+            {/* A model the endpoint says cannot answer a chat request, or no
+                model at all where this provider has no checked default, is
+                refused here rather than sent (L-291, L-292). */}
             <button
               className="btn btn--primary"
-              disabled={busy !== ''}
+              disabled={busy !== '' || unsuitable !== null || needsExplicitModel}
               onClick={() =>
                 void (async () => {
                   if ((await save()) !== null) await test();
@@ -467,7 +536,11 @@ export function AgentProviderCard() {
             >
               {busy === 'saving' ? 'Saving…' : busy === 'testing' ? 'Testing…' : 'Save and test'}
             </button>
-            <button className="btn" disabled={busy !== ''} onClick={() => void save()}>
+            <button
+              className="btn"
+              disabled={busy !== '' || unsuitable !== null || needsExplicitModel}
+              onClick={() => void save()}
+            >
               Save without testing
             </button>
             {config.hasKey || config.providerKind ? (

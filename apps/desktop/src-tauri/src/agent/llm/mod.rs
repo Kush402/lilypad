@@ -16,6 +16,7 @@
 pub mod anthropic;
 pub mod effective;
 pub mod http;
+pub mod models;
 pub mod openai_compat;
 pub mod presets;
 pub mod probe;
@@ -175,11 +176,22 @@ impl ProviderChoice {
         // Computed before the fields below are moved out, and by the one rule
         // that decides it (L-286).
         let vision = store::effective_vision(&settings);
+        // Which model a blank field means, decided per provider rather than by
+        // dialect (L-292). `None` here is a configuration that cannot run:
+        // there is no id this endpoint is known to accept, so the honest
+        // outcome is an inert agent and a setup screen that asks, not a
+        // request built from another vendor's default.
+        let default_model = presets::default_model_for(
+            settings.profile_id.as_deref(),
+            kind,
+            settings.base_url.as_deref(),
+        );
         match kind {
             "anthropic" => {
-                let model = settings
-                    .model
-                    .unwrap_or_else(|| anthropic::DEFAULT_MODEL.to_string());
+                let model = match settings.model {
+                    Some(model) => model,
+                    None => default_model?.to_string(),
+                };
                 let mut c = anthropic::AnthropicConfig::new(api_key?, model);
                 if let Some(base) = settings.base_url {
                     c.base_url = base;
@@ -195,9 +207,10 @@ impl ProviderChoice {
                 if api_key.is_none() && settings.base_url.is_none() {
                     return None;
                 }
-                let model = settings
-                    .model
-                    .unwrap_or_else(|| openai_compat::DEFAULT_MODEL.to_string());
+                let model = match settings.model {
+                    Some(model) => model,
+                    None => default_model?.to_string(),
+                };
                 let mut c = openai_compat::OpenAiCompatConfig::new(
                     api_key.unwrap_or_else(|| "none".into()),
                     model,

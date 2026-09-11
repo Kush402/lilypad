@@ -8,10 +8,9 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { and, eq, ne } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import {
   Environment,
-  NotificationTypeV2,
   SignedDataVerifier,
   VerificationException,
   type JWSTransactionDecodedPayload,
@@ -19,7 +18,14 @@ import {
 } from '@apple/app-store-server-library';
 import { PRO_MONTHLY_PRODUCT_ID, type BillingStatus } from '@lilypad/protocol';
 import { db as defaultDb } from '../db/client.js';
-import { users } from '../db/schema.js';
+import { subscriptions, users } from '../db/schema.js';
+import { applySubscriptionEvent, toState } from './subscriptionStore.js';
+import {
+  effectiveTier,
+  subscriptionIsCurrent,
+  type AppleEnvironment,
+  type SubscriptionEvent,
+} from './subscription.js';
 import { config } from '../config.js';
 import { log } from '../logging.js';
 
@@ -81,39 +87,98 @@ export type ApplyResult =
       error: 'invalid_transaction' | 'wrong_product' | 'already_linked' | 'not_configured';
     };
 
-function toStatus(row: {
-  tier: 'free' | 'pro' | 'team';
-  subscriptionProductId: string | null;
-  subscriptionExpiresAt: Date | null;
-}): BillingStatus {
+/** Which environment this deployment sells in. A Sandbox subscription does
+ *  not entitle an ordinary account here (L-298). */
+function commercialEnvironment(): AppleEnvironment {
+  return config.env.APPLE_IAP_ENVIRONMENT === 'Production' ? 'Production' : 'Sandbox';
+}
+
+/**
+ * A verified transaction, normalized — environment included, which is the
+ * half that used to be verified and then discarded (L-298).
+ */
+function toEvent(
+  tx: JWSTransactionDecodedPayload,
+  environment: AppleEnvironment,
+  notificationType?: string | null,
+  graceExpiresAt?: number | null,
+): SubscriptionEvent | null {
+  if (!tx.originalTransactionId || !tx.productId) return null;
   return {
-    tier: row.tier,
-    productId: row.subscriptionProductId,
-    currentPeriodEndsAt: row.subscriptionExpiresAt ? row.subscriptionExpiresAt.toISOString() : null,
+    environment,
+    originalTransactionId: tx.originalTransactionId,
+    transactionId: tx.transactionId ?? tx.originalTransactionId,
+    productId: tx.productId,
+    // Apple's own clock for this transaction. Arrival order is what is
+    // unreliable, so it is never used for ordering.
+    purchaseDate: tx.purchaseDate ?? tx.signedDate ?? 0,
+    expiresAt: tx.expiresDate ?? null,
+    revocationDate: tx.revocationDate ?? null,
+    notificationType: notificationType ?? null,
+    graceExpiresAt: graceExpiresAt ?? null,
   };
 }
 
-function expiresAtFromTx(tx: JWSTransactionDecodedPayload): Date | null {
-  if (tx.expiresDate == null) return null;
-  return new Date(tx.expiresDate);
+/** The account's manual grant plus its Apple subscription, as one answer. */
+async function statusFor(
+  userId: string,
+  database: typeof defaultDb,
+  now = Date.now(),
+): Promise<BillingStatus | null> {
+  const [account] = await database
+    .select({ tier: users.tier, isBillingTester: users.isBillingTester })
+    .from(users)
+    .where(eq(users.id, userId))
+    .limit(1);
+  if (!account) return null;
+  const [row] = await database
+    .select()
+    .from(subscriptions)
+    .where(eq(subscriptions.ownerUserId, userId))
+    .limit(1);
+  const state = row ? toState(row) : null;
+  const tier = effectiveTier({
+    manualTier: account.tier,
+    subscription: state,
+    commercialEnvironment: commercialEnvironment(),
+    isApprovedTester: account.isBillingTester,
+    now,
+  });
+  // Only describe a period that is actually in force. Reporting the end date
+  // of a subscription that stopped entitling is how "Pro until…" outlived the
+  // subscription it described.
+  const current = state != null && subscriptionIsCurrent(state, now);
+  return {
+    tier,
+    productId: current ? state!.productId : null,
+    currentPeriodEndsAt:
+      current && state!.expiresAt != null ? new Date(state!.expiresAt).toISOString() : null,
+  };
 }
 
-function isCurrentlyEntitled(tx: JWSTransactionDecodedPayload, now = Date.now()): boolean {
-  if (tx.revocationDate != null) return false;
-  if (tx.expiresDate != null && tx.expiresDate <= now) return false;
-  return PRO_PRODUCTS.has(tx.productId ?? '');
-}
-
+/**
+ * Verify a transaction JWS and say **which environment accepted it**.
+ *
+ * The Sandbox fallback stays: a TestFlight build posts Sandbox receipts even
+ * against a Production server, and refusing them would make every tester's
+ * purchase look like a forgery. What changes is that the answer is carried
+ * instead of discarded — the fallback used to be invisible by the time the
+ * tier was written, so a Sandbox purchase bought ordinary production Pro
+ * (L-298).
+ */
 async function decodeTransaction(
   signedTransaction: string,
-): Promise<JWSTransactionDecodedPayload | null> {
+): Promise<{ tx: JWSTransactionDecodedPayload; environment: AppleEnvironment } | null> {
   const { primary, sandbox } = verifiers();
+  const configured = commercialEnvironment();
   try {
-    return await primary.verifyAndDecodeTransaction(signedTransaction);
+    const tx = await primary.verifyAndDecodeTransaction(signedTransaction);
+    return { tx, environment: (tx.environment as AppleEnvironment) ?? configured };
   } catch (err) {
     if (sandbox && err instanceof VerificationException) {
       try {
-        return await sandbox.verifyAndDecodeTransaction(signedTransaction);
+        const tx = await sandbox.verifyAndDecodeTransaction(signedTransaction);
+        return { tx, environment: (tx.environment as AppleEnvironment) ?? 'Sandbox' };
       } catch {
         /* fall through */
       }
@@ -126,8 +191,10 @@ async function decodeTransaction(
 /**
  * Attach a verified Apple transaction to this Lilypad account.
  *
- * Fails closed on an unknown product, a revoked/expired transaction, and on
- * an originalTransactionId already owned by a different account.
+ * What this no longer does: write `users.tier`. The account's tier is the
+ * manual grant now, and an Apple purchase on a Team account records the
+ * subscription and changes nothing about what they can do (L-299). What the
+ * person is entitled to is derived from both, every time it is asked.
  */
 export async function applySignedTransaction(
   userId: string,
@@ -141,103 +208,43 @@ export async function applySignedTransaction(
     return { ok: false, error: 'not_configured' };
   }
 
-  const tx = await decodeTransaction(signedTransaction);
-  if (!tx?.originalTransactionId || !tx.productId) {
-    return { ok: false, error: 'invalid_transaction' };
-  }
-  if (!PRO_PRODUCTS.has(tx.productId)) {
+  const decoded = await decodeTransaction(signedTransaction);
+  if (!decoded) return { ok: false, error: 'invalid_transaction' };
+  const event = toEvent(decoded.tx, decoded.environment);
+  if (!event) return { ok: false, error: 'invalid_transaction' };
+  if (!PRO_PRODUCTS.has(event.productId)) {
     return { ok: false, error: 'wrong_product' };
   }
 
-  const entitled = isCurrentlyEntitled(tx);
-  const expiresAt = expiresAtFromTx(tx);
-  const originalId = tx.originalTransactionId;
-
-  // Another account already holds this Apple subscription.
-  const [conflict] = await database
-    .select({ id: users.id })
-    .from(users)
-    .where(and(eq(users.appleOriginalTransactionId, originalId), ne(users.id, userId)))
-    .limit(1);
+  const { conflict } = await applySubscriptionEvent(database, event, userId);
   if (conflict) return { ok: false, error: 'already_linked' };
 
-  if (!entitled) {
-    // Restore of an expired sub: clear Apple linkage if it was ours, leave
-    // tier alone when this account is `team` (not sold via StoreKit).
-    const [row] = await database
-      .select({
-        tier: users.tier,
-        subscriptionProductId: users.subscriptionProductId,
-        subscriptionExpiresAt: users.subscriptionExpiresAt,
-        appleOriginalTransactionId: users.appleOriginalTransactionId,
-      })
-      .from(users)
-      .where(eq(users.id, userId))
-      .limit(1);
-    if (!row) return { ok: false, error: 'invalid_transaction' };
-    if (row.appleOriginalTransactionId === originalId && row.tier === 'pro') {
-      await database
-        .update(users)
-        .set({
-          tier: 'free',
-          appleOriginalTransactionId: null,
-          subscriptionProductId: null,
-          subscriptionExpiresAt: expiresAt,
-        })
-        .where(eq(users.id, userId));
-      return {
-        ok: true,
-        status: {
-          tier: 'free',
-          productId: null,
-          currentPeriodEndsAt: expiresAt ? expiresAt.toISOString() : null,
-        },
-      };
-    }
-    return { ok: true, status: toStatus(row) };
-  }
-
-  await database
-    .update(users)
-    .set({
-      tier: 'pro',
-      appleOriginalTransactionId: originalId,
-      subscriptionProductId: tx.productId,
-      subscriptionExpiresAt: expiresAt,
-    })
-    .where(eq(users.id, userId));
-
-  return {
-    ok: true,
-    status: {
-      tier: 'pro',
-      productId: tx.productId,
-      currentPeriodEndsAt: expiresAt ? expiresAt.toISOString() : null,
-    },
-  };
+  const status = await statusFor(userId, database);
+  if (!status) return { ok: false, error: 'invalid_transaction' };
+  return { ok: true, status };
 }
 
+/**
+ * What this account may do right now.
+ *
+ * Derived from the current period rather than read from a stored word, so an
+ * expired subscription whose notification never arrived stops entitling on
+ * its own (L-294).
+ */
 export async function billingStatusFor(
   userId: string,
   database = defaultDb,
 ): Promise<BillingStatus | null> {
-  const [row] = await database
-    .select({
-      tier: users.tier,
-      subscriptionProductId: users.subscriptionProductId,
-      subscriptionExpiresAt: users.subscriptionExpiresAt,
-    })
-    .from(users)
-    .where(eq(users.id, userId))
-    .limit(1);
-  return row ? toStatus(row) : null;
+  return statusFor(userId, database);
 }
 
 /**
  * Apply an App Store Server Notification V2.
  *
- * Looks up the account by `originalTransactionId`. Unknown ids are acknowledged
- * (200) rather than retried forever — Apple will keep sending until we do.
+ * An event for a subscription no account has claimed yet is **kept**, not
+ * discarded: Apple's first notification routinely beats the phone's receipt,
+ * and the row it creates is claimed by the first client that presents a
+ * receipt for the same identity (L-296).
  */
 export async function applyNotificationPayload(
   signedPayload: string,
@@ -273,66 +280,35 @@ export async function applyNotificationPayload(
     return { handled: true, reason: 'no_transaction' };
   }
 
-  const tx = await decodeTransaction(signedTx);
-  if (!tx?.originalTransactionId) {
-    return { handled: false, reason: 'invalid_transaction' };
-  }
+  const verified = await decodeTransaction(signedTx);
+  if (!verified) return { handled: false, reason: 'invalid_transaction' };
 
-  const [account] = await database
-    .select({
-      id: users.id,
-      tier: users.tier,
-    })
-    .from(users)
-    .where(eq(users.appleOriginalTransactionId, tx.originalTransactionId))
-    .limit(1);
+  // Apple states a grace period on the renewal info, not the transaction.
+  const graceRaw = (decoded.data as { signedRenewalInfo?: unknown } | undefined)?.signedRenewalInfo;
+  const event = toEvent(
+    verified.tx,
+    verified.environment,
+    decoded.notificationType ?? null,
+    typeof graceRaw === 'object' && graceRaw !== null
+      ? ((graceRaw as { gracePeriodExpiresDate?: number }).gracePeriodExpiresDate ?? null)
+      : null,
+  );
+  if (!event) return { handled: false, reason: 'invalid_transaction' };
 
-  if (!account) {
-    // Purchase on a device that has not posted the JWS yet, or a foreign app.
+  // `null` claimant: a notification never assigns ownership, it only ever
+  // updates the subscription it names.
+  const { state } = await applySubscriptionEvent(database, event, null);
+  if (state.ownerUserId == null) {
     log.server.info(
-      { originalTransactionId: tx.originalTransactionId, type: decoded.notificationType },
-      'ASSN for unknown Lilypad account — acknowledged',
+      { originalTransactionId: event.originalTransactionId, type: decoded.notificationType },
+      'ASSN for a subscription no account has claimed — kept for association',
     );
-    return { handled: true, reason: 'unknown_account' };
+    return { handled: true, reason: 'unclaimed' };
   }
-
-  const type = decoded.notificationType;
-  const dropTypes = new Set<string>([
-    NotificationTypeV2.EXPIRED,
-    NotificationTypeV2.REVOKE,
-    NotificationTypeV2.REFUND,
-    NotificationTypeV2.GRACE_PERIOD_EXPIRED,
-  ]);
-
-  if (dropTypes.has(type ?? '') || !isCurrentlyEntitled(tx)) {
-    if (account.tier === 'team') {
-      // Team is not StoreKit-managed; leave it alone.
-      return { handled: true, reason: 'team_untouched' };
-    }
-    await database
-      .update(users)
-      .set({
-        tier: 'free',
-        appleOriginalTransactionId: null,
-        subscriptionProductId: null,
-        subscriptionExpiresAt: expiresAtFromTx(tx),
-      })
-      .where(eq(users.id, account.id));
-    log.server.info({ userId: account.id, type }, 'subscription ended — account returned to free');
-    return { handled: true };
-  }
-
-  if (PRO_PRODUCTS.has(tx.productId ?? '')) {
-    await database
-      .update(users)
-      .set({
-        tier: 'pro',
-        subscriptionProductId: tx.productId ?? PRO_MONTHLY_PRODUCT_ID,
-        subscriptionExpiresAt: expiresAtFromTx(tx),
-      })
-      .where(eq(users.id, account.id));
-  }
-
+  log.server.info(
+    { userId: state.ownerUserId, type: decoded.notificationType, status: state.status },
+    'subscription state updated',
+  );
   return { handled: true };
 }
 
