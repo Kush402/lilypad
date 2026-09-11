@@ -6,6 +6,14 @@ All notable changes to Lilypad are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **Ask no longer offers models that cannot answer.** Some providers list a
+  batch version of a model alongside the ordinary one. It looks identical in
+  the list and it cannot hold a conversation, so picking it meant every request
+  failed. Those are now marked, with the model to choose instead. Lilypad only
+  checked this for Google before; it now covers OpenRouter too.
+
 ## [0.1.36] — 2026-09-11
 
 What the first real first-install journey on v0.1.35 turned up. Your Mac and

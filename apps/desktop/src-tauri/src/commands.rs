@@ -1898,7 +1898,7 @@ pub async fn list_agent_models(
         Some(url) => fetch_method_index(&client, &url, metadata_key.as_deref()).await,
         None => crate::agent::llm::models::MethodIndex::new(),
     };
-    Ok(crate::agent::llm::models::options(&ids, &index))
+    Ok(crate::agent::llm::models::options(&ids, &index, &origin))
 }
 
 /// Remove the credential for the configured destination and forget the

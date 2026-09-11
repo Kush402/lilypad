@@ -176,16 +176,73 @@ pub fn extend_method_index(index: &mut MethodIndex, body: &serde_json::Value) {
     }
 }
 
+/// A routing variant a gateway appends to a model id after a colon (L-310).
+///
+/// ### Why this is not "judging a model by its name"
+///
+/// `method_explanation` above deliberately reads the provider's own method
+/// names and never the model's name, because a name is marketing. A variant
+/// suffix is neither: on OpenRouter it is documented routing grammar, and
+/// `google/gemini-3-flash-preview:batch` is a *different destination* from
+/// `google/gemini-3-flash-preview`, not a differently-branded one.
+///
+/// ### Why it has to be the id at all
+///
+/// Because OpenRouter's catalogue carries no other signal. Fetched and
+/// compared, 2026-09-11: the only field that differs between the pair above is
+/// `pricing`. `supported_parameters` still lists `tools`, `architecture` still
+/// says text output. Nothing structured says "this one cannot answer a chat
+/// request" — and it cannot: the endpoint replies
+/// "This model is only available through the Batch API."
+///
+/// 77 of OpenRouter's 443 models carried `:batch` on that day and every one of
+/// them was offered as an ordinary choice.
+///
+/// ### Why it is scoped to one origin
+///
+/// A colon in a model id is completely ordinary elsewhere — Ollama's tags are
+/// `llama3.1:8b`. `Unsuitable` removes a model from the list and disables Save
+/// and Test, so a false positive takes away a model that works. The rule
+/// applies where the grammar is documented, and nowhere else.
+fn variant_verdict(origin: &str, id: &str) -> Option<(Suitability, String)> {
+    if !origin.ends_with("://openrouter.ai") {
+        return None;
+    }
+    // Only the last segment: the vendor prefix is `/`-separated and never
+    // carries a variant.
+    let variant = bare(id).rsplit_once(':')?.1;
+    if !variant.eq_ignore_ascii_case("batch") {
+        // `:free` is the same model on a rate-limited route. It answers chat
+        // requests, so it is not this function's business.
+        return None;
+    }
+    Some((
+        Suitability::Unsuitable,
+        "This is the batch version of the model. It answers through a queue that returns \
+         results later, not the live connection Ask uses. Choose the same model without \
+         the :batch ending."
+            .to_string(),
+    ))
+}
+
+/// What is known about one id, from the variant grammar first and the
+/// provider's method metadata second.
+fn verdict(origin: &str, id: &str, index: &MethodIndex) -> (Suitability, String) {
+    if let Some(found) = variant_verdict(origin, id) {
+        return found;
+    }
+    from_methods(index.get(bare(id)).map(|m| m.as_slice()))
+}
+
 /// Turn a catalogue of ids plus whatever metadata was obtained into the list
 /// the setup screen offers.
 ///
 /// Ids the metadata does not mention stay `Unknown`: a partial index must not
 /// condemn what it does not cover.
-pub fn options(ids: &[String], index: &MethodIndex) -> Vec<ModelOption> {
+pub fn options(ids: &[String], index: &MethodIndex, origin: &str) -> Vec<ModelOption> {
     ids.iter()
         .map(|id| {
-            let methods = index.get(bare(id)).map(|m| m.as_slice());
-            let (suitability, reason) = from_methods(methods);
+            let (suitability, reason) = verdict(origin, id, index);
             ModelOption {
                 id: id.clone(),
                 suitability,
@@ -197,8 +254,8 @@ pub fn options(ids: &[String], index: &MethodIndex) -> Vec<ModelOption> {
 
 /// What is known about one id — including one typed by hand, which never
 /// passed through the catalogue at all (L-291).
-pub fn lookup(id: &str, index: &MethodIndex) -> ModelOption {
-    let (suitability, reason) = from_methods(index.get(bare(id)).map(|m| m.as_slice()));
+pub fn lookup(id: &str, index: &MethodIndex, origin: &str) -> ModelOption {
+    let (suitability, reason) = verdict(origin, id, index);
     ModelOption {
         id: id.to_string(),
         suitability,
@@ -209,6 +266,10 @@ pub fn lookup(id: &str, index: &MethodIndex) -> ModelOption {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The origin every Google case below is about.
+    const GOOGLE: &str = "https://generativelanguage.googleapis.com";
+    const OPENROUTER: &str = "https://openrouter.ai";
 
     fn methods(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| s.to_string()).collect()
@@ -245,7 +306,7 @@ mod tests {
             "models/text-embedding-004".to_string(),
             "models/imagen-4.0-generate-001".to_string(),
         ];
-        let offered = options(&ids, &index);
+        let offered = options(&ids, &index, GOOGLE);
 
         assert_eq!(offered[0].suitability, Suitability::Usable);
 
@@ -281,11 +342,11 @@ mod tests {
         });
         let index = google_method_index(&catalogue);
         // Typed without the `models/` prefix, which is how a person would.
-        let typed = lookup("gemini-live-2.5-flash-preview", &index);
+        let typed = lookup("gemini-live-2.5-flash-preview", &index, GOOGLE);
         assert_eq!(typed.suitability, Suitability::Unsuitable);
         // And an id the metadata has never heard of stays open, not condemned.
         assert_eq!(
-            lookup("some-gateway/private-model", &index).suitability,
+            lookup("some-gateway/private-model", &index, GOOGLE).suitability,
             Suitability::Unknown
         );
     }
@@ -309,15 +370,104 @@ mod tests {
         });
         let index = google_method_index(&catalogue);
         assert_eq!(
-            lookup("models/gemini-2.5-flash-audio-understanding", &index).suitability,
+            lookup(
+                "models/gemini-2.5-flash-audio-understanding",
+                &index,
+                GOOGLE
+            )
+            .suitability,
             Suitability::Usable,
             "a name-shape rule would have refused this one"
         );
         assert_eq!(
-            lookup("models/perfectly-ordinary-name", &index).suitability,
+            lookup("models/perfectly-ordinary-name", &index, GOOGLE).suitability,
             Suitability::Unsuitable,
             "a name-shape rule would have allowed this one"
         );
+    }
+
+    /// OpenRouter's batch variants (L-310).
+    ///
+    /// Ids and the pairing are taken from OpenRouter's own `/api/v1/models`,
+    /// fetched 2026-09-11: 443 models, of which 77 ended in `:batch` and 19 in
+    /// `:free`. Every `:batch` one was offered by Lilypad as an ordinary
+    /// choice, and the owner picked `google/gemini-3-flash-preview:batch` on a
+    /// clean v0.1.36 install. The endpoint answered "This model is only
+    /// available through the Batch API", so Ask could not run at all.
+    #[test]
+    fn openrouter_batch_variants_are_refused_and_their_siblings_are_not() {
+        // Empty on purpose: OpenRouter publishes no method metadata, which is
+        // exactly why every one of these was `Unknown` and offered.
+        let index = MethodIndex::new();
+        let ids = vec![
+            "google/gemini-3-flash-preview".to_string(),
+            "google/gemini-3-flash-preview:batch".to_string(),
+            "anthropic/claude-fable-5.1:batch".to_string(),
+            "meta-llama/llama-3.3-70b-instruct:free".to_string(),
+        ];
+        let offered = options(&ids, &index, OPENROUTER);
+
+        assert_eq!(
+            offered[0].suitability,
+            Suitability::Unknown,
+            "the ordinary model must stay offered: nothing is known about it"
+        );
+        assert_eq!(
+            offered[1].suitability,
+            Suitability::Unsuitable,
+            "a batch-only model was offered for Ask"
+        );
+        assert!(
+            offered[1].reason.contains("batch"),
+            "the refusal did not say why: {}",
+            offered[1].reason
+        );
+        assert_eq!(offered[2].suitability, Suitability::Unsuitable);
+        // `:free` is the same model on a rate-limited route. It answers chat
+        // requests, and removing it would take away the only models somebody
+        // without credit can use.
+        assert_eq!(
+            offered[3].suitability,
+            Suitability::Unknown,
+            "the free route was mistaken for a batch route"
+        );
+    }
+
+    /// The rule keys on an origin string it does not build itself, so this
+    /// pins the two together. A silent mismatch here would leave the fix
+    /// switched off in production while every test above still passed.
+    #[test]
+    fn the_openrouter_preset_resolves_to_the_origin_the_rule_matches() {
+        let origin = crate::agent::llm::store::origin_of("https://openrouter.ai/api/v1")
+            .expect("the shipped OpenRouter base URL must parse");
+        assert_eq!(origin, OPENROUTER);
+        assert_eq!(
+            options(
+                &["google/gemini-3-flash-preview:batch".to_string()],
+                &MethodIndex::new(),
+                &origin,
+            )[0]
+            .suitability,
+            Suitability::Unsuitable
+        );
+    }
+
+    /// The rule is grammar on one gateway, not a rule about colons.
+    #[test]
+    fn a_colon_in_an_id_is_ordinary_everywhere_else() {
+        let index = MethodIndex::new();
+        // Ollama tags are `name:tag`, and a local endpoint publishes no
+        // metadata either. Condemning these would empty the list.
+        let ids = vec!["llama3.1:8b".to_string(), "qwen2.5-coder:batch".to_string()];
+        let offered = options(&ids, &index, "http://localhost:11434");
+        for option in &offered {
+            assert_eq!(
+                option.suitability,
+                Suitability::Unknown,
+                "{} was condemned on an endpoint whose variant grammar we do not know",
+                option.id
+            );
+        }
     }
 
     /// An endpoint with no metadata must not lose its catalogue. Silence is
@@ -327,7 +477,7 @@ mod tests {
         let index = google_method_index(&serde_json::json!({ "error": "nope" }));
         assert!(index.is_empty());
         let ids = vec!["llama3.1:8b".to_string(), "qwen2.5-coder".to_string()];
-        let offered = options(&ids, &index);
+        let offered = options(&ids, &index, GOOGLE);
         assert_eq!(offered.len(), 2);
         for option in &offered {
             assert_eq!(option.suitability, Suitability::Unknown);
@@ -366,7 +516,8 @@ mod tests {
         assert_eq!(
             lookup(
                 "models/gemini-2.5-flash-native-audio-preview-12-2025",
-                &first_only
+                &first_only,
+                GOOGLE
             )
             .suitability,
             Suitability::Unknown
@@ -379,14 +530,15 @@ mod tests {
         assert_eq!(
             lookup(
                 "models/gemini-2.5-flash-native-audio-preview-12-2025",
-                &index
+                &index,
+                GOOGLE
             )
             .suitability,
             Suitability::Unsuitable,
             "a paged catalogue let the Live Audio model through"
         );
         assert_eq!(
-            lookup("models/gemini-2.5-flash", &index).suitability,
+            lookup("models/gemini-2.5-flash", &index, GOOGLE).suitability,
             Suitability::Usable,
             "merging pages must not lose the earlier one"
         );
