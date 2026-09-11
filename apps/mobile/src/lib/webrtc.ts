@@ -1021,8 +1021,7 @@ export class ViewerConnection {
    * a report could say "decoding" about a picture already being nudged. */
   private isVideoDecoding(): boolean {
     return (
-      this.lastFrameDecodedAt !== null &&
-      Date.now() - this.lastFrameDecodedAt < DECODER_STALL_MS
+      this.lastFrameDecodedAt !== null && Date.now() - this.lastFrameDecodedAt < DECODER_STALL_MS
     );
   }
 

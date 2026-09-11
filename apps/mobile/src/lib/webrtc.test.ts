@@ -1711,9 +1711,7 @@ describe('ViewerConnection', () => {
       const probe = JSON.parse(critical.send.mock.calls[0][0]);
 
       for (const state of ['checking', 'unconfigured', 'unavailable'] as const) {
-        critical.emitMessage(
-          readyFrame(probe.runId, { state, destination: undefined }),
-        );
+        critical.emitMessage(readyFrame(probe.runId, { state, destination: undefined }));
         expect(cb.onAgentReady).toHaveBeenLastCalledWith(state, undefined);
         // None of these is permission to send.
         expect(conn.sendAgentCommand('open Safari').sent).toBe(false);

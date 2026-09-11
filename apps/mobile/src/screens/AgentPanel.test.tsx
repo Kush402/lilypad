@@ -497,7 +497,9 @@ describe('the handshake, before consent (L-285)', () => {
 
   it('asks for consent once the Mac actually says where it sends', async () => {
     consent.granted = false;
-    const view = render(<AgentPanel desktopDeviceId="mac-1" handshake="checking" feed={feed()} {...props} />);
+    const view = render(
+      <AgentPanel desktopDeviceId="mac-1" handshake="checking" feed={feed()} {...props} />,
+    );
     await shown('agent-handshake');
     // The Mac's follow-up frame for the same hello arrives.
     view.rerender(<AgentPanel {...DISCLOSED} handshake="ready" feed={feed()} {...props} />);

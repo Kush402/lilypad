@@ -125,7 +125,7 @@ describe('the handshake state is stated, not inferred (L-285)', () => {
     expect(AgentOutboundSchema.safeParse({ ...base, state: 'incompatible' }).success).toBe(false);
   });
 
-  it('recognises an out-of-date Mac\'s frame without trusting it', () => {
+  it("recognises an out-of-date Mac's frame without trusting it", () => {
     // `incompatible` is never on the wire — it is what the phone concludes
     // when the strict schema rejects a frame that is plainly an Ask handshake.
     const older = { kind: 'agent_ready', runId: 'probe-1', protocolVersion: 2, ts: 2 };
