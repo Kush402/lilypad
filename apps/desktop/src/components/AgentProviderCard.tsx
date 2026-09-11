@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 
 /** Kept in step with `commands.rs::ReadinessState`. */
@@ -238,7 +238,7 @@ export function AgentProviderCard() {
     }
   };
 
-  const listModels = async () => {
+  const listModels = useCallback(async () => {
     setBusy('listing');
     setModelsError('');
     try {
@@ -266,7 +266,38 @@ export function AgentProviderCard() {
     } finally {
       setBusy('');
     }
-  };
+  }, [dialect, baseUrl, apiKey]);
+
+  /**
+   * Fetch the catalogue as soon as there is a credential to fetch it with,
+   * instead of behind a button somebody has to know to press (L-311).
+   *
+   * Everything that judges a model hangs off this list. With no listing,
+   * `models` is null, a typed or pasted id is compared against nothing, and
+   * both Save buttons stay live — so the L-291 and L-310 refusals only ever
+   * protected a person who had already clicked `List models`. The owner's
+   * v0.1.36 install had a batch-only model saved this way.
+   *
+   * Three conditions, and each is load-bearing:
+   *
+   *  - a credential exists (typed now, or already saved, or not required).
+   *    Listing before then answers 401 and puts an error on screen that the
+   *    person has done nothing to deserve.
+   *  - `listModels` sets the catalogue back to null when it fails, so "is it
+   *    null" cannot be the whole guard or a dead endpoint is called for ever.
+   *    One automatic attempt per destination; the button is the manual retry.
+   *  - past the provider step, because that is where the model field appears.
+   */
+  const hasCredential =
+    apiKey.trim() !== '' || config?.hasKey === true || preset?.requiresKey === false;
+  const listedFor = useRef('');
+  const listingTarget = `${dialect}|${baseUrl.trim()}|${apiKey.trim() === '' ? '' : 'key'}`;
+  useEffect(() => {
+    if (step === 'provider' || !preset?.modelDiscovery || !hasCredential) return;
+    if (models !== null || busy !== '' || listedFor.current === listingTarget) return;
+    listedFor.current = listingTarget;
+    void listModels();
+  }, [step, preset, hasCredential, models, busy, listingTarget, listModels]);
 
   const test = async () => {
     setBusy('testing');

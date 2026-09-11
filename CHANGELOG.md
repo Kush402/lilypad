@@ -8,6 +8,11 @@ All notable changes to Lilypad are documented here. The format follows
 
 ### Fixed
 
+- **Setting up Ask no longer hides the model list behind a button.** The list
+  of models loads as soon as you have entered a key, so the ones Lilypad cannot
+  use are marked before you pick, not after. Pasting a model id gets the same
+  check that choosing one from the list does.
+
 - **Ask no longer offers models that cannot answer.** Some providers list a
   batch version of a model alongside the ordinary one. It looks identical in
   the list and it cannot hold a conversation, so picking it meant every request

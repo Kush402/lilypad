@@ -29,6 +29,17 @@ const PRESETS = [
     defaultModel: '',
   },
   {
+    id: 'openrouter',
+    displayName: 'OpenRouter',
+    dialect: 'openai_compat',
+    defaultBaseUrl: 'https://openrouter.ai/api/v1',
+    authHint: 'An OpenRouter API key from openrouter.ai/keys.',
+    modelDiscovery: true,
+    requiresKey: true,
+    note: 'Model names are prefixed by their vendor.',
+    defaultModel: '',
+  },
+  {
     id: 'ollama',
     displayName: 'Ollama (on this Mac)',
     dialect: 'openai_compat',
@@ -350,5 +361,99 @@ describe('a provider with no default model (L-292)', () => {
     // Anthropic is the default selection and has a validated default model.
     expect(screen.queryByTestId('agent-provider-model-required')).toBeNull();
     expect(screen.getByRole('button', { name: 'Save and test' })).toHaveProperty('disabled', false);
+  });
+});
+
+/**
+ * The catalogue arrives without being asked for (L-311).
+ *
+ * `List models` was a button a person had to know to press, and everything
+ * that judges a model hangs off the list it fetches: with no listing, a typed
+ * or pasted id is judged by nothing and Save is enabled. So the L-310 guard —
+ * and L-291's before it — only protected somebody who had already clicked.
+ *
+ * The owner's v0.1.36 install had `google/gemini-3-flash-preview:batch` saved,
+ * a model that cannot answer at all.
+ */
+describe('the model catalogue loads by itself', () => {
+  const OPENROUTER_MODELS = [
+    { id: 'google/gemini-3-flash-preview', suitability: 'unknown', reason: '' },
+    {
+      id: 'google/gemini-3-flash-preview:batch',
+      suitability: 'unsuitable',
+      reason:
+        'This is the batch version of the model. It answers through a queue that returns results later, not the live connection Ask uses. Choose the same model without the :batch ending.',
+    },
+  ];
+
+  /** Reach the model step on OpenRouter with a key typed, and nothing clicked. */
+  async function openrouterWithKey(models: unknown = OPENROUTER_MODELS) {
+    const calls: string[] = [];
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      calls.push(cmd);
+      if (cmd === 'list_provider_presets') return PRESETS;
+      if (cmd === 'get_agent_config') return UNCONFIGURED;
+      if (cmd === 'list_agent_models') return models;
+      throw new Error(`unexpected ${cmd}`);
+    });
+    render(<AgentProviderCard />);
+    await screen.findByLabelText('Provider');
+    fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'openrouter' } });
+    fireEvent.click(screen.getByTestId('agent-provider-continue'));
+    await screen.findByLabelText('API key');
+    fireEvent.change(screen.getByLabelText('API key'), { target: { value: 'sk-or-v1-test' } });
+    return calls;
+  }
+
+  it('lists without anybody pressing List models', async () => {
+    const calls = await openrouterWithKey();
+    await waitFor(() => expect(calls).toContain('list_agent_models'));
+    await waitFor(() => expect(screen.getByTestId('agent-provider-models-filtered')).toBeTruthy());
+  });
+
+  it('refuses a pasted batch model that nobody looked up first', async () => {
+    // The whole point: this person never clicked anything. Before the
+    // catalogue loaded on its own, `models` was null, so nothing judged the
+    // id and both buttons were live.
+    await openrouterWithKey();
+    await waitFor(() => expect(screen.getByTestId('agent-provider-models-filtered')).toBeTruthy());
+    fireEvent.change(screen.getByLabelText('Model'), {
+      target: { value: 'google/gemini-3-flash-preview:batch' },
+    });
+    expect(screen.getByTestId('agent-provider-model-unsuitable').textContent).toContain(':batch');
+    expect(screen.getByRole('button', { name: 'Save and test' })).toHaveProperty('disabled', true);
+    expect(screen.getByRole('button', { name: 'Save without testing' })).toHaveProperty(
+      'disabled',
+      true,
+    );
+  });
+
+  it('does not retry for ever when the endpoint cannot be listed', async () => {
+    // `listModels` sets the catalogue back to null on failure, so an effect
+    // that only checked "is it null" would call the endpoint without end.
+    const calls = await openrouterWithKey(Promise.reject(new Error('nope')));
+    await waitFor(() => expect(calls.filter((c) => c === 'list_agent_models').length).toBe(1));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(calls.filter((c) => c === 'list_agent_models').length).toBe(1);
+  });
+
+  it('asks for nothing while there is no credential to ask with', async () => {
+    // Gemini needs a key. Listing before one is entered would answer 401 and
+    // put an error on screen that the person has done nothing to deserve.
+    const calls: string[] = [];
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      calls.push(cmd);
+      if (cmd === 'list_provider_presets') return PRESETS;
+      if (cmd === 'get_agent_config') return UNCONFIGURED;
+      if (cmd === 'list_agent_models') return GEMINI_MODELS;
+      throw new Error(`unexpected ${cmd}`);
+    });
+    render(<AgentProviderCard />);
+    await screen.findByLabelText('Provider');
+    fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'gemini' } });
+    fireEvent.click(screen.getByTestId('agent-provider-continue'));
+    await screen.findByLabelText('Model');
+    await new Promise((r) => setTimeout(r, 50));
+    expect(calls).not.toContain('list_agent_models');
   });
 });
