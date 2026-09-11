@@ -52,6 +52,12 @@ export async function billingRoutes(app: FastifyInstance): Promise<void> {
             message: 'that Apple subscription is already linked to a different Lilypad account',
           });
         }
+        if (result.error === 'wrong_account') {
+          return reply.code(409).send({
+            error: 'wrong_account',
+            message: 'that purchase was made for a different Lilypad account',
+          });
+        }
         if (result.error === 'wrong_product') {
           return reply.code(400).send({ error: 'wrong_product' });
         }

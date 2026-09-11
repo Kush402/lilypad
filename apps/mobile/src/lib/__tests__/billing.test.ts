@@ -1,12 +1,23 @@
+import { AppState } from 'react-native';
 import {
   fetchBillingStatus,
   submitAppleTransaction,
   purchasePro,
   restorePro,
+  deliverPendingPurchases,
+  startPurchaseDelivery,
   BillingError,
 } from '../billing';
 import { accessToken, DeviceAuthError } from '../auth';
-import { getProduct, purchaseProduct, restorePurchases, PRO_MONTHLY_PRODUCT_ID } from '../storekit';
+import {
+  getProduct,
+  purchaseProduct,
+  restorePurchases,
+  unfinishedTransactions,
+  finishTransaction,
+  PRO_MONTHLY_PRODUCT_ID,
+} from '../storekit';
+import { loadSession } from '../session';
 
 jest.mock('../auth', () => {
   class FakeDeviceAuthError extends Error {
@@ -29,12 +40,20 @@ jest.mock('../storekit', () => ({
   getProduct: jest.fn(),
   purchaseProduct: jest.fn(),
   restorePurchases: jest.fn(),
+  unfinishedTransactions: jest.fn(),
+  finishTransaction: jest.fn(),
+  onTransactionsChanged: jest.fn(() => ({ remove: jest.fn() })),
 }));
+
+jest.mock('../session', () => ({ loadSession: jest.fn() }));
 
 const accessTokenMock = accessToken as jest.MockedFunction<typeof accessToken>;
 const getProductMock = getProduct as jest.MockedFunction<typeof getProduct>;
 const purchaseProductMock = purchaseProduct as jest.MockedFunction<typeof purchaseProduct>;
 const restorePurchasesMock = restorePurchases as jest.MockedFunction<typeof restorePurchases>;
+const unfinishedMock = unfinishedTransactions as jest.MockedFunction<typeof unfinishedTransactions>;
+const finishMock = finishTransaction as jest.MockedFunction<typeof finishTransaction>;
+const loadSessionMock = loadSession as jest.MockedFunction<typeof loadSession>;
 const realFetch = globalThis.fetch;
 
 const STATUS = {
@@ -49,7 +68,18 @@ const PURCHASE = {
   transactionId: 'txn-1',
   signedTransactionInfo: 'eyJhbGciOiJFUzI1NiJ9.fake.sig',
   environment: 'Sandbox',
+  appAccountToken: 'user-1',
 };
+
+const SESSION = {
+  userId: 'user-1',
+  apiBaseUrl: 'https://api.takedia.com',
+  signedInAt: 0,
+};
+
+/** Let every pending promise settle, not just the next microtask: one drain is
+ *  a chain of them, and the re-entrancy guard stays set until it finishes. */
+const settle = () => new Promise<void>((resolve) => setImmediate(() => resolve()));
 
 beforeEach(() => {
   accessTokenMock.mockResolvedValue('a-device-token');
@@ -65,6 +95,9 @@ beforeEach(() => {
   });
   purchaseProductMock.mockResolvedValue(PURCHASE);
   restorePurchasesMock.mockResolvedValue([PURCHASE]);
+  unfinishedMock.mockResolvedValue([]);
+  finishMock.mockResolvedValue(true);
+  loadSessionMock.mockResolvedValue(SESSION);
 });
 
 afterEach(() => {
@@ -136,7 +169,9 @@ describe('purchasePro', () => {
     await expect(purchasePro('https://api.takedia.com')).resolves.toEqual(STATUS);
 
     expect(getProductMock).toHaveBeenCalledWith(PRO_MONTHLY_PRODUCT_ID);
-    expect(purchaseProductMock).toHaveBeenCalledWith(PRO_MONTHLY_PRODUCT_ID);
+    // Stamped with the signed-in account, so a delivery that outlives a
+    // sign-out cannot be handed to somebody else (L-297).
+    expect(purchaseProductMock).toHaveBeenCalledWith(PRO_MONTHLY_PRODUCT_ID, 'user-1');
     expect(
       JSON.parse((fetchMock.mock.calls[0] as [string, RequestInit])[1].body as string),
     ).toEqual({ signedTransaction: PURCHASE.signedTransactionInfo });
@@ -167,5 +202,147 @@ describe('restorePro', () => {
 
     await expect(restorePro('https://api.takedia.com')).rejects.toBeInstanceOf(BillingError);
     expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Delivery of a purchase that has already been paid for (L-297).
+ *
+ * The defect: StoreKit was told the purchase had been delivered before
+ * Lilypad's server had heard of it. Losing the network, the process or the
+ * backend in that interval left a person charged, with a transaction Apple
+ * considered handed over and an account that had never heard of it, and no
+ * recovery except somehow knowing to press Restore.
+ *
+ * These are the half that does not need a phone: what gets finished, when, and
+ * what happens when the submission fails. The signed-device run is the other
+ * half and is recorded in the kanban.
+ */
+describe('a purchase is finished only once Lilypad has recorded it', () => {
+  it('submits, then finishes, in that order', async () => {
+    const order: string[] = [];
+    globalThis.fetch = jest.fn().mockImplementation(async () => {
+      order.push('submit');
+      return jsonResponse(STATUS);
+    });
+    finishMock.mockImplementation(async () => {
+      order.push('finish');
+      return true;
+    });
+
+    await expect(purchasePro('https://api.takedia.com')).resolves.toEqual(STATUS);
+    expect(order).toEqual(['submit', 'finish']);
+    expect(finishMock).toHaveBeenCalledWith('txn-1');
+  });
+
+  it('leaves the transaction unfinished when the server does not record it', async () => {
+    // This is the whole defect. An unfinished transaction is offered again; a
+    // finished one is gone, and the person is charged for nothing.
+    globalThis.fetch = jest.fn().mockResolvedValue(jsonResponse({ error: 'boom' }, 500));
+
+    await expect(purchasePro('https://api.takedia.com')).rejects.toBeInstanceOf(BillingError);
+    expect(finishMock).not.toHaveBeenCalled();
+  });
+
+  it('does not tell the person their purchase failed, because it did not', async () => {
+    globalThis.fetch = jest.fn().mockResolvedValue(jsonResponse({ error: 'boom' }, 500));
+    await expect(purchasePro('https://api.takedia.com')).rejects.toThrow(/purchase went through/i);
+  });
+});
+
+describe('the recovery drain', () => {
+  it('delivers what Apple still considers undelivered, then finishes it', async () => {
+    unfinishedMock.mockResolvedValue([PURCHASE]);
+    globalThis.fetch = jest.fn().mockResolvedValue(jsonResponse(STATUS));
+
+    await expect(deliverPendingPurchases('https://api.takedia.com')).resolves.toEqual({
+      delivered: 1,
+      held: 0,
+    });
+    expect(finishMock).toHaveBeenCalledWith('txn-1');
+  });
+
+  it('holds a delivery the server refuses, so Apple offers it again', async () => {
+    unfinishedMock.mockResolvedValue([PURCHASE]);
+    globalThis.fetch = jest.fn().mockResolvedValue(jsonResponse({ error: 'down' }, 503));
+
+    await expect(deliverPendingPurchases('https://api.takedia.com')).resolves.toEqual({
+      delivered: 0,
+      held: 1,
+    });
+    expect(finishMock).not.toHaveBeenCalled();
+  });
+
+  it('does not hand one account purchase to whoever is signed in now', async () => {
+    // A delivery that outlived a sign-out. Apple's stamp says whose it is.
+    loadSessionMock.mockResolvedValue({ ...SESSION, userId: 'user-2' });
+    unfinishedMock.mockResolvedValue([PURCHASE]);
+    globalThis.fetch = jest.fn();
+
+    await expect(deliverPendingPurchases('https://api.takedia.com')).resolves.toEqual({
+      delivered: 0,
+      held: 1,
+    });
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+    expect(finishMock).not.toHaveBeenCalled();
+  });
+
+  it('still delivers a purchase made before the stamp existed', async () => {
+    loadSessionMock.mockResolvedValue({ ...SESSION, userId: 'user-2' });
+    unfinishedMock.mockResolvedValue([{ ...PURCHASE, appAccountToken: null }]);
+    globalThis.fetch = jest.fn().mockResolvedValue(jsonResponse(STATUS));
+
+    await expect(deliverPendingPurchases('https://api.takedia.com')).resolves.toEqual({
+      delivered: 1,
+      held: 0,
+    });
+  });
+
+  it('survives a StoreKit that cannot answer at all', async () => {
+    unfinishedMock.mockRejectedValue(new Error('no native module'));
+    await expect(deliverPendingPurchases('https://api.takedia.com')).resolves.toEqual({
+      delivered: 0,
+      held: 0,
+    });
+  });
+});
+
+describe('the delivery loop', () => {
+  it('drains on launch and again on every return to the foreground', async () => {
+    const listeners: ((s: string) => void)[] = [];
+    jest.spyOn(AppState, 'addEventListener').mockImplementation(((
+      _: string,
+      handler: (s: string) => void,
+    ) => {
+      listeners.push(handler);
+      return { remove: jest.fn() };
+    }) as never);
+
+    const delivery = startPurchaseDelivery();
+    await settle();
+    expect(unfinishedMock).toHaveBeenCalledTimes(1);
+
+    listeners.forEach((l) => l('active'));
+    await settle();
+    expect(unfinishedMock).toHaveBeenCalledTimes(2);
+
+    // Backgrounding is not a trigger; only coming back is.
+    listeners.forEach((l) => l('background'));
+    await settle();
+    expect(unfinishedMock).toHaveBeenCalledTimes(2);
+
+    delivery.stop();
+  });
+
+  it('does nothing at all when nobody is signed in', async () => {
+    loadSessionMock.mockResolvedValue(null);
+    jest
+      .spyOn(AppState, 'addEventListener')
+      .mockImplementation((() => ({ remove: jest.fn() })) as never);
+
+    const delivery = startPurchaseDelivery();
+    await settle();
+    expect(unfinishedMock).not.toHaveBeenCalled();
+    delivery.stop();
   });
 });

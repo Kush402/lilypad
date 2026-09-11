@@ -13,6 +13,7 @@ import { SignInRoute } from './src/screens/SignInRoute';
 import { AccountDevicesScreen } from './src/screens/AccountDevicesScreen';
 import { ViewerScreen } from './src/screens/ViewerScreen';
 import { initDeviceIdentity } from './src/lib/device';
+import { startPurchaseDelivery } from './src/lib/billing';
 import { SessionProvider, useSession } from './src/lib/sessionContext';
 import { ErrorBoundary } from './src/components/ErrorBoundary';
 
@@ -100,6 +101,14 @@ export default function App() {
   // Fire-and-forget: failures degrade to the old per-launch id, never crash.
   useEffect(() => {
     void initDeviceIdentity();
+  }, []);
+  // A purchase Apple has taken money for but Lilypad has not recorded yet is
+  // redelivered here -- on launch, on foreground, and when StoreKit says the
+  // set changed (L-297). Silent: nothing to ask the person, only something to
+  // keep trying.
+  useEffect(() => {
+    const delivery = startPurchaseDelivery();
+    return () => delivery.stop();
   }, []);
   return (
     <SafeAreaProvider>

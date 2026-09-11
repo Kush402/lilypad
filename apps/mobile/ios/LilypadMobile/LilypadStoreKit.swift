@@ -1,4 +1,5 @@
 import Foundation
+import React
 import StoreKit
 
 /**
@@ -9,18 +10,66 @@ import StoreKit
  * surface would cost more than it buys, and the promise-based bridge is what
  * the TypeScript wrappers already speak.
 
- * Entitlement truth lives on the control plane after we POST the JWS — this
- * module only reads Apple's signed transaction and finishes it so StoreKit
- * stops redelivering. Never "finish" before copying `jwsRepresentation`: a
- * finished transaction can still be read later via `latest` / entitlements,
- * but losing the JWS on the hot purchase path forces a restore round-trip.
+ * Entitlement truth lives on the control plane after we POST the JWS.
+
+ * ### Finishing is the receipt for delivery, not for the sale (L-297)
+
+ * `purchase` used to call `transaction.finish()` before the JWS had been
+ * anywhere near Lilypad's server. Finishing tells StoreKit "this is delivered,
+ * stop redelivering it" — so losing the network, the process, or the backend in
+ * the moments after a purchase left a person charged, with a transaction Apple
+ * considered handed over and an account that had never heard of it. Recovery
+ * meant the person somehow knowing to press Restore.
+
+ * So nothing is finished here any more. `purchase` returns the signed
+ * transaction and leaves it unfinished; JavaScript calls `finishTransaction`
+ * only once the control plane has acknowledged it. Until then StoreKit itself
+ * is the durable pending-delivery queue — it survives crashes, reinstalls and
+ * reboots, which is more than any record we could keep — and `unfinished`
+ * replays it on demand.
+
+ * `Transaction.updates` is observed too, but only as a nudge: the event carries
+ * no payload and the drain is what is authoritative. `RCTEventEmitter` drops an
+ * event when nothing is listening yet, and a design where a dropped event costs
+ * a delivery would be the same defect in a new place.
  */
 @objc(LilypadStoreKit)
-class LilypadStoreKit: NSObject {
+class LilypadStoreKit: RCTEventEmitter {
 
   // MARK: - RN bridge
 
-  @objc static func requiresMainQueueSetup() -> Bool { false }
+  @objc override static func requiresMainQueueSetup() -> Bool { false }
+
+  /// A nudge, deliberately empty. See the note on `Transaction.updates` above.
+  static let transactionsChanged = "LilypadStoreKitTransactionsChanged"
+
+  private var updatesTask: Task<Void, Never>?
+
+  override func supportedEvents() -> [String]! { [Self.transactionsChanged] }
+
+  /**
+   Watch Apple's stream of transactions that arrive outside a purchase call —
+   an Ask-to-Buy approval that lands while the app is open, a renewal, a
+   purchase made on another device.
+
+   It tells JavaScript to drain; it does not carry the transaction. Anything
+   missed while nothing was listening is still sitting in `Transaction.unfinished`
+   for the next drain.
+   */
+  override func startObserving() {
+    updatesTask?.cancel()
+    updatesTask = Task { [weak self] in
+      for await _ in Transaction.updates {
+        guard !Task.isCancelled else { return }
+        self?.sendEvent(withName: Self.transactionsChanged, body: nil)
+      }
+    }
+  }
+
+  override func stopObserving() {
+    updatesTask?.cancel()
+    updatesTask = nil
+  }
 
   /// Block signatures match `RCTPromiseResolveBlock` / `RCTPromiseRejectBlock`
   /// without a bridging header (this target has none — see Noop.swift).
@@ -39,23 +88,41 @@ class LilypadStoreKit: NSObject {
     }
   }
 
+  /**
+   Buy, and stamp the purchase with the account it is for.
+
+   `appAccountToken` is Apple's own answer to "whose purchase is this": it is
+   carried inside the signed transaction, so it survives a reinstall, and the
+   server can check it rather than taking the client's word. Without it, a
+   delivery retried after a sign-out would be handed to whoever is signed in
+   when it finally succeeds.
+
+   Lilypad account ids are UUIDs, which is what the field requires. A caller
+   that passes something else gets an unstamped purchase rather than no
+   purchase -- the association is then whatever the server can work out on its
+   own, exactly as before this existed.
+   */
   @objc func purchase(
     _ productId: String,
+    appAccountToken: String?,
     resolver resolve: @escaping (Any?) -> Void,
     rejecter reject: @escaping (String?, String?, Error?) -> Void
   ) {
     Task {
       do {
         let product = try await Self.fetchProduct(productId)
-        let result = try await product.purchase()
+        var options: Set<Product.PurchaseOption> = []
+        if let token = appAccountToken, let uuid = UUID(uuidString: token) {
+          options.insert(.appAccountToken(uuid))
+        }
+        let result = try await product.purchase(options: options)
         switch result {
         case .success(let verification):
-          // JWS first, finish second — see file comment.
+          // Deliberately NOT finished here. It stays in Transaction.unfinished
+          // until the control plane has acknowledged it (L-297).
           let jws = verification.jwsRepresentation
           let transaction = try Self.unwrap(verification)
-          let payload = Self.purchaseDict(transaction, jws: jws)
-          await transaction.finish()
-          resolve(payload)
+          resolve(Self.purchaseDict(transaction, jws: jws))
         case .userCancelled:
           reject("user_cancelled", "Purchase cancelled.", nil)
         case .pending:
@@ -70,6 +137,59 @@ class LilypadStoreKit: NSObject {
       } catch {
         Self.reject(reject, code: "storekit_error", error: error)
       }
+    }
+  }
+
+  /**
+   Every transaction Apple still considers undelivered, newest work first.
+
+   This is the recovery path: on launch, on foreground, and whenever the
+   updates stream nudges. A purchase whose delivery failed is here, and stays
+   here, until Lilypad acknowledges it.
+   */
+  @objc func unfinishedTransactions(
+    _ resolve: @escaping (Any?) -> Void,
+    rejecter reject: @escaping (String?, String?, Error?) -> Void
+  ) {
+    Task {
+      var pending: [[String: Any]] = []
+      for await verification in Transaction.unfinished {
+        do {
+          let jws = verification.jwsRepresentation
+          let transaction = try Self.unwrap(verification)
+          pending.append(Self.purchaseDict(transaction, jws: jws))
+        } catch {
+          // An unverified row cannot be delivered and must not block the
+          // verified ones behind it.
+          continue
+        }
+      }
+      resolve(pending)
+    }
+  }
+
+  /**
+   Finish one transaction, by id, once Lilypad has recorded it.
+
+   Resolves `false` when the transaction is no longer unfinished, which is not
+   an error: a second delivery of the same purchase is the ordinary case, and
+   the first one already finished it.
+   */
+  @objc func finishTransaction(
+    _ transactionId: String,
+    resolver resolve: @escaping (Any?) -> Void,
+    rejecter reject: @escaping (String?, String?, Error?) -> Void
+  ) {
+    Task {
+      for await verification in Transaction.unfinished {
+        guard let transaction = try? Self.unwrap(verification) else { continue }
+        if String(transaction.id) == transactionId {
+          await transaction.finish()
+          resolve(true)
+          return
+        }
+      }
+      resolve(false)
     }
   }
 
@@ -162,6 +282,9 @@ class LilypadStoreKit: NSObject {
       "transactionId": String(transaction.id),
       "signedTransactionInfo": jws,
       "environment": environmentString(transaction),
+      // Whose purchase Apple was told this was, when it was told. Null for a
+      // purchase made before the stamp existed, or one made outside the app.
+      "appAccountToken": transaction.appAccountToken?.uuidString ?? NSNull(),
     ]
   }
 

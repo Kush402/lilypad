@@ -1,6 +1,16 @@
 import { accessToken, DeviceAuthError, unauthorizedError } from './auth';
 import { UserFacingError } from './errors';
-import { getProduct, purchaseProduct, restorePurchases, PRO_MONTHLY_PRODUCT_ID } from './storekit';
+import { AppState } from 'react-native';
+import {
+  finishTransaction,
+  onTransactionsChanged,
+  getProduct,
+  purchaseProduct,
+  restorePurchases,
+  unfinishedTransactions,
+  PRO_MONTHLY_PRODUCT_ID,
+} from './storekit';
+import { loadSession } from './session';
 
 /**
  * Account billing against the control plane
@@ -106,8 +116,82 @@ export async function submitAppleTransaction(
  */
 export async function purchasePro(apiBaseUrl: string): Promise<BillingStatus> {
   await getProduct(PRO_MONTHLY_PRODUCT_ID);
-  const purchase = await purchaseProduct(PRO_MONTHLY_PRODUCT_ID);
-  return submitAppleTransaction(apiBaseUrl, purchase.signedTransactionInfo);
+  const session = await loadSession();
+  const purchase = await purchaseProduct(PRO_MONTHLY_PRODUCT_ID, session?.userId ?? null);
+
+  let status: BillingStatus;
+  try {
+    status = await submitAppleTransaction(apiBaseUrl, purchase.signedTransactionInfo);
+  } catch (err) {
+    // The money has moved and the transaction is still unfinished, so Apple
+    // will keep offering it and `deliverPendingPurchases` will keep trying.
+    // Saying "purchase failed" here would be false, and it is what sent people
+    // hunting for a Restore button (L-297).
+    if (err instanceof DeviceAuthError) throw err;
+    throw new BillingError(
+      'Your purchase went through. Lilypad could not record it just yet, but it will finish on its own. Reopen this screen to check.',
+    );
+  }
+
+  // Delivered. Only now may StoreKit stop offering it.
+  await finishTransaction(purchase.transactionId).catch(() => undefined);
+  return status;
+}
+
+/** What one drain did, for logging and for the tests. */
+export type DeliveryOutcome = {
+  /** Recorded by the control plane and finished with StoreKit. */
+  delivered: number;
+  /** Still unfinished, deliberately: it will be offered again. */
+  held: number;
+};
+
+/**
+ * Deliver every purchase Apple still considers undelivered (L-297).
+ *
+ * Run on launch, on foreground, and whenever StoreKit nudges. It is the
+ * recovery path for the interval this defect was about: charged, then the
+ * network or the process or the server went away before Lilypad recorded it.
+ *
+ * A failure here is not an error to report. The transaction stays unfinished,
+ * which means Apple offers it again next time — retrying quietly is the whole
+ * design, and a modal apology for a purchase that will arrive by itself is
+ * worse than silence.
+ */
+export async function deliverPendingPurchases(apiBaseUrl: string): Promise<DeliveryOutcome> {
+  let pending: Awaited<ReturnType<typeof unfinishedTransactions>>;
+  try {
+    pending = await unfinishedTransactions();
+  } catch {
+    return { delivered: 0, held: 0 };
+  }
+  if (pending.length === 0) return { delivered: 0, held: 0 };
+
+  const session = await loadSession();
+  let delivered = 0;
+  let held = 0;
+
+  for (const purchase of pending) {
+    // Apple's own stamp of whose purchase this is. A delivery that outlived a
+    // sign-out must not be handed to whoever happens to be signed in now.
+    if (
+      purchase.appAccountToken != null &&
+      session?.userId != null &&
+      purchase.appAccountToken !== session.userId
+    ) {
+      held += 1;
+      continue;
+    }
+    try {
+      await submitAppleTransaction(apiBaseUrl, purchase.signedTransactionInfo);
+      await finishTransaction(purchase.transactionId);
+      delivered += 1;
+    } catch {
+      // Signed out, offline, or the server said no. It stays queued.
+      held += 1;
+    }
+  }
+  return { delivered, held };
 }
 
 /**
@@ -127,4 +211,52 @@ export async function restorePro(apiBaseUrl: string): Promise<BillingStatus> {
   }
   // Loop always assigns when length > 0; the null check keeps TypeScript honest.
   return status ?? (await fetchBillingStatus(apiBaseUrl));
+}
+
+/**
+ * Keep delivering paid-for purchases, for as long as the app is running.
+ *
+ * Three triggers, all leading to the same drain: launch, returning to the
+ * foreground, and Apple's nudge that its set of transactions changed. The
+ * nudge is the only one that can be missed — `RCTEventEmitter` drops an event
+ * when nothing is listening — which is why the other two exist and why the
+ * nudge carries no payload.
+ *
+ * Silent by design. A purchase that has not reached the server yet is not
+ * something to interrupt a person about; it is something to keep trying.
+ */
+export function startPurchaseDelivery(): { stop: () => void } {
+  let draining = false;
+
+  const drain = async (): Promise<void> => {
+    // Three triggers can fire at once on a cold foreground. Delivering the
+    // same transaction twice is safe -- submission is idempotent by
+    // transaction id -- but there is no reason to do it.
+    if (draining) return;
+    draining = true;
+    try {
+      const session = await loadSession();
+      if (session == null) return;
+      await deliverPendingPurchases(session.apiBaseUrl);
+    } catch {
+      /* the transaction is still unfinished; the next trigger tries again */
+    } finally {
+      draining = false;
+    }
+  };
+
+  void drain();
+  const nudge = onTransactionsChanged(() => {
+    void drain();
+  });
+  const appState = AppState.addEventListener('change', (next) => {
+    if (next === 'active') void drain();
+  });
+
+  return {
+    stop: () => {
+      nudge.remove();
+      appState.remove();
+    },
+  };
 }

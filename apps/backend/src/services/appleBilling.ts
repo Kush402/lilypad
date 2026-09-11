@@ -84,7 +84,12 @@ export type ApplyResult =
   | { ok: true; status: BillingStatus }
   | {
       ok: false;
-      error: 'invalid_transaction' | 'wrong_product' | 'already_linked' | 'not_configured';
+      error:
+        | 'invalid_transaction'
+        | 'wrong_product'
+        | 'already_linked'
+        | 'wrong_account'
+        | 'not_configured';
     };
 
 /** Which environment this deployment sells in. A Sandbox subscription does
@@ -209,6 +214,21 @@ export async function applySignedTransaction(
   if (!event) return { ok: false, error: 'invalid_transaction' };
   if (!PRO_PRODUCTS.has(event.productId)) {
     return { ok: false, error: 'wrong_product' };
+  }
+  // Apple's own statement of whose purchase this is, set by the app at purchase
+  // time and carried inside the signed transaction (L-297). Where it is
+  // present it decides, because it is signed and the caller's claim is not: a
+  // delivery that outlived a sign-out must not attach to whoever is holding a
+  // token now. Absent on purchases made before the stamp existed, and on
+  // purchases made outside the app -- those fall back to the ownership rules,
+  // which already refuse a subscription another account holds.
+  const stamped = decoded.tx.appAccountToken;
+  if (typeof stamped === 'string' && stamped.length > 0 && stamped !== userId) {
+    log.server.warn(
+      { userId, stamped },
+      'Apple transaction was bought for a different Lilypad account',
+    );
+    return { ok: false, error: 'wrong_account' };
   }
 
   const { conflict } = await applySubscriptionEvent(database, event, userId);

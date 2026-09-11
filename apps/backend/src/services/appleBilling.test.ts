@@ -182,6 +182,48 @@ describe('applySignedTransaction', () => {
     expect(store.subs[0]?.status).toBe('active');
   });
 
+  it('refuses a transaction Apple says was bought for another account (L-297)', async () => {
+    // The stamp is inside the signed transaction, so it outranks the bearer
+    // token presenting it: a delivery retried after a sign-out must not attach
+    // to whoever happens to be signed in when it finally goes through.
+    const jws = JSON.stringify({
+      originalTransactionId: 'ot-9',
+      productId: PRO_MONTHLY_PRODUCT_ID,
+      expiresDate: Date.now() + 30 * 24 * 3600 * 1000,
+      appAccountToken: 'user-2',
+    });
+    const result = await applySignedTransaction('user-1', jws, fakeDb(store));
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBe('wrong_account');
+    expect(store.subs).toHaveLength(0);
+  });
+
+  it('accepts a transaction stamped for the account presenting it', async () => {
+    const jws = JSON.stringify({
+      originalTransactionId: 'ot-10',
+      productId: PRO_MONTHLY_PRODUCT_ID,
+      expiresDate: Date.now() + 30 * 24 * 3600 * 1000,
+      appAccountToken: 'user-1',
+    });
+    const result = await applySignedTransaction('user-1', jws, fakeDb(store));
+    expect(result.ok).toBe(true);
+    expect(store.subs[0]?.ownerUserId).toBe('user-1');
+  });
+
+  it('still accepts a transaction with no stamp at all', async () => {
+    // Purchases made before the stamp existed, and purchases made outside the
+    // app, carry nothing. They fall back to the ownership rules, which already
+    // refuse a subscription another account holds.
+    const jws = JSON.stringify({
+      originalTransactionId: 'ot-11',
+      productId: PRO_MONTHLY_PRODUCT_ID,
+      expiresDate: Date.now() + 30 * 24 * 3600 * 1000,
+    });
+    const result = await applySignedTransaction('user-1', jws, fakeDb(store));
+    expect(result.ok).toBe(true);
+  });
+
   it('refuses a product that is not Pro', async () => {
     const jws = JSON.stringify({
       originalTransactionId: 'ot-2',

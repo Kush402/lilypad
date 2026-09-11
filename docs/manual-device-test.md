@@ -705,6 +705,68 @@ the candidate commit the builds were made from, and the desktop and mobile
 version and build numbers as the installed apps report them. A row without
 those is not evidence about this candidate.
 
+## L-297 — purchase delivery, on signed hardware
+
+This sheet exists because every claim about L-297 is currently a source claim.
+The code is done and covered by regressions; none of it has been through a real
+App Store Sandbox purchase on a real phone, and the defect it fixes is about
+money. Nothing below is verified until it is performed and written into the
+result block.
+
+**Before you start.** Use a Sandbox Apple ID (Settings → App Store → Sandbox
+Account), not a real one. Note the account, the build number, and whether the
+server is the production API or a local one. A Sandbox subscription does not
+entitle an ordinary account in production — that is L-298 working — so either
+test against a Sandbox-configured server, or set `is_billing_tester` on the
+account first and say in the result block which you did.
+
+### The runs
+
+1. **The happy path.** Buy Pro. Expect: the screen shows Pro, and
+   `Transaction.unfinished` is empty afterwards. Nothing else in this sheet
+   means anything if this fails.
+
+2. **Offline in the delivery window.** Put the phone in Airplane Mode
+   immediately after Apple's confirmation sheet, before the screen settles.
+   Expect: a message saying the purchase went through and will finish on its
+   own — **not** "purchase failed". Restore network, background and foreground
+   the app. Expect: Pro, with no Restore tap.
+
+3. **The server refuses.** Point the app at a backend returning 500 for
+   `POST /billing/apple/transactions` (or stop it). Buy. Expect: the same
+   honest message, the transaction still unfinished. Bring the backend back,
+   foreground the app, expect delivery.
+
+4. **Process death mid-delivery.** Buy, then force-quit the app from the app
+   switcher during the submission. Relaunch. Expect: the launch drain delivers
+   it, with no interaction at all. This is the run that proves StoreKit's
+   unfinished queue really is the durable record.
+
+5. **Delayed approval (Ask to Buy).** With a Sandbox family child account, buy
+   and let the request sit. Expect: a clear "waiting for approval" message, no
+   finished transaction. Approve it from the parent device **while the app is
+   open**. Expect: the `Transaction.updates` nudge drains it without the person
+   doing anything. Repeat with the app closed, and expect delivery on next
+   launch.
+
+6. **Duplicate delivery.** Foreground the app repeatedly after a successful
+   purchase. Expect: no second subscription row and no error — submission is
+   idempotent by transaction id.
+
+7. **The account boundary.** Buy on account A. Before delivery succeeds (use
+   run 3's broken backend), sign out and sign in as account B. Restore the
+   backend and foreground. Expect: **nothing is delivered to B**, and the
+   transaction stays unfinished. Sign back in as A; expect it to arrive. This
+   is the one that needs the `appAccountToken` stamp to be real rather than
+   assumed.
+
+### What to record
+
+For each run: the build number, the Sandbox account, what the screen said
+verbatim, whether Pro appeared, and — for the ones that are about recovery —
+how long it took and whether any tap was needed. A run that needed a Restore
+tap is a **failure** of that run, not a pass with a caveat.
+
 ## Results
 
 Copy this in and fill it out. "Not run" is a legitimate answer; a guess is not.
