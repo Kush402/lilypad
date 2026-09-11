@@ -148,11 +148,19 @@ async function statusFor(
   // of a subscription that stopped entitling is how "Pro until…" outlived the
   // subscription it described.
   const current = state != null && subscriptionIsCurrent(state, now);
+  // A live subscription that buys nothing here, because Apple sold it in the
+  // test environment and this account is not an approved tester. Refusing it
+  // is L-298; saying so is L-307. `free` on its own is indistinguishable from
+  // "you never bought anything", which is what made a successful TestFlight
+  // purchase look like a broken one.
+  const testPurchase =
+    current && state!.environment !== commercialEnvironment() && !account.isBillingTester;
   return {
     tier,
     productId: current ? state!.productId : null,
     currentPeriodEndsAt:
       current && state!.expiresAt != null ? new Date(state!.expiresAt).toISOString() : null,
+    testPurchase,
   };
 }
 

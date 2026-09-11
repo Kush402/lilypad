@@ -6,6 +6,28 @@ All notable changes to Lilypad are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **The Approve button on an Ask request is reachable again.** When Lilypad
+  asked permission to do something on your Mac, the card could be drawn
+  underneath the Disconnect bar, where it could not be tapped. The request sat
+  waiting and the only way out was to disconnect. The card now stays on screen
+  and scrolls, with Approve and Deny always at the bottom of it.
+
+- **A purchase made in Apple's test environment now says what it is.** On a
+  TestFlight build the purchase goes through, and it does not unlock Pro on the
+  live service. Lilypad used to say nothing at all: the subscription screen
+  simply offered to sell you Pro again. It now tells you the purchase was a
+  test one and that you were not charged.
+
+- **One subscription can no longer unlock Pro on two accounts.** A purchase
+  could be claimed a second time by a different account, and both kept Pro.
+
+- **A test purchase made before this release no longer counts as a real one.**
+  Subscriptions recorded before Lilypad tracked which Apple environment they
+  came from were all assumed to be real purchases. Where Apple's own records
+  contradict that, the assumption is dropped.
+
 ## [0.1.35] — 2026-09-11
 
 Everything a customer review of v0.1.34 found in Ask's setup and in the

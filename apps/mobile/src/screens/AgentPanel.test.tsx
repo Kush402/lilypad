@@ -1,5 +1,6 @@
 import React from 'react';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react-native';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react-native';
+import { StyleSheet } from 'react-native';
 import { AgentPanel, describeForScreenReader, readsLabel } from './AgentPanel';
 import type { AgentFeedState, AgentStepView } from '../lib/agentFeed';
 
@@ -544,5 +545,65 @@ describe('the handshake, before consent (L-285)', () => {
     expect(screen.queryByTestId('agent-command-input')).toBeNull();
     expect(screen.queryByTestId('agent-send')).toBeNull();
     expect(send).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * The approval card has to be reachable (L-306).
+ *
+ * A React Native `View` paints its overflow by default, so content taller than
+ * `maxHeight` is still drawn — outside the box, underneath whatever is
+ * rendered after it. The panel's next sibling is the Disconnect bar, so on a
+ * real phone Approve was painted beneath Disconnect and could not be tapped.
+ * Nothing in the old tests noticed, because a decision that is off-screen is
+ * still `getByTestId`-able.
+ */
+describe('the approval card stays reachable', () => {
+  /** A grant disclosure long enough to overflow any fixed panel height. */
+  const bigCard = feed({
+    running: true,
+    steps: [
+      step({
+        state: 'held',
+        toolClass: 'consequential',
+        summary: 'Run a script',
+        approval: {
+          purpose: 'Run a shell script',
+          script: {
+            language: 'shell',
+            source: Array.from({ length: 60 }, (_, i) => `echo line ${i}`).join('\n'),
+          },
+          writablePaths: ['/Users/me/Documents', '/Users/me/Desktop'],
+          readablePaths: ['/Users/me/Documents/notes.txt'],
+          network: true,
+        },
+      }),
+    ],
+  });
+
+  it('keeps Approve and Deny out of the part that scrolls', async () => {
+    render(<AgentPanel {...DISCLOSED} feed={bigCard} onSend={noop} onStop={noop} onDecide={noop} />);
+    const disclosure = await shown('agent-hold-disclosure');
+    // The model writes the summary and the script; it must not be able to push
+    // the decision off the card by writing more of them.
+    expect(within(disclosure).queryByTestId('agent-approve')).toBeNull();
+    expect(within(disclosure).queryByTestId('agent-deny')).toBeNull();
+    expect(screen.getByTestId('agent-approve')).toBeTruthy();
+    expect(screen.getByTestId('agent-deny')).toBeTruthy();
+  });
+
+  it('clips the panel instead of painting it over the Disconnect bar', async () => {
+    render(<AgentPanel {...DISCLOSED} feed={bigCard} onSend={noop} onStop={noop} onDecide={noop} />);
+    const panel = await shown('agent-panel');
+    expect(StyleSheet.flatten(panel.props.style).overflow).toBe('hidden');
+  });
+
+  it('drops the idle height cap while a step is held, and keeps it otherwise', async () => {
+    render(<AgentPanel {...DISCLOSED} feed={bigCard} onSend={noop} onStop={noop} onDecide={noop} />);
+    expect(StyleSheet.flatten((await shown('agent-panel')).props.style).maxHeight).toBeUndefined();
+
+    screen.unmount();
+    render(<AgentPanel {...DISCLOSED} feed={feed()} onSend={noop} onStop={noop} onDecide={noop} />);
+    expect(StyleSheet.flatten((await shown('agent-panel')).props.style).maxHeight).toBe(260);
   });
 });

@@ -136,11 +136,17 @@ export const subscriptions = pgTable(
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
-    // The cross-account uniqueness binding, and the lookup a notification
-    // uses. UNIQUE is the security control: without it one payment could
-    // entitle two accounts.
+    // The row identity, and the lookup a notification uses. It is NOT the
+    // control that stops one payment entitling two accounts, though it was
+    // described that way and believed: `environment` is part of the key, so
+    // the same Apple subscription presented under the other label is a
+    // different row and the index is satisfied. It happened in production
+    // (L-308). Ownership is enforced in `applySubscriptionEvent`, on the
+    // original transaction id alone.
     uniqueIndex('subscriptions_identity_idx').on(t.environment, t.originalTransactionId),
     index('subscriptions_owner_idx').on(t.ownerUserId),
+    // What that ownership check queries.
+    index('subscriptions_original_transaction_idx').on(t.originalTransactionId),
   ],
 );
 

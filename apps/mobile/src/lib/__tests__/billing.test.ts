@@ -346,3 +346,35 @@ describe('the delivery loop', () => {
     delivery.stop();
   });
 });
+
+/**
+ * A 409 is an answer about the purchase, not a network failure (L-308).
+ *
+ * The guard that stops one Apple subscription entitling two accounts makes
+ * this reachable, and "check your connection and try again" sends somebody off
+ * to fix a connection that is working perfectly.
+ */
+describe('what a refused claim tells the customer', () => {
+  it('names the real reason when the subscription is on another account', async () => {
+    globalThis.fetch = jest
+      .fn()
+      .mockResolvedValue(jsonResponse({ error: 'already_linked' }, 409));
+    await expect(
+      submitAppleTransaction('https://api.takedia.com', PURCHASE.signedTransactionInfo),
+    ).rejects.toThrow(/another Lilypad account/);
+  });
+
+  it('names it for a purchase stamped for somebody else', async () => {
+    globalThis.fetch = jest.fn().mockResolvedValue(jsonResponse({ error: 'wrong_account' }, 409));
+    await expect(
+      submitAppleTransaction('https://api.takedia.com', PURCHASE.signedTransactionInfo),
+    ).rejects.toThrow(/another Lilypad account/);
+  });
+
+  it('falls back to something plain when a 409 carries no code it knows', async () => {
+    globalThis.fetch = jest.fn().mockResolvedValue(jsonResponse({}, 409));
+    await expect(
+      submitAppleTransaction('https://api.takedia.com', PURCHASE.signedTransactionInfo),
+    ).rejects.toThrow(/Could not update your subscription/);
+  });
+});

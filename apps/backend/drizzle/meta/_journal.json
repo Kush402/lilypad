@@ -92,6 +92,13 @@
       "when": 1788000000000,
       "tag": "0012_subscriptions",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1789000000000,
+      "tag": "0013_subscription_identity_repair",
+      "breakpoints": true
     }
   ]
 }

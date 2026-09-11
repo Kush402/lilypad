@@ -158,10 +158,11 @@ describeWithDb('subscription ordering, against a real database', () => {
     expect(row?.expiresAt?.getTime()).toBe(T0 + 70 * DAY);
   });
 
-  it('one Apple subscription cannot be held by two accounts', async () => {
+  it('one Apple subscription cannot be held by two accounts, in the same environment', async () => {
     await apply(event(), userId);
-    // The database, not the application, is what makes this true: a second
-    // row for the same identity is refused even if a caller tries.
+    // Within one environment the database enforces this on its own: a second
+    // row for the same identity violates the unique index. Across
+    // environments it does not, which is the case below.
     await expect(
       db.insert(subscriptions).values({
         environment: 'Production',
@@ -173,15 +174,58 @@ describeWithDb('subscription ordering, against a real database', () => {
     ).rejects.toThrow();
   });
 
-  it('the same original transaction id in each environment is two subscriptions', async () => {
+  it('the same original transaction id in each environment is two rows for ONE account', async () => {
+    // A TestFlight tester who later buys for real. Two rows, two environments,
+    // one owner -- which is the case the split identity exists to allow.
     await apply(event(), userId);
-    await apply(event({ environment: 'Sandbox', transactionId: 'tx-s' }), otherUserId);
+    await apply(event({ environment: 'Sandbox', transactionId: 'tx-s' }), userId);
     const rows = await db
       .select()
       .from(subscriptions)
       .where(eq(subscriptions.originalTransactionId, originalTransactionId));
     expect(rows).toHaveLength(2);
     expect(new Set(rows.map((r) => r.environment))).toEqual(new Set(['Production', 'Sandbox']));
+    expect(new Set(rows.map((r) => r.ownerUserId))).toEqual(new Set([userId]));
+  });
+
+  it('refuses a second account claiming the same subscription under the other environment (L-308)', async () => {
+    // This is the shape the previous version of the test above had, with the
+    // second row given to a DIFFERENT account -- and it passed, because the
+    // unique index is on (environment, originalTransactionId) and two labels
+    // are two identities. So the check that was supposed to stop one payment
+    // entitling two accounts never saw the second claimant at all.
+    //
+    // Observed in production: a legacy Sandbox purchase recorded as Production
+    // by migration 0012, then the same Apple subscription bought again under
+    // Sandbox by a second Lilypad account. Both accounts held it at once.
+    await apply(event(), userId);
+
+    const { state, conflict } = await applySubscriptionEvent(
+      db as never,
+      event({ environment: 'Sandbox', transactionId: 'tx-s' }),
+      otherUserId,
+    );
+    expect(conflict).toBe(true);
+    expect(state.ownerUserId).toBe(userId);
+
+    const rows = await db
+      .select()
+      .from(subscriptions)
+      .where(eq(subscriptions.originalTransactionId, originalTransactionId));
+    expect(rows.filter((r) => r.ownerUserId === otherUserId)).toHaveLength(0);
+  });
+
+  it('still lets a notification reach a subscription another account owns', async () => {
+    // Notifications claim nothing, so the ownership refusal must not apply to
+    // them: Apple addresses the subscription, and the row it addresses has an
+    // owner by definition. Refusing here would have stopped every renewal.
+    await apply(event(), userId);
+    const renewed = await apply(
+      event({ transactionId: 'tx-2', purchaseDate: T0 + DAY, expiresAt: T0 + 60 * DAY }),
+      null,
+    );
+    expect(renewed.ownerUserId).toBe(userId);
+    expect(renewed.lastTransactionId).toBe('tx-2');
   });
 
   it('a webhook winning the first-purchase race does not cost the buyer the claim', async () => {

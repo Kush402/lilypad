@@ -30,6 +30,9 @@ export type BillingStatus = {
   productId: string | null;
   /** When the current paid period ends, ISO-8601, or null when unknown / free. */
   currentPeriodEndsAt: string | null;
+  /** A purchase was recorded but Apple sold it in the test environment, so it
+   *  entitles nothing here (L-307). Absent from older servers. */
+  testPurchase?: boolean;
 };
 
 export class BillingError extends UserFacingError {}
@@ -62,9 +65,30 @@ async function request(
   }
 }
 
-function billingFailure(status: number): string {
-  if (status === 429) return 'Too many requests just now. Wait a moment, then try again.';
-  if (status >= 500) {
+/**
+ * What to tell the person, from the status the server answered with.
+ *
+ * A 409 is a real answer about their purchase and not a network problem, and
+ * telling them to check their connection sends them to fix something that is
+ * not broken. The sentences are chosen here rather than taken from the
+ * response body: the server's wording is for a developer reading a log, and
+ * rendering text a server supplies is a habit worth not having.
+ */
+async function billingFailure(res: Response): Promise<string> {
+  if (res.status === 409) {
+    const code = await res
+      .json()
+      .then((body: { error?: string }) => body?.error ?? null)
+      .catch(() => null);
+    if (code === 'already_linked') {
+      return 'That Apple subscription is already on another Lilypad account. Sign in as that account to use it.';
+    }
+    if (code === 'wrong_account') {
+      return 'That purchase was made for another Lilypad account. Sign in as that account to use it.';
+    }
+  }
+  if (res.status === 429) return 'Too many requests just now. Wait a moment, then try again.';
+  if (res.status >= 500) {
     return 'Lilypad’s server is having trouble with billing. Try again in a moment.';
   }
   return 'Could not update your subscription. Check your connection and try again.';
@@ -79,7 +103,7 @@ export async function fetchBillingStatus(apiBaseUrl: string): Promise<BillingSta
     if (err instanceof DeviceAuthError) throw err;
     throw new BillingError('Could not reach Lilypad. Check your connection.');
   }
-  if (!res.ok) throw new BillingError(billingFailure(res.status));
+  if (!res.ok) throw new BillingError(await billingFailure(res));
   return (await res.json()) as BillingStatus;
 }
 
@@ -104,7 +128,7 @@ export async function submitAppleTransaction(
     if (err instanceof UserFacingError) throw err;
     throw new BillingError('Could not reach Lilypad. Check your connection.');
   }
-  if (!res.ok) throw new BillingError(billingFailure(res.status));
+  if (!res.ok) throw new BillingError(await billingFailure(res));
   return (await res.json()) as BillingStatus;
 }
 

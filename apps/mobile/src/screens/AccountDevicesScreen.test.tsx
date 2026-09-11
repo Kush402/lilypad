@@ -375,3 +375,37 @@ describe('the version a support conversation asks for', () => {
     expect(screen.queryByText(/ · v/)).toBeNull();
   });
 });
+
+/**
+ * A purchase that succeeded and bought nothing (L-307).
+ *
+ * Sandbox receipts do not entitle Pro on the live service, which is correct
+ * (L-298). What the card could not do was say so: the server answered `free`,
+ * the card put the Subscribe button back, and a tester who had just completed
+ * a purchase saw the screen they started on.
+ */
+describe('a purchase Apple made in its test environment', () => {
+  const billing = jest.requireMock('../lib/billing') as {
+    fetchBillingStatus: jest.Mock;
+  };
+
+  it('says the purchase was a test one instead of silently offering Subscribe again', async () => {
+    billing.fetchBillingStatus.mockResolvedValueOnce({
+      tier: 'free',
+      productId: null,
+      currentPeriodEndsAt: null,
+      testPurchase: true,
+    });
+    renderScreen();
+    expect(await screen.findByTestId('billing-test-purchase')).toBeTruthy();
+    // Subscribe stays: the purchase really did not entitle them, so the offer
+    // is still the honest one. What changes is that it is now explained.
+    expect(screen.getByTestId('billing-subscribe')).toBeTruthy();
+  });
+
+  it('says nothing of the kind to somebody who simply has not bought Pro', async () => {
+    renderScreen();
+    await screen.findByTestId('billing-subscribe');
+    expect(screen.queryByTestId('billing-test-purchase')).toBeNull();
+  });
+});

@@ -407,7 +407,7 @@ export function AgentPanel({
   }
 
   return (
-    <View style={styles.panel} testID="agent-panel">
+    <View style={[styles.panel, !held && styles.panelCapped]} testID="agent-panel">
       <View style={styles.inputRow}>
         <TextInput
           testID="agent-command-input"
@@ -464,92 +464,96 @@ export function AgentPanel({
 
       {held ? (
         <View style={styles.holdCard} testID="agent-hold">
-          <Text style={styles.holdTitle}>Allow this action?</Text>
-          <Text style={styles.holdSummary}>{held.summary}</Text>
-          {/* Why this is being asked at all.
-           *
-           * Only `Consequential` actions are ever held — `security.rs` runs
-           * everything the model proposes through a deterministic gate, lets
-           * `Safe` and `Sensitive` through, hard-refuses `Forbidden` without
-           * offering it, and defaults anything it cannot positively recognise
-           * to `Consequential`. So every card a person sees here is one the Mac
-           * declined to do on its own.
-           *
-           * Saying so is the difference between a decision and a habit. The
-           * card used to be a summary and two buttons, which trains a customer
-           * to tap Approve — and the summary is written by a model, so it is
-           * the least trustworthy thing on screen. */}
-          <Text style={styles.holdWhy}>
-            Your Mac won’t do this on its own. Lilypad asks before anything it can’t confirm is
-            routine.
-          </Text>
-          {/* What is actually being granted (L-229).
-           *
-           * "Run shell script" is the same sentence for a script that lists a
-           * folder and one that uploads it, so the summary above cannot carry
-           * this decision. The grants below come from the very action the Mac
-           * will run, not from the model's description of it. */}
-          {held.approval ? (
-            <View style={styles.grants} testID="agent-approval">
-              {held.approval.target ? (
-                <Text style={styles.grantLine}>
-                  Control:{' '}
-                  <Text style={styles.grantValue}>
-                    {held.approval.target.label || '(unlabelled)'}
+          <ScrollView style={styles.holdScroll} testID="agent-hold-disclosure">
+            <Text style={styles.holdTitle}>Allow this action?</Text>
+            <Text style={styles.holdSummary}>{held.summary}</Text>
+            {/* Why this is being asked at all.
+             *
+             * Only `Consequential` actions are ever held — `security.rs` runs
+             * everything the model proposes through a deterministic gate, lets
+             * `Safe` and `Sensitive` through, hard-refuses `Forbidden` without
+             * offering it, and defaults anything it cannot positively recognise
+             * to `Consequential`. So every card a person sees here is one the Mac
+             * declined to do on its own.
+             *
+             * Saying so is the difference between a decision and a habit. The
+             * card used to be a summary and two buttons, which trains a customer
+             * to tap Approve — and the summary is written by a model, so it is
+             * the least trustworthy thing on screen. */}
+            <Text style={styles.holdWhy}>
+              Your Mac won’t do this on its own. Lilypad asks before anything it can’t confirm is
+              routine.
+            </Text>
+            {/* What is actually being granted (L-229).
+             *
+             * "Run shell script" is the same sentence for a script that lists a
+             * folder and one that uploads it, so the summary above cannot carry
+             * this decision. The grants below come from the very action the Mac
+             * will run, not from the model's description of it. */}
+            {held.approval ? (
+              <View style={styles.grants} testID="agent-approval">
+                {held.approval.target ? (
+                  <Text style={styles.grantLine}>
+                    Control:{' '}
+                    <Text style={styles.grantValue}>
+                      {held.approval.target.label || '(unlabelled)'}
+                    </Text>
+                    {`  ·  ${held.approval.target.role}`}
                   </Text>
-                  {`  ·  ${held.approval.target.role}`}
+                ) : null}
+                <Text style={styles.grantLine}>
+                  Network:{' '}
+                  <Text style={held.approval.network ? styles.grantDanger : styles.grantValue}>
+                    {held.approval.network ? 'allowed' : 'blocked'}
+                  </Text>
                 </Text>
-              ) : null}
-              <Text style={styles.grantLine}>
-                Network:{' '}
-                <Text style={held.approval.network ? styles.grantDanger : styles.grantValue}>
-                  {held.approval.network ? 'allowed' : 'blocked'}
-                </Text>
-              </Text>
-              <Text style={styles.grantLine}>
-                Can write to:{' '}
-                <Text
-                  style={
-                    held.approval.writablePaths.length > 0 ? styles.grantDanger : styles.grantValue
-                  }
-                >
-                  {held.approval.writablePaths.length > 0
-                    ? held.approval.writablePaths.join(', ')
-                    : 'its scratch folder only'}
-                </Text>
-              </Text>
-              <Text style={styles.grantLine}>
-                Can read:{' '}
-                <Text
-                  style={
-                    held.approval.readablePaths === undefined ||
-                    held.approval.readablePaths.length > 0
-                      ? styles.grantDanger
-                      : styles.grantValue
-                  }
-                >
-                  {held.approval.readablePaths === undefined
-                    ? 'not disclosed by this Mac'
-                    : held.approval.readablePaths.length > 0
-                      ? held.approval.readablePaths.join(', ')
-                      : 'none of your files'}
-                </Text>
-              </Text>
-              {held.approval.script ? (
-                <View style={styles.scriptBox}>
-                  <Text style={styles.grantLine}>{held.approval.script.language}</Text>
-                  <ScrollView
-                    style={styles.scriptScroll}
-                    testID="agent-approval-script"
-                    accessible
-                    accessibilityLabel={`Script that will run: ${held.approval.script.source}`}
+                <Text style={styles.grantLine}>
+                  Can write to:{' '}
+                  <Text
+                    style={
+                      held.approval.writablePaths.length > 0
+                        ? styles.grantDanger
+                        : styles.grantValue
+                    }
                   >
-                    <Text style={styles.scriptText}>{held.approval.script.source}</Text>
-                  </ScrollView>
-                </View>
-              ) : null}
-            </View>
-          ) : null}
+                    {held.approval.writablePaths.length > 0
+                      ? held.approval.writablePaths.join(', ')
+                      : 'its scratch folder only'}
+                  </Text>
+                </Text>
+                <Text style={styles.grantLine}>
+                  Can read:{' '}
+                  <Text
+                    style={
+                      held.approval.readablePaths === undefined ||
+                      held.approval.readablePaths.length > 0
+                        ? styles.grantDanger
+                        : styles.grantValue
+                    }
+                  >
+                    {held.approval.readablePaths === undefined
+                      ? 'not disclosed by this Mac'
+                      : held.approval.readablePaths.length > 0
+                        ? held.approval.readablePaths.join(', ')
+                        : 'none of your files'}
+                  </Text>
+                </Text>
+                {held.approval.script ? (
+                  <View style={styles.scriptBox}>
+                    <Text style={styles.grantLine}>{held.approval.script.language}</Text>
+                    <View
+                      style={styles.scriptBody}
+                      testID="agent-approval-script"
+                      accessible
+                      accessibilityLabel={`Script that will run: ${held.approval.script.source}`}
+                    >
+                      <Text style={styles.scriptText}>{held.approval.script.source}</Text>
+                    </View>
+                  </View>
+                ) : null}
+              </View>
+            ) : null}
+          </ScrollView>
           <View style={styles.holdBtns}>
             <Pressable
               testID="agent-deny"
@@ -663,8 +667,24 @@ const styles = StyleSheet.create({
     borderColor: theme.line,
     padding: 10,
     gap: 8,
-    maxHeight: 260,
+    /* Two rules, and the panel is unusable without both.
+     *
+     * `overflow: 'hidden'` because a React Native View defaults to `visible`:
+     * content taller than the box is still PAINTED, outside the box, and the
+     * sibling rendered after it — the Disconnect bar — paints on top. That is
+     * how Approve ended up underneath Disconnect and untappable (L-306).
+     *
+     * `flexShrink` because clipping alone would only hide the button instead
+     * of putting it under another one. The panel yields height to the video
+     * above it rather than growing past the screen; what no longer fits
+     * scrolls inside the card. */
+    overflow: 'hidden',
+    flexShrink: 1,
   },
+  /** The idle cap. Deliberately not applied while a step is held: an approval
+   *  card does not fit in 260pt, and it is the most important thing on screen
+   *  when it exists. */
+  panelCapped: { maxHeight: 260 },
   inputRow: { flexDirection: 'row', alignItems: 'flex-end', gap: 8 },
   input: {
     flex: 1,
@@ -699,7 +719,11 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     padding: 12,
     gap: 8,
+    flexShrink: 1,
   },
+  /** The disclosure scrolls; the decision does not. Approve and Deny live
+   *  outside this, so no amount of model-authored text can push them away. */
+  holdScroll: { flexShrink: 1 },
   holdTitle: { color: theme.pending, fontWeight: '700', fontSize: 14 },
   holdSummary: { color: theme.ink, fontSize: 14 },
   holdWhy: { color: theme.muted, fontSize: 13, marginTop: 6 },
@@ -714,7 +738,7 @@ const styles = StyleSheet.create({
   grantValue: { color: theme.ink },
   grantDanger: { color: theme.danger },
   scriptBox: { marginTop: 8 },
-  scriptScroll: { maxHeight: 132, backgroundColor: theme.bg, borderRadius: 6, padding: 8 },
+  scriptBody: { backgroundColor: theme.bg, borderRadius: 6, padding: 8 },
   scriptText: { color: theme.ink, fontSize: 11, fontFamily: 'Menlo' },
   holdBtns: { flexDirection: 'row', gap: 8 },
   consentTitle: { color: theme.ink, fontWeight: '700', fontSize: 15 },
@@ -722,7 +746,7 @@ const styles = StyleSheet.create({
   declineBtn: { backgroundColor: theme.bg, borderWidth: 1, borderColor: theme.line, flex: 1 },
   declineText: { color: theme.ink, fontWeight: '700', fontSize: 14 },
   withdraw: { color: theme.muted, fontSize: 11, textDecorationLine: 'underline' },
-  feed: { maxHeight: 130 },
+  feed: { maxHeight: 130, flexShrink: 1 },
   feedContent: { gap: 6, paddingVertical: 2 },
   empty: { color: theme.muted, fontSize: 13, fontStyle: 'italic' },
   stepRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 8 },

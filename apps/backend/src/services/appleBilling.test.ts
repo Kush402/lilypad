@@ -27,6 +27,11 @@ vi.mock('@apple/app-store-server-library', () => {
   };
 });
 
+/** Which environment this deployment *sells* in. Mutable, because the
+ *  difference between a test purchase and a real one is the only thing some
+ *  of the cases below are about, and it is a deployment setting. */
+const deployment = vi.hoisted(() => ({ sells: 'Sandbox' as 'Sandbox' | 'Production' }));
+
 vi.mock('../config.js', () => ({
   env: {
     DATABASE_URL: 'postgres://unused',
@@ -37,7 +42,9 @@ vi.mock('../config.js', () => ({
   config: {
     env: {
       APPLE_IAP_BUNDLE_ID: 'com.takedia.lilypad',
-      APPLE_IAP_ENVIRONMENT: 'Sandbox',
+      get APPLE_IAP_ENVIRONMENT() {
+        return deployment.sells;
+      },
       APPLE_APP_APPLE_ID: undefined,
     },
   },
@@ -56,7 +63,11 @@ vi.mock('node:fs', async () => {
   };
 });
 
-import { applySignedTransaction, applyNotificationPayload } from './appleBilling.js';
+import {
+  applySignedTransaction,
+  applyNotificationPayload,
+  billingStatusFor,
+} from './appleBilling.js';
 import { users as usersTable } from '../db/schema.js';
 import { PRO_MONTHLY_PRODUCT_ID } from '@lilypad/protocol';
 
@@ -313,5 +324,86 @@ describe('applyNotificationPayload', () => {
     // authenticated, so it is kept rather than acknowledged and forgotten.
     expect(store.subs).toHaveLength(1);
     expect(store.subs[0]?.ownerUserId).toBeNull();
+  });
+});
+
+/**
+ * What the billing screen is told when a purchase succeeded and bought nothing
+ * (L-307).
+ *
+ * Refusing to sell Pro for a Sandbox receipt is deliberate (L-298). The defect
+ * was that the answer was a bare `free`, which is the same answer somebody who
+ * never bought anything gets — so a tester watched the purchase sheet succeed,
+ * came back to the card, and found the Subscribe button exactly where they had
+ * left it, with nothing on screen admitting what had happened.
+ */
+describe('billingStatusFor on a test purchase', () => {
+  const liveSandboxRow = (over: Record<string, unknown> = {}) => ({
+    id: 'sub-1',
+    environment: 'Sandbox',
+    originalTransactionId: 'ot-1',
+    ownerUserId: 'user-1',
+    productId: PRO_MONTHLY_PRODUCT_ID,
+    status: 'active',
+    expiresAt: new Date(Date.now() + 30 * 24 * 3600 * 1000),
+    graceExpiresAt: null,
+    lastTransactionId: 'tx-1',
+    lastPurchaseDate: new Date(Date.now() - 1000),
+    revokedAt: null,
+    ...over,
+  });
+
+  const account = (over: Partial<UserRow> = {}): UserRow => ({
+    id: 'user-1',
+    tier: 'free',
+    isBillingTester: false,
+    appleOriginalTransactionId: null,
+    subscriptionProductId: null,
+    subscriptionExpiresAt: null,
+    ...over,
+  });
+
+  beforeEach(() => {
+    deployment.sells = 'Production';
+  });
+
+  it('says so, rather than answering a bare free', async () => {
+    const store = { users: [account()], subs: [liveSandboxRow()] as SubRow[] };
+    const status = await billingStatusFor('user-1', fakeDb(store));
+    expect(status?.tier).toBe('free');
+    expect(status?.testPurchase).toBe(true);
+  });
+
+  it('is not a test purchase for an approved tester, who really is entitled', async () => {
+    const store = {
+      users: [account({ isBillingTester: true })],
+      subs: [liveSandboxRow()] as SubRow[],
+    };
+    const status = await billingStatusFor('user-1', fakeDb(store));
+    expect(status?.tier).toBe('pro');
+    expect(status?.testPurchase).toBe(false);
+  });
+
+  it('is not a test purchase when the receipt matches what this server sells', async () => {
+    const store = {
+      users: [account()],
+      subs: [liveSandboxRow({ environment: 'Production' })] as SubRow[],
+    };
+    const status = await billingStatusFor('user-1', fakeDb(store));
+    expect(status?.tier).toBe('pro');
+    expect(status?.testPurchase).toBe(false);
+  });
+
+  it('is not a test purchase once the period it describes has ended', async () => {
+    // Nothing is being refused any more -- there is no live subscription to
+    // refuse. Saying "that was a test purchase" here would explain away an
+    // ordinary expiry.
+    const store = {
+      users: [account()],
+      subs: [liveSandboxRow({ expiresAt: new Date(Date.now() - 1000) })] as SubRow[],
+    };
+    const status = await billingStatusFor('user-1', fakeDb(store));
+    expect(status?.tier).toBe('free');
+    expect(status?.testPurchase).toBe(false);
   });
 });

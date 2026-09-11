@@ -76,6 +76,39 @@ export async function applySubscriptionEvent(
   claimingUserId: string | null,
 ): Promise<{ state: SubscriptionState; conflict: boolean }> {
   return database.transaction(async (tx) => {
+    // One Apple subscription, one account -- and the identity that decides
+    // *ownership* is the original transaction id alone, not the
+    // (environment, id) pair the table is keyed on (L-308).
+    //
+    // A row labelled Sandbox and a row labelled Production are two identities
+    // to the unique index, so a second account presenting the same purchase
+    // under the other label used to create its own row and be granted it. The
+    // only check was on the locked row, which by definition was the other one.
+    // Observed in production: one subscription entitling two accounts.
+    //
+    // This has to run BEFORE the insert below, not after it. Asking once the
+    // row exists reports the conflict accurately and has already written the
+    // second claim.
+    //
+    // Apple's two environments genuinely are separate id spaces, so a
+    // coincidental collision would be refused here too. That is the direction
+    // to fail in: a refused claim is a support message, a shared subscription
+    // is a billing hole.
+    //
+    // Notifications claim nothing (`claimingUserId` is null) and are never
+    // refused by this -- they must reach the row Apple is talking about, and
+    // that row has an owner by definition.
+    if (claimingUserId != null) {
+      const everywhere = await tx
+        .select()
+        .from(subscriptions)
+        .where(eq(subscriptions.originalTransactionId, event.originalTransactionId));
+      const heldByAnother = everywhere.find(
+        (row) => row.ownerUserId != null && row.ownerUserId !== claimingUserId,
+      );
+      if (heldByAnother) return { state: toState(heldByAnother), conflict: true };
+    }
+
     const read = async () => {
       const [row] = await tx
         .select()
@@ -108,8 +141,10 @@ export async function applySubscriptionEvent(
     }
 
     const previous = toState(existing);
-    // One Apple subscription, one account. An attempt to claim a subscription
-    // another account already owns is refused rather than reassigned.
+    // The same refusal as above, re-checked under the row lock. Two accounts
+    // claiming the same identity at the same instant both pass the pre-insert
+    // check -- neither can see a row that does not exist yet -- and meet here,
+    // where the loser is holding the winner's committed row.
     if (
       previous.ownerUserId != null &&
       claimingUserId != null &&

@@ -20,6 +20,19 @@ export const BillingStatusSchema = z.object({
   productId: z.string().nullable(),
   /** ISO-8601 instant when the current paid period ends, or null. */
   currentPeriodEndsAt: z.string().datetime({ offset: true }).nullable(),
+  /**
+   * A subscription was recorded and is inside its period, but it buys nothing
+   * here because Apple sold it in the test environment (L-307).
+   *
+   * Without this the server answers `free` and the client has no way to tell
+   * that outcome apart from "no purchase was ever made" — so a TestFlight
+   * tester watched a purchase succeed and the Subscribe button stay put, with
+   * nothing on screen admitting why. Refusing Sandbox entitlement is correct
+   * (L-298); saying nothing about it is not.
+   *
+   * Optional on the wire so an older client parses a newer server.
+   */
+  testPurchase: z.boolean().optional(),
 });
 export type BillingStatus = z.infer<typeof BillingStatusSchema>;
 

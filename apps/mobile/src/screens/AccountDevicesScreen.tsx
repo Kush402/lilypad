@@ -278,6 +278,18 @@ export function AccountDevicesScreen({ route, navigation }: Props): React.JSX.El
           </Text>
         ) : (
           <>
+            {/* The purchase worked and bought nothing, which is the one
+             * outcome the old card could not express: it answered `free` and
+             * put the Subscribe button back, so a tester who had just paid saw
+             * the screen they started on and concluded Lilypad was broken
+             * (L-307). Refusing Sandbox entitlement is deliberate (L-298).
+             * Refusing it silently was not. */}
+            {billing?.testPurchase ? (
+              <Text testID="billing-test-purchase" style={styles.billingTestPurchase}>
+                Apple recorded that as a test purchase. It does not unlock Pro on the live service,
+                and you were not charged.
+              </Text>
+            ) : null}
             <Text style={styles.billingTerms}>
               {product
                 ? `${product.displayName} · ${product.displayPrice} per month` +
@@ -502,6 +514,7 @@ const styles = StyleSheet.create({
   billingTitle: { color: theme.ink, fontSize: 16, fontWeight: '600' },
   billingBody: { color: theme.muted, fontSize: 13, lineHeight: 18 },
   billingTerms: { color: theme.ink, fontSize: 13, lineHeight: 18 },
+  billingTestPurchase: { color: theme.pending, fontSize: 13, lineHeight: 18 },
   billingActive: { color: theme.accent, fontSize: 13, fontWeight: '600' },
   list: { gap: 12, paddingBottom: 16 },
   empty: { color: theme.muted, textAlign: 'center', marginTop: 40 },
