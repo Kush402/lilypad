@@ -43,7 +43,13 @@ for (const ref of ['refs/tags/v0.1.29', 'refs/heads/main']) {
         if (missing) assert.match(result.stdout, new RegExp(missing));
         if (!rejects) {
           const output = readFileSync(join(dir, 'output'), 'utf8');
-          assert.match(output, missing ? /publish=false/ : /publish=true/);
+          // Publishing belongs to a version tag. A manual dispatch builds and
+          // signs a candidate and leaves it a draft, however complete its
+          // inputs are — it used to publish a `v0.0.0-dispatch.N` release to a
+          // public repository instead, which is how testers came to be told to
+          // ignore one.
+          const publishes = !missing && ref.startsWith('refs/tags/');
+          assert.match(output, publishes ? /publish=true/ : /publish=false/);
           if (!missing) {
             assert.match(output, /signing=true/);
             assert.match(output, /notarize=true/);

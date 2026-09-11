@@ -95,8 +95,17 @@ jobs:
             fi
             echo "publish=false" >> "$GITHUB_OUTPUT"
             echo "::warning::manual build will remain a draft — missing: ${missing[*]}"
-          else
+          elif [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            # The rule above says a manual build must remain a draft. Until
+            # now it only did so when a secret was MISSING: with every secret
+            # present a dispatch ran `gh release edit --draft=false` and put a
+            # public `v0.0.0-dispatch.N` release on a public repository. That
+            # is how testers ended up told to ignore `v0.0.0-dispatch.42`.
+            # Publishing is what a version tag is for.
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::manual build is a signed candidate and stays a draft; push a v* tag to publish"
           fi
 
           export_if_set() {
