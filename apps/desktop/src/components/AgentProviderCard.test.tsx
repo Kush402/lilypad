@@ -386,6 +386,12 @@ describe('the model catalogue loads by itself', () => {
     },
   ];
 
+  /** Ask `openrouterWithKey` for an endpoint that cannot be listed. NOT a
+   *  rejected promise: one built here would sit unhandled between this line
+   *  and the moment the mock returns it, which vitest reports as an unhandled
+   *  rejection and fails the run on — every test in the file having passed. */
+  const CANNOT_LIST = Symbol('cannot list');
+
   /** Reach the model step on OpenRouter with a key typed, and nothing clicked. */
   async function openrouterWithKey(models: unknown = OPENROUTER_MODELS) {
     const calls: string[] = [];
@@ -393,7 +399,10 @@ describe('the model catalogue loads by itself', () => {
       calls.push(cmd);
       if (cmd === 'list_provider_presets') return PRESETS;
       if (cmd === 'get_agent_config') return UNCONFIGURED;
-      if (cmd === 'list_agent_models') return models;
+      if (cmd === 'list_agent_models') {
+        if (models === CANNOT_LIST) throw new Error('nope');
+        return models;
+      }
       throw new Error(`unexpected ${cmd}`);
     });
     render(<AgentProviderCard />);
@@ -431,7 +440,7 @@ describe('the model catalogue loads by itself', () => {
   it('does not retry for ever when the endpoint cannot be listed', async () => {
     // `listModels` sets the catalogue back to null on failure, so an effect
     // that only checked "is it null" would call the endpoint without end.
-    const calls = await openrouterWithKey(Promise.reject(new Error('nope')));
+    const calls = await openrouterWithKey(CANNOT_LIST);
     await waitFor(() => expect(calls.filter((c) => c === 'list_agent_models').length).toBe(1));
     await new Promise((r) => setTimeout(r, 50));
     expect(calls.filter((c) => c === 'list_agent_models').length).toBe(1);
