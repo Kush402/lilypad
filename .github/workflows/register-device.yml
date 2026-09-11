@@ -1,0 +1,77 @@
+name: Register a test device
+
+# Registering an iPhone needs App Store Connect credentials, and those live
+# here as repository secrets. A GitHub secret cannot be read back out — the API
+# returns names, never values — so the work comes to the secrets rather than
+# the other way round: this job uses them and never prints them.
+#
+# This repository is PUBLIC, which makes these logs public and permanent.
+# Never add a step that echoes ASC_ISSUER_ID, ASC_KEY_ID or ASC_KEY_P8, or that
+# smuggles one out through an artifact. The profile this uploads is not secret;
+# the credentials that made it are.
+#
+# Manual only. Nothing about this runs on a push.
+on:
+  workflow_dispatch:
+    inputs:
+      udid:
+        description: 'Device UDID (Xcode: Window → Devices and Simulators)'
+        required: true
+        type: string
+      name:
+        description: 'A name for the device in App Store Connect'
+        required: false
+        default: 'CI test device'
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  register:
+    name: Register the device and mint an ad-hoc profile
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # Same shape as the check in mobile-ios.yml: say which one is missing
+      # rather than failing later with a flat 401.
+      - name: Require the App Store Connect credentials
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+        run: |
+          missing=()
+          [ -n "$ASC_KEY_ID" ] || missing+=(ASC_KEY_ID)
+          [ -n "$ASC_ISSUER_ID" ] || missing+=(ASC_ISSUER_ID)
+          [ -n "$ASC_KEY_P8" ] || missing+=(ASC_KEY_P8)
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::not configured: ${missing[*]}. See docs/apple-setup.md."
+            exit 1
+          fi
+
+      - name: Register the device and create the profile
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+        run: |
+          node scripts/register-device.mjs \
+            --udid "${{ inputs.udid }}" \
+            --name "${{ inputs.name }}" \
+            --out lilypad-adhoc.mobileprovision
+
+      # The profile is what the laptop needs, and it carries no credential:
+      # a public key, an app id, and a list of device UDIDs.
+      - name: Upload the profile
+        uses: actions/upload-artifact@v4
+        with:
+          name: lilypad-adhoc-profile
+          path: lilypad-adhoc.mobileprovision
+          retention-days: 1
