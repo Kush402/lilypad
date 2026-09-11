@@ -1525,6 +1525,40 @@ the third was the same class and is folded into the second row.
 | L-287 | **P2 — the L-284 redirect tests could pass for the wrong reason.** The tripwire that counts a leaked request stopped listening three seconds after it was spawned, and the redirector stopped answering after five. Under a full `cargo test` those spans expired before the request under test was issued, so a followed redirect would have arrived at a closed socket and been counted as zero. Separately, the listener was left non-blocking and an accepted stream inherits that on macOS, so `drain_request` and `write_all` both returned `WouldBlock` and both results were discarded: the server answered nothing, and the client's transport error was reported as the boundary failing to name the second origin. Observed in 2 of 4 full runs. | Fixed — fifth pass, 2026-09-10. Both servers now live for the test's lifetime rather than a wall-clock span, stopped explicitly after the assertions and backstopped at 120s only so a panicking test cannot leak the thread. Accepted streams are put back into blocking mode before they are read or written. The two tests still fail when the redirect policy is changed back to `Policy::limited(5)`, so the boundary itself is still what they measure. A detector that can leave before the thing it detects is not evidence, which is why this is a row and not a tidy-up.                                                                                                                                                                                                                                                                                                                                                               |
 | L-288 | **P3 — three tests asserted on outcomes the suite's own scheduling decides.** `resolver::tests::a_refresh_eventually_publishes_an_answer` polled for a published answer without taking the process-wide epoch turn, so any concurrent settings write discarded the answer it was waiting for. `sandbox::tests::a_setsid_descendant_does_not_outlive_the_run` asserted one branch of a race the module documents as unwinnable: on a loaded machine perl never reached its `fork` inside the 400ms budget, the run was genuinely clean, and `Confirmed` — the correct answer — failed the test. `wall_clock_timeout_kills_a_hung_script` bounded a whole run, cleanup included, at a flat five seconds with nothing behind the number.                       | Fixed — fifth pass, 2026-09-10. The resolver test takes the turn lock; measured with a thread calling `invalidate()` every 5ms it never publishes at all, which is the L-278 rule working. The setsid test now asserts the invariant that holds in every branch — a confirmed cleanup never coexists with a surviving descendant — and says so when the observation gap was not exercised, instead of passing silently. The timing bound is derived from `wall_timeout + CLEANUP_GRACE`, measured at ~850ms idle and ~1.3s under sixteen concurrent `ps` loops, and still sits far below the 30s a broken timeout would take. New deterministic coverage in `descendants`: a process still naming the run lowers `Confirmed` to `Unknown` and is never killed for it, and an unnamed run still confirms. Both fail against a `terminate_in` that ignores the evidence; the setsid invariant fails against a `terminate_in` that always confirms. |
 
+### A third correction to an earlier claim
+
+`pnpm format:check` is a CI gate and four files had been failing it since the
+third pass: `apps/mobile/src/lib/webrtc.ts` and its test,
+`apps/mobile/src/screens/AgentPanel.test.tsx` and
+`packages/protocol/src/agent.test.ts`. The third-pass report said prettier was
+clean; prettier had only been run over the docs. The first candidate CI run
+stopped at that step, so nothing after it — the docs check, the TypeScript
+suites, the device-identity end-to-end — ran at all on that run. Formatting
+only, no behaviour changed.
+
+Together with the clippy correction in the fourth pass, the lesson is the same
+one twice: a gate is green when the gate's own command exits 0, not when a
+command like it does.
+
+### The candidate, and its CI
+
+The workspace looked like it held an older HEAD because local `main` was
+**fifteen commits behind** `origin/main`. It was never the candidate. The
+candidate is `claude/v0133-review-boundaries`, five commits on top of
+`origin/main` `bd5a842`, and the working tree matched that branch's tree
+exactly — so HEAD was repointed with `git symbolic-ref`, which touches neither
+the working tree nor the index. Nothing was deleted or rebuilt.
+
+Candidate commit: **`16cbef3`**, pushed to origin.
+
+CI on that exact ref, dispatched rather than merged:
+[run 34544946210](https://github.com/Kush402/lilypad/actions/runs/34544946210)
+— **success**. TypeScript typecheck/lint/format/test, Security CodeQL plus
+dependency audit, Rust dependency advisories, and Rust fmt/clippy/test on
+macOS all green; the two soak tiers are cron-only and skipped, as designed.
+The first dispatch, [34544296797](https://github.com/Kush402/lilypad/actions/runs/34544296797),
+failed at the format step described above and is kept as the record of it.
+
 ### What this pass did not do
 
 No product code changed. No user-visible behaviour changed, so `CHANGELOG.md`
