@@ -582,7 +582,9 @@ describe('the approval card stays reachable', () => {
   });
 
   it('keeps Approve and Deny out of the part that scrolls', async () => {
-    render(<AgentPanel {...DISCLOSED} feed={bigCard} onSend={noop} onStop={noop} onDecide={noop} />);
+    render(
+      <AgentPanel {...DISCLOSED} feed={bigCard} onSend={noop} onStop={noop} onDecide={noop} />,
+    );
     const disclosure = await shown('agent-hold-disclosure');
     // The model writes the summary and the script; it must not be able to push
     // the decision off the card by writing more of them.
@@ -593,13 +595,17 @@ describe('the approval card stays reachable', () => {
   });
 
   it('clips the panel instead of painting it over the Disconnect bar', async () => {
-    render(<AgentPanel {...DISCLOSED} feed={bigCard} onSend={noop} onStop={noop} onDecide={noop} />);
+    render(
+      <AgentPanel {...DISCLOSED} feed={bigCard} onSend={noop} onStop={noop} onDecide={noop} />,
+    );
     const panel = await shown('agent-panel');
     expect(StyleSheet.flatten(panel.props.style).overflow).toBe('hidden');
   });
 
   it('drops the idle height cap while a step is held, and keeps it otherwise', async () => {
-    render(<AgentPanel {...DISCLOSED} feed={bigCard} onSend={noop} onStop={noop} onDecide={noop} />);
+    render(
+      <AgentPanel {...DISCLOSED} feed={bigCard} onSend={noop} onStop={noop} onDecide={noop} />,
+    );
     expect(StyleSheet.flatten((await shown('agent-panel')).props.style).maxHeight).toBeUndefined();
 
     screen.unmount();

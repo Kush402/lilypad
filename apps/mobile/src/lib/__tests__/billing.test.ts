@@ -356,9 +356,7 @@ describe('the delivery loop', () => {
  */
 describe('what a refused claim tells the customer', () => {
   it('names the real reason when the subscription is on another account', async () => {
-    globalThis.fetch = jest
-      .fn()
-      .mockResolvedValue(jsonResponse({ error: 'already_linked' }, 409));
+    globalThis.fetch = jest.fn().mockResolvedValue(jsonResponse({ error: 'already_linked' }, 409));
     await expect(
       submitAppleTransaction('https://api.takedia.com', PURCHASE.signedTransactionInfo),
     ).rejects.toThrow(/another Lilypad account/);
