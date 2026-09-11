@@ -6,8 +6,12 @@ All notable changes to Lilypad are documented here. The format follows
 
 ## [Unreleased]
 
-Work from the v0.1.33 product review and its 2026-09-10 follow-up. Not released,
-not tagged, not on any device yet.
+## [0.1.34] — 2026-09-10
+
+Work from the v0.1.33 product review and the five independent follow-up reviews
+that answered it. Ask's wire protocol is version 3: both your Mac and your phone
+need this version for Ask, and each says so plainly if the other is older.
+Manual control works across the mismatch as before.
 
 ### Removed
 
