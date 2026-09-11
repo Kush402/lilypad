@@ -32,6 +32,22 @@ and the hardware gate still need a device; L-247, L-251 and L-259 are fixed at
 source and still await it. A cut needs the owner's authorization and those
 gates, not an empty "open" column.
 
+**v0.1.34 published (2026-09-11):** Release commit
+`4889f575e7ff5a08109296a2961f7d0fd3f83be9`, tagged `v0.1.34` and
+`mobile-v0.1.34`, CI green on that exact commit before either tag was pushed.
+The desktop release is published and Latest; the backend deploy, the Android
+build and the site redeploy all succeeded, and the site, installer bytes and
+updater feed were verified anonymously. The iOS half failed first on L-290 and was
+rebuilt separately as run 34553468165 — uploaded to TestFlight as version
+0.1.34 build **38**, with `pod install` running on attempt 3 of 5, which is
+the known CocoaPods flake the retry loop exists for. **The owner authorised this cut knowing the device,
+provider and first-use gates had not run and that the independent review had
+not cleared it.** Those rows in [manual-device-test.md](manual-device-test.md)
+are now a post-publication check, not a pre-release gate, and they are still
+owed — in particular the L-272 approval re-check, which has only ever been
+exercised against synthetic AX trees. Ask moves to wire protocol 3 in this
+release: both halves must be on it.
+
 **v0.1.33 published on BOTH halves (2026-09-09):** Release commit
 `507804f536ca7da07e849486816eda4034e06b59` is on main and tagged `v0.1.33`. It
 carries L-227 through L-259 — the whole Ask boundary pass, the bitrate floor

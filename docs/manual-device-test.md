@@ -638,9 +638,10 @@ Two facts that shape the test before you start:
 
 - **Mac** — <https://lilypadhome.takedia.com/download/Lilypad.dmg>. The page
   should read v0.1.34; if it reads 0.1.33 you have a cached page.
-- **iPhone** — TestFlight, version 0.1.34. Record the build number in the
-  result block; two phones on different builds are otherwise
-  indistinguishable.
+- **iPhone** — TestFlight, version 0.1.34, build **38**. Record the build
+  number in the result block; two phones on different builds are otherwise
+  indistinguishable. Build 37 does not exist — that run is the one L-290
+  took down.
 
 Both halves are needed for Ask in this release: the Ask wire protocol goes from
 2 to 3, so a 0.1.34 Mac and a 0.1.33 phone refuse to start an Ask task and say
