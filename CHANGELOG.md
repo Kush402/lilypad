@@ -6,6 +6,59 @@ All notable changes to Lilypad are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.35] — 2026-09-11
+
+Everything a customer review of v0.1.34 found in Ask's setup and in the
+subscription lifecycle, plus six more defects a second pass found in those
+fixes. Your Mac and your phone should both be on this version.
+
+### Fixed
+
+- **Setup no longer offers a model that cannot work.** Choosing Gemini and
+  picking from the list Lilypad itself produced could land you on a Live Audio
+  model, which answers over a connection Ask does not open — so every request
+  failed with nothing to explain why. Lilypad now asks the provider what each
+  model is for and says which ones Ask cannot use, and why. Where a provider
+  publishes nothing, every model is still offered exactly as before.
+
+- **Lilypad asks for a model instead of guessing one.** Providers without a
+  validated default no longer inherit someone else's — an OpenAI model name was
+  being sent to Google, which cannot work. Anthropic and OpenAI keep theirs.
+
+- **A failed connection test no longer reports what the model can do.** A
+  rejected key or an unreachable endpoint used to be recorded as "this model
+  cannot call tools". What happened is now kept apart from what was proven, and
+  the date of the last successful check no longer moves for a failure.
+
+- **A subscription that has ended stops granting Pro.** Entitlement is worked
+  out from the current period every time it is asked, rather than from a word
+  written once. An expired subscription whose notification never arrived used
+  to stay Pro indefinitely.
+
+- **A renewal after an expiry finds your account again.** Expiry used to clear
+  the only link back to it, so renewing went nowhere.
+
+- **A refund or a replayed older receipt can no longer confuse your tier.**
+  Events are ordered by Apple's own clock rather than by when they arrive, and
+  a refund still applies when it concerns an earlier transaction.
+
+- **A purchase on a Team account no longer downgrades it to Pro.** Grants are
+  kept separately and the highest wins, so removing a Team plan later reveals
+  the subscription that was there all along.
+
+- **A test purchase no longer grants a commercial subscription.** Sandbox and
+  Production are recorded separately and are two different subscriptions.
+
+- **A purchase is recorded before it is marked delivered.** If the network, the
+  app or Lilypad's server went away in the moments after you paid, the purchase
+  could be lost — charged, with nothing to show for it, and no way back except
+  finding Restore. Lilypad now tells the App Store the purchase is delivered
+  only after recording it, retries on its own when the app next opens, and says
+  plainly that your purchase went through if it cannot record it immediately.
+
+- **A purchase is bound to the account that made it**, so a delivery that
+  completes after signing out cannot attach to a different account.
+
 ## [0.1.34] — 2026-09-10
 
 Work from the v0.1.33 product review and the five independent follow-up reviews
