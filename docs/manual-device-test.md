@@ -634,6 +634,24 @@ Two facts that shape the test before you start:
 - **Ask still cannot run scripts.** They were withdrawn in this cycle and stay
   withdrawn. Asking for one should produce a clear refusal, not a hang.
 
+### Install the build this sheet is about
+
+- **Mac** — <https://lilypadhome.takedia.com/download/Lilypad.dmg>. The page
+  should read v0.1.34; if it reads 0.1.33 you have a cached page.
+- **iPhone** — TestFlight, version 0.1.34. Record the build number in the
+  result block; two phones on different builds are otherwise
+  indistinguishable.
+
+Both halves are needed for Ask in this release: the Ask wire protocol goes from
+2 to 3, so a 0.1.34 Mac and a 0.1.33 phone refuse to start an Ask task and say
+so. That is correct behaviour, not a bug to report. Manual remote control works
+across the mismatch — the session protocol is unchanged.
+
+**Row 19 has an order requirement.** The updater can only be seen updating
+_from_ something older, so install **0.1.33 first**, run it, leave the bubble
+up, and let it find 0.1.34. Installing 0.1.34 directly makes that row
+untestable — mark it blocked rather than passed.
+
 ### The first-use journey, start to finish
 
 | #   | Scenario                                                                           | Expected                                                                                                                 |

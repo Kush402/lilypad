@@ -237,10 +237,19 @@ jobs:
           # The same question Xcode's own "[CP] Check Pods Manifest.lock" phase
           # asks, and the same one the beta lane asks: is the sandbox already
           # the one this lockfile describes?
-          # The codegen podspec is half of "the sandbox is current" — see the
-          # cache step above and the same condition in `fastlane/Fastfile`.
+          # "The sandbox is current" is THREE artifacts, not two. `pod
+          # install` runs React Native's codegen, and codegen writes in two
+          # places: `build/generated/ios`, which this cache holds, and
+          # `RCTThirdPartyFabricComponentsProvider.{h,mm}` inside the
+          # `react-native` package itself — which lives in `node_modules`,
+          # which `pnpm install` recreates from scratch every run and no cache
+          # here covers. So a cache hit skipped the install, the provider was
+          # never generated, and `React-RCTFabric` failed on a missing input
+          # file. mobile-v0.1.34 is what it cost, exactly as mobile-v0.1.31
+          # cost the layer below. The same condition is in `fastlane/Fastfile`.
           if [ -f Pods/Manifest.lock ] \
             && [ -f build/generated/ios/ReactCodegen.podspec.json ] \
+            && [ -f ../node_modules/react-native/React/Fabric/RCTThirdPartyFabricComponentsProvider.mm ] \
             && cmp -s Pods/Manifest.lock Podfile.lock; then
             echo "Pods restored from cache and match Podfile.lock — skipping install"
             exit 0

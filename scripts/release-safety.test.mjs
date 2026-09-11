@@ -261,39 +261,62 @@ const podGuard = fastfile.slice(
   fastfile.indexOf('    pods_match_lockfile = '),
   fastfile.indexOf('    if pods_match_lockfile'),
 );
-// `codegen` is the third input, and the one that made the first version of
-// this fix a worse bug than the one it fixed: `pod install` also writes React
-// Native's generated sources under `ios/build/generated`, which `Pods.xcodeproj`
-// references and git ignores. A guard that skipped on `Manifest.lock` alone
-// would hand the archive a Pods tree whose generated sources do not exist.
-for (const [label, manifest, codegen, expected] of [
-  ['a sandbox that already matches Podfile.lock', 'LOCK', true, 'true'],
-  ['a sandbox built from a different lockfile', 'STALE', true, 'false'],
-  ['no sandbox at all', null, false, 'false'],
-  ['a Pods tree restored without its generated sources', 'LOCK', false, 'false'],
-]) {
+// `codegen` and `provider` are the second and third inputs, and each one was
+// added after it cost a release. `pod install` runs React Native's codegen,
+// and codegen writes in two places: `ios/build/generated`, which
+// `Pods.xcodeproj` references and git ignores, and
+// `RCTThirdPartyFabricComponentsProvider.{h,mm}` inside the `react-native`
+// package under `node_modules`, which `pnpm install` recreates from scratch
+// every CI run and no cache covers. A guard that skipped on `Manifest.lock`
+// alone hands the archive a Pods tree whose generated sources do not exist;
+// a guard that also checks `build/generated` still hands it a `react-native`
+// package missing the provider, which is what stopped mobile-v0.1.34.
+//
+// The sandbox fixture is `<root>/ios` so that the guard's own
+// `../node_modules` resolves inside the fixture rather than the temp root.
+function podFixture(name, manifest, codegen, provider) {
+  const root = mkdtempSync(join(tmpdir(), name));
+  const dir = join(root, 'ios');
+  mkdirSync(dir);
+  writeFileSync(join(dir, 'Podfile.lock'), 'LOCK');
+  if (manifest !== null) {
+    mkdirSync(join(dir, 'Pods'));
+    writeFileSync(join(dir, 'Pods', 'Manifest.lock'), manifest);
+  }
+  if (codegen) {
+    mkdirSync(join(dir, 'build', 'generated', 'ios'), { recursive: true });
+    writeFileSync(join(dir, 'build', 'generated', 'ios', 'ReactCodegen.podspec.json'), '{}');
+  }
+  if (provider) {
+    const fabric = join(root, 'node_modules', 'react-native', 'React', 'Fabric');
+    mkdirSync(fabric, { recursive: true });
+    writeFileSync(join(fabric, 'RCTThirdPartyFabricComponentsProvider.mm'), '');
+  }
+  return { root, dir };
+}
+
+const podCases = [
+  ['a sandbox that already matches Podfile.lock', 'LOCK', true, true, true],
+  ['a sandbox built from a different lockfile', 'STALE', true, true, false],
+  ['no sandbox at all', null, false, false, false],
+  ['a Pods tree restored without its generated sources', 'LOCK', false, true, false],
+  ['a react-native package reinstalled without its generated provider', 'LOCK', true, false, false],
+];
+
+for (const [label, manifest, codegen, provider, matches] of podCases) {
   test(`the iOS beta lane detects ${label}`, () => {
     assert.ok(podGuard.includes('Dir.chdir'), 'the pod guard was not found in the Fastfile');
-    const dir = mkdtempSync(join(tmpdir(), 'lilypad-pod-guard-'));
+    const { root, dir } = podFixture('lilypad-pod-guard-', manifest, codegen, provider);
     try {
       mkdirSync(join(dir, 'fastlane'));
-      writeFileSync(join(dir, 'Podfile.lock'), 'LOCK');
-      if (manifest !== null) {
-        mkdirSync(join(dir, 'Pods'));
-        writeFileSync(join(dir, 'Pods', 'Manifest.lock'), manifest);
-      }
-      if (codegen) {
-        mkdirSync(join(dir, 'build', 'generated', 'ios'), { recursive: true });
-        writeFileSync(join(dir, 'build', 'generated', 'ios', 'ReactCodegen.podspec.json'), '{}');
-      }
       const result = spawnSync('ruby', ['-e', `${podGuard}\nputs pods_match_lockfile`], {
         cwd: join(dir, 'fastlane'),
         encoding: 'utf8',
       });
       assert.equal(result.status, 0, result.error?.message ?? result.stderr);
-      assert.equal(result.stdout.trim(), expected);
+      assert.equal(result.stdout.trim(), String(matches));
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(root, { recursive: true, force: true });
     }
   });
 }
@@ -319,31 +342,17 @@ test('the pod cache carries the generated sources, under a key that can still be
   assert.ok(!podCache.with.key.startsWith('pods-$'), podCache.with.key);
 });
 
-for (const [label, manifest, codegen, skips] of [
-  ['a sandbox that already matches Podfile.lock', 'LOCK', true, true],
-  ['a sandbox built from a different lockfile', 'STALE', true, false],
-  ['no sandbox at all', null, false, false],
-  ['a Pods tree restored without its generated sources', 'LOCK', false, false],
-]) {
+for (const [label, manifest, codegen, provider, skips] of podCases) {
   test(`the iOS workflow ${skips ? 'skips' : 'installs'} for ${label}`, () => {
-    const dir = mkdtempSync(join(tmpdir(), 'lilypad-pod-step-'));
+    const { root, dir } = podFixture('lilypad-pod-step-', manifest, codegen, provider);
     try {
-      writeFileSync(join(dir, 'Podfile.lock'), 'LOCK');
-      if (manifest !== null) {
-        mkdirSync(join(dir, 'Pods'));
-        writeFileSync(join(dir, 'Pods', 'Manifest.lock'), manifest);
-      }
-      if (codegen) {
-        mkdirSync(join(dir, 'build', 'generated', 'ios'), { recursive: true });
-        writeFileSync(join(dir, 'build', 'generated', 'ios', 'ReactCodegen.podspec.json'), '{}');
-      }
       // Stop before the retry loop: running `pod install` here is neither
       // possible nor the thing under test.
       const gate = podInstall.run.slice(0, podInstall.run.indexOf('for attempt in'));
       const result = spawnSync('/bin/bash', ['-c', gate], { cwd: dir, encoding: 'utf8' });
       assert.equal(/skipping install/.test(result.stdout), skips, result.stdout + result.stderr);
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(root, { recursive: true, force: true });
     }
   });
 }

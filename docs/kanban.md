@@ -16,9 +16,9 @@ This file exists because the list used to live only in a conversation. Six rows
 (L-20, L-38 through L-42) were reconstructed from later summaries after the
 earlier record was compacted away, which is the argument for the file.
 
-**Status counts:** 239 fixed · 35 shipped · 4 partially fixed · 0 open ·
+**Status counts:** 240 fixed · 35 shipped · 4 partially fixed · 0 open ·
 1 blocked on something outside the code · 4 deliberately unchanged · 4 not a bug ·
-1 unrecoverable (L-20). 288 rows.
+1 unrecoverable (L-20). 289 rows.
 
 "Fixed" here means _fixed at source_. Fixed, released and device-verified are
 three different states and this file keeps them apart. L-227 through L-259 are
@@ -1658,3 +1658,16 @@ The device, provider and first-use UX matrix in
 matching TestFlight build. A private draft is not discoverable by the website
 or the updater, so candidate installation is what can be validated now; public
 discovery is a post-publication smoke check and is not a substitute.
+
+## L-290, found by cutting the release — 2026-09-11
+
+| ID    | Finding                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | Status                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| ----- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| L-290 | **P1 — the iOS build skipped the `pod install` that generates a source it needs, and the phone half of v0.1.34 never reached TestFlight.** "Is the CocoaPods sandbox current" was asked of two artifacts: `Pods/Manifest.lock` and `ios/build/generated`. React Native's codegen writes a third, `RCTThirdPartyFabricComponentsProvider.h/mm`, inside the `react-native` package under `node_modules` — which `pnpm install` recreates from scratch on every CI run and no cache here covers. The cached sandbox satisfied both checks, `pod install` was skipped, and `React-RCTFabric` failed on a missing input file. Run 34552068989. | Fixed — 2026-09-11. The provider file is the third half of the question, in the workflow's bash gate and the beta lane's Ruby guard, which are deliberately identical. `release-safety.test.mjs` grew a `provider` dimension across both gates and a new case: a `react-native` package reinstalled without its generated provider must install, not skip. Both new cases fail against the shipped condition. The desktop half had already published when this was found, so the phone half was rebuilt separately. |
+
+This is the third time the same shape has cost a mobile release. mobile-v0.1.31
+went down because the workflow and the lane asked the question differently;
+mobile-v0.1.34 went down because they asked it identically and the question was
+missing a term. Each artifact only stopped being taken for granted after it had
+cost a release. The guard now names all three, and the tests hold both
+implementations to the same fixtures.

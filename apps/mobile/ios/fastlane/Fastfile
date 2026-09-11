@@ -129,17 +129,27 @@ platform :ios do
     # attempt and the `--repo-update` retry, and the release never reached
     # TestFlight while the desktop half of v0.1.31 shipped.
     #
-    # "The sandbox is current" is TWO artifacts, not one. `pod install` writes
-    # the Pods tree AND React Native's codegen output under
-    # `build/generated/ios` — `Pods.xcodeproj` references that path, and
-    # `apps/mobile/ios/build/` is gitignored. A Pods tree without it is an
-    # unbuildable sandbox, so the presence of the codegen podspec is part of
-    # the question. Checking only `Manifest.lock` would let a restored-from-
-    # cache Pods tree skip the install that generates the sources the archive
-    # then cannot find.
+    # "The sandbox is current" is THREE artifacts, not one. `pod install`
+    # writes the Pods tree AND React Native's codegen output, and codegen
+    # writes in two places:
+    #
+    #   - `build/generated/ios` — `Pods.xcodeproj` references that path, and
+    #     `apps/mobile/ios/build/` is gitignored;
+    #   - `RCTThirdPartyFabricComponentsProvider.{h,mm}` inside the
+    #     `react-native` package itself, under `node_modules`.
+    #
+    # The second one is the trap: `node_modules` is recreated from scratch by
+    # `pnpm install` on every CI run and the workflow's Pods cache does not
+    # cover it, so a cache hit could skip the install that generates a file
+    # that no longer existed. `React-RCTFabric` then failed on a missing
+    # input file, and mobile-v0.1.34 never reached TestFlight while the
+    # desktop half shipped — the same way mobile-v0.1.31 was lost to the
+    # layer below. Each artifact only stops being checked once it has cost a
+    # release, so all three are checked here.
     pods_match_lockfile = Dir.chdir("..") do
       File.exist?("Pods/Manifest.lock") &&
         File.exist?("build/generated/ios/ReactCodegen.podspec.json") &&
+        File.exist?("../node_modules/react-native/React/Fabric/RCTThirdPartyFabricComponentsProvider.mm") &&
         File.read("Pods/Manifest.lock") == File.read("Podfile.lock")
     end
     if pods_match_lockfile
