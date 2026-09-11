@@ -6,6 +6,11 @@ All notable changes to Lilypad are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.36] — 2026-09-11
+
+What the first real first-install journey on v0.1.35 turned up. Your Mac and
+your phone should both be on this version.
+
 ### Fixed
 
 - **The Approve button on an Ask request is reachable again.** When Lilypad
