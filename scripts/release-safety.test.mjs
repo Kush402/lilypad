@@ -19,13 +19,23 @@ const required = [
   'APPLE_API_KEY_P8',
 ];
 
+// What publishes is a PUSHED version tag. The trigger has to be varied
+// independently of the ref: `gh workflow run release.yml --ref v0.1.34` gives a
+// `workflow_dispatch` a `refs/tags/v0.1.34` ref, and a rule that read only the
+// ref shape published from it. The third row below is that case.
+const triggers = [
+  { ref: 'refs/tags/v0.1.29', event: 'push', publishes: true },
+  { ref: 'refs/heads/main', event: 'workflow_dispatch', publishes: false },
+  { ref: 'refs/tags/v0.1.29', event: 'workflow_dispatch', publishes: false },
+  { ref: 'refs/heads/main', event: 'push', publishes: false },
+];
+
 // Execute only the local export/presence check, with dummy values and an
 // isolated environment. Never call Apple or load the developer's credentials.
-for (const ref of ['refs/tags/v0.1.29', 'refs/heads/main']) {
+for (const { ref, event, publishes: tagPush } of triggers) {
   for (const missing of [null, ...required]) {
-    const rejects =
-      missing && (ref.startsWith('refs/tags/') || missing === 'TAURI_SIGNING_PRIVATE_KEY');
-    test(`${ref} release preflight ${missing ? `handles missing ${missing}` : 'accepts complete inputs'}`, () => {
+    const rejects = missing && (tagPush || missing === 'TAURI_SIGNING_PRIVATE_KEY');
+    test(`${event} on ${ref} release preflight ${missing ? `handles missing ${missing}` : 'accepts complete inputs'}`, () => {
       const dir = mkdtempSync(join(tmpdir(), 'lilypad-release-preflight-'));
       try {
         const env = Object.fromEntries(required.map((key) => [key, 'test-only']));
@@ -35,6 +45,7 @@ for (const ref of ['refs/tags/v0.1.29', 'refs/heads/main']) {
           env: {
             ...env,
             GITHUB_REF: ref,
+            GITHUB_EVENT_NAME: event,
             GITHUB_ENV: join(dir, 'env'),
             GITHUB_OUTPUT: join(dir, 'output'),
           },
@@ -43,13 +54,10 @@ for (const ref of ['refs/tags/v0.1.29', 'refs/heads/main']) {
         if (missing) assert.match(result.stdout, new RegExp(missing));
         if (!rejects) {
           const output = readFileSync(join(dir, 'output'), 'utf8');
-          // Publishing belongs to a version tag. A manual dispatch builds and
-          // signs a candidate and leaves it a draft, however complete its
-          // inputs are — it used to publish a `v0.0.0-dispatch.N` release to a
-          // public repository instead, which is how testers came to be told to
-          // ignore one.
-          const publishes = !missing && ref.startsWith('refs/tags/');
-          assert.match(output, publishes ? /publish=true/ : /publish=false/);
+          // A manual dispatch builds and signs a candidate and leaves it a
+          // draft, however complete its inputs are and whatever ref it was
+          // pointed at.
+          assert.match(output, !missing && tagPush ? /publish=true/ : /publish=false/);
           if (!missing) {
             assert.match(output, /signing=true/);
             assert.match(output, /notarize=true/);
@@ -61,6 +69,30 @@ for (const ref of ['refs/tags/v0.1.29', 'refs/heads/main']) {
     });
   }
 }
+
+test('every release target is chosen by the trigger, not by the ref it was pointed at', () => {
+  // `github.ref_type == 'tag'` is true for a dispatch pointed at a tag, so a
+  // workflow that reads it targets that tag's EXISTING release — the upload
+  // guard is then the only thing standing between a manual build and a public
+  // release's assets. A dispatch gets its own run-scoped draft instead.
+  const raw = readFileSync('.github/workflows/release.yml', 'utf8');
+  assert.equal(
+    raw.includes('github.ref_type'),
+    false,
+    'the release target must not be chosen by the ref type',
+  );
+  const expressions = [...raw.matchAll(/\$\{\{[^\n]*v0\.0\.0-dispatch[^\n]*\}\}/g)].map(
+    (match) => match[0],
+  );
+  assert.ok(expressions.length >= 4, 'expected every tag expression to name the dispatch fallback');
+  assert.equal(
+    new Set(expressions).size,
+    1,
+    'every step must compute the same release tag: ' + [...new Set(expressions)].join(' | '),
+  );
+  assert.match(expressions[0], /github\.event_name == 'push'/);
+  assert.match(expressions[0], /startsWith\(github\.ref, 'refs\/tags\/v'\)/);
+});
 
 test('release artifacts stay draft until notarization and Gatekeeper checks finish', () => {
   const target = steps.findIndex((step) => step.id === 'release_target');

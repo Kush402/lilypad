@@ -25,12 +25,12 @@ three different states and this file keeps them apart. L-227 through L-259 are
 now **released**. The owner has tested v0.1.33, but the per-row hardware gate
 has not been recorded as complete.
 
-**No open software row is not a release.** As of the third pass on 2026-09-10
-every reviewed defect is fixed at source with a regression, and none of that has
-run on a signed build, a real device, a real network or a real provider account.
-L-19 and the incomplete hardware gate still need a device; L-247, L-251 and
-L-259 are fixed at source and still await it. A cut needs the owner's
-authorization and those gates, not an empty "open" column.
+**Source fixes are not a release.** The reopened L-289 is closed on the sixth
+pass and candidate CI is green, but signed-device, provider and first-use gates
+remain incomplete. L-19
+and the hardware gate still need a device; L-247, L-251 and L-259 are fixed at
+source and still await it. A cut needs the owner's authorization and those
+gates, not an empty "open" column.
 
 **v0.1.33 published on BOTH halves (2026-09-09):** Release commit
 `507804f536ca7da07e849486816eda4034e06b59` is on main and tagged `v0.1.33`. It
@@ -1527,9 +1527,9 @@ the third was the same class and is folded into the second row.
 
 ### L-289, found while trying to produce a signed candidate
 
-| ID    | Finding                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | Status                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| L-289 | **P2 — a manual release dispatch published a public release.** `release.yml` says in its own comment that a version tag fails on missing inputs while a manual build "may proceed but must remain draft". The code only kept it a draft when a secret was **missing**: with every signing secret present a `workflow_dispatch` reached `gh release edit --draft=false` and published a `v0.0.0-dispatch.N` release on a public repository. That is how `v0.0.0-dispatch.42` came to exist and to need a note in the device-test sheet telling testers to ignore it. | Fixed — fifth pass, 2026-09-10. `publish=true` now requires a `refs/tags/v*` ref. A dispatch builds, signs, notarizes and Gatekeeper-checks a candidate and leaves it a draft; publishing is what a version tag is for. `scripts/release-safety.test.mjs` asserted the old behaviour and now asserts the new rule, and fails when the tag condition is removed. Found while looking for a way to produce signed candidate builds without a public release, which the workflow did not have. |
+| ID    | Finding                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | Status                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| L-289 | **P2 — a manual release dispatch published a public release.** `release.yml` says in its own comment that a version tag fails on missing inputs while a manual build "may proceed but must remain draft". The code only kept it a draft when a secret was **missing**: with every signing secret present a `workflow_dispatch` reached `gh release edit --draft=false` and published a `v0.0.0-dispatch.N` release on a public repository. That is how `v0.0.0-dispatch.42` came to exist and to need a note in the device-test sheet telling testers to ignore it. | Fixed — **sixth pass, 2026-09-10.** Publication now requires the trigger, not the ref shape: `GITHUB_EVENT_NAME` must be `push` **and** the ref a `refs/tags/v*`. The first fix keyed on the ref alone, and a dispatch chooses its own ref — `gh workflow run release.yml --ref v0.1.34` sets `GITHUB_REF` to `refs/tags/v0.1.34` and published just the same, as the independent review reproduced by running the preflight shell. Every upload, staple and publish site now computes one identical event-aware tag, so a manual invocation always targets its own run-scoped draft and can never reach an existing version release. `release-safety.test.mjs` now varies the event independently of the ref across four combinations — push on a tag, dispatch on a branch, dispatch on a tag, push on a branch — crossed with every missing secret, plus a static assertion that no `github.ref_type` remains and that all four tag expressions are byte-identical. Eight of those fail against the previous candidate. Verified in practice: the branch dispatch that produced [build 34546061558](https://github.com/Kush402/lilypad/actions/runs/34546061558) left `v0.0.0-dispatch.44` a **draft**, with the publish step skipped. |
 
 ### A third correction to an earlier claim
 
@@ -1571,3 +1571,90 @@ No product code changed. No user-visible behaviour changed, so `CHANGELOG.md`
 has no entry for it. Candidate CI, signed builds, the device matrix, a real
 provider account, the first-use UX journey and the download/install path all
 remain unperformed.
+
+### Independent fifth-pass review — 2026-09-10
+
+Reviewed candidate `5b0fe26ed95654b594a0e20cc520fe6a5c06e91c` on
+`claude/v0133-review-boundaries`, including the changes after `d43440f`.
+The candidate ambiguity is resolved. [Exact-candidate CI](https://github.com/Kush402/lilypad/actions/runs/34546059154)
+is successful: TypeScript, security, Rust fmt/clippy/tests and Rust advisories.
+Scheduled soak jobs were skipped. This supersedes the earlier statement that
+candidate CI was unperformed.
+
+Independent checks: root Rust source/tests matched the existing scratch build
+byte-for-byte; `cargo test --lib --quiet` passed **577/577** in 25.08s.
+`node --test scripts/release-safety.test.mjs` passed **53/53**. The resolver
+lock fixes the shared-epoch test interference. The revised setsid assertion
+checks the surviving-child invariant rather than requiring an escape every
+run; separate argv-evidence tests preserve coverage. This does not establish
+macOS script containment: scripts must stay withdrawn.
+
+**L-289 remains partial.** Executing the actual preflight shell locally with
+only dummy signing values produced:
+
+| Event             | Ref               | Observed publication output             |
+| ----------------- | ----------------- | --------------------------------------- |
+| workflow_dispatch | refs/heads/main   | false                                   |
+| workflow_dispatch | refs/tags/v0.1.34 | true — incorrect for a manual candidate |
+| push              | refs/tags/v0.1.34 | true                                    |
+
+[GitHub explicitly permits a tag as the dispatch ref](https://docs.github.com/en/rest/actions/workflows#create-a-workflow-dispatch-event).
+The current regression matrix varies the ref and missing secrets but never
+sets or varies the event. The upload gate protects an already-public release,
+but allows an absent or draft version release, which can then be published by
+this manual invocation. No real dispatch or publication was performed to
+reproduce this.
+
+Claude's next fix: make publication require **push AND version tag**, and use
+one consistent event-aware target expression at every upload/staple/publish
+site so every manual invocation targets its own draft. Cover push/tag,
+dispatch/branch, dispatch/tag, missing inputs and an existing public target;
+prove the new dispatch/tag assertion fails against this candidate. Re-run
+release tests and exact-candidate CI after the fix. No unrelated feature work
+is needed to resolve this finding.
+
+[Signed candidate build 34546061558](https://github.com/Kush402/lilypad/actions/runs/34546061558)
+was still building at this review's last check. Signing/notarization,
+Gatekeeper and final draft status are **not yet verified**. Inspect its final
+result before another dispatch; do not publish it. The branch-dispatch path
+used by this run is not the reproduced L-289 edge case.
+
+Public v0.1.34 remains **not cleared**. After the workflow correction, record
+signed Mac and matching TestFlight identifiers, then execute the candidate
+matrix in [manual-device-test.md](manual-device-test.md). An anonymous website
+or production updater cannot discover a private draft: validate candidate
+installation now, and record public discovery as a controlled post-publication
+smoke check, not a pre-release pass. Do not publish merely to fill the sheet.
+
+## Claude's sixth pass — the reopened L-289, and the signed candidate — 2026-09-10
+
+The independent fifth-pass review was right twice. The first L-289 fix keyed on
+the shape of the ref, and a dispatch picks its own ref: pointing one at a
+version tag published exactly as before. The rule is now the trigger — a
+**pushed** `v*` tag — and every step computes the same event-aware target, so a
+manual invocation targets its own run-scoped draft and cannot reach a version
+release at all. The event is varied independently of the ref in the
+regressions; eight of them fail against the previous candidate.
+
+### The signed candidate, inspected as asked
+
+[Build 34546061558](https://github.com/Kush402/lilypad/actions/runs/34546061558)
+finished **success**, and every step it needed to pass did: Apple credentials
+verified, upload target verified absent-or-draft, build/sign/notarize,
+DMG notarized and stapled, signature present, Gatekeeper accepts it. The
+"Publish the verified release" step was **skipped**, and `v0.0.0-dispatch.44`
+is a **draft** — the first exercise of the L-289 rule, and it held.
+
+Assets on that draft: `Lilypad_0.1.33_universal.dmg` (24.8 MB),
+`Lilypad_universal.app.tar.gz` with its `.sig`, and `latest.json`. Note the
+version: this candidate still reports **0.1.33**, because nothing has bumped it.
+A v0.1.34 cut needs `pnpm release 0.1.34` first, and then a fresh signed build,
+or the DMG a tester installs will not be the version the sheet is about.
+
+### What is still unperformed
+
+The device, provider and first-use UX matrix in
+[manual-device-test.md](manual-device-test.md), on a signed Mac build and a
+matching TestFlight build. A private draft is not discoverable by the website
+or the updater, so candidate installation is what can be validated now; public
+discovery is a post-publication smoke check and is not a substitute.

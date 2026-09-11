@@ -80,30 +80,41 @@ jobs:
             exit 1
           fi
 
-          # Every public build preserves the established signed-install
-          # experience. Version tags fail immediately on missing inputs; a
-          # manual troubleshooting build may proceed but must remain draft.
+          # What publishes is a PUSHED version tag, and nothing else.
+          #
+          # Two ways this has been got wrong, both fixed here. First the rule
+          # lived only in the comment above: with every secret present a
+          # `workflow_dispatch` ran through to `gh release edit --draft=false`
+          # and put a public `v0.0.0-dispatch.N` release on a public
+          # repository, which is how testers came to be told to ignore
+          # `v0.0.0-dispatch.42`. Then the rule was keyed on the shape of the
+          # ref, which a dispatch chooses: `gh workflow run release.yml --ref
+          # v0.1.34` sets `GITHUB_REF` to `refs/tags/v0.1.34` and published
+          # just the same. The trigger is the fact that matters, so the
+          # trigger is what this reads.
+          is_tag_push=false
+          if [ "${GITHUB_EVENT_NAME:-}" = "push" ] && [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            is_tag_push=true
+          fi
+
+          # A pushed version tag fails immediately on missing inputs, so a
+          # release is never quietly unsigned. A manual build is a candidate:
+          # it may proceed, and it stays a draft either way.
           missing=()
           for name in APPLE_CERTIFICATE APPLE_SIGNING_IDENTITY APPLE_TEAM_ID \
                       APPLE_API_ISSUER APPLE_API_KEY APPLE_API_KEY_P8; do
             [ -n "${!name:-}" ] || missing+=("$name")
           done
           if [ ${#missing[@]} -gt 0 ]; then
-            if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            if [ "$is_tag_push" = true ]; then
               echo "::error::signed release requires: ${missing[*]}"
               exit 1
             fi
             echo "publish=false" >> "$GITHUB_OUTPUT"
             echo "::warning::manual build will remain a draft — missing: ${missing[*]}"
-          elif [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+          elif [ "$is_tag_push" = true ]; then
             echo "publish=true" >> "$GITHUB_OUTPUT"
           else
-            # The rule above says a manual build must remain a draft. Until
-            # now it only did so when a secret was MISSING: with every secret
-            # present a dispatch ran `gh release edit --draft=false` and put a
-            # public `v0.0.0-dispatch.N` release on a public repository. That
-            # is how testers ended up told to ignore `v0.0.0-dispatch.42`.
-            # Publishing is what a version tag is for.
             echo "publish=false" >> "$GITHUB_OUTPUT"
             echo "::notice::manual build is a signed candidate and stays a draft; push a v* tag to publish"
           fi
@@ -218,7 +229,7 @@ jobs:
         id: release_target
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ github.ref_type == 'tag' && github.ref_name || format('v0.0.0-dispatch.{0}', github.run_number) }}
+          TAG: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) && github.ref_name || format('v0.0.0-dispatch.{0}', github.run_number) }}
         run: |
           set -euo pipefail
           if ! releases=$(gh api --method GET --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100"); then
@@ -272,7 +283,7 @@ jobs:
           projectPath: apps/desktop
           # For a tag push this is the tag itself; a manual dispatch falls back
           # to a run-scoped tag so the action still has something to publish to.
-          tagName: ${{ github.ref_type == 'tag' && github.ref_name || format('v0.0.0-dispatch.{0}', github.run_number) }}
+          tagName: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) && github.ref_name || format('v0.0.0-dispatch.{0}', github.run_number) }}
           releaseName: 'Lilypad __VERSION__'
           releaseBody: 'Download an installer below. Existing installs update automatically via the built-in updater.'
           # Keep artifacts private until the DMG ticket and Gatekeeper checks
@@ -298,7 +309,7 @@ jobs:
         if: steps.preflight.outputs.notarize == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ github.ref_type == 'tag' && github.ref_name || format('v0.0.0-dispatch.{0}', github.run_number) }}
+          TAG: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) && github.ref_name || format('v0.0.0-dispatch.{0}', github.run_number) }}
         run: |
           set -euo pipefail
           shopt -s nullglob
@@ -424,5 +435,5 @@ jobs:
         if: steps.preflight.outputs.publish == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ github.ref_type == 'tag' && github.ref_name || format('v0.0.0-dispatch.{0}', github.run_number) }}
+          TAG: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) && github.ref_name || format('v0.0.0-dispatch.{0}', github.run_number) }}
         run: gh release edit "$TAG" --draft=false
