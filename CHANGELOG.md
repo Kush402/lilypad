@@ -6,6 +6,10 @@ All notable changes to Lilypad are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.37] — 2026-09-11
+
+Setting up Ask, after a real first-install attempt got stuck on it.
+
 ### Fixed
 
 - **Setting up Ask no longer hides the model list behind a button.** The list
