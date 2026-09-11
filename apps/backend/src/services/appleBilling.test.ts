@@ -87,25 +87,32 @@ function fakeDb(store: { users: UserRow[]; subs: SubRow[] }) {
   const api = {
     select: (cols?: Record<string, unknown>) => ({
       from: (table: unknown) => ({
-        where: () => ({
-          // `.limit(1)` and `.limit(1).for('update')` are both valid drizzle,
-          // so the result is a promise that also carries `for`.
-          limit: () => {
-            const rows = rowsFor(table);
-            const selected = cols
-              ? rows.slice(0, 1).map((row) => {
+        // `where(...)`, `where(...).limit(1)` and `where(...).limit(1).for('update')`
+        // are all valid drizzle, so each step is a promise that also carries
+        // the next one. `subscriptionForOwner` awaits `where` directly -- it
+        // has to see every row an account owns, not the first one.
+        where: () => {
+          const project = (rows: Record<string, unknown>[]) =>
+            cols
+              ? rows.map((row) => {
                   const out: Record<string, unknown> = {};
                   for (const key of Object.keys(cols)) out[key] = row[key];
                   return out;
                 })
-              : rows.slice(0, 1);
-            const pending = Promise.resolve(selected) as Promise<Record<string, unknown>[]> & {
-              for: () => Promise<Record<string, unknown>[]>;
-            };
-            pending.for = () => pending;
-            return pending;
-          },
-        }),
+              : rows;
+          const all = project(rowsFor(table));
+          return Object.assign(Promise.resolve(all), {
+            limit: () => {
+              const pending = Promise.resolve(all.slice(0, 1)) as Promise<
+                Record<string, unknown>[]
+              > & {
+                for: () => Promise<Record<string, unknown>[]>;
+              };
+              pending.for = () => pending;
+              return pending;
+            },
+          });
+        },
       }),
     }),
     update: (table: unknown) => ({

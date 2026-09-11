@@ -11,7 +11,8 @@
  */
 import { eq } from 'drizzle-orm';
 import { db as defaultDb } from '../db/client.js';
-import { subscriptions, users } from '../db/schema.js';
+import { users } from '../db/schema.js';
+import { subscriptionForOwner } from './subscriptionStore.js';
 import { config } from '../config.js';
 import { entitlesRemoteAccess, type AppleEnvironment } from './subscription.js';
 
@@ -48,29 +49,15 @@ export async function remoteAccessFor(
   // The same evaluator the billing screen uses, so the two cannot disagree
   // about whether an account is entitled — and so that an expired
   // subscription stops entitling here too, notification or not (L-294).
-  const [row] = await database
-    .select()
-    .from(subscriptions)
-    .where(eq(subscriptions.ownerUserId, userId))
-    .limit(1);
+  // One reader, shared with the billing screen -- including how it picks among
+  // an account's subscriptions. A second hand-written copy of that mapping is
+  // how the two answers start disagreeing.
+  const commercialEnvironment: AppleEnvironment =
+    config.env.APPLE_IAP_ENVIRONMENT === 'Production' ? 'Production' : 'Sandbox';
   const entitled = entitlesRemoteAccess({
     manualTier: account.tier,
-    subscription: row
-      ? {
-          environment: row.environment as AppleEnvironment,
-          originalTransactionId: row.originalTransactionId,
-          ownerUserId: row.ownerUserId,
-          productId: row.productId,
-          status: row.status as 'active' | 'grace' | 'expired' | 'revoked',
-          expiresAt: row.expiresAt ? row.expiresAt.getTime() : null,
-          graceExpiresAt: row.graceExpiresAt ? row.graceExpiresAt.getTime() : null,
-          lastTransactionId: row.lastTransactionId,
-          lastPurchaseDate: row.lastPurchaseDate ? row.lastPurchaseDate.getTime() : null,
-          revokedAt: row.revokedAt ? row.revokedAt.getTime() : null,
-        }
-      : null,
-    commercialEnvironment:
-      config.env.APPLE_IAP_ENVIRONMENT === 'Production' ? 'Production' : 'Sandbox',
+    subscription: await subscriptionForOwner(database, userId, commercialEnvironment),
+    commercialEnvironment,
     isApprovedTester: account.isBillingTester,
     now,
   });

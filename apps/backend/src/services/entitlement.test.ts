@@ -1,15 +1,23 @@
 import { describe, it, expect } from 'vitest';
 import { remoteAccessFor } from './entitlement.js';
+import { users } from '../db/schema.js';
 
-/** Enough of Drizzle's chain to answer one `select ... where ... limit`. */
-function fakeDb(rows: { tier: string }[]) {
+/**
+ * Enough of Drizzle's chain to answer the account lookup and the subscription
+ * lookup -- which are two different tables, so the fake dispatches on the one
+ * it is handed. Returning the account row to both queries is what let an
+ * earlier version of this fake build a nonsense subscription out of `{tier}`
+ * and still pass.
+ */
+function fakeDb(accounts: { tier: string }[], subscriptionRows: unknown[] = []) {
   return {
     select: () => ({
-      from: () => ({
-        where: () => ({
-          limit: () => Promise.resolve(rows),
-        }),
-      }),
+      from: (table: unknown) => {
+        const rows = table === users ? accounts : subscriptionRows;
+        return {
+          where: () => Object.assign(Promise.resolve(rows), { limit: () => Promise.resolve(rows) }),
+        };
+      },
     }),
   } as never;
 }
@@ -26,6 +34,46 @@ describe('who may reach a laptop from another network', () => {
 
   it('holds the free tier to its own network', async () => {
     expect(await remoteAccessFor('u', fakeDb([{ tier: 'free' }]))).toBe('not_entitled');
+  });
+
+  it('is decided by the subscription, not only by the manual tier', async () => {
+    // The comment in `entitlement.ts` claims an expired subscription stops
+    // entitling here too, notification or not. Nothing tested it: the fake
+    // never returned a subscription row at all.
+    const day = 24 * 60 * 60 * 1000;
+    const now = Date.parse('2026-09-15T00:00:00Z');
+    const subscription = (expiresAt: number, status = 'active') => [
+      {
+        environment: 'Sandbox',
+        originalTransactionId: 'orig-1',
+        ownerUserId: 'u',
+        productId: 'com.takedia.lilypad.pro.monthly',
+        status,
+        expiresAt: new Date(expiresAt),
+        graceExpiresAt: null,
+        lastTransactionId: 'tx-1',
+        lastPurchaseDate: new Date(now - day),
+        revokedAt: null,
+      },
+    ];
+
+    // The test environment is Sandbox, so a Sandbox subscription is the
+    // commercial one here and entitles a free-tier account.
+    expect(
+      await remoteAccessFor('u', fakeDb([{ tier: 'free' }], subscription(now + day)), now),
+    ).toBe('entitled');
+    // Same row, period passed, no EXPIRED notification ever delivered.
+    expect(
+      await remoteAccessFor('u', fakeDb([{ tier: 'free' }], subscription(now - day)), now),
+    ).toBe('not_entitled');
+    // A refund ends it regardless of the period still running.
+    expect(
+      await remoteAccessFor(
+        'u',
+        fakeDb([{ tier: 'free' }], subscription(now + day, 'revoked')),
+        now,
+      ),
+    ).toBe('not_entitled');
   });
 
   it('does not tell a deleted account to upgrade', async () => {

@@ -19,7 +19,7 @@ import { and, eq, sql } from 'drizzle-orm';
 import postgres from 'postgres';
 import { drizzle, type PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 import { subscriptions, users } from '../db/schema.js';
-import { applySubscriptionEvent } from './subscriptionStore.js';
+import { applySubscriptionEvent, subscriptionForOwner } from './subscriptionStore.js';
 import type { SubscriptionEvent, SubscriptionState } from './subscription.js';
 
 const DATABASE_URL = process.env.DATABASE_URL;
@@ -182,6 +182,40 @@ describeWithDb('subscription ordering, against a real database', () => {
       .where(eq(subscriptions.originalTransactionId, originalTransactionId));
     expect(rows).toHaveLength(2);
     expect(new Set(rows.map((r) => r.environment))).toEqual(new Set(['Production', 'Sandbox']));
+  });
+
+  it('a webhook winning the first-purchase race does not cost the buyer the claim', async () => {
+    // Apple's SUBSCRIBED and the phone's receipt name the SAME transaction and
+    // arrive together. Whoever loses the insert race must still end up with
+    // the subscription attached to the account that paid -- the row was
+    // created unowned by the notification, and the receipt is the claim.
+    const first = event();
+    await Promise.all([apply(first, null), apply(first, userId)]);
+
+    const row = await stored();
+    expect(row?.ownerUserId).toBe(userId);
+  });
+
+  it('an account holding both a test and a real subscription is judged on the real one', async () => {
+    // A TestFlight tester who later buys for real owns two rows. `ownerUserId`
+    // is not unique, so "take one row" is a coin toss, and the toss decides
+    // whether they get the Pro they paid for.
+    const sandboxOnly = `ot-${randomUUID()}`;
+    await db.insert(subscriptions).values({
+      environment: 'Sandbox',
+      originalTransactionId: sandboxOnly,
+      ownerUserId: userId,
+      productId: PRO,
+      status: 'active',
+      expiresAt: new Date(T0 + 90 * DAY),
+    });
+    // Inserted second, so a query with no ordering will tend to return the
+    // Sandbox row above -- which entitles an ordinary account to nothing.
+    await apply(event(), userId);
+
+    const chosen = await subscriptionForOwner(db as never, userId, 'Production');
+    expect(chosen?.environment).toBe('Production');
+    expect(chosen?.originalTransactionId).toBe(originalTransactionId);
   });
 
   afterAll(async () => {

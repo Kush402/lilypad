@@ -329,3 +329,117 @@ describe('an Apple subscription never overwrites a Team grant (L-299)', () => {
     ).toBe('pro');
   });
 });
+
+describe('a termination is not a duplicate of the state it lands on', () => {
+  /**
+   * The duplicate guard on the terminal path asked "same transaction, and not
+   * active?" — which is true of a refund that lands on a grace period for the
+   * same transaction. Apple sends exactly that: DID_FAIL_TO_RENEW opens a
+   * grace window on tx-1, and a refund of tx-1 follows. Treating the refund as
+   * already-applied leaves paid access running for the rest of the window on a
+   * purchase whose money has gone back.
+   */
+  it('applies a refund that lands on a grace period for the same transaction', () => {
+    const grace = reduce(
+      purchased(),
+      event({ notificationType: 'DID_FAIL_TO_RENEW', graceExpiresAt: T0 + 45 * DAY }),
+      'user-1',
+    ).state;
+    expect(grace.status).toBe('grace');
+    expect(subscriptionIsCurrent(grace, T0 + 40 * DAY)).toBe(true);
+
+    const refunded = reduce(
+      grace,
+      event({ notificationType: 'REFUND', revocationDate: T0 + 35 * DAY }),
+      'user-1',
+    );
+    expect(refunded.changed).toBe(true);
+    expect(refunded.state.status).toBe('revoked');
+    expect(refunded.state.revokedAt).toBe(T0 + 35 * DAY);
+    expect(subscriptionIsCurrent(refunded.state, T0 + 40 * DAY)).toBe(false);
+  });
+
+  /** Access was already gone, but whether the money came back is a different
+   *  fact, and reconciliation reads it. */
+  it('records a refund that follows an expiry of the same transaction', () => {
+    const expired = reduce(purchased(), event({ notificationType: 'EXPIRED' }), 'user-1').state;
+    expect(expired.status).toBe('expired');
+
+    const refunded = reduce(
+      expired,
+      event({ notificationType: 'REFUND', revocationDate: T0 + 31 * DAY }),
+      'user-1',
+    );
+    expect(refunded.state.status).toBe('revoked');
+    expect(refunded.state.revokedAt).toBe(T0 + 31 * DAY);
+  });
+
+  /** The control: a genuine repeat of a termination still changes nothing, or
+   *  the guard has simply been deleted rather than corrected. */
+  it('still ignores the same termination delivered twice', () => {
+    const revoke = event({ notificationType: 'REVOKE', revocationDate: T0 + 10 * DAY });
+    const once = reduce(purchased(), revoke, 'user-1').state;
+    const twice = reduce(once, revoke, 'user-1');
+    expect(twice.changed).toBe(false);
+    expect(twice.changed === false && twice.reason).toBe('duplicate');
+    expect(twice.state).toEqual(once);
+  });
+});
+
+describe('the claim happens on the transaction Apple actually names', () => {
+  /**
+   * The defect the first pass left behind, and the reason it survived: the
+   * existing claim and grace tests both gave the second event a *different*
+   * transaction id. Apple does not. `SUBSCRIBED` carries the transaction the
+   * phone is holding a receipt for, so the client's submission names that same
+   * transaction — and the duplicate guard keyed on transaction id alone threw
+   * it away before the claim was applied. The subscription stayed unowned, so
+   * the person who paid never became Pro. This is the ordinary path, not an
+   * edge: it is what happens every time the notification wins the race.
+   */
+  it('claims an unowned subscription from a receipt for the same transaction', () => {
+    const orphan = reduce(null, event(), null);
+    expect(orphan.state.ownerUserId).toBeNull();
+
+    const claimed = reduce(orphan.state, event(), 'user-1');
+    expect(claimed.changed).toBe(true);
+    expect(claimed.state.ownerUserId).toBe('user-1');
+  });
+
+  /** Apple sends DID_FAIL_TO_RENEW against the last successful transaction —
+   *  the one already stored. Keyed on the id alone, grace was unreachable. */
+  it('enters a grace period announced against the stored transaction', () => {
+    const grace = reduce(
+      purchased(),
+      event({ notificationType: 'DID_FAIL_TO_RENEW', graceExpiresAt: T0 + 36 * DAY }),
+      'user-1',
+    );
+    expect(grace.changed).toBe(true);
+    expect(grace.state.status).toBe('grace');
+    expect(subscriptionIsCurrent(grace.state, T0 + 33 * DAY)).toBe(true);
+    expect(subscriptionIsCurrent(grace.state, T0 + 37 * DAY)).toBe(false);
+  });
+
+  /** The boundary this must not cross: a replayed receipt for a transaction
+   *  that was refunded does not buy the subscription back. */
+  it('does not let a replayed receipt undo a refund of that same transaction', () => {
+    const revoked = reduce(
+      purchased(),
+      event({ notificationType: 'REVOKE', revocationDate: T0 + 5 * DAY }),
+      'user-1',
+    ).state;
+    const replay = reduce(revoked, event(), 'user-1');
+    expect(replay.changed).toBe(false);
+    expect(replay.state.status).toBe('revoked');
+    expect(subscriptionIsCurrent(replay.state, T0 + 6 * DAY)).toBe(false);
+  });
+
+  /** And an ordinary duplicate receipt is still a duplicate. */
+  it('still ignores a receipt that repeats what is already stored', () => {
+    const state = purchased();
+    const again = reduce(state, event(), 'user-1');
+    expect(again.changed).toBe(false);
+    expect(again.changed === false && again.reason).toBe('duplicate');
+    expect(again.state).toEqual(state);
+  });
+});

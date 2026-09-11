@@ -99,10 +99,12 @@ export async function applySubscriptionEvent(
       existing = await read();
       // Nobody raced us: the row we just wrote is the answer.
       if (!existing) return { state: first.state, conflict: false };
-      // Somebody did. Fall through and treat their row as the previous state.
-      if (existing.lastTransactionId === first.state.lastTransactionId) {
-        return { state: toState(existing), conflict: false };
-      }
+      // Somebody did. Fall through and treat their row as the previous state,
+      // through the ordinary reducer path -- including when the winner wrote
+      // the same transaction we are holding. That case is not a no-op: Apple's
+      // notification and the phone's receipt name the SAME transaction, and
+      // the notification creates the row unowned, so returning the winner's
+      // row here dropped the buyer's claim and left them unentitled.
     }
 
     const previous = toState(existing);
@@ -125,4 +127,38 @@ export async function applySubscriptionEvent(
       .where(eq(subscriptions.id, existing.id));
     return { state: result.state, conflict: false };
   });
+}
+
+/**
+ * The subscription that decides what an account may do.
+ *
+ * `owner_user_id` is not unique and is not meant to be: a TestFlight tester who
+ * later buys for real owns a Sandbox row and a Production row at once. Both
+ * readers used to take `.limit(1)` with no ordering, which is a coin toss --
+ * and losing it means the Sandbox row answers for the account, entitling
+ * nothing, while the subscription they actually paid for sits unread.
+ *
+ * The rows per account are a handful, so they are ordered here rather than in
+ * SQL: the environment this deployment sells in first, then the period that
+ * ends last.
+ */
+export async function subscriptionForOwner(
+  database: Database,
+  userId: string,
+  commercialEnvironment: SubscriptionState['environment'],
+): Promise<SubscriptionState | null> {
+  const rows = await database
+    .select()
+    .from(subscriptions)
+    .where(eq(subscriptions.ownerUserId, userId));
+  if (rows.length === 0) return null;
+  const states = rows.map(toState);
+  if (states.length === 1) return states[0]!;
+  return states.sort((a, b) => {
+    const environment =
+      Number(b.environment === commercialEnvironment) -
+      Number(a.environment === commercialEnvironment);
+    if (environment !== 0) return environment;
+    return (b.expiresAt ?? -Infinity) - (a.expiresAt ?? -Infinity);
+  })[0]!;
 }

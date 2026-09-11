@@ -1741,33 +1741,60 @@ fn method_metadata_url(base_url: &str) -> Option<String> {
     Some(format!("{root}/models"))
 }
 
-/// Ask Google what its models support. Any failure yields an empty index,
-/// which means "nothing known" — never "nothing supported" (see
-/// `models::google_method_index`).
+/// How many pages of Google's catalogue to walk before giving up. Google
+/// publishes well under a thousand models; this is a bound on a loop driven by
+/// a remote value, not a guess at the catalogue size.
+const MAX_METADATA_PAGES: usize = 8;
+
+/// Ask Google what its models support.
+///
+/// Any failure yields whatever was collected so far — "nothing known" for the
+/// rest, never "nothing supported" (see `models::google_method_index`). A page
+/// that fails halfway leaves the models it would have covered `unknown` and
+/// offered, which is the same degradation as no metadata at all.
+///
+/// **Paged.** `models.list` returns 50 per page by default and Google's
+/// catalogue is longer than that, so a single request covers part of it. Since
+/// an unmentioned model is offered, stopping at page one puts the Live Audio
+/// model back on the list whenever it sits past the boundary.
 async fn fetch_method_index(
     client: &reqwest::Client,
     url: &str,
     key: Option<&str>,
 ) -> crate::agent::llm::models::MethodIndex {
     use crate::agent::llm::{http, models};
-    let mut request = client.get(url);
-    if let Some(key) = key {
-        // A header, not a query parameter: a key in a URL ends up in logs.
-        request = request.header("x-goog-api-key", key);
+    let mut index = models::MethodIndex::new();
+    let mut page_token: Option<String> = None;
+
+    for _ in 0..MAX_METADATA_PAGES {
+        let paged = match &page_token {
+            Some(token) => format!("{url}?pageSize=200&pageToken={token}"),
+            None => format!("{url}?pageSize=200"),
+        };
+        let mut request = client.get(paged);
+        if let Some(key) = key {
+            // A header, not a query parameter: a key in a URL ends up in logs.
+            request = request.header("x-goog-api-key", key);
+        }
+        let Ok(resp) = request.send().await else {
+            return index;
+        };
+        if !resp.status().is_success() {
+            return index;
+        }
+        let Ok(raw) = http::collect_bounded(resp).await else {
+            return index;
+        };
+        let Ok(json) = http::parse_success(&raw) else {
+            return index;
+        };
+        models::extend_method_index(&mut index, &json);
+        match models::next_page_token(&json) {
+            Some(token) => page_token = Some(token),
+            None => break,
+        }
     }
-    let Ok(resp) = request.send().await else {
-        return models::MethodIndex::new();
-    };
-    if !resp.status().is_success() {
-        return models::MethodIndex::new();
-    }
-    let Ok(raw) = http::collect_bounded(resp).await else {
-        return models::MethodIndex::new();
-    };
-    match http::parse_success(&raw) {
-        Ok(json) => models::google_method_index(&json),
-        Err(_) => models::MethodIndex::new(),
-    }
+    index
 }
 
 /// The models the endpoint offers, each with what is known about whether Ask

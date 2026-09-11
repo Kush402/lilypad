@@ -130,8 +130,30 @@ pub type MethodIndex = HashMap<String, Vec<String>>;
 /// to hide every model from the list.
 pub fn google_method_index(body: &serde_json::Value) -> MethodIndex {
     let mut index = MethodIndex::new();
+    extend_method_index(&mut index, body);
+    index
+}
+
+/// Google's catalogue is **paged** — `models.list` returns 50 by default and
+/// hands back a `nextPageToken`. Google publishes well over 50 models, so a
+/// single request covers part of the catalogue and no more.
+///
+/// That matters here in one direction only, and it is the direction this file
+/// exists for: a model absent from the metadata stays [`Suitability::Unknown`]
+/// and is offered. So fetching one page leaves the Live Audio model offered
+/// without a word whenever it happens to sit past the page boundary — which is
+/// the original defect, back again, decided by catalogue position.
+pub fn next_page_token(body: &serde_json::Value) -> Option<String> {
+    body.get("nextPageToken")
+        .and_then(|t| t.as_str())
+        .filter(|t| !t.is_empty())
+        .map(str::to_string)
+}
+
+/// Fold one page of `models.list` into an index.
+pub fn extend_method_index(index: &mut MethodIndex, body: &serde_json::Value) {
     let Some(rows) = body.get("models").and_then(|m| m.as_array()) else {
-        return index;
+        return;
     };
     for row in rows {
         let Some(name) = row.get("name").and_then(|n| n.as_str()) else {
@@ -152,7 +174,6 @@ pub fn google_method_index(body: &serde_json::Value) -> MethodIndex {
         }
         index.insert(bare(name).to_string(), methods);
     }
-    index
 }
 
 /// Turn a catalogue of ids plus whatever metadata was obtained into the list
@@ -312,6 +333,63 @@ mod tests {
             assert_eq!(option.suitability, Suitability::Unknown);
             assert!(option.reason.is_empty());
         }
+    }
+
+    /// Google pages its catalogue. One request is one page, and a model on a
+    /// later page has no metadata — so it is offered, unmarked, which is the
+    /// defect this module was written to remove.
+    #[test]
+    fn a_live_model_on_a_later_page_is_still_caught() {
+        let page_one = serde_json::json!({
+            "models": [{
+                "name": "models/gemini-2.5-flash",
+                "supportedGenerationMethods": ["generateContent"]
+            }],
+            "nextPageToken": "page-2"
+        });
+        let page_two = serde_json::json!({
+            "models": [{
+                "name": "models/gemini-2.5-flash-native-audio-preview-12-2025",
+                "supportedGenerationMethods": ["bidiGenerateContent"]
+            }]
+        });
+
+        assert_eq!(next_page_token(&page_one).as_deref(), Some("page-2"));
+        assert_eq!(
+            next_page_token(&page_two),
+            None,
+            "a last page must end the walk"
+        );
+
+        // Page one alone: the Live model is invisible, so it is offered.
+        let first_only = google_method_index(&page_one);
+        assert_eq!(
+            lookup(
+                "models/gemini-2.5-flash-native-audio-preview-12-2025",
+                &first_only
+            )
+            .suitability,
+            Suitability::Unknown
+        );
+
+        // Both pages: it is caught, exactly as if it had been on page one.
+        let mut index = MethodIndex::new();
+        extend_method_index(&mut index, &page_one);
+        extend_method_index(&mut index, &page_two);
+        assert_eq!(
+            lookup(
+                "models/gemini-2.5-flash-native-audio-preview-12-2025",
+                &index
+            )
+            .suitability,
+            Suitability::Unsuitable,
+            "a paged catalogue let the Live Audio model through"
+        );
+        assert_eq!(
+            lookup("models/gemini-2.5-flash", &index).suitability,
+            Suitability::Usable,
+            "merging pages must not lose the earlier one"
+        );
     }
 
     /// A model listed with methods that are all unknown to this file is still

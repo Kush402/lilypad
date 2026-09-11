@@ -18,8 +18,8 @@ import {
 } from '@apple/app-store-server-library';
 import { PRO_MONTHLY_PRODUCT_ID, type BillingStatus } from '@lilypad/protocol';
 import { db as defaultDb } from '../db/client.js';
-import { subscriptions, users } from '../db/schema.js';
-import { applySubscriptionEvent, toState } from './subscriptionStore.js';
+import { users } from '../db/schema.js';
+import { applySubscriptionEvent, subscriptionForOwner } from './subscriptionStore.js';
 import {
   effectiveTier,
   subscriptionIsCurrent,
@@ -131,12 +131,7 @@ async function statusFor(
     .where(eq(users.id, userId))
     .limit(1);
   if (!account) return null;
-  const [row] = await database
-    .select()
-    .from(subscriptions)
-    .where(eq(subscriptions.ownerUserId, userId))
-    .limit(1);
-  const state = row ? toState(row) : null;
+  const state = await subscriptionForOwner(database, userId, commercialEnvironment());
   const tier = effectiveTier({
     manualTier: account.tier,
     subscription: state,

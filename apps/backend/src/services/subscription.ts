@@ -194,61 +194,87 @@ export function reduce(
   }
 
   const terminal = event.revocationDate != null || TERMINAL_TYPES.has(event.notificationType ?? '');
+  const sameTransaction = previous.lastTransactionId === event.transactionId;
 
   // Rule 3, checked before rule 2: a refund concerns the transaction it
-  // names, and that transaction may legitimately be older than the newest
-  // one. Duplicates of it still do nothing.
+  // names, and that transaction may legitimately be older than the newest one.
   if (terminal) {
-    if (previous.lastTransactionId === event.transactionId && previous.status !== 'active') {
-      return { changed: false, state: previous, reason: 'duplicate' };
-    }
-    return {
-      changed: true,
-      state: {
-        ...previous,
-        ownerUserId: owner,
-        status: statusFromEvent(event),
-        // The period is not rewritten by a termination. Whatever Apple said
-        // the period was, it still was; what changed is access.
-        expiresAt: previous.expiresAt ?? event.expiresAt,
-        graceExpiresAt: null,
-        revokedAt: event.revocationDate ?? previous.revokedAt,
-        // A late termination must not make an older transaction look newest,
-        // or the next genuine renewal would be judged stale against it.
-        lastTransactionId:
-          event.purchaseDate >= (previous.lastPurchaseDate ?? -Infinity)
-            ? event.transactionId
-            : previous.lastTransactionId,
-        lastPurchaseDate: Math.max(previous.lastPurchaseDate ?? -Infinity, event.purchaseDate),
-      },
+    const next: SubscriptionState = {
+      ...previous,
+      ownerUserId: owner,
+      status: statusFromEvent(event),
+      // The period is not rewritten by a termination. Whatever Apple said
+      // the period was, it still was; what changed is access.
+      expiresAt: previous.expiresAt ?? event.expiresAt,
+      graceExpiresAt: null,
+      revokedAt: event.revocationDate ?? previous.revokedAt,
+      // A late termination must not make an older transaction look newest,
+      // or the next genuine renewal would be judged stale against it.
+      lastTransactionId:
+        event.purchaseDate >= (previous.lastPurchaseDate ?? -Infinity)
+          ? event.transactionId
+          : previous.lastTransactionId,
+      lastPurchaseDate: Math.max(previous.lastPurchaseDate ?? -Infinity, event.purchaseDate),
     };
+    return same(next, previous)
+      ? { changed: false, state: previous, reason: 'duplicate' }
+      : { changed: true, state: next };
   }
 
-  if (previous.lastTransactionId === event.transactionId) {
-    return { changed: false, state: previous, reason: 'duplicate' };
-  }
   // Rule 2. An older non-terminal event has nothing to add that the newer one
   // has not already said.
   if (previous.lastPurchaseDate != null && event.purchaseDate < previous.lastPurchaseDate) {
     return { changed: false, state: previous, reason: 'stale' };
   }
 
-  return {
-    changed: true,
-    state: {
-      ...previous,
-      ownerUserId: owner,
-      productId: event.productId,
-      status: statusFromEvent(event),
-      expiresAt: event.expiresAt,
-      graceExpiresAt: event.graceExpiresAt ?? null,
-      lastTransactionId: event.transactionId,
-      lastPurchaseDate: event.purchaseDate,
-      // A genuinely newer paid transaction ends a revocation: the person
-      // bought it again.
-      revokedAt: null,
-    },
+  // A transaction that has been refunded or has run out is not bought back by
+  // restating it. Only a genuinely newer transaction revives a subscription,
+  // which is the clause below that clears `revokedAt`.
+  if (sameTransaction && previous.status !== 'active' && previous.status !== 'grace') {
+    return { changed: false, state: previous, reason: 'duplicate' };
+  }
+
+  const next: SubscriptionState = {
+    ...previous,
+    ownerUserId: owner,
+    productId: event.productId,
+    status: statusFromEvent(event),
+    expiresAt: event.expiresAt,
+    graceExpiresAt: event.graceExpiresAt ?? null,
+    lastTransactionId: event.transactionId,
+    lastPurchaseDate: event.purchaseDate,
+    // A genuinely newer paid transaction ends a revocation: the person bought
+    // it again. Restating the terminated transaction itself does not, and does
+    // not reach here.
+    revokedAt: sameTransaction ? previous.revokedAt : null,
   };
+  return same(next, previous)
+    ? { changed: false, state: previous, reason: 'duplicate' }
+    : { changed: true, state: next };
+}
+
+/**
+ * Whether applying an event left the subscription exactly as it was.
+ *
+ * This is the duplicate test, and it is deliberately a comparison of outcomes
+ * rather than a comparison of transaction ids. Keying on the id alone was
+ * wrong in both directions, and both were shipped: it discarded a
+ * `DID_FAIL_TO_RENEW` and a first client receipt because Apple names the
+ * transaction already stored, and it accepted a refund as new because the
+ * status happened to differ. What makes an event a duplicate is that it
+ * changes nothing — so ask that.
+ */
+function same(a: SubscriptionState, b: SubscriptionState): boolean {
+  return (
+    a.ownerUserId === b.ownerUserId &&
+    a.productId === b.productId &&
+    a.status === b.status &&
+    a.expiresAt === b.expiresAt &&
+    a.graceExpiresAt === b.graceExpiresAt &&
+    a.lastTransactionId === b.lastTransactionId &&
+    a.lastPurchaseDate === b.lastPurchaseDate &&
+    a.revokedAt === b.revokedAt
+  );
 }
 
 // ── entitlement ──────────────────────────────────────────────────────────
