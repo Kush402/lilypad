@@ -6,6 +6,19 @@ All notable changes to Lilypad are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **Setting up Ask is now paste your key and pick a model.** Lilypad
+  recognises which provider a key belongs to, fills in the address, and loads
+  that provider's models by itself. Before this, a key pasted while a different
+  provider was selected was sent to that provider instead of yours.
+
+- **Only models that can actually do the job are offered.** Ask works by
+  calling tools on your Mac, so a model that cannot call tools could describe
+  what to do and never do it. Those are now marked, using what each provider
+  publishes about its own models. On OpenRouter that is 142 of 443 names you no
+  longer have to rule out yourself.
+
 ## [0.1.37] — 2026-09-11
 
 Setting up Ask, after a real first-install attempt got stuck on it.

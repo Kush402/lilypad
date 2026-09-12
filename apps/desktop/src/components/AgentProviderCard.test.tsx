@@ -466,3 +466,77 @@ describe('the model catalogue loads by itself', () => {
     expect(calls).not.toContain('list_agent_models');
   });
 });
+
+/**
+ * A pasted key must not be sent to the wrong company (L-313).
+ *
+ * The catalogue loads as soon as a credential exists (L-311) and the provider
+ * selection starts on Anthropic, so before this an OpenRouter key pasted on a
+ * fresh install went straight to `api.anthropic.com`. Recognising the shape is
+ * what stops that, and it must never refuse a key it does not know.
+ */
+describe('a pasted key picks its own provider', () => {
+  /** Render, reach the connect step on the default provider, paste `key`. */
+  async function paste(key: string, recognisedAs: string | null) {
+    const calls: Array<{ cmd: string; args: unknown }> = [];
+    vi.mocked(invoke).mockImplementation(async (cmd: string, args: unknown) => {
+      calls.push({ cmd, args });
+      if (cmd === 'list_provider_presets') return PRESETS;
+      if (cmd === 'get_agent_config') return UNCONFIGURED;
+      if (cmd === 'recognise_api_key') return recognisedAs;
+      if (cmd === 'list_agent_models') return [];
+      throw new Error(`unexpected ${cmd}`);
+    });
+    render(<AgentProviderCard />);
+    await screen.findByLabelText('Provider');
+    // Untouched: the selection is still the default, Anthropic.
+    expect((screen.getByLabelText('Provider') as HTMLSelectElement).value).toBe('anthropic');
+    fireEvent.click(screen.getByTestId('agent-provider-continue'));
+    await screen.findByLabelText('API key');
+    fireEvent.change(screen.getByLabelText('API key'), { target: { value: key } });
+    return calls;
+  }
+
+  /** Every destination this key was actually sent to. */
+  const listedOrigins = (calls: Array<{ cmd: string; args: unknown }>) =>
+    calls
+      .filter((c) => c.cmd === 'list_agent_models')
+      .map((c) => (c.args as { args: { baseUrl: string } }).args.baseUrl);
+
+  it('moves the provider to the one the key belongs to, and says where it goes', async () => {
+    await paste('sk-or-v1-abcdef', 'openrouter');
+    await waitFor(() => expect(screen.getByTestId('agent-provider-recognised')).toBeTruthy());
+    expect((screen.getByLabelText('Provider') as HTMLSelectElement).value).toBe('openrouter');
+    const said = screen.getByTestId('agent-provider-recognised').textContent ?? '';
+    expect(said).toContain('OpenRouter');
+    expect(said).toContain('https://openrouter.ai/api/v1');
+  });
+
+  it('never carries the key to the provider that merely happened to be selected', async () => {
+    // The defect in one assertion: api.anthropic.com must never see an
+    // OpenRouter key.
+    const calls = await paste('sk-or-v1-abcdef', 'openrouter');
+    await waitFor(() => expect(listedOrigins(calls).length).toBeGreaterThan(0));
+    for (const origin of listedOrigins(calls)) {
+      expect(origin).toBe('https://openrouter.ai/api/v1');
+    }
+    expect(listedOrigins(calls)).not.toContain('https://api.anthropic.com');
+  });
+
+  it('leaves an unrecognised key exactly where the person put it', async () => {
+    // A key shape nobody has listed, or one a vendor changed this morning, is
+    // not refused and does not move anything.
+    await paste('some-brand-new-shape-1234', null);
+    await waitFor(() =>
+      expect((screen.getByLabelText('Provider') as HTMLSelectElement).value === 'anthropic').toBe(
+        true,
+      ),
+    );
+    expect(screen.queryByTestId('agent-provider-recognised')).toBeNull();
+    // Still usable: nothing is disabled, nothing is complained about.
+    expect(screen.getByRole('button', { name: 'Save without testing' })).toHaveProperty(
+      'disabled',
+      false,
+    );
+  });
+});

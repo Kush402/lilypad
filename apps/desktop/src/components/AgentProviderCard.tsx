@@ -180,18 +180,83 @@ export function AgentProviderCard() {
     void load();
   }, [load]);
 
-  /** Changing provider clears what belonged to the old one. A base URL or
-   * model from another origin is not a default for this one. */
-  const chooseProvider = (id: string) => {
+  /** Everything that belonged to the old provider. A base URL or model from
+   * another origin is not a default for this one. */
+  const forgetProvider = (id: string) => {
     const next = presets.find((p) => p.id === id);
     setProfileId(id);
     setBaseUrl(next?.defaultBaseUrl ?? '');
     setModel('');
-    setApiKey('');
     setModels(null);
     setReport(null);
     setError('');
   };
+
+  /** Changing provider by hand also drops the key: it belonged to the old
+   * destination and is not a credential for this one. */
+  const chooseProvider = (id: string) => {
+    forgetProvider(id);
+    setApiKey('');
+  };
+
+  /**
+   * What the pasted credential's shape points at, if anything (L-313).
+   *
+   * This is a **safety** fix wearing a convenience fix's clothes. The
+   * catalogue now loads as soon as a credential exists (L-311), and the
+   * provider selection starts on Anthropic — so pasting an OpenRouter key on a
+   * fresh install sent `sk-or-v1-…` straight to `api.anthropic.com`, a party
+   * it does not belong to. Recognising the shape is what stops the key going
+   * to the wrong company.
+   *
+   * `null` is the ordinary answer and changes nothing: an unfamiliar, new or
+   * re-shaped key is never refused, and whatever provider the person chose
+   * stands. See `presets::recognise`.
+   */
+  const [recognised, setRecognised] = useState<string | null>(null);
+  /** The exact key text an answer has come back for. */
+  const [recognisedFor, setRecognisedFor] = useState('');
+  /**
+   * A key is on screen that nothing has looked at yet.
+   *
+   * Derived during render rather than held in state, and that is the whole
+   * correctness argument: the listing effect and this one run in the same
+   * commit, so a `setRecognising(true)` in the effect above is invisible to the
+   * effect below, which still sees the value from the render that scheduled
+   * them both. Written that way first, and the test caught it — the key went
+   * to `api.anthropic.com` exactly as before.
+   */
+  const keyPending = apiKey.trim() !== '' && apiKey.trim() !== recognisedFor;
+  useEffect(() => {
+    const key = apiKey.trim();
+    if (key === '') {
+      setRecognised(null);
+      setRecognisedFor('');
+      return;
+    }
+    if (key === recognisedFor) return;
+    let alive = true;
+    void invoke<string | null>('recognise_api_key', { key })
+      .then((id) => {
+        if (!alive) return;
+        if (id && id !== profileId) forgetProvider(id);
+        setRecognised(id ?? null);
+      })
+      .catch(() => {
+        /* Recognition is a convenience. Failing it must not block setup, and
+         * the person's own choice of provider is still in force. */
+      })
+      .finally(() => {
+        // Always, including on failure: otherwise a provider that cannot be
+        // recognised leaves the listing waiting for ever.
+        if (alive) setRecognisedFor(key);
+      });
+    return () => {
+      alive = false;
+    };
+    // Deliberately not depending on `forgetProvider`: it is rebuilt every
+    // render, so re-running on it would re-ask the backend on every keystroke.
+  }, [apiKey, recognisedFor, profileId]);
 
   /**
    * Move on with whatever provider is selected (L-279).
@@ -294,10 +359,14 @@ export function AgentProviderCard() {
   const listingTarget = `${dialect}|${baseUrl.trim()}|${apiKey.trim() === '' ? '' : 'key'}`;
   useEffect(() => {
     if (step === 'provider' || !preset?.modelDiscovery || !hasCredential) return;
+    // Never list while the shape of a freshly pasted key is still being read
+    // (L-313). Listing is what first carries the key off this Mac, and the
+    // destination is exactly what recognition is about to correct.
+    if (keyPending) return;
     if (models !== null || busy !== '' || listedFor.current === listingTarget) return;
     listedFor.current = listingTarget;
     void listModels();
-  }, [step, preset, hasCredential, models, busy, listingTarget, listModels]);
+  }, [step, preset, hasCredential, keyPending, models, busy, listingTarget, listModels]);
 
   const test = async () => {
     setBusy('testing');
@@ -471,6 +540,16 @@ export function AgentProviderCard() {
               autoComplete="off"
             />
           </div>
+          {/* Where this key is about to go, before it goes there (L-313).
+              Naming the destination is the whole safeguard: the person can see
+              that a pasted key moved the provider, and to what. */}
+          {recognised ? (
+            <p className="muted" data-testid="agent-provider-recognised">
+              That looks like a{' '}
+              {presets.find((p) => p.id === recognised)?.displayName ?? recognised} key. Requests go
+              to <code>{baseUrl}</code>.
+            </p>
+          ) : null}
 
           {/* ── step 3: model ────────────────────────────────────────────── */}
           <div className="row">

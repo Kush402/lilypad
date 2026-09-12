@@ -168,9 +168,101 @@ pub fn default_model_for(
     }
 }
 
+/// The credential shapes a few providers document, used to **point at** a
+/// preset and never to judge a key (L-313).
+///
+/// ### Why this is not the prefix list this module forbids
+///
+/// The header above says a preset is not a key-format check, and that stands:
+/// nothing here rejects anything. `None` is the ordinary answer and means
+/// "carry on with whatever provider you chose". A key whose shape is unknown,
+/// new, or changed by its vendor tomorrow is unaffected, because no branch
+/// leads to a refusal.
+///
+/// ### Why it is a safety improvement rather than only a convenience
+///
+/// The setup screen lists a provider's models as soon as a credential exists,
+/// which means an unrecognised paste goes to **whatever provider happens to be
+/// selected** — and the selection starts on Anthropic. Pasting an OpenRouter
+/// key on a fresh install therefore sent `sk-or-v1-…` to `api.anthropic.com`,
+/// a party it does not belong to. Recognising it is what stops that.
+///
+/// Only unmistakable, vendor-documented shapes are listed. A bare `sk-` is
+/// deliberately absent: dozens of gateways mint keys in OpenAI's shape, and
+/// guessing OpenAI for those would cause the exact mis-delivery this exists to
+/// prevent.
+pub fn recognise(key: &str) -> Option<&'static str> {
+    let key = key.trim();
+    // Longest, most specific first: `sk-or-v1-` would otherwise never be
+    // reached past a shorter `sk-` rule, which is half of why there is no
+    // `sk-` rule at all.
+    const SHAPES: &[(&str, &str)] = &[
+        ("sk-ant-", "anthropic"),
+        ("sk-or-v1-", "openrouter"),
+        ("sk-proj-", "openai"),
+        ("AIza", "gemini"),
+    ];
+    SHAPES
+        .iter()
+        .find(|(prefix, _)| key.starts_with(prefix))
+        .map(|(_, id)| *id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Recognition points at a preset. It must never be able to refuse one.
+    #[test]
+    fn an_unfamiliar_key_is_not_rejected_it_is_simply_unrecognised() {
+        for key in [
+            "",
+            "   ",
+            "sk-",
+            "sk-1234567890",
+            "gsk_something_from_a_provider_we_do_not_list",
+            "a-perfectly-valid-key-from-a-vendor-invented-tomorrow",
+            "hf_abcdefghijklmnop",
+        ] {
+            assert_eq!(
+                recognise(key),
+                None,
+                "{key:?} was mapped to a provider on a guess"
+            );
+        }
+    }
+
+    #[test]
+    fn a_documented_shape_points_at_its_own_provider() {
+        for (key, expected) in [
+            ("sk-ant-api03-AAAA", "anthropic"),
+            ("sk-or-v1-0123456789abcdef", "openrouter"),
+            ("sk-proj-AAAABBBB", "openai"),
+            ("AIzaSyAAAABBBBCCCC", "gemini"),
+        ] {
+            assert_eq!(recognise(key), Some(expected), "{key}");
+            assert!(
+                find(expected).is_some(),
+                "{expected} is not a preset that exists"
+            );
+        }
+        // Pasted with the whitespace a copy usually brings.
+        assert_eq!(recognise("  sk-ant-api03-AAAA\n"), Some("anthropic"));
+    }
+
+    /// The case this exists for: an OpenRouter key on a fresh install, where
+    /// the selection still says Anthropic. Without recognition the key is sent
+    /// to api.anthropic.com the moment the catalogue loads.
+    #[test]
+    fn an_openrouter_key_is_not_mistaken_for_the_default_provider() {
+        assert_eq!(recognise("sk-or-v1-abc"), Some("openrouter"));
+        assert_ne!(recognise("sk-or-v1-abc"), Some("anthropic"));
+        assert_ne!(
+            recognise("sk-or-v1-abc"),
+            Some("openai"),
+            "OpenRouter's shape starts with OpenAI's and must not fall through to it"
+        );
+    }
 
     #[test]
     fn every_preset_is_internally_consistent() {

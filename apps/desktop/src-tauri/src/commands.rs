@@ -1511,6 +1511,17 @@ pub struct TestAgentConfigArgs {
     pub api_key: Option<String>,
 }
 
+/// Which preset a pasted credential's shape points at, or `None` (L-313).
+///
+/// Does not validate, store, or send anything. `None` means "nothing
+/// recognised", which is an ordinary answer and never a refusal — see
+/// `presets::recognise` for why this is not the key-format check that module's
+/// header forbids.
+#[tauri::command]
+pub fn recognise_api_key(key: String) -> Option<&'static str> {
+    crate::agent::llm::presets::recognise(&key)
+}
+
 /// Run the capability probe and record what it found.
 ///
 /// Nothing here touches the screen or any of the person's files: the probe
@@ -1894,11 +1905,20 @@ pub async fn list_agent_models(
     ids.sort();
     ids.dedup();
 
-    let index = match method_metadata_url(&base_url) {
-        Some(url) => fetch_method_index(&client, &url, metadata_key.as_deref()).await,
-        None => crate::agent::llm::models::MethodIndex::new(),
+    // Each provider publishes capability in its own vocabulary, or not at all
+    // (L-312). Google's lives behind a second request; OpenRouter's arrived in
+    // the body already parsed above, so reading it costs nothing.
+    use crate::agent::llm::models::{self, Catalogue};
+    let catalogue = match method_metadata_url(&base_url) {
+        Some(url) => {
+            Catalogue::Methods(fetch_method_index(&client, &url, metadata_key.as_deref()).await)
+        }
+        None if models::publishes_parameters(&origin) => {
+            Catalogue::Parameters(models::openrouter_parameter_index(&json))
+        }
+        None => Catalogue::Silent,
     };
-    Ok(crate::agent::llm::models::options(&ids, &index, &origin))
+    Ok(models::options(&ids, &catalogue))
 }
 
 /// Remove the credential for the configured destination and forget the

@@ -176,38 +176,81 @@ pub fn extend_method_index(index: &mut MethodIndex, body: &serde_json::Value) {
     }
 }
 
-/// A routing variant a gateway appends to a model id after a colon (L-310).
+/// What a provider actually published about its models, in that provider's own
+/// vocabulary (L-310, L-312).
+///
+/// There is no shared schema for "can this model do the job", so there is no
+/// shared parser either. Each arm is one endpoint's documented field, read
+/// literally. A provider that publishes nothing gets `Silent`, which means
+/// nothing is known and everything is offered — never "nothing is supported".
+pub enum Catalogue {
+    /// Google's `supportedGenerationMethods`, keyed by the bare model id.
+    Methods(MethodIndex),
+    /// OpenRouter's `supported_parameters`, keyed by the FULL id. Its ids
+    /// carry a vendor prefix (`google/…`, `meta-llama/…`) and two vendors
+    /// publishing the same model name is ordinary, so the prefix is part of
+    /// the key rather than something to strip.
+    Parameters(MethodIndex),
+    /// This endpoint published nothing. Everything is offered; the probe is
+    /// what settles it.
+    Silent,
+}
+
+/// The parameter Ask cannot work without.
+///
+/// Ask is a tool-calling loop: the model asks the Mac to click, type, read the
+/// screen. A model that cannot call tools cannot do any of it, and the failure
+/// arrives as a model that chats politely and never acts.
+const REQUIRED_PARAMETER: &str = "tools";
+
+/// Decide suitability from the parameters an OpenAI-compatible gateway says a
+/// model accepts.
+///
+/// On OpenRouter's catalogue, 2026-09-11: 66 of 443 models did not list
+/// `tools`. They were all offered, and every one of them would have failed to
+/// do anything useful.
+pub fn from_parameters(parameters: Option<&[String]>) -> (Suitability, String) {
+    let Some(parameters) = parameters else {
+        return (Suitability::Unknown, String::new());
+    };
+    if parameters.is_empty() {
+        return (Suitability::Unknown, String::new());
+    }
+    if parameters
+        .iter()
+        .any(|p| p.eq_ignore_ascii_case(REQUIRED_PARAMETER))
+    {
+        return (Suitability::Usable, String::new());
+    }
+    (
+        Suitability::Unsuitable,
+        "This endpoint does not list tool calling for this model. Ask works by calling tools \
+         on your Mac, so a model without them could describe what to do but never do it."
+            .to_string(),
+    )
+}
+
+/// A routing variant appended to a model id after a colon (L-310).
 ///
 /// ### Why this is not "judging a model by its name"
 ///
-/// `method_explanation` above deliberately reads the provider's own method
-/// names and never the model's name, because a name is marketing. A variant
-/// suffix is neither: on OpenRouter it is documented routing grammar, and
+/// `method_explanation` above deliberately reads a provider's own method names
+/// and never the model's name, because a name is marketing. A variant suffix is
+/// neither: on OpenRouter it is documented routing grammar, and
 /// `google/gemini-3-flash-preview:batch` is a *different destination* from
 /// `google/gemini-3-flash-preview`, not a differently-branded one.
 ///
 /// ### Why it has to be the id at all
 ///
-/// Because OpenRouter's catalogue carries no other signal. Fetched and
-/// compared, 2026-09-11: the only field that differs between the pair above is
-/// `pricing`. `supported_parameters` still lists `tools`, `architecture` still
-/// says text output. Nothing structured says "this one cannot answer a chat
-/// request" — and it cannot: the endpoint replies
-/// "This model is only available through the Batch API."
+/// Because nothing else says so. Fetched and diffed 2026-09-11: `pricing` is
+/// the ONLY field that differs between that pair. `supported_parameters` still
+/// lists `tools`, `architecture` still says text output. The endpoint's own
+/// answer to a chat request is "This model is only available through the Batch
+/// API" — which arrives far too late to help anybody choosing from a list.
 ///
-/// 77 of OpenRouter's 443 models carried `:batch` on that day and every one of
-/// them was offered as an ordinary choice.
-///
-/// ### Why it is scoped to one origin
-///
-/// A colon in a model id is completely ordinary elsewhere — Ollama's tags are
-/// `llama3.1:8b`. `Unsuitable` removes a model from the list and disables Save
-/// and Test, so a false positive takes away a model that works. The rule
-/// applies where the grammar is documented, and nowhere else.
-fn variant_verdict(origin: &str, id: &str) -> Option<(Suitability, String)> {
-    if !origin.ends_with("://openrouter.ai") {
-        return None;
-    }
+/// 77 of OpenRouter's 443 models carried `:batch` on that day, and this runs
+/// before the parameter check because every one of them lists `tools`.
+fn batch_variant(id: &str) -> Option<(Suitability, String)> {
     // Only the last segment: the vendor prefix is `/`-separated and never
     // carries a variant.
     let variant = bare(id).rsplit_once(':')?.1;
@@ -225,24 +268,70 @@ fn variant_verdict(origin: &str, id: &str) -> Option<(Suitability, String)> {
     ))
 }
 
-/// What is known about one id, from the variant grammar first and the
-/// provider's method metadata second.
-fn verdict(origin: &str, id: &str, index: &MethodIndex) -> (Suitability, String) {
-    if let Some(found) = variant_verdict(origin, id) {
-        return found;
+/// What is known about one id, read in the vocabulary its provider published.
+fn verdict(id: &str, catalogue: &Catalogue) -> (Suitability, String) {
+    match catalogue {
+        Catalogue::Silent => (Suitability::Unknown, String::new()),
+        Catalogue::Methods(index) => from_methods(index.get(bare(id)).map(|m| m.as_slice())),
+        Catalogue::Parameters(index) => {
+            if let Some(found) = batch_variant(id) {
+                return found;
+            }
+            from_parameters(index.get(id).map(|p| p.as_slice()))
+        }
     }
-    from_methods(index.get(bare(id)).map(|m| m.as_slice()))
 }
 
-/// Turn a catalogue of ids plus whatever metadata was obtained into the list
+/// Whether this endpoint's own `/models` response carries
+/// `supported_parameters`, which is what `Catalogue::Parameters` reads.
+///
+/// A predicate rather than an inline comparison because the caller builds the
+/// origin with `store::origin_of` and this decides against it: if the two ever
+/// disagree about spelling, the capability data is silently dropped and every
+/// model goes back to `Unknown`. The test below pins them together.
+pub fn publishes_parameters(origin: &str) -> bool {
+    origin.ends_with("://openrouter.ai")
+}
+
+/// Parse OpenRouter's `/models` response into its `supported_parameters`.
+///
+/// Read from the catalogue response the setup screen already fetched: the
+/// capability data and the id list arrive together, so this costs no second
+/// request. Anything unparseable yields an empty index, which means "nothing
+/// known" and never "nothing supported".
+pub fn openrouter_parameter_index(body: &serde_json::Value) -> MethodIndex {
+    let mut index = MethodIndex::new();
+    let Some(rows) = body.get("data").and_then(|d| d.as_array()) else {
+        return index;
+    };
+    for row in rows {
+        let Some(id) = row.get("id").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let Some(parameters) = row.get("supported_parameters").and_then(|v| v.as_array()) else {
+            continue;
+        };
+        index.insert(
+            id.to_string(),
+            parameters
+                .iter()
+                .filter_map(|p| p.as_str())
+                .map(str::to_string)
+                .collect(),
+        );
+    }
+    index
+}
+
+/// Turn a catalogue of ids plus whatever the provider published into the list
 /// the setup screen offers.
 ///
-/// Ids the metadata does not mention stay `Unknown`: a partial index must not
-/// condemn what it does not cover.
-pub fn options(ids: &[String], index: &MethodIndex, origin: &str) -> Vec<ModelOption> {
+/// Ids the provider said nothing about stay `Unknown`: partial knowledge must
+/// not condemn what it does not cover.
+pub fn options(ids: &[String], catalogue: &Catalogue) -> Vec<ModelOption> {
     ids.iter()
         .map(|id| {
-            let (suitability, reason) = verdict(origin, id, index);
+            let (suitability, reason) = verdict(id, catalogue);
             ModelOption {
                 id: id.clone(),
                 suitability,
@@ -254,8 +343,8 @@ pub fn options(ids: &[String], index: &MethodIndex, origin: &str) -> Vec<ModelOp
 
 /// What is known about one id — including one typed by hand, which never
 /// passed through the catalogue at all (L-291).
-pub fn lookup(id: &str, index: &MethodIndex, origin: &str) -> ModelOption {
-    let (suitability, reason) = verdict(origin, id, index);
+pub fn lookup(id: &str, catalogue: &Catalogue) -> ModelOption {
+    let (suitability, reason) = verdict(id, catalogue);
     ModelOption {
         id: id.to_string(),
         suitability,
@@ -306,7 +395,7 @@ mod tests {
             "models/text-embedding-004".to_string(),
             "models/imagen-4.0-generate-001".to_string(),
         ];
-        let offered = options(&ids, &index, GOOGLE);
+        let offered = options(&ids, &Catalogue::Methods(index));
 
         assert_eq!(offered[0].suitability, Suitability::Usable);
 
@@ -342,11 +431,18 @@ mod tests {
         });
         let index = google_method_index(&catalogue);
         // Typed without the `models/` prefix, which is how a person would.
-        let typed = lookup("gemini-live-2.5-flash-preview", &index, GOOGLE);
+        let typed = lookup(
+            "gemini-live-2.5-flash-preview",
+            &Catalogue::Methods(index.clone()),
+        );
         assert_eq!(typed.suitability, Suitability::Unsuitable);
         // And an id the metadata has never heard of stays open, not condemned.
         assert_eq!(
-            lookup("some-gateway/private-model", &index, GOOGLE).suitability,
+            lookup(
+                "some-gateway/private-model",
+                &Catalogue::Methods(index.clone())
+            )
+            .suitability,
             Suitability::Unknown
         );
     }
@@ -372,94 +468,162 @@ mod tests {
         assert_eq!(
             lookup(
                 "models/gemini-2.5-flash-audio-understanding",
-                &index,
-                GOOGLE
+                &Catalogue::Methods(index.clone())
             )
             .suitability,
             Suitability::Usable,
             "a name-shape rule would have refused this one"
         );
         assert_eq!(
-            lookup("models/perfectly-ordinary-name", &index, GOOGLE).suitability,
+            lookup(
+                "models/perfectly-ordinary-name",
+                &Catalogue::Methods(index.clone())
+            )
+            .suitability,
             Suitability::Unsuitable,
             "a name-shape rule would have allowed this one"
         );
     }
 
-    /// OpenRouter's batch variants (L-310).
+    /// OpenRouter's catalogue, in the shape OpenRouter actually serves
+    /// (L-310, L-312).
     ///
-    /// Ids and the pairing are taken from OpenRouter's own `/api/v1/models`,
-    /// fetched 2026-09-11: 443 models, of which 77 ended in `:batch` and 19 in
-    /// `:free`. Every `:batch` one was offered by Lilypad as an ordinary
-    /// choice, and the owner picked `google/gemini-3-flash-preview:batch` on a
-    /// clean v0.1.36 install. The endpoint answered "This model is only
-    /// available through the Batch API", so Ask could not run at all.
+    /// Rows below are trimmed copies of `https://openrouter.ai/api/v1/models`
+    /// fetched 2026-09-11. That day it held 443 models: **77 ended in
+    /// `:batch`** and **66 did not list `tools`**. All 143 were offered, and
+    /// the owner picked `google/gemini-3-flash-preview:batch` from that list on
+    /// a clean v0.1.36 install, which is why Ask could not run at all.
+    fn openrouter_catalogue() -> serde_json::Value {
+        serde_json::json!({
+            "data": [
+                {
+                    "id": "google/gemini-3-flash-preview",
+                    "supported_parameters": ["max_tokens", "tools", "tool_choice", "temperature"]
+                },
+                {
+                    // The batch twin. `pricing` is the only field that differs
+                    // from the row above on the real endpoint -- it lists
+                    // `tools` exactly like its sibling, which is why the
+                    // variant check has to run before the parameter check.
+                    "id": "google/gemini-3-flash-preview:batch",
+                    "supported_parameters": ["max_tokens", "tools", "tool_choice", "temperature"]
+                },
+                {
+                    // Real row, real reason: a translation model that answers
+                    // chat requests and cannot call a single tool.
+                    "id": "tencent/hy-mt2-7b",
+                    "supported_parameters": ["max_tokens", "temperature", "top_p"]
+                },
+                {
+                    "id": "meta-llama/llama-3.3-70b-instruct:free",
+                    "supported_parameters": ["max_tokens", "tools", "temperature"]
+                },
+                {
+                    // Published with no parameter list at all.
+                    "id": "some-vendor/brand-new-model"
+                }
+            ]
+        })
+    }
+
     #[test]
-    fn openrouter_batch_variants_are_refused_and_their_siblings_are_not() {
-        // Empty on purpose: OpenRouter publishes no method metadata, which is
-        // exactly why every one of these was `Unknown` and offered.
-        let index = MethodIndex::new();
+    fn openrouter_models_that_cannot_call_tools_are_not_offered() {
+        let catalogue = Catalogue::Parameters(openrouter_parameter_index(&openrouter_catalogue()));
         let ids = vec![
             "google/gemini-3-flash-preview".to_string(),
             "google/gemini-3-flash-preview:batch".to_string(),
-            "anthropic/claude-fable-5.1:batch".to_string(),
+            "tencent/hy-mt2-7b".to_string(),
             "meta-llama/llama-3.3-70b-instruct:free".to_string(),
+            "some-vendor/brand-new-model".to_string(),
         ];
-        let offered = options(&ids, &index, OPENROUTER);
+        let offered = options(&ids, &catalogue);
 
         assert_eq!(
             offered[0].suitability,
-            Suitability::Unknown,
-            "the ordinary model must stay offered: nothing is known about it"
+            Suitability::Usable,
+            "the provider says this one calls tools"
         );
         assert_eq!(
             offered[1].suitability,
             Suitability::Unsuitable,
             "a batch-only model was offered for Ask"
         );
-        assert!(
-            offered[1].reason.contains("batch"),
-            "the refusal did not say why: {}",
-            offered[1].reason
+        assert!(offered[1].reason.contains("batch"), "{}", offered[1].reason);
+        assert_eq!(
+            offered[2].suitability,
+            Suitability::Unsuitable,
+            "Ask is a tool-calling loop and this model cannot call one"
         );
-        assert_eq!(offered[2].suitability, Suitability::Unsuitable);
+        assert!(offered[2].reason.contains("tool"), "{}", offered[2].reason);
         // `:free` is the same model on a rate-limited route. It answers chat
         // requests, and removing it would take away the only models somebody
         // without credit can use.
         assert_eq!(
             offered[3].suitability,
-            Suitability::Unknown,
+            Suitability::Usable,
             "the free route was mistaken for a batch route"
+        );
+        // Silence is not refusal. A model published with no parameter list is
+        // offered, and the probe decides.
+        assert_eq!(offered[4].suitability, Suitability::Unknown);
+        assert!(offered[4].reason.is_empty());
+    }
+
+    /// OpenRouter ids carry a vendor prefix and two vendors publishing the same
+    /// model name is ordinary, so the index keys on the whole id. Keying on the
+    /// bare name would let one vendor's metadata answer for another's model.
+    #[test]
+    fn openrouter_capability_is_keyed_on_the_whole_id() {
+        let catalogue = Catalogue::Parameters(openrouter_parameter_index(&serde_json::json!({
+            "data": [
+                { "id": "vendor-a/shared-name", "supported_parameters": ["tools"] },
+                { "id": "vendor-b/shared-name", "supported_parameters": ["temperature"] }
+            ]
+        })));
+        assert_eq!(
+            lookup("vendor-a/shared-name", &catalogue).suitability,
+            Suitability::Usable
+        );
+        assert_eq!(
+            lookup("vendor-b/shared-name", &catalogue).suitability,
+            Suitability::Unsuitable
         );
     }
 
-    /// The rule keys on an origin string it does not build itself, so this
-    /// pins the two together. A silent mismatch here would leave the fix
-    /// switched off in production while every test above still passed.
+    /// An endpoint that answers with something else entirely must lose nothing.
     #[test]
-    fn the_openrouter_preset_resolves_to_the_origin_the_rule_matches() {
+    fn an_unparseable_openrouter_answer_condemns_nothing() {
+        let index = openrouter_parameter_index(&serde_json::json!({ "error": "nope" }));
+        assert!(index.is_empty());
+        let offered = options(
+            &["anything/at-all".to_string()],
+            &Catalogue::Parameters(index),
+        );
+        assert_eq!(offered[0].suitability, Suitability::Unknown);
+    }
+
+    /// The predicate decides against an origin it does not build. A silent
+    /// disagreement about spelling would drop the capability data and put
+    /// every model back to `Unknown`, with every other test still passing.
+    #[test]
+    fn the_openrouter_preset_resolves_to_the_origin_the_predicate_matches() {
         let origin = crate::agent::llm::store::origin_of("https://openrouter.ai/api/v1")
             .expect("the shipped OpenRouter base URL must parse");
         assert_eq!(origin, OPENROUTER);
-        assert_eq!(
-            options(
-                &["google/gemini-3-flash-preview:batch".to_string()],
-                &MethodIndex::new(),
-                &origin,
-            )[0]
-            .suitability,
-            Suitability::Unsuitable
-        );
+        assert!(publishes_parameters(&origin));
+        assert!(!publishes_parameters(GOOGLE));
+        // Not a suffix match on the bare host: a lookalike domain must not
+        // inherit OpenRouter's vocabulary.
+        assert!(!publishes_parameters("https://notopenrouter.ai"));
     }
 
     /// The rule is grammar on one gateway, not a rule about colons.
     #[test]
     fn a_colon_in_an_id_is_ordinary_everywhere_else() {
-        let index = MethodIndex::new();
         // Ollama tags are `name:tag`, and a local endpoint publishes no
         // metadata either. Condemning these would empty the list.
         let ids = vec!["llama3.1:8b".to_string(), "qwen2.5-coder:batch".to_string()];
-        let offered = options(&ids, &index, "http://localhost:11434");
+        let offered = options(&ids, &Catalogue::Silent);
         for option in &offered {
             assert_eq!(
                 option.suitability,
@@ -477,7 +641,7 @@ mod tests {
         let index = google_method_index(&serde_json::json!({ "error": "nope" }));
         assert!(index.is_empty());
         let ids = vec!["llama3.1:8b".to_string(), "qwen2.5-coder".to_string()];
-        let offered = options(&ids, &index, GOOGLE);
+        let offered = options(&ids, &Catalogue::Methods(index));
         assert_eq!(offered.len(), 2);
         for option in &offered {
             assert_eq!(option.suitability, Suitability::Unknown);
@@ -516,8 +680,7 @@ mod tests {
         assert_eq!(
             lookup(
                 "models/gemini-2.5-flash-native-audio-preview-12-2025",
-                &first_only,
-                GOOGLE
+                &Catalogue::Methods(first_only.clone())
             )
             .suitability,
             Suitability::Unknown
@@ -530,15 +693,18 @@ mod tests {
         assert_eq!(
             lookup(
                 "models/gemini-2.5-flash-native-audio-preview-12-2025",
-                &index,
-                GOOGLE
+                &Catalogue::Methods(index.clone())
             )
             .suitability,
             Suitability::Unsuitable,
             "a paged catalogue let the Live Audio model through"
         );
         assert_eq!(
-            lookup("models/gemini-2.5-flash", &index, GOOGLE).suitability,
+            lookup(
+                "models/gemini-2.5-flash",
+                &Catalogue::Methods(index.clone())
+            )
+            .suitability,
             Suitability::Usable,
             "merging pages must not lose the earlier one"
         );
