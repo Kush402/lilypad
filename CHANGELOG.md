@@ -6,6 +6,36 @@ All notable changes to Lilypad are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.39] — 2026-09-12
+
+What one three-minute Ask session on v0.1.38 turned out to be doing.
+
+### Fixed
+
+- **Ask no longer starts a run it already knows cannot work.** A model saved
+  before Lilypad could tell it was a batch-only route stayed saved, and the run
+  died at the provider fifteen seconds after you asked for something. The
+  refusal now happens before anything on your screen moves, and says which
+  model to pick instead.
+- **Pressing something no longer freezes the screen your phone is watching.**
+  Checking that an approval still describes the control ran a full
+  accessibility walk on the wrong thread. On a web page that takes seconds, and
+  the video stream stopped for as long as it took — 19 seconds in one measured
+  session. It runs out of the way now.
+- **Asking for a web page costs one approval, not a series of them.** Every
+  press needs your say-so and always will, so a task that clicks its way to a
+  website asks you over and over. Ask now goes straight there in one step, and
+  says so when it cannot.
+- **Runs cost far fewer tokens.** A run re-sends its whole conversation on
+  every step, so the bill grew with the square of its length. Screen readings —
+  the biggest part of it by far — are no longer re-sent once they are stale,
+  the repeated part is now cached by the provider, and what each step actually
+  cost is recorded instead of estimated.
+- **A run leaves a record on the Mac.** Everything Ask proposed, held and did
+  used to vanish the moment the phone disconnected, which is exactly when you
+  want to know what happened. It is in the log now — and that log is no longer
+  two thirds one repeated line about video frames.
+
 ## [0.1.38] — 2026-09-11
 
 Ask setup, after a real attempt to configure it got stuck twice.
