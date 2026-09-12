@@ -254,16 +254,33 @@ jobs:
             echo "Pods restored from cache and match Podfile.lock — skipping install"
             exit 0
           fi
+          known=0
           for attempt in 1 2 3 4 5; do
             echo "pod install (attempt $attempt/5)"
-            if bundle exec pod install; then
+            if bundle exec pod install 2>&1 | tee "$RUNNER_TEMP/pod-$attempt.log"; then
               echo "pod install succeeded on attempt $attempt"
               exit 0
+            fi
+            # Which failure it was, counted rather than assumed. The previous
+            # version ended with "this is not the known intermittent failure"
+            # no matter what had happened, and on mobile-v0.1.38 all five
+            # attempts WERE that failure -- so the log told the next reader to
+            # go looking for a new problem that did not exist (L-315).
+            if grep -q 'pathname contains null byte' "$RUNNER_TEMP/pod-$attempt.log"; then
+              known=$((known + 1))
             fi
             echo "::warning::pod install failed on attempt $attempt — retrying"
             sleep 5
           done
-          echo "::error::pod install failed five times — this is not the known intermittent failure"
+          if [ "$known" -eq 5 ]; then
+            echo "::error::pod install hit the known pnpm/CocoaPods 'pathname contains null byte' \
+          flake on all five attempts (CocoaPods #12798, #12866). Nothing here is broken: re-run \
+          the job, or warm the Pods cache so the command that flakes does not run at all."
+          else
+            echo "::error::pod install failed five times, and $known of those were the known \
+          'pathname contains null byte' flake. The rest are something else — read \
+          \$RUNNER_TEMP/pod-*.log before re-running."
+          fi
           exit 1
 
       - name: Fastlane beta (archive → IPA → TestFlight)
