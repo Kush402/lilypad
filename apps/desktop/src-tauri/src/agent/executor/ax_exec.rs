@@ -63,12 +63,53 @@ impl Executor for AxExecutor {
                             return Ok(Observation::fail(format!("ax read task failed: {e}")))
                         }
                     };
-                let text = tree::serialize(&snapshot.nodes);
+                let text = tree::observation(&snapshot.nodes);
                 self.last = Some(snapshot);
                 self.read_on = display;
-                Ok(Observation::ok(format!("Accessibility tree:\n{text}")))
+                Ok(Observation::ok(text))
             }
-            Action::AxPress { element_id, target } => self.press(*element_id, target.as_ref()),
+            Action::AxPress { element_id, target } => {
+                if let Some(refusal) = self.cannot_press(*element_id) {
+                    return Ok(refusal);
+                }
+                // Re-reading the screen to check the approval still describes
+                // this control is the same blocking FFI walk as `read_ax_tree`
+                // above, and it used to run inline on the async worker
+                // (L-322). A walk of a web page is not fast — browsers build
+                // their accessibility tree lazily and a large page takes
+                // seconds — so holding a runtime worker for it stalls whatever
+                // else that worker was carrying. In one real session capture
+                // went from 34ms a frame to 70ms and produced no frames at all
+                // for 19 seconds while an Ask run was pressing.
+                //
+                // It happens here rather than inside `press` because `&self`
+                // may not be held across an await: `AxHandle` is `Send` and
+                // not `Sync`, so a future holding a reference to the snapshot
+                // is not `Send` and the runner cannot hold it. `&mut self` is.
+                let fresh = match target {
+                    None => None,
+                    Some(_) => {
+                        let display = self.display.get();
+                        match tokio::task::spawn_blocking(move || ax::read_focused_tree(display))
+                            .await
+                        {
+                            Ok(Ok(s)) => Some(s),
+                            // An observation, not an error: the model can read
+                            // again and choose, where a failed step only ends
+                            // with a message nobody can act on.
+                            Ok(Err(e)) => {
+                                return Ok(Observation::fail(format!(
+                                    "could not re-read the screen before pressing: {e}"
+                                )))
+                            }
+                            Err(e) => {
+                                return Ok(Observation::fail(format!("ax read task failed: {e}")))
+                            }
+                        }
+                    }
+                };
+                Ok(self.press(*element_id, target.as_ref(), fresh))
+            }
             other => bail!("AxExecutor only handles ReadAxTree/AxPress, got {other:?}"),
         }
     }
@@ -95,84 +136,99 @@ impl AxExecutor {
             .map(|(role, label)| AxTarget::new(role, label))
     }
 
-    fn press(&self, element_id: usize, approved: Option<&AxTarget>) -> Result<Observation> {
-        let Some(snapshot) = &self.last else {
-            return Ok(Observation::fail(
-                "no accessibility tree has been read yet — call read_ax_tree first",
-            ));
+    /// Every refusal that costs nothing to decide, so the expensive re-read
+    /// in `execute` only happens for a press that could actually go ahead.
+    fn cannot_press(&self, element_id: usize) -> Option<Observation> {
+        let snapshot = match &self.last {
+            Some(snapshot) => snapshot,
+            None => {
+                return Some(Observation::fail(
+                    "no accessibility tree has been read yet — call read_ax_tree first",
+                ))
+            }
         };
         // The session can move to another monitor between the read and the
         // press. The ids in the old snapshot describe windows on the old
         // screen, so they are no longer a description of what the person is
         // watching (L-267).
         if self.read_on != self.display.get() {
-            return Ok(Observation::fail(
+            return Some(Observation::fail(
                 "the shared screen changed since this tree was read — read it again",
             ));
         }
         // Reject a bad or non-actionable id before touching the live element.
         match tree::pressable_by_id(&snapshot.nodes, element_id) {
-            None => {
-                return Ok(Observation::fail(format!(
-                    "element [{element_id}] is not in the current tree — re-read first"
-                )))
-            }
-            Some(false) => {
-                return Ok(Observation::fail(format!(
-                    "element [{element_id}] is not pressable — pick one marked {{pressable}}"
-                )))
-            }
-            Some(true) => {}
+            None => Some(Observation::fail(format!(
+                "element [{element_id}] is not in the current tree — re-read first"
+            ))),
+            Some(false) => Some(Observation::fail(format!(
+                "element [{element_id}] is not pressable — pick one marked {{pressable}}"
+            ))),
+            Some(true) => None,
         }
+    }
+
+    /// Press the element. `fresh` is the reading taken between the approval
+    /// and now, present exactly when there is an approval to re-check.
+    fn press(
+        &self,
+        element_id: usize,
+        approved: Option<&AxTarget>,
+        fresh: Option<AxSnapshot>,
+    ) -> Observation {
+        let Some(snapshot) = &self.last else {
+            return Observation::fail(
+                "no accessibility tree has been read yet — call read_ax_tree first",
+            );
+        };
         #[cfg(target_os = "macos")]
         {
             let Some(handle) = snapshot.handle(element_id) else {
-                return Ok(Observation::fail(format!(
-                    "element [{element_id}] handle missing"
-                )));
+                return Observation::fail(format!("element [{element_id}] handle missing"));
             };
             // The gate classified a specific control, and the user may have
             // approved that control by name. Between then and now the app can
             // re-lay itself out and leave a different button under this handle.
             // Ask the live element what it is before pressing it; the snapshot
             // cannot answer, because it is a copy of what we already believed.
-            if let Some(approved) = approved {
-                let fresh = ax::read_focused_tree(self.display.get())?;
+            if let (Some(approved), Some(fresh)) = (approved, fresh) {
                 if !snapshot.same_context(&fresh, element_id) {
-                    return Ok(Observation::fail(
-                        "The app or its contents changed since this action was chosen. Read again and request fresh approval."
-                    ));
+                    return Observation::fail(
+                        "The window changed between the approval and the press, so the approval \
+                         no longer describes what would happen. Pages that update themselves do \
+                         this on their own. Read the tree again and choose; if the same press \
+                         keeps being refused, use a direct tool instead or finish with \
+                         needs_input rather than asking the person again.",
+                    );
                 }
                 match ax::describe_live(handle) {
                     Some((role, label)) => {
                         let now = AxTarget::new(role, label);
                         if &now != approved {
-                            return Ok(Observation::fail(format!(
+                            return Observation::fail(format!(
                                 "element [{element_id}] changed from {:?} to {:?} since it was \
                                  approved — re-read the tree and choose again",
                                 approved.label, now.label
-                            )));
+                            ));
                         }
                     }
                     None => {
-                        return Ok(Observation::fail(format!(
+                        return Observation::fail(format!(
                             "element [{element_id}] could not be re-read before pressing — \
                              re-read the tree and choose again"
-                        )))
+                        ))
                     }
                 }
             }
             match ax::macos::press(handle) {
-                Ok(()) => Ok(Observation::ok(format!("pressed element [{element_id}]"))),
-                Err(e) => Ok(Observation::fail(format!("press failed: {e}"))),
+                Ok(()) => Observation::ok(format!("pressed element [{element_id}]")),
+                Err(e) => Observation::fail(format!("press failed: {e}")),
             }
         }
         #[cfg(not(target_os = "macos"))]
         {
-            let _ = snapshot;
-            Ok(Observation::fail(
-                "the accessibility tier is only available on macOS",
-            ))
+            let _ = (snapshot, approved, fresh);
+            Observation::fail("the accessibility tier is only available on macOS")
         }
     }
 }
@@ -184,7 +240,7 @@ mod tests {
     #[test]
     fn press_without_a_read_is_rejected() {
         let ex = AxExecutor::default();
-        let obs = ex.press(3, None).unwrap();
+        let obs = ex.cannot_press(3).expect("refused");
         assert!(!obs.ok);
         assert!(obs.summary.contains("read_ax_tree first"));
     }
@@ -216,13 +272,11 @@ mod tests {
 
     /// L-267. A tree read while one screen was shared does not describe the
     /// screen that is shared now, so a press chosen from it is refused.
-    #[tokio::test]
-    async fn a_display_switch_invalidates_the_last_read() {
+    #[test]
+    fn a_display_switch_invalidates_the_last_read() {
         let executor = snapshot(vec![node(0, "AXButton", Some("Send"))]);
         executor.display.set(Some(7));
-        let obs = executor
-            .press(0, Some(&AxTarget::new("AXButton", "Send")))
-            .unwrap();
+        let obs = executor.cannot_press(0).expect("refused");
         assert!(!obs.ok);
         assert!(
             obs.summary.contains("shared screen changed"),

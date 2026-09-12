@@ -229,6 +229,66 @@ impl ProviderChoice {
     pub fn resolve() -> Option<Self> {
         Self::from_env().or_else(Self::from_settings)
     }
+
+    /// Why this configuration cannot run, judged before a request is made
+    /// (L-316).
+    ///
+    /// Model suitability was only ever enforced over a fetched catalogue in
+    /// the setup screen. A configuration saved before that catalogue could
+    /// refuse it is never judged again, so it survives the fix that was meant
+    /// to prevent it and fails at the provider instead — as a 404 naming an
+    /// endpoint the person has never heard of, fifteen seconds after they
+    /// asked for something. This is the same verdict, read where the stale
+    /// setting is actually used.
+    pub fn refusal(&self) -> Option<String> {
+        let (base_url, model) = match self {
+            ProviderChoice::Anthropic(c) => (&c.base_url, &c.model),
+            ProviderChoice::OpenAiCompat(c) => (&c.base_url, &c.model),
+        };
+        let origin = store::origin_of(base_url).ok()?;
+        models::refusal_without_a_catalogue(&origin, model)
+            .map(|why| format!("{why} Open Lilypad Settings on the Mac to change the model."))
+    }
+}
+
+/// What one model turn cost, read from whichever `usage` shape the endpoint
+/// sent (L-319).
+///
+/// Token spend was never measured, only reasoned about. A run's cost is the
+/// sum of every turn's input, and the input is the whole transcript again each
+/// time, so the number that matters is not one anybody can estimate from the
+/// task — it has to be read off the responses. Both dialects report it and
+/// neither was being looked at.
+///
+/// Returns `None` when the endpoint reported nothing, which is ordinary for
+/// local servers: a missing count is not a zero count, and logging "0 tokens"
+/// would be worse than logging nothing.
+pub(crate) fn usage_line(body: &serde_json::Value) -> Option<String> {
+    let usage = body.get("usage")?;
+    let n = |key: &str| usage.get(key).and_then(|v| v.as_u64());
+    // Anthropic Messages, then OpenAI chat-completions.
+    let input = n("input_tokens").or_else(|| n("prompt_tokens"))?;
+    let output = n("output_tokens")
+        .or_else(|| n("completion_tokens"))
+        .unwrap_or(0);
+    let cached = n("cache_read_input_tokens").or_else(|| {
+        usage
+            .get("prompt_tokens_details")
+            .and_then(|d| d.get("cached_tokens"))
+            .and_then(|v| v.as_u64())
+    });
+    let written = n("cache_creation_input_tokens");
+    let mut line = format!("tokens in {input} out {output}");
+    if let Some(cached) = cached {
+        line.push_str(&format!(" (cache read {cached}"));
+        match written {
+            Some(written) => line.push_str(&format!(", written {written})")),
+            None => line.push(')'),
+        }
+    } else if let Some(written) = written {
+        line.push_str(&format!(" (cache written {written})"));
+    }
+    Some(line)
 }
 
 /// Transient provider statuses worth retrying: rate limits (429) and server
@@ -327,7 +387,14 @@ lowest-risk tool. After each tool runs you receive its result; decide the \
 next single step from there. Never claim a step succeeded before its result \
 comes back. When the task is fully done, call `finish` with a short summary. \
 Do not ask the user questions — act, and rely on the approval prompts for \
-anything consequential.";
+anything consequential.\n\
+Every press and every URL asks the person to approve it on their phone, so \
+reach the goal in as few of those as the task allows. To get to a web page, \
+call `open_url` once with the full address; do not open a browser and press \
+your way there. A page that updates itself can invalidate an approval before \
+it is used, so if a press is refused because the screen changed, do not \
+simply propose the same press again — use a direct tool if one fits, or \
+`finish` with `needs_input` and say what you need.";
 
 /// The full agent toolset for a provider with the given capabilities. The
 /// vision tool (`take_screenshot`) is advertised ONLY when the model accepts
@@ -384,7 +451,9 @@ fn base_tools() -> Vec<ToolSpec> {
     let mut tools = vec![
         ToolSpec {
             name: "open_app",
-            description: "Launch or focus a macOS application by its name, e.g. \"Safari\".",
+            description: "Launch or focus a macOS application by its name, e.g. \"Safari\". \
+                          For a web page use open_url instead — it opens the browser as well, \
+                          in one step.",
             input_schema: json!({
                 "type": "object",
                 "properties": { "name": { "type": "string", "description": "Application name" } },
@@ -393,7 +462,9 @@ fn base_tools() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "open_url",
-            description: "Open a URL in the default browser.",
+            description: "Open a URL in the default browser. This is the whole of \"go to a \
+                          website\" — one step, one approval. Give the full address, including \
+                          https://.",
             input_schema: json!({
                 "type": "object",
                 "properties": { "url": { "type": "string", "description": "http(s) URL" } },
@@ -757,6 +828,7 @@ impl<P: LlmProvider + Send> Brain for LlmBrain<P> {
         }
 
         retain_recent_images(&mut self.messages);
+        retain_recent_trees(&mut self.messages);
 
         let reply = self
             .provider
@@ -808,6 +880,47 @@ impl<P: LlmProvider + Send> Brain for LlmBrain<P> {
                     }),
                 reason: FinishReason::Incomplete,
             }),
+        }
+    }
+}
+
+/// How many screen readings stay in the thread in full (L-317).
+///
+/// Two, for the same reason two screenshots do: the model needs what is on
+/// screen now and what was there before its last action. Anything older
+/// describes a screen that no longer exists.
+const RETAINED_TREES: usize = 2;
+
+/// Age out old accessibility readings the way images are aged out (L-317).
+///
+/// A reading is the largest thing in the thread by an order of magnitude — up
+/// to `tree::MAX_NODES` lines of roles, labels and values — and it is also the
+/// shortest-lived, because the ids in it only resolve against the most recent
+/// read. Yet every one stayed in the transcript for the life of the run and
+/// was re-sent on every later turn, so the cost of a run grew with the square
+/// of its length: ten readings in a twenty-step run are paid for ten times
+/// over. Nothing was gained for it — the executor rejects an id from any read
+/// but the last, so an older reading could only mislead.
+///
+/// The tool_result block itself stays, so both dialects keep valid call/result
+/// pairs; only its body is replaced.
+fn retain_recent_trees(messages: &mut [ChatMessage]) {
+    let mut kept = 0;
+    for message in messages.iter_mut().rev() {
+        for block in message.blocks.iter_mut().rev() {
+            if let Block::ToolResult { content, .. } = block {
+                if !content.starts_with(crate::agent::ax::tree::OBSERVATION_PREFIX) {
+                    continue;
+                }
+                kept += 1;
+                if kept > RETAINED_TREES {
+                    *content = "[An earlier screen reading, no longer included. It described the \
+                                screen at that moment, and its element ids stopped being valid \
+                                when the screen was read again. Call read_ax_tree if you need \
+                                what is there now.]"
+                        .to_string();
+                }
+            }
         }
     }
 }
@@ -1300,6 +1413,146 @@ mod tests {
         );
         accepted.abort();
     }
+    /// L-317. A screen reading is the largest thing in the thread and the
+    /// shortest-lived. Every one of them used to be re-sent on every later
+    /// turn, so a run paid for its tenth reading ten times over.
+    #[test]
+    fn only_the_two_newest_screen_readings_are_still_sent() {
+        let reading = |i: usize| ChatMessage {
+            role: Role::User,
+            blocks: vec![Block::ToolResult {
+                tool_use_id: format!("read-{i}"),
+                content: format!(
+                    "{}  [0] AXWindow \"page {i}\"",
+                    crate::agent::ax::tree::OBSERVATION_PREFIX
+                ),
+                is_error: false,
+                image_base64: None,
+            }],
+        };
+        let mut messages: Vec<_> = (0..4).map(reading).collect();
+        // A result that is not a reading must be left completely alone.
+        messages.insert(
+            2,
+            ChatMessage {
+                role: Role::User,
+                blocks: vec![Block::ToolResult {
+                    tool_use_id: "press-1".into(),
+                    content: "pressed element [3]".into(),
+                    is_error: false,
+                    image_base64: None,
+                }],
+            },
+        );
+
+        retain_recent_trees(&mut messages);
+        retain_recent_trees(&mut messages); // idempotent
+
+        let bodies: Vec<&str> = messages
+            .iter()
+            .flat_map(|m| m.blocks.iter())
+            .map(|b| match b {
+                Block::ToolResult { content, .. } => content.as_str(),
+                _ => unreachable!(),
+            })
+            .collect();
+        let ids: Vec<&str> = messages
+            .iter()
+            .flat_map(|m| m.blocks.iter())
+            .map(|b| match b {
+                Block::ToolResult { tool_use_id, .. } => tool_use_id.as_str(),
+                _ => unreachable!(),
+            })
+            .collect();
+
+        assert!(!bodies[0].contains("page 0"), "oldest reading still sent");
+        assert!(!bodies[1].contains("page 1"), "second reading still sent");
+        assert_eq!(bodies[2], "pressed element [3]", "unrelated result touched");
+        assert!(bodies[3].contains("page 2"), "newest but one was dropped");
+        assert!(bodies[4].contains("page 3"), "newest was dropped");
+        // Every tool_result keeps its identity or the thread stops parsing.
+        assert_eq!(ids, ["read-0", "read-1", "press-1", "read-2", "read-3"]);
+    }
+
+    /// The pruner finds readings by the line the executor writes. If those two
+    /// ever disagree nothing is pruned and the only symptom is a larger bill,
+    /// so they are pinned to each other here.
+    #[test]
+    fn a_screen_reading_is_recognisable_to_the_pruner() {
+        let mut thread = vec![
+            ChatMessage {
+                role: Role::User,
+                blocks: vec![Block::ToolResult {
+                    tool_use_id: "read-0".into(),
+                    content: crate::agent::ax::tree::observation(&[]),
+                    is_error: false,
+                    image_base64: None,
+                }],
+            };
+            3
+        ];
+        retain_recent_trees(&mut thread);
+        match &thread[0].blocks[0] {
+            Block::ToolResult { content, .. } => assert!(
+                content.starts_with("[An earlier screen reading"),
+                "the pruner did not recognise what the executor writes: {content}"
+            ),
+            _ => unreachable!(),
+        }
+    }
+
+    /// L-316. Suitability was only ever enforced over a catalogue the setup
+    /// screen fetched, so a model saved before that catalogue could refuse it
+    /// stayed saved and failed at the provider instead.
+    #[test]
+    fn a_batch_only_model_is_refused_before_the_run_starts() {
+        let batch = {
+            let mut c = openai_compat::OpenAiCompatConfig::new("k", "google/gemini-3-flash:batch");
+            c.base_url = "https://openrouter.ai/api/v1".into();
+            ProviderChoice::OpenAiCompat(c)
+        };
+        let live = {
+            let mut c = openai_compat::OpenAiCompatConfig::new("k", "google/gemini-3-flash");
+            c.base_url = "https://openrouter.ai/api/v1".into();
+            ProviderChoice::OpenAiCompat(c)
+        };
+        let refusal = batch.refusal().expect("a batch-only model cannot run");
+        assert!(refusal.contains("without the :batch ending"), "{refusal}");
+        assert!(refusal.contains("Lilypad Settings"), "{refusal}");
+        assert_eq!(live.refusal(), None);
+
+        // A colon is ordinary elsewhere — `llama3.1:8b` on a local server is a
+        // tag, not a routing variant, and refusing it would be the same bug
+        // pointing the other way.
+        let mut local = openai_compat::OpenAiCompatConfig::new("none", "llama3.1:batch");
+        local.base_url = "http://localhost:11434/v1".into();
+        assert_eq!(ProviderChoice::OpenAiCompat(local).refusal(), None);
+    }
+
+    /// L-319. Both dialects report what a turn cost and neither was read.
+    #[test]
+    fn usage_is_read_from_either_dialect_and_absent_when_unreported() {
+        let anthropic = json!({ "usage": {
+            "input_tokens": 12345, "output_tokens": 67,
+            "cache_read_input_tokens": 12000, "cache_creation_input_tokens": 300 }});
+        let line = usage_line(&anthropic).expect("reported");
+        assert!(line.contains("in 12345"), "{line}");
+        assert!(line.contains("out 67"), "{line}");
+        assert!(line.contains("cache read 12000"), "{line}");
+        assert!(line.contains("written 300"), "{line}");
+
+        let openai = json!({ "usage": {
+            "prompt_tokens": 900, "completion_tokens": 20,
+            "prompt_tokens_details": { "cached_tokens": 512 } }});
+        let line = usage_line(&openai).expect("reported");
+        assert!(line.contains("in 900"), "{line}");
+        assert!(line.contains("cache read 512"), "{line}");
+
+        // A local server that reports nothing must not be logged as zero.
+        assert_eq!(usage_line(&json!({ "content": [] })), None);
+        assert_eq!(usage_line(&json!({ "usage": { "total_tokens": 5 } })), None);
+    }
+
     #[test]
     fn recent_images_keep_before_after_and_all_tool_result_identities() {
         let mut messages: Vec<_> = (0..4)

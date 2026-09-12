@@ -387,6 +387,15 @@ impl AgentController {
         }
         let choice = choice.expect("authorize_command guaranteed a provider");
 
+        // A configuration this Mac can already say will not work is refused
+        // here rather than at the provider (L-316). The person gets the same
+        // sentence the setup screen would have shown, before anything on their
+        // screen moves.
+        if let Some(reason) = choice.refusal() {
+            Self::send_refusal(&peer, &run_id, &reason);
+            return;
+        }
+
         // A new command supersedes any in-flight run — but only once this
         // command is admitted. Cancelling before the gate would let a refused
         // command (view-only session, no provider) kill a legitimate run.

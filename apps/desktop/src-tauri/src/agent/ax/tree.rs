@@ -32,6 +32,16 @@ pub struct AxNode {
 pub const MAX_NODES: usize = 400;
 pub const MAX_DEPTH: usize = 12;
 
+/// The opening line of a `read_ax_tree` observation.
+///
+/// A contract between the one place that writes a screen reading
+/// (`executor::ax_exec`) and the one place that ages them out of the model
+/// thread (`llm::retain_recent_trees`, L-317). A constant rather than a
+/// literal in each, so the two cannot drift apart silently — if they did, the
+/// readings would simply never be pruned and the only symptom would be a
+/// larger bill.
+pub const OBSERVATION_PREFIX: &str = "Accessibility tree:\n";
+
 // ── what makes an approval still apply (L-272) ───────────────────────────
 //
 // Approval used to be re-checked by comparing the whole flattened tree for
@@ -106,6 +116,13 @@ fn clip(s: &str) -> String {
         let truncated: String = one_line.chars().take(CAP).collect();
         format!("{truncated}…")
     }
+}
+
+/// The whole observation a `read_ax_tree` returns: the prefix the thread
+/// pruner looks for, then the tree. One function so the producer and
+/// `OBSERVATION_PREFIX` cannot drift apart.
+pub fn observation(nodes: &[AxNode]) -> String {
+    format!("{OBSERVATION_PREFIX}{}", serialize(nodes))
 }
 
 /// Render a flattened tree as compact, indented text for the model. Each line:

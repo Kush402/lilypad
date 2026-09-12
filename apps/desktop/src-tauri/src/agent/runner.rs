@@ -343,6 +343,18 @@ where
         class: Option<ToolClass>,
         state: StepState,
     ) {
+        let summary: String = summary.into();
+        // The step feed dies with the phone connection, and it was the only
+        // record a run ever left (L-320). A whole session of actions — what
+        // was proposed, what was held, what the person decided — vanished the
+        // moment the DataChannel closed, which is exactly when somebody wants
+        // to know what happened. The same line the phone gets now also goes to
+        // this Mac's log.
+        log::info!(
+            target: "lilypad::agent",
+            "run {run_id} step {step_id}: {kind:?} {state:?}{} — {summary}",
+            class.map(|c| format!(" [{c:?}]")).unwrap_or_default(),
+        );
         // A closed receiver just means the phone went away; the caller will
         // observe the run ending. Dropping the message is correct here.
         let _ = self.steps_tx.send(AgentOutbound::step(
@@ -504,6 +516,11 @@ where
                     // generic label: "Run shell script" is the same sentence
                     // for a script that lists a directory and one that uploads
                     // it. Derived from the very action that will run.
+                    log::info!(
+                        target: "lilypad::agent",
+                        "run {run_id} step {step_id}: waiting for approval [{class:?}] — {}",
+                        approval.purpose,
+                    );
                     let _ = self.steps_tx.send(AgentOutbound::held_step(
                         run_id,
                         &step_id,

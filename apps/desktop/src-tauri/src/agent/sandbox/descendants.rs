@@ -470,6 +470,20 @@ mod tests {
             .spawn()
             .expect("spawn namer");
         let namer_pid = namer.id() as i32;
+        // `spawn` returns once the fork is issued, not once the child has
+        // exec’d — until it does, its argv is not yet the one this test is
+        // about, and the scan below truthfully reports a clean run (L-314).
+        // A fixed sleep is the wrong instrument: the window is as wide as the
+        // machine is busy, which is why this only ever failed inside the full
+        // suite and never alone. Wait for the evidence itself to exist.
+        let visible = std::time::Instant::now();
+        while argv_mentions(&dir) != Some(true) {
+            assert!(
+                visible.elapsed() < Duration::from_secs(10),
+                "the process that names the run never became visible to the scan"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
 
         let mut mine = Command::new("/bin/sh")
             .arg("-c")

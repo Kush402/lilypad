@@ -150,7 +150,13 @@ impl MediaPipeline {
             .spawn(move || {
                 let mut frame_no: u64 = 0;
                 let mut next_tick = Instant::now();
-                let log_every = fps as u64; // ~1s
+                // Once every 30s, not once a second (L-321). A session logs
+                // one line per second for its whole life; 1341 of the 1945
+                // lines in a real 90-minute log were this snapshot, and the
+                // agent run that session was there to diagnose was four lines
+                // buried inside them. The counters are cumulative, so a
+                // coarser cadence loses nothing but the noise.
+                let log_every = fps as u64 * 30;
                 let window_every = (fps as u64 * METRICS_WINDOW_SECS).max(1);
                 // Set when a sample was dropped on a full queue: the receiver
                 // is now missing a reference frame, so deltas would smear until

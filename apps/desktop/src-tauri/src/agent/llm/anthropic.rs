@@ -136,6 +136,40 @@ fn block_to_json(block: &Block) -> Value {
     }
 }
 
+/// Mark the thread so the provider can serve the repeated part from its cache
+/// (L-318).
+///
+/// An agent run sends the whole conversation again on every step: the system
+/// prompt, every tool definition, and every prior action and result. Step
+/// twenty re-sends nineteen steps' worth of text that has not changed since
+/// step nineteen, so the input billed for a run grows with the square of its
+/// length. A twenty-step run over a few screen readings is a large number
+/// reached entirely by repetition.
+///
+/// Two breakpoints, which is what the shape of the request wants:
+///
+///   1. **The system prompt.** Tools are sent before it, so one breakpoint
+///      here covers the tool definitions as well. This half never changes for
+///      the life of a run — or between runs within the cache's lifetime.
+///   2. **The end of the thread.** Rolling: what is marked on this request is
+///      the prefix the *next* request reuses, which is every step so far.
+///
+/// Steps are seconds apart, well inside the cache's lifetime, so the second
+/// breakpoint hits on every turn after the first.
+fn cache_the_thread(body: &mut Value) {
+    body["system"][0]["cache_control"] = json!({ "type": "ephemeral" });
+    if let Some(last) = body
+        .get_mut("messages")
+        .and_then(|m| m.as_array_mut())
+        .and_then(|m| m.last_mut())
+        .and_then(|m| m.get_mut("content"))
+        .and_then(|c| c.as_array_mut())
+        .and_then(|c| c.last_mut())
+    {
+        last["cache_control"] = json!({ "type": "ephemeral" });
+    }
+}
+
 /// Build the JSON request body. Pure.
 pub fn build_body(
     system: &str,
@@ -166,10 +200,12 @@ pub fn build_body(
     let mut body = json!({
         "model": model,
         "max_tokens": max_tokens,
-        "system": system,
+        // An array, not a bare string, so `cache_the_thread` can mark it.
+        "system": [{ "type": "text", "text": system }],
         "messages": msgs,
         "tools": tool_defs,
     });
+    cache_the_thread(&mut body);
     if !tool_defs.is_empty() {
         // One action per step (L-269); see the note on `parse_reply`.
         body["tool_choice"] = json!({ "type": "auto", "disable_parallel_tool_use": true });
@@ -303,6 +339,9 @@ impl LlmProvider for AnthropicProvider {
                 return Err(super::http::classify(status.as_u16(), &raw).into());
             }
             let json = super::http::parse_success(&raw)?;
+            if let Some(usage) = super::usage_line(&json) {
+                log::info!(target: "lilypad::agent", "model turn: {usage}");
+            }
             return parse_reply(&json);
         }
     }
@@ -360,6 +399,56 @@ mod tests {
     fn the_request_disables_parallel_tool_use() {
         let body = build_body(SYSTEM_PROMPT, &[user("t")], &base_tools(), "m", 512);
         assert_eq!(body["tool_choice"]["disable_parallel_tool_use"], true);
+    }
+
+    /// L-318. An agent run re-sends the whole conversation on every step, so
+    /// the input billed for a run grows with the square of its length unless
+    /// the repeated part is cached.
+    #[test]
+    fn the_repeated_prefix_carries_cache_breakpoints() {
+        let messages = vec![
+            ChatMessage::user_text("Task: open a window"),
+            ChatMessage {
+                role: Role::Assistant,
+                blocks: vec![Block::Text("thinking".into())],
+            },
+            ChatMessage {
+                role: Role::User,
+                blocks: vec![Block::ToolResult {
+                    tool_use_id: "1".into(),
+                    content: "ok".into(),
+                    is_error: false,
+                    image_base64: None,
+                }],
+            },
+        ];
+        let body = build_body("be useful", &messages, &base_tools(), "claude-x", 512);
+
+        // Tools are sent before the system prompt, so one breakpoint here
+        // covers both halves of the static prefix.
+        assert_eq!(
+            body["system"][0]["cache_control"]["type"], "ephemeral",
+            "the static prefix is not cached: {}",
+            body["system"]
+        );
+        assert_eq!(body["system"][0]["text"], "be useful");
+
+        // Rolling: what is marked now is the prefix the next step reuses.
+        let last = body["messages"].as_array().unwrap().last().unwrap();
+        let last_block = last["content"].as_array().unwrap().last().unwrap();
+        assert_eq!(
+            last_block["cache_control"]["type"], "ephemeral",
+            "the conversation so far is not cached: {last}"
+        );
+        // Nothing else is marked — Anthropic allows only a few breakpoints.
+        let marked = body["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|m| m["content"].as_array().unwrap())
+            .filter(|b| !b["cache_control"].is_null())
+            .count();
+        assert_eq!(marked, 1, "more breakpoints than intended");
     }
 
     #[test]

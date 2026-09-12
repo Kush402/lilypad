@@ -293,6 +293,27 @@ pub fn publishes_parameters(origin: &str) -> bool {
     origin.ends_with("://openrouter.ai")
 }
 
+/// What is known against this model id from the id and its destination alone —
+/// no catalogue, no request (L-316).
+///
+/// Everything else in this module judges a model against a catalogue the setup
+/// screen fetched. That is enforcement in the *list*, and a list is only
+/// consulted by someone standing in front of it: a model saved before the
+/// catalogue could refuse it stays saved, and the run that uses it fails at the
+/// provider. That happened on a released build — `agent-settings.json` held a
+/// `:batch` id and the run died with Batch API 404 fifteen seconds after the
+/// phone rang.
+///
+/// A routing variant is the one verdict that needs nothing fetched, because it
+/// is in the id. So it is also the one that can be enforced where the run
+/// starts, which is the only place a stale setting is ever read again.
+pub fn refusal_without_a_catalogue(origin: &str, id: &str) -> Option<String> {
+    if !publishes_parameters(origin) {
+        return None;
+    }
+    batch_variant(id).map(|(_, why)| why)
+}
+
 /// Parse OpenRouter's `/models` response into its `supported_parameters`.
 ///
 /// Read from the catalogue response the setup screen already fetched: the
@@ -354,6 +375,34 @@ pub fn lookup(id: &str, catalogue: &Catalogue) -> ModelOption {
 
 #[cfg(test)]
 mod tests {
+
+    /// L-316. The one verdict that needs nothing fetched, so the one that can
+    /// be enforced where a stale setting is read again.
+    #[test]
+    fn the_catalogue_free_verdict_is_the_routing_variant_and_only_that() {
+        let why = refusal_without_a_catalogue(
+            "https://openrouter.ai",
+            "google/gemini-3-flash-preview:batch",
+        )
+        .expect("a batch route cannot answer a live request");
+        assert!(why.contains("without the :batch ending"), "{why}");
+
+        // The same id without the variant, and an unrelated id, say nothing.
+        assert_eq!(
+            refusal_without_a_catalogue("https://openrouter.ai", "google/gemini-3-flash-preview"),
+            None
+        );
+        assert_eq!(
+            refusal_without_a_catalogue("https://openrouter.ai", "anthropic/claude-opus-4-8:free"),
+            None
+        );
+        // A colon means something else everywhere else — `llama3.1:8b` is a
+        // tag on a local server, and this must never speak for that endpoint.
+        assert_eq!(
+            refusal_without_a_catalogue("http://localhost:11434", "llama3.1:batch"),
+            None
+        );
+    }
     use super::*;
 
     /// The origin every Google case below is about.

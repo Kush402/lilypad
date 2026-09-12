@@ -376,6 +376,9 @@ impl LlmProvider for OpenAiCompatProvider {
                 return Err(super::http::classify(status.as_u16(), &raw).into());
             }
             let json = super::http::parse_success(&raw)?;
+            if let Some(usage) = super::usage_line(&json) {
+                log::info!(target: "lilypad::agent", "model turn: {usage}");
+            }
             return parse_reply(&json);
         }
     }
