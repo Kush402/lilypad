@@ -6,6 +6,10 @@ All notable changes to Lilypad are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.38] — 2026-09-11
+
+Ask setup, after a real attempt to configure it got stuck twice.
+
 ### Fixed
 
 - **Setting up Ask is now paste your key and pick a model.** Lilypad
