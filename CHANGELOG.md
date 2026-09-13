@@ -6,6 +6,10 @@ All notable changes to Lilypad are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.40] — 2026-09-13
+
+Connections that went stale, and the five separate reasons they did.
+
 ### Fixed
 
 - **Rapid reconnects no longer leave an older session running behind the new
