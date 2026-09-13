@@ -7,6 +7,7 @@ import {
   type SignalingMessage,
   type SessionScope,
   type CaptureMode,
+  type AnswerCapability,
 } from '@lilypad/protocol';
 import { createSignalingSocket } from './lanTls';
 import { appError, ClassifiedError } from './errors';
@@ -213,13 +214,19 @@ export class MobileSignaling {
     });
   }
 
-  answer(sdp: string): void {
+  answer(sdp: string, capabilities: AnswerCapability[] = []): void {
     this.emit({
       type: 'answer',
       roomId: this.roomId,
       from: 'mobile',
       ts: Date.now(),
-      payload: { type: 'answer', sdp },
+      payload: {
+        type: 'answer',
+        sdp,
+        // Omit, rather than send an empty claim. On the desktop both shapes
+        // mean unsupported, which is the fail-closed legacy default.
+        ...(capabilities.length > 0 ? { capabilities } : {}),
+      },
     });
   }
 

@@ -1,4 +1,4 @@
-import { SIGNALING_OPEN_TIMEOUT_MS } from '@lilypad/protocol';
+import { ANSWERER_PEER_REPLACEMENT_CAPABILITY, SIGNALING_OPEN_TIMEOUT_MS } from '@lilypad/protocol';
 import { MobileSignaling, type SignalingLifecycleEvent } from './signaling';
 import { toAppError } from './errors';
 
@@ -171,6 +171,21 @@ describe('MobileSignaling', () => {
       role: 'mobile',
       deviceId: 'mobile-device-1',
       rejoin: true,
+    });
+  });
+
+  it('puts explicitly supported answer capabilities on the wire', async () => {
+    const sig = new MobileSignaling('wss://x', 'room1', () => {});
+    const p = sig.connect();
+    lastSocket().open();
+    await p;
+
+    sig.answer('v=0', [ANSWERER_PEER_REPLACEMENT_CAPABILITY]);
+
+    expect(lastSocket().sentType('answer')?.payload).toEqual({
+      type: 'answer',
+      sdp: 'v=0',
+      capabilities: [ANSWERER_PEER_REPLACEMENT_CAPABILITY],
     });
   });
 

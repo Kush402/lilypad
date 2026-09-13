@@ -1,7 +1,7 @@
 import React from 'react';
 import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react-native';
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react-native';
 import { DeviceListScreen } from './DeviceListScreen';
 import { loadPairs, reconcilePairs, touchPair, type PairedDesktop } from '../lib/pairs';
 import { requestConnectForPair } from '../lib/api';
@@ -264,5 +264,40 @@ describe('reopen while the Mac is still Active', () => {
     await waitFor(() => expect(clearResumeHandle).toHaveBeenCalled());
     expect(screen.queryByText(/viewer-pin:/)).toBeNull();
     expect(await screen.findByText('Kush’s MacBook')).toBeTruthy();
+  });
+
+  it('does not let a late cold-start resume supersede an explicit Ring', async () => {
+    let resolveHandle!: (handle: { desktopDeviceId: string }) => void;
+    loadResumeHandle.mockReturnValue(
+      new Promise((resolve) => {
+        resolveHandle = resolve;
+      }),
+    );
+    (loadPairs as jest.Mock).mockResolvedValue([pair()]);
+    (requestConnectForPair as jest.Mock)
+      .mockResolvedValueOnce({
+        roomId: 'room-explicit',
+        signalingUrl: 'wss://api.takedia.com/ws/signal',
+        scopes: ['view', 'control'],
+      })
+      .mockResolvedValueOnce({
+        roomId: 'room-stale-resume',
+        signalingUrl: 'wss://api.takedia.com/ws/signal',
+        scopes: ['view', 'control'],
+        resumed: true,
+      });
+    renderScreen();
+
+    fireEvent.press(await screen.findByText('Connect'));
+    expect(await screen.findByText(/room:room-explicit/)).toBeTruthy();
+
+    await act(async () => {
+      resolveHandle({ desktopDeviceId: 'desktop-1' });
+      await Promise.resolve();
+    });
+
+    expect(requestConnectForPair).toHaveBeenCalledTimes(1);
+    expect(screen.getByText(/room:room-explicit/)).toBeTruthy();
+    expect(screen.queryByText(/room:room-stale-resume/)).toBeNull();
   });
 });

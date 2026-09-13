@@ -29,6 +29,16 @@ const MAX_REASON_LEN = 512;
  * truncated clipboard sync is worse than a rejected one). */
 const MAX_CLIPBOARD_LEN = 64 * 1024;
 
+/**
+ * The answerer can retire its current `RTCPeerConnection` when a later offer
+ * carries a new DTLS fingerprint. Missing means unsupported: older phones did
+ * not do this safely, so a desktop must never infer support from SDP success.
+ */
+export const ANSWERER_PEER_REPLACEMENT_CAPABILITY = 'answerer-peer-replacement-v1' as const;
+export const AnswerCapabilitySchema = z.literal(ANSWERER_PEER_REPLACEMENT_CAPABILITY);
+export type AnswerCapability = z.infer<typeof AnswerCapabilitySchema>;
+const MAX_ANSWER_CAPABILITIES = 8;
+
 const SdpSchema = z.object({
   type: z.enum(['offer', 'answer']),
   sdp: z.string().max(MAX_SDP_LEN),
@@ -109,7 +119,10 @@ const offer = z.object({
 const answer = z.object({
   type: z.literal('answer'),
   ...envelope,
-  payload: SdpSchema,
+  payload: SdpSchema.extend({
+    /** Optional for wire compatibility; absence deliberately fails closed. */
+    capabilities: z.array(AnswerCapabilitySchema).max(MAX_ANSWER_CAPABILITIES).optional(),
+  }),
 });
 
 const iceCandidate = z.object({

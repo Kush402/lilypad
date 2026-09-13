@@ -24,11 +24,55 @@ use crate::state::{AppState, AppStateDto, PendingRequest, SessionStatus, SharedS
 /// before starting anyway — bounds a stuck old teardown so a takeover can't
 /// hang indefinitely.
 const SESSION_TEARDOWN_WAIT: Duration = Duration::from_secs(3);
+/// Once graceful teardown expires, arm cancellation and briefly let owned
+/// destructors run. If a synchronous library poll/drop still has not returned,
+/// the already-aborted handle is detached so the new room is never held
+/// indefinitely; cancellation remains armed for the stale task's next yield.
+const SESSION_CANCEL_WAIT: Duration = Duration::from_millis(100);
 /// How long `create_pairing` waits for the session runner to register in the
 /// minted room before it will show a scannable QR. A code the Mac is not
 /// seated in is a phone that waits forever on "Waiting for approval…" with no
 /// Approve on this side — proven 2026-08-31 (three `201`s, no desktop seat).
 const PAIRING_SEAT_WAIT: Duration = Duration::from_secs(8);
+
+/// A rapid third takeover can cancel the task that is waiting for the first
+/// runner to retire. Tokio detaches a task when its bare `JoinHandle` is
+/// dropped, so keep the nested runner abort-on-drop as well.
+struct SupersededSessionTask(tauri::async_runtime::JoinHandle<()>);
+
+impl Drop for SupersededSessionTask {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// Give the previous runner a bounded graceful teardown, then cancel it.
+///
+/// Dropping a Tokio/Tauri `JoinHandle` only detaches the task. The old timeout
+/// path therefore let a superseded negotiation keep running after the new room
+/// had been published; a real trace showed it sending its offer 31 seconds
+/// after supersession. Once the grace expires the new room owns the product,
+/// so the old runner must no longer be able to capture, signal or emit events.
+async fn retire_previous_session(mut task: SupersededSessionTask, grace: Duration) {
+    if tokio::time::timeout(grace, &mut task.0).await.is_err() {
+        log::warn!(
+            target: "lilypad::session",
+            "previous session teardown exceeded {}ms — cancelling superseded runner",
+            grace.as_millis()
+        );
+        task.0.abort();
+        if tokio::time::timeout(SESSION_CANCEL_WAIT, &mut task.0)
+            .await
+            .is_err()
+        {
+            log::warn!(
+                target: "lilypad::session",
+                "cancelled previous session did not stop within {}ms — continuing takeover",
+                SESSION_CANCEL_WAIT.as_millis()
+            );
+        }
+    }
+}
 
 type SeatNotify = Arc<std::sync::Mutex<Option<oneshot::Sender<Result<(), String>>>>>;
 
@@ -377,6 +421,10 @@ fn spawn_session_runner_inner(
         offered_scopes,
         control_tx,
         |old_task| {
+            // Wrap BEFORE spawning the new task. If another room supersedes
+            // this one before its future is ever polled, dropping that future
+            // must still abort the older runner rather than detach it.
+            let old_task = old_task.map(SupersededSessionTask);
             // Only a successful claim may start a forwarder. Otherwise a rejected
             // same-room ring's closed stream could end the runner already there.
             tauri::async_runtime::spawn(forward_session_events(event_rx, move |ev| {
@@ -407,10 +455,10 @@ fn spawn_session_runner_inner(
                 // Wait for the PREVIOUS session to fully tear down (its media.stop()
                 // joins the capture thread) before this one starts, so screen capture
                 // is never double-opened during a trusted takeover. Bounded so a stuck
-                // old teardown can't hang the takeover — after the timeout we proceed
-                // and accept the pre-existing brief-overlap behavior as the fallback.
+                // old teardown can't hang the takeover; after the timeout cancellation
+                // makes the ownership transfer real instead of detaching the old task.
                 if let Some(old) = old_task {
-                    let _ = tokio::time::timeout(SESSION_TEARDOWN_WAIT, old).await;
+                    retire_previous_session(old, SESSION_TEARDOWN_WAIT).await;
                 }
                 if let Err(e) = run_session(
                     signaling_url,
@@ -2727,6 +2775,78 @@ mod tests {
             }
             current_task.abort();
         }
+    }
+
+    #[tokio::test]
+    async fn a_superseded_runner_is_cancelled_after_its_teardown_grace() {
+        let old = tauri::async_runtime::spawn(std::future::pending::<()>());
+        let old_task = old.inner().abort_handle();
+
+        retire_previous_session(SupersededSessionTask(old), Duration::from_millis(1)).await;
+
+        assert!(
+            old_task.is_finished(),
+            "timing out a JoinHandle must cancel it, not detach a stale runner"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_rapid_third_takeover_cannot_detach_the_oldest_runner() {
+        let oldest = tauri::async_runtime::spawn(std::future::pending::<()>());
+        let oldest_task = oldest.inner().abort_handle();
+        let retirement = tauri::async_runtime::spawn(retire_previous_session(
+            SupersededSessionTask(oldest),
+            Duration::from_secs(60),
+        ));
+
+        retirement.abort();
+        let _ = retirement.await;
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !oldest_task.is_finished() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("cancelling a nested retirement must also cancel its runner");
+    }
+
+    #[tokio::test]
+    async fn cancelling_an_uncooperative_runner_does_not_unbound_the_takeover() {
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let stale_work_ran = Arc::new(AtomicBool::new(false));
+        let stale_work_ran_in_task = Arc::clone(&stale_work_ran);
+        let old = tauri::async_runtime::spawn(async move {
+            started_tx.send(()).unwrap();
+            // Model a task stuck in a synchronous library poll/drop. Tokio
+            // cannot observe abort until this poll reaches its next yield.
+            std::thread::sleep(Duration::from_millis(500));
+            tokio::task::yield_now().await;
+            stale_work_ran_in_task.store(true, Ordering::SeqCst);
+        });
+        let old_task = old.inner().abort_handle();
+        started_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("uncooperative runner should start");
+
+        let started = std::time::Instant::now();
+        retire_previous_session(SupersededSessionTask(old), Duration::from_millis(1)).await;
+        assert!(
+            started.elapsed() < Duration::from_millis(300),
+            "an aborted but uncooperative runner must not hold the takeover indefinitely"
+        );
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !old_task.is_finished() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the abort must take effect when the stale runner next yields");
+        assert!(
+            !stale_work_ran.load(Ordering::SeqCst),
+            "the aborted runner must not resume stale work after its blocking poll"
+        );
     }
 
     #[tokio::test]

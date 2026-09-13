@@ -422,6 +422,10 @@ pub struct SdpPayload {
     pub sdp_type: SdpType,
     #[serde(deserialize_with = "deserialize_sdp")]
     pub sdp: String,
+    /// Optional answerer features. Older phones omit this field; unknown
+    /// values are ignored by the desktop rather than treated as support.
+    #[serde(default)]
+    pub capabilities: Vec<String>,
 }
 
 #[derive(Deserialize, Debug, Clone)]

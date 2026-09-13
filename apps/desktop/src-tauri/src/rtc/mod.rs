@@ -101,17 +101,64 @@ pub const PATH_RELAY: &str = "relay";
 /// reports `direct` rather than guessing `lan`, because claiming a session is
 /// local when it might be relayed is the wrong way to be wrong.
 pub fn classify_candidate_pair(pair: &str) -> &'static str {
-    if pair.contains("relay") {
+    let sides: Vec<&str> = pair.split("<->").collect();
+    if sides.len() != 2 {
+        return PATH_DIRECT;
+    }
+    if sides
+        .iter()
+        .any(|side| side.split_whitespace().any(|field| field == "relay"))
+    {
         return PATH_RELAY;
     }
-    // `host` on BOTH sides is the only combination that means "neither side
-    // needed to go outside its own network". One host plus one server-reflexive
-    // is an ordinary internet connection.
-    let sides: Vec<&str> = pair.split("<->").collect();
-    if sides.len() == 2 && sides.iter().all(|side| side.contains("host")) {
+
+    // A host candidate is the address of an interface, not proof that the
+    // interface is local-only. In particular, iOS advertises globally routed
+    // IPv6 addresses as host candidates. Two such addresses on different /64s
+    // are an internet path, and treating them as LAN suppresses the relay-only
+    // recovery used when RTP works but SCTP never opens.
+    let addresses = candidate_host_address(sides[0]).zip(candidate_host_address(sides[1]));
+    if addresses.is_some_and(|(left, right)| same_local_network(left, right)) {
         return PATH_LAN;
     }
     PATH_DIRECT
+}
+
+/// Pull the address out of one side of webrtc-rs's candidate-pair `Display`.
+/// Unknown/mDNS/future formats deliberately return `None`: the classifier's
+/// safe fallback is `direct`, which keeps recovery enabled.
+fn candidate_host_address(side: &str) -> Option<std::net::IpAddr> {
+    let mut fields = side.split_whitespace();
+    fields.find(|field| *field == "host")?;
+    let endpoint = fields.next()?;
+    let (address, port) = endpoint.rsplit_once(':')?;
+    port.parse::<u16>().ok()?;
+    let address = address.trim_matches(['[', ']']);
+    // A link-local IPv6 address may carry an interface zone (`%en0`).
+    address
+        .split('%')
+        .next()
+        .and_then(|address| address.parse().ok())
+}
+
+fn same_local_network(left: std::net::IpAddr, right: std::net::IpAddr) -> bool {
+    match (left, right) {
+        (std::net::IpAddr::V4(left), std::net::IpAddr::V4(right)) => {
+            let left = left.octets();
+            let right = right.octets();
+            // A selected host↔host pair in one IPv4 /24 is strong evidence of
+            // the local network. Anything less certain is conservatively
+            // direct so a dead DataChannel can still fall back to TURN.
+            left[..3] == right[..3]
+        }
+        (std::net::IpAddr::V6(left), std::net::IpAddr::V6(right)) => {
+            // SLAAC subnets are /64. This covers global, ULA and link-local
+            // peers on the same network while rejecting the real failure
+            // shape: globally routed host candidates from different /64s.
+            left.segments()[..4] == right.segments()[..4]
+        }
+        _ => false,
+    }
 }
 
 impl From<IceServerConfig> for RTCIceServer {
@@ -546,6 +593,30 @@ mod tests {
         assert_eq!(
             classify_candidate_pair(
                 "(local) udp host 10.0.0.2:54321 <-> (remote) udp host 10.0.0.7:51000"
+            ),
+            PATH_LAN
+        );
+    }
+
+    #[test]
+    fn globally_routed_ipv6_hosts_on_different_networks_are_direct() {
+        // A phone can expose its public IPv6 address as a `host` candidate.
+        // Candidate TYPE therefore does not prove the peers share a LAN. This
+        // is the shape selected in the failed real-device sessions where RTP
+        // flowed but SCTP never opened.
+        assert_eq!(
+            classify_candidate_pair(
+                "(local) udp host 2001:db8:1111:1::2:54321 <-> (remote) udp host 2001:db8:2222:2::7:51000"
+            ),
+            PATH_DIRECT
+        );
+    }
+
+    #[test]
+    fn globally_routed_ipv6_hosts_on_the_same_subnet_are_lan() {
+        assert_eq!(
+            classify_candidate_pair(
+                "(local) udp host 2001:db8:1111:1::2:54321 <-> (remote) udp host 2001:db8:1111:1::7:51000"
             ),
             PATH_LAN
         );

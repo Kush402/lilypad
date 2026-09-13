@@ -316,6 +316,11 @@ export function ViewerScreen({ route, navigation }: Props) {
             hiddenInputRef.current?.blur();
             Keyboard.dismiss();
             setKeyboardOpen(false);
+            // A MediaStream object stays truthy after its PeerConnection is
+            // closed. Keeping it mounted hides ViewerPlaceholder entirely,
+            // so a dead session showed a blank/stale last frame plus controls
+            // and never exposed the Reconnect button its terminal state owns.
+            setStream(null);
           }
           if (
             next === 'negotiating' ||
@@ -752,7 +757,7 @@ export function ViewerScreen({ route, navigation }: Props) {
   // honest if the OS dismisses the keyboard by other means.
   useEffect(() => {
     const sub = Keyboard.addListener('keyboardDidHide', () => setKeyboardOpen(false));
-    return () => sub.remove();
+    return () => sub?.remove?.();
   }, []);
 
   const onComposedChangeText = useCallback((next: string) => {
@@ -781,7 +786,7 @@ export function ViewerScreen({ route, navigation }: Props) {
       if (next !== 'active') stopControls();
     });
     return () => {
-      sub.remove();
+      sub?.remove?.();
       stopControls();
     };
   }, [applyIntents]);

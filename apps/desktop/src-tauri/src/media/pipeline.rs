@@ -41,11 +41,41 @@ const BITRATE_RETARGET_DEBOUNCE: Duration = Duration::from_millis(250);
 /// `docs/audit/m3/streaming-media.md` Finding 14.
 const MAX_CONSECUTIVE_ENCODE_ERRORS: u32 = 5;
 
+/// A dead ScreenCaptureKit stream is often transient (display reconfiguration,
+/// GPU hiccup, or a system stop). Bound restart attempts so a permanently
+/// unavailable source still fails instead of looping forever.
+const MAX_CAPTURE_RESTARTS: u32 = 3;
+
 /// Pure decision extracted from the encode loop, mirroring
 /// `bitrate_retarget_due`'s pattern, so the threshold itself is directly
 /// unit-testable independent of the background thread.
 fn encode_error_budget_exhausted(consecutive_errors: u32) -> bool {
     consecutive_errors >= MAX_CONSECUTIVE_ENCODE_ERRORS
+}
+
+fn restart_capture_with_backoff(
+    capture_restarts: &mut u32,
+    stop: &AtomicBool,
+    mut start: impl FnMut() -> Result<()>,
+    mut sleep: impl FnMut(Duration),
+) -> bool {
+    while *capture_restarts < MAX_CAPTURE_RESTARTS {
+        *capture_restarts += 1;
+        sleep(Duration::from_millis(300u64 << (*capture_restarts - 1)));
+        if stop.load(Ordering::Relaxed) {
+            return false;
+        }
+        match start() {
+            Ok(()) => return true,
+            Err(restart_err) => {
+                log::error!(
+                    target: "lilypad::media",
+                    "capture restart failed (attempt {capture_restarts}/{MAX_CAPTURE_RESTARTS}): {restart_err}"
+                );
+            }
+        }
+    }
+    false
 }
 
 /// Windowed-metrics cadence, in seconds of stream time — matches the
@@ -189,7 +219,6 @@ impl MediaPipeline {
                 // genuinely broken source (permission revoked, display gone)
                 // still fails fast instead of freeze-looping.
                 let mut capture_restarts: u32 = 0;
-                const MAX_CAPTURE_RESTARTS: u32 = 3;
                 // The budget guards against a freeze-LOOP, not against a long
                 // session: macOS legitimately stops the stream on display
                 // reconfiguration (fullscreen video, resolution change) every
@@ -291,32 +320,22 @@ impl MediaPipeline {
                         Err(e) => {
                             log::error!(target: "lilypad::media", "capture failed: {e}");
                             last_capture_failure = Some(Instant::now());
-                            if capture_restarts >= MAX_CAPTURE_RESTARTS {
-                                break;
+                            if restart_capture_with_backoff(
+                                &mut capture_restarts,
+                                &s,
+                                || capture.start(),
+                                std::thread::sleep,
+                            ) {
+                                log::warn!(
+                                    target: "lilypad::media",
+                                    "capture restarted after failure (attempt {capture_restarts}/{MAX_CAPTURE_RESTARTS})"
+                                );
+                                // The receiver lost continuity — resync
+                                // with an IDR on the next encoded frame.
+                                recover_with_keyframe = true;
+                                continue;
                             }
-                            capture_restarts += 1;
-                            std::thread::sleep(Duration::from_millis(
-                                300u64 << (capture_restarts - 1),
-                            ));
-                            if s.load(Ordering::Relaxed) {
-                                break;
-                            }
-                            match capture.start() {
-                                Ok(()) => {
-                                    log::warn!(
-                                        target: "lilypad::media",
-                                        "capture restarted after failure (attempt {capture_restarts}/{MAX_CAPTURE_RESTARTS})"
-                                    );
-                                    // The receiver lost continuity — resync
-                                    // with an IDR on the next encoded frame.
-                                    recover_with_keyframe = true;
-                                    continue;
-                                }
-                                Err(restart_err) => {
-                                    log::error!(target: "lilypad::media", "capture restart failed: {restart_err}");
-                                    break;
-                                }
-                            }
+                            break;
                         }
                     };
                     m.frames_captured.fetch_add(1, Ordering::Relaxed);
@@ -565,5 +584,38 @@ mod tests {
         assert!(encode_error_budget_exhausted(
             MAX_CONSECUTIVE_ENCODE_ERRORS + 1
         ));
+    }
+
+    #[test]
+    fn failed_capture_starts_retry_until_the_existing_budget_succeeds() {
+        let stop = AtomicBool::new(false);
+        let mut capture_restarts = 0;
+        let mut start_calls = 0;
+        let mut backoffs = Vec::new();
+
+        let restarted = restart_capture_with_backoff(
+            &mut capture_restarts,
+            &stop,
+            || {
+                start_calls += 1;
+                if start_calls < 3 {
+                    anyhow::bail!("capture source is still unavailable");
+                }
+                Ok(())
+            },
+            |duration| backoffs.push(duration),
+        );
+
+        assert!(restarted, "the third allowed start should recover capture");
+        assert_eq!(start_calls, 3);
+        assert_eq!(capture_restarts, MAX_CAPTURE_RESTARTS);
+        assert_eq!(
+            backoffs,
+            vec![
+                Duration::from_millis(300),
+                Duration::from_millis(600),
+                Duration::from_millis(1_200),
+            ]
+        );
     }
 }

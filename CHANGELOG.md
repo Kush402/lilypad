@@ -6,6 +6,27 @@ All notable changes to Lilypad are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **Rapid reconnects no longer leave an older session running behind the new
+  one.** Superseded desktop work is now cancelled with a bounded handoff, so a
+  late offer from the previous room cannot take over a fresh connection.
+- **Remote control recovers on IPv6 paths that only look local.** Lilypad now
+  distinguishes same-network IPv6 from globally routed IPv6, and can rebuild
+  a stalled control channel over relay without disturbing working video.
+  Peer replacement is capability-gated, so an older phone keeps its current
+  video connection and receives a safe same-peer ICE restart instead.
+- **A closed signaling socket can no longer come back as an online ghost.** If
+  a browser or app disconnects while authorization is still in flight, its
+  queued frames and late authorization result are discarded immediately.
+- **Overlapping phone connection attempts now have one owner.** A newer offer,
+  an explicit Ring tap, or a terminal connection state retires stale native
+  work instead of answering twice, navigating twice, or leaving a dead frame
+  covering the Reconnect action.
+- **A transient ScreenCaptureKit source failure uses the full retry budget.**
+  Capture now retries with bounded backoff up to three times before ending the
+  session, instead of spending only the first attempt.
+
 ## [0.1.39] — 2026-09-12
 
 What one three-minute Ask session on v0.1.38 turned out to be doing.

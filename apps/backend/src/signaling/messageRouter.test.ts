@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import type { DeviceKind, SignalingMessage } from '@lilypad/protocol';
+import {
+  ANSWERER_PEER_REPLACEMENT_CAPABILITY,
+  SignalingMessageSchema,
+  type DeviceKind,
+  type SignalingMessage,
+} from '@lilypad/protocol';
 import type { Peer } from './peer.js';
 import { Room } from './room.js';
 import { MessageRouter } from './messageRouter.js';
@@ -233,6 +238,38 @@ describe('MessageRouter — offer/answer', () => {
     expect(room.fsmState()).toBe('connected');
     expect(room.isEstablished()).toBe(true);
     expect(actions).toEqual([{ kind: 'relay', to: 'desktop', msg: m }]);
+  });
+
+  it('preserves a validated answerer replacement capability when relaying cloud-side', () => {
+    const router = new MessageRouter();
+    const room = connectedSeatsRoom();
+    room.tryFsm('pairing');
+    room.tryFsm('waiting_approval');
+    room.tryFsm('connecting');
+    room.tryFsm('negotiating');
+    const parsed = SignalingMessageSchema.parse({
+      type: 'answer',
+      roomId: ROOM,
+      from: 'mobile',
+      ts: 0,
+      payload: {
+        type: 'answer',
+        sdp: 'v=0-ans',
+        capabilities: [ANSWERER_PEER_REPLACEMENT_CAPABILITY],
+      },
+    });
+
+    expect(router.route(room, 'mobile', parsed)).toEqual([
+      {
+        kind: 'relay',
+        to: 'desktop',
+        msg: expect.objectContaining({
+          payload: expect.objectContaining({
+            capabilities: [ANSWERER_PEER_REPLACEMENT_CAPABILITY],
+          }),
+        }),
+      },
+    ]);
   });
 
   it('answer arriving while the room is still idle: the illegal FSM transition is silently ignored (current, pre-existing behavior — not fixed by this decomposition), yet the relay and established-flag side effects still happen', () => {

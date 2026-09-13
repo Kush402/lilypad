@@ -43,7 +43,34 @@ export function DeviceListScreen({ navigation }: Props) {
   const [pairs, setPairs] = useState<PairedDesktop[]>([]);
   const [connecting, setConnecting] = useState<string | null>(null);
   const resumeAttempted = useRef(false);
+  // The cold-start resume and an explicit Ring share one ownership token.
+  // Without it, a slow Keychain read could finish after a tap, issue a second
+  // connect request, and navigate its older room over the one the user chose.
+  const connectionAttempt = useRef(0);
+  const connectingRef = useRef(false);
+  const mountedRef = useRef(true);
   const { session, signOut } = useSession();
+
+  useEffect(
+    () => () => {
+      mountedRef.current = false;
+      connectionAttempt.current += 1;
+      connectingRef.current = false;
+    },
+    [],
+  );
+
+  // DeviceList remains mounted underneath Viewer/Scanner. A response that
+  // completes after this screen loses focus no longer owns navigation.
+  useEffect(
+    () =>
+      navigation.addListener('blur', () => {
+        connectionAttempt.current += 1;
+        connectingRef.current = false;
+        setConnecting(null);
+      }),
+    [navigation],
+  );
   /**
    * Which backend "Your devices" asks.
    *
@@ -73,18 +100,25 @@ export function DeviceListScreen({ navigation }: Props) {
   useEffect(() => {
     if (resumeAttempted.current) return;
     resumeAttempted.current = true;
+    const attempt = ++connectionAttempt.current;
+    const current = () =>
+      mountedRef.current && connectionAttempt.current === attempt && !connectingRef.current;
     void (async () => {
       const handle = await loadResumeHandle();
-      if (!handle) return;
+      if (!current() || !handle) return;
       const local = await loadPairs();
+      if (!current()) return;
       const pair = local.find((p) => p.desktopDeviceId === handle.desktopDeviceId);
       if (!pair?.connectSecret) {
         await clearResumeHandle();
         return;
       }
+      if (!current()) return;
+      connectingRef.current = true;
       setConnecting(pair.desktopDeviceId);
       try {
         const res = await requestConnectForPair(pair, { resume: true });
+        if (!mountedRef.current || connectionAttempt.current !== attempt) return;
         if (!res.resumed) {
           await clearResumeHandle();
           return;
@@ -100,9 +134,17 @@ export function DeviceListScreen({ navigation }: Props) {
           rejoin: true,
         });
       } catch (e) {
-        if (toAppError(e).code === 'session_gone') await clearResumeHandle();
+        if (
+          mountedRef.current &&
+          connectionAttempt.current === attempt &&
+          toAppError(e).code === 'session_gone'
+        )
+          await clearResumeHandle();
       } finally {
-        setConnecting(null);
+        if (mountedRef.current && connectionAttempt.current === attempt) {
+          connectingRef.current = false;
+          setConnecting(null);
+        }
       }
     })();
   }, [navigation]);
@@ -154,9 +196,16 @@ export function DeviceListScreen({ navigation }: Props) {
 
   const connect = useCallback(
     async (pair: PairedDesktop) => {
+      // State does not disable the Pressable until React commits the next
+      // render. The ref closes the same-tick double-tap window immediately.
+      if (connectingRef.current) return;
+      connectingRef.current = true;
+      const attempt = ++connectionAttempt.current;
+      const current = () => mountedRef.current && connectionAttempt.current === attempt;
       setConnecting(pair.desktopDeviceId);
       try {
         const res = await requestConnectForPair(pair);
+        if (!current()) return;
         void touchPair(pair.desktopDeviceId).catch(() => {});
         navigation.navigate('Viewer', {
           roomId: res.roomId,
@@ -172,6 +221,7 @@ export function DeviceListScreen({ navigation }: Props) {
           signalingTlsPin: res.signalingTlsPin,
         });
       } catch (e) {
+        if (!current()) return;
         const err = toAppError(e);
         // A dead/changed backend address (an ephemeral dev tunnel that
         // rotated, a moved deployment) surfaces as server/network errors
@@ -183,7 +233,10 @@ export function DeviceListScreen({ navigation }: Props) {
             : err.message;
         Alert.alert(pair.name ?? 'Laptop', message);
       } finally {
-        setConnecting(null);
+        if (current()) {
+          connectingRef.current = false;
+          setConnecting(null);
+        }
       }
     },
     [navigation],

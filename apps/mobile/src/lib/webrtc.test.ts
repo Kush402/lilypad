@@ -1,4 +1,5 @@
 import {
+  ANSWERER_PEER_REPLACEMENT_CAPABILITY,
   iceRecoveryTimeoutMs,
   MAX_ICE_RESTARTS,
   SIGNALING_OPEN_TIMEOUT_MS,
@@ -350,7 +351,72 @@ describe('ViewerConnection', () => {
       expect.objectContaining({ iceTransportPolicy: 'relay' }),
     );
     expect(lastPeer().setRemoteDescription).toHaveBeenCalled();
-    expect(lastSignaling().answer).toHaveBeenCalled();
+    expect(lastSignaling().answer).toHaveBeenCalledWith('fake-answer-sdp', [
+      ANSWERER_PEER_REPLACEMENT_CAPABILITY,
+    ]);
+  });
+
+  it('recreates the peer before accepting an offer from a replacement desktop peer', async () => {
+    // A relay fallback is a wholly new desktop PeerConnection, not an ICE
+    // restart on the old one. Some native WebRTC builds accept its changed
+    // DTLS fingerprint on the existing answerer instead of rejecting
+    // setRemoteDescription; that apparent success leaves the old SCTP
+    // association in place and the critical input channel never opens.
+    const cb = makeCallbacks();
+    const { sig, peer } = await startConnected(cb);
+    sig.onMessage({
+      type: 'offer',
+      payload: { sdp: 'v=0\r\na=fingerprint:sha-256 AA:AA\r\n' },
+    });
+    for (let i = 0; i < 10; i += 1) await Promise.resolve();
+    expect(sig.answer).toHaveBeenCalledTimes(1);
+    const before = rtcMock.__mockPeerInstances.length;
+
+    sig.onMessage({
+      type: 'offer',
+      payload: { sdp: 'v=0\r\na=fingerprint:sha-256 BB:BB\r\n' },
+    });
+    for (let i = 0; i < 10; i += 1) await Promise.resolve();
+
+    expect(rtcMock.__mockPeerInstances.length).toBe(before + 1);
+    expect(peer.close).toHaveBeenCalled();
+    expect(lastPeer().setRemoteDescription).toHaveBeenCalledWith(
+      expect.objectContaining({ sdp: expect.stringContaining('BB:BB') }),
+    );
+    expect(sig.answer).toHaveBeenCalledTimes(2);
+  });
+
+  it('lets only the newest overlapping offer on one peer send an answer', async () => {
+    const cb = makeCallbacks();
+    const { sig, peer } = await startConnected(cb);
+    let resolveOld!: () => void;
+    peer.setRemoteDescription.mockReturnValueOnce(
+      new Promise<void>((resolve) => {
+        resolveOld = resolve;
+      }),
+    );
+
+    sig.onMessage({ type: 'offer', payload: { sdp: 'old-offer' } });
+    sig.onMessage({ type: 'offer', payload: { sdp: 'new-offer' } });
+    for (let i = 0; i < 10; i += 1) await Promise.resolve();
+    const answeringPeer = lastPeer();
+    expect(answeringPeer).not.toBe(peer);
+    expect(peer.close).toHaveBeenCalled();
+    expect(answeringPeer.setRemoteDescription).toHaveBeenCalledTimes(1);
+    expect(answeringPeer.setRemoteDescription).toHaveBeenCalledWith(
+      expect.objectContaining({ sdp: 'new-offer' }),
+    );
+    expect(sig.answer).toHaveBeenCalledTimes(1);
+
+    resolveOld();
+    for (let i = 0; i < 10; i += 1) await Promise.resolve();
+    // The old native call did finish, but only against the closed peer. The
+    // peer whose answer went on the wire was never touched by old-offer.
+    expect(answeringPeer.setRemoteDescription).toHaveBeenCalledTimes(1);
+    expect(answeringPeer.setRemoteDescription).not.toHaveBeenCalledWith(
+      expect.objectContaining({ sdp: 'old-offer' }),
+    );
+    expect(sig.answer).toHaveBeenCalledTimes(1);
   });
 
   it.each(['resolve', 'reject'] as const)(

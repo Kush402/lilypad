@@ -310,6 +310,19 @@ fn ice_budget_earned_back(
 /// onto TURN is a new PeerConnection with `iceTransportPolicy: relay`.
 const INPUT_CHANNEL_FALLBACK_GRACE: Duration = Duration::from_secs(6);
 
+/// An answerer advertising this capability promises that a later offer with a
+/// new DTLS fingerprint will be applied on a fresh RTCPeerConnection. Older
+/// phones can keep video alive but must not be handed the desktop's relay-only
+/// peer replacement: some native WebRTC builds accept that offer on the old
+/// answerer while silently retaining its dead SCTP association.
+const ANSWERER_PEER_REPLACEMENT_CAPABILITY: &str = "answerer-peer-replacement-v1";
+
+fn answerer_supports_peer_replacement(capabilities: &[String]) -> bool {
+    capabilities
+        .iter()
+        .any(|capability| capability == ANSWERER_PEER_REPLACEMENT_CAPABILITY)
+}
+
 /// Pure decision: recreate the peer as relay-only because the input
 /// DataChannel never opened on the current pair.
 ///
@@ -331,6 +344,43 @@ fn input_channel_fallback_due(
         return false;
     }
     connected_without_dc_since.is_some_and(|t| now.duration_since(t) >= grace)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InputChannelFallbackAction {
+    None,
+    BlockUnsupported,
+    ReplacePeer,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn input_channel_fallback_action(
+    channel_open: bool,
+    already_forced: bool,
+    replacement_supported: bool,
+    replacement_blocked: bool,
+    path: Option<&str>,
+    connected_without_dc_since: Option<Instant>,
+    now: Instant,
+    grace: Duration,
+) -> InputChannelFallbackAction {
+    if replacement_blocked
+        || !input_channel_fallback_due(
+            channel_open,
+            already_forced,
+            path,
+            connected_without_dc_since,
+            now,
+            grace,
+        )
+    {
+        return InputChannelFallbackAction::None;
+    }
+    if replacement_supported {
+        InputChannelFallbackAction::ReplacePeer
+    } else {
+        InputChannelFallbackAction::BlockUnsupported
+    }
 }
 
 /// Bundles the session-lifetime state that used to be five independent
@@ -424,6 +474,14 @@ struct SessionRunner {
     connected_without_dc_since: Option<Instant>,
     /// We already recreated the peer with `iceTransportPolicy: relay`.
     forced_relay: bool,
+    /// Learned only from an answer that was successfully applied to the
+    /// current peer. Missing/unknown capabilities remain false.
+    answerer_peer_replacement_supported: bool,
+    /// A relay fallback was due but could not safely replace this answerer (or
+    /// lacked relay configuration). Keeps the heartbeat from retrying/logging
+    /// the same impossible replacement every four seconds without pretending
+    /// that relay was actually forced.
+    relay_fallback_blocked: bool,
     /// Drop events from a PeerConnection we have already replaced. See
     /// `PeerEventGate`.
     event_gate: PeerEventGate,
@@ -464,6 +522,8 @@ impl SessionRunner {
             viewer_paused: false,
             connected_without_dc_since: None,
             forced_relay: false,
+            answerer_peer_replacement_supported: false,
+            relay_fallback_blocked: false,
             event_gate: PeerEventGate::new(),
         }
     }
@@ -667,6 +727,11 @@ impl SessionRunner {
                 self.ice_policy = policy;
                 // Hub already asked for relay — don't later recreate "to" relay.
                 self.forced_relay = matches!(policy, IcePolicy::Relay);
+                // A replacement session-start owns a new, not-yet-proven
+                // answerer. Never carry a prior phone/peer's capability into
+                // the offer that is about to be negotiated.
+                self.answerer_peer_replacement_supported = false;
+                self.relay_fallback_blocked = false;
                 // A repeat session-start must not leak the previous
                 // PeerConnection (its ICE/DTLS/RTCP-reader tasks live until
                 // close) AND must not let that close end this runner —
@@ -716,7 +781,21 @@ impl SessionRunner {
                 if let Some(p) = self.peer.as_ref() {
                     let payload: messages::SdpPayload =
                         serde_json::from_value(env.payload.clone())?;
+                    let replacement_supported =
+                        answerer_supports_peer_replacement(&payload.capabilities);
                     p.set_answer(payload.sdp).await?;
+                    // The capability is authoritative only after the answer
+                    // itself was accepted. A malformed/rejected answer must
+                    // never authorize destruction of the still-working peer.
+                    self.answerer_peer_replacement_supported = replacement_supported;
+                    if replacement_supported {
+                        self.relay_fallback_blocked = false;
+                    }
+                    log::info!(
+                        target: "lilypad::session",
+                        "answerer peer replacement capability: {}",
+                        if replacement_supported { "supported" } else { "unsupported" }
+                    );
                 }
             }
             "ice-candidate" => {
@@ -750,26 +829,54 @@ impl SessionRunner {
                         "renegotiate throttled — ICE restarted {}s ago",
                         self.last_ice_restart.unwrap().elapsed().as_secs()
                     );
-                } else if input_channel_fallback_due(
-                    self.input_channel_open,
-                    self.forced_relay,
-                    self.connection_path,
-                    self.connected_without_dc_since,
-                    Instant::now(),
-                    Duration::ZERO,
-                ) {
-                    if self
-                        .recreate_peer_relay_only(
-                            sig,
-                            peer_ev_rx,
-                            "phone renegotiate, input DataChannel never opened",
-                        )
-                        .await?
-                    {
-                        return Ok(true);
+                } else {
+                    match input_channel_fallback_action(
+                        self.input_channel_open,
+                        self.forced_relay,
+                        self.answerer_peer_replacement_supported,
+                        self.relay_fallback_blocked,
+                        self.connection_path,
+                        self.connected_without_dc_since,
+                        Instant::now(),
+                        Duration::ZERO,
+                    ) {
+                        InputChannelFallbackAction::ReplacePeer => {
+                            if self
+                                .recreate_peer_relay_only(
+                                    sig,
+                                    peer_ev_rx,
+                                    "phone renegotiate, input DataChannel never opened",
+                                )
+                                .await?
+                            {
+                                return Ok(true);
+                            }
+                        }
+                        InputChannelFallbackAction::BlockUnsupported => {
+                            self.block_relay_fallback(
+                                "phone renegotiate, input DataChannel never opened",
+                                "answerer did not advertise peer-replacement support",
+                            );
+                            // A legacy phone cannot safely accept a new DTLS
+                            // peer, but its explicit recovery request still
+                            // deserves the best non-destructive fallback we
+                            // have: restart ICE on the existing video peer.
+                            if self
+                                .attempt_ice_restart(
+                                    sig,
+                                    "phone renegotiate without peer-replacement support",
+                                )
+                                .await?
+                            {
+                                return Ok(true);
+                            }
+                        }
+                        InputChannelFallbackAction::None => {
+                            if self.attempt_ice_restart(sig, "phone renegotiate").await? {
+                                return Ok(true);
+                            }
+                        }
                     }
-                } else if self.attempt_ice_restart(sig, "phone renegotiate").await? {
-                    return Ok(true);
                 }
             }
             "pause" => {
@@ -1163,6 +1270,17 @@ impl SessionRunner {
         }
     }
 
+    fn block_relay_fallback(&mut self, reason: &str, cause: &str) {
+        if self.relay_fallback_blocked {
+            return;
+        }
+        self.relay_fallback_blocked = true;
+        log::warn!(
+            target: "lilypad::session",
+            "relay peer replacement skipped ({reason}) — {cause}; keeping the current video peer and leaving control unavailable"
+        );
+    }
+
     /// Tear down the current PeerConnection and build a relay-only one.
     /// webrtc-rs 0.11's `setConfiguration` is unimplemented, so this is the
     /// only way to change `iceTransportPolicy` after the first gather.
@@ -1176,11 +1294,15 @@ impl SessionRunner {
         peer_ev_rx: &mut UnboundedReceiver<PeerEvent>,
         reason: &str,
     ) -> Result<bool> {
-        if self.ice_servers.is_empty() {
-            log::warn!(
-                target: "lilypad::session",
-                "cannot force relay ({reason}) — session-start carried no ICE servers"
+        if !self.answerer_peer_replacement_supported {
+            self.block_relay_fallback(
+                reason,
+                "answerer did not advertise peer-replacement support",
             );
+            return Ok(false);
+        }
+        if self.ice_servers.is_empty() {
+            self.block_relay_fallback(reason, "session-start carried no relay configuration");
             return Ok(false);
         }
         if matches!(self.ice_policy, IcePolicy::Relay) {
@@ -1727,27 +1849,36 @@ pub async fn run_session(
                     runner.end("peer disconnected");
                     break;
                 }
-                if input_channel_fallback_due(
+                match input_channel_fallback_action(
                     runner.input_channel_open,
                     runner.forced_relay,
+                    runner.answerer_peer_replacement_supported,
+                    runner.relay_fallback_blocked,
                     runner.connection_path,
                     runner.connected_without_dc_since,
                     Instant::now(),
                     INPUT_CHANNEL_FALLBACK_GRACE,
                 ) {
-                    match runner.recreate_peer_relay_only(
-                        &sig,
-                        &mut peer_ev_rx,
-                        "input DataChannel did not open on the selected ICE pair",
-                    )
-                    .await {
-                        Ok(true) => break,
-                        Ok(false) => {}
-                        Err(e) => {
-                            runner.end(format!("relay recovery failed: {e}"));
-                            break;
+                    InputChannelFallbackAction::ReplacePeer => {
+                        match runner.recreate_peer_relay_only(
+                            &sig,
+                            &mut peer_ev_rx,
+                            "input DataChannel did not open on the selected ICE pair",
+                        )
+                        .await {
+                            Ok(true) => break,
+                            Ok(false) => {}
+                            Err(e) => {
+                                runner.end(format!("relay recovery failed: {e}"));
+                                break;
+                            }
                         }
                     }
+                    InputChannelFallbackAction::BlockUnsupported => runner.block_relay_fallback(
+                        "input DataChannel did not open on the selected ICE pair",
+                        "answerer did not advertise peer-replacement support",
+                    ),
+                    InputChannelFallbackAction::None => {}
                 }
             }
 
@@ -2206,6 +2337,77 @@ mod tests {
             false,
             false,
             Some("direct"),
+            since,
+            now,
+            INPUT_CHANNEL_FALLBACK_GRACE
+        ));
+    }
+
+    #[test]
+    fn input_fallback_replaces_only_a_capable_answerer() {
+        let now = Instant::now();
+        let since = Some(now - INPUT_CHANNEL_FALLBACK_GRACE - Duration::from_millis(1));
+
+        assert_eq!(
+            input_channel_fallback_action(
+                false,
+                false,
+                true,
+                false,
+                Some("direct"),
+                since,
+                now,
+                INPUT_CHANNEL_FALLBACK_GRACE,
+            ),
+            InputChannelFallbackAction::ReplacePeer
+        );
+        assert_eq!(
+            input_channel_fallback_action(
+                false,
+                false,
+                false,
+                false,
+                Some("direct"),
+                since,
+                now,
+                INPUT_CHANNEL_FALLBACK_GRACE,
+            ),
+            InputChannelFallbackAction::BlockUnsupported
+        );
+    }
+
+    #[test]
+    fn input_fallback_stays_quiet_after_legacy_answerer_was_blocked() {
+        let now = Instant::now();
+        let since = Some(now - INPUT_CHANNEL_FALLBACK_GRACE - Duration::from_millis(1));
+
+        assert_eq!(
+            input_channel_fallback_action(
+                false,
+                false,
+                false,
+                true,
+                Some("direct"),
+                since,
+                now,
+                INPUT_CHANNEL_FALLBACK_GRACE,
+            ),
+            InputChannelFallbackAction::None
+        );
+    }
+
+    #[test]
+    fn global_ipv6_host_pair_does_not_suppress_input_fallback() {
+        let now = Instant::now();
+        let since = Some(now - INPUT_CHANNEL_FALLBACK_GRACE - Duration::from_millis(1));
+        let path = crate::rtc::classify_candidate_pair(
+            "(local) udp host 2001:db8:1111:1::2:54321 <-> (remote) udp host 2001:db8:2222:2::7:51000",
+        );
+
+        assert!(input_channel_fallback_due(
+            false,
+            false,
+            Some(path),
             since,
             now,
             INPUT_CHANNEL_FALLBACK_GRACE

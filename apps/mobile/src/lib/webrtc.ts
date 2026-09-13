@@ -1,4 +1,4 @@
-import { ASK_PROTOCOL_VERSION } from '@lilypad/protocol';
+import { ANSWERER_PEER_REPLACEMENT_CAPABILITY, ASK_PROTOCOL_VERSION } from '@lilypad/protocol';
 import { Platform } from 'react-native';
 import {
   RTCPeerConnection,
@@ -226,6 +226,28 @@ type DataChannelLike = {
 };
 
 /**
+ * Identity of the DTLS peer that authored an SDP offer.
+ *
+ * An ICE restart keeps the same certificate/fingerprint. The desktop's
+ * control-channel fallback is different: it creates a wholly new
+ * PeerConnection (webrtc-rs cannot change iceTransportPolicy in place), so
+ * its fingerprint changes. A few native WebRTC builds accept that new offer
+ * on the old answerer instead of rejecting it; the SDP call succeeds, but the
+ * old SCTP association survives and the input DataChannel never opens. Treat
+ * a changed fingerprint as the peer replacement it actually is.
+ */
+function offerFingerprint(sdp: string): string | null {
+  const values = sdp
+    .split(/\r?\n/)
+    .filter((line) => line.trimStart().toLowerCase().startsWith('a=fingerprint:'))
+    .map((line) =>
+      line.trim().slice('a=fingerprint:'.length).trim().replace(/\s+/g, ' ').toLowerCase(),
+    );
+  if (values.length === 0) return null;
+  return [...new Set(values)].sort().join('|');
+}
+
+/**
  * The mobile answer-side of a session. Registers as the mobile seat, requests
  * control, answers the desktop's offer, renders its video track, and opens the
  * input path over the DataChannel the desktop creates.
@@ -300,6 +322,16 @@ export class ViewerConnection {
   private networkType: string | undefined;
   private handoffTimer: ReturnType<typeof setTimeout> | null = null;
   private backgrounded = false;
+  /** Fingerprint accepted on the current answerer. See `offerFingerprint`. */
+  private remotePeerFingerprint: string | null = null;
+  /** Newer offers supersede older async SDP work even on the SAME peer.
+   * Peer identity alone cannot distinguish two overlapping offers. */
+  private offerGeneration = 0;
+  /** The native setRemoteDescription call cannot be cancelled. If another
+   * offer arrives while it is pending, that whole peer is retired so the old
+   * native mutation can finish only on a closed, unreachable object. */
+  private offerInFlightPc: RTCPeerConnection | null = null;
+  private peerIceTransportPolicy: 'all' | 'relay' = 'all';
 
   constructor(
     private readonly signalingUrl: string,
@@ -839,6 +871,8 @@ export class ViewerConnection {
     this.askDestination = undefined;
     this.moveDataChannel = null;
     this.peerConnected = false;
+    this.remotePeerFingerprint = null;
+    this.offerInFlightPc = null;
     try {
       oldDataChannel?.close();
     } catch {
@@ -856,9 +890,10 @@ export class ViewerConnection {
     }
 
     this.iceServers = iceServers;
+    this.peerIceTransportPolicy = iceTransportPolicy ?? 'all';
     const pc = new RTCPeerConnection({
       iceServers: iceServers as any,
-      iceTransportPolicy: iceTransportPolicy ?? 'all',
+      iceTransportPolicy: this.peerIceTransportPolicy,
     });
     this.pc = pc;
     this.iceRestartAttempts = 0;
@@ -1362,7 +1397,35 @@ export class ViewerConnection {
     // Guard against acting after close() began
     if (this.isClosed) return;
     if (!this.pc) return;
+    const generation = ++this.offerGeneration;
+    // Merely suppressing the old answer is insufficient: its already-started
+    // native setRemoteDescription may resolve last and overwrite the newer
+    // remote description on the same object. Move the newer offer to a fresh
+    // peer; the stale operation is then confined to the peer we close here.
+    if (this.offerInFlightPc === this.pc) {
+      record('offer superseded', 'retiring peer with native SDP work still in flight');
+      this.setupPeer(this.iceServers, this.peerIceTransportPolicy);
+      if (!this.pc || this.isClosed || generation !== this.offerGeneration) return;
+    }
     let pc = this.pc;
+    const fingerprint = offerFingerprint(sdp);
+    // A changed DTLS fingerprint is a new desktop PeerConnection (the relay
+    // fallback), not a same-peer ICE restart. Recreate before applying it;
+    // relying on setRemoteDescription to reject is not portable and was the
+    // path that left video live while the critical channel stayed dead.
+    if (
+      fingerprint !== null &&
+      this.remotePeerFingerprint !== null &&
+      fingerprint !== this.remotePeerFingerprint
+    ) {
+      record('desktop peer replaced', 'changed DTLS fingerprint; recreating answerer with relay');
+      this.setupPeer(this.iceServers, 'relay');
+      if (!this.pc || this.isClosed || generation !== this.offerGeneration) return;
+      pc = this.pc;
+    }
+    this.offerInFlightPc = pc;
+    const current = (): boolean =>
+      !this.isClosed && this.pc === pc && generation === this.offerGeneration;
     // No `onState('negotiating')` here: the initial offer follows
     // 'session-start' (which already set it), and a later renegotiation
     // offer arrives mid-`recovering_ice` — stomping that back to a generic
@@ -1372,28 +1435,34 @@ export class ViewerConnection {
       try {
         await pc.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp }));
       } catch (err) {
-        if (this.isClosed || this.pc !== pc) return;
+        if (!current()) return;
         // The desktop recreated its PeerConnection (new DTLS fingerprint)
         // because the input DataChannel never opened on the first ICE pair.
         // Accept its offer on a fresh relay-only peer using the same servers.
         record('offer rejected on current peer, recreating with relay', String(err));
         this.setupPeer(this.iceServers, 'relay');
-        if (!this.pc || this.isClosed) return;
+        if (!this.pc || this.isClosed || generation !== this.offerGeneration) return;
         pc = this.pc;
+        this.offerInFlightPc = pc;
         await pc.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp }));
       }
-      if (this.isClosed || this.pc !== pc) return;
+      if (!current()) return;
+      if (fingerprint !== null) this.remotePeerFingerprint = fingerprint;
       const answer = await pc.createAnswer();
-      if (this.isClosed || this.pc !== pc) return;
+      if (!current()) return;
       await pc.setLocalDescription(answer);
-      if (this.isClosed || this.pc !== pc) return;
-      this.sig.answer((answer as any).sdp);
+      if (!current()) return;
+      this.sig.answer((answer as any).sdp, [ANSWERER_PEER_REPLACEMENT_CAPABILITY]);
     } catch (err) {
       // Every native await can reject after teardown or peer replacement,
       // including the relay retry. Only the peer still in use owns this error.
-      if (this.isClosed || this.pc !== pc) return;
+      if (!current()) return;
       record('offer failed', String(err));
       this.cb.onError(appError('unknown'));
+    } finally {
+      if (generation === this.offerGeneration && this.offerInFlightPc === pc) {
+        this.offerInFlightPc = null;
+      }
     }
   }
 

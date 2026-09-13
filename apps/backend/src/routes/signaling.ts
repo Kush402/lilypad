@@ -371,6 +371,12 @@ export async function signalingRoutes(
 
     const rate = new TokenBucket(MSG_BURST, MSG_REFILL_PER_SEC);
     let released = false;
+    // `register` authorization awaits Redis/Postgres. The transport can close
+    // while that lookup is in flight; its close handler then (correctly) finds
+    // no hub context yet. Never let the completed lookup register the already-
+    // dead peer afterwards, or it leaves a zombie seat that looks online until
+    // the heartbeat reaper eventually catches it.
+    let transportClosed = false;
     const release = () => {
       if (released) return;
       released = true;
@@ -386,6 +392,10 @@ export async function signalingRoutes(
         }
       },
       close: (code, reason) => {
+        // WebSocket `close` is asynchronous. Latch at the decision to close so
+        // frames already queued behind the rejecting one cannot register this
+        // peer in the window before the transport emits its close event.
+        transportClosed = true;
         try {
           socket.close(code, reason);
         } catch {
@@ -420,6 +430,7 @@ export async function signalingRoutes(
     let queue: Promise<void> = Promise.resolve();
 
     async function processMessage(raw: Buffer): Promise<void> {
+      if (transportClosed) return;
       if (!rate.allow()) {
         log.signaling.warn({ ip }, 'per-socket message rate exceeded — closing');
         peer.close(4429, 'message rate exceeded');
@@ -448,6 +459,9 @@ export async function signalingRoutes(
           return actAsDevice(await socketActor, desktop).allow;
         },
       );
+      // The authorization result belongs to the socket that requested it.
+      // A close invalidates every queued/in-flight frame from that transport.
+      if (transportClosed) return;
       switch (decision.action) {
         case 'error':
           log.signaling.error({ roomId: decision.attempt.roomId }, 'room-auth lookup failed');
@@ -490,6 +504,7 @@ export async function signalingRoutes(
     });
 
     socket.on('close', () => {
+      transportClosed = true;
       clearTimeout(registerTimer);
       release();
       hub.handleClose(peer);

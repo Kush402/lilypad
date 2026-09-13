@@ -165,6 +165,21 @@ describe('ViewerScreen', () => {
     expect(lastConn().start).toHaveBeenCalled();
   });
 
+  it('removes a stale video stream so a terminal session exposes Reconnect', async () => {
+    renderViewer();
+    await act(async () => {
+      lastConn().cb.onStream({ toURL: () => 'fake://old-session' });
+      lastConn().cb.onState('connected');
+    });
+    expect(screen.queryByText('Reconnect')).toBeNull();
+
+    await act(async () => {
+      lastConn().cb.onState('ended');
+    });
+
+    expect(screen.getByText('Reconnect')).toBeTruthy();
+  });
+
   it('ignores callbacks and an opening failure from the connection replaced by Reconnect', async () => {
     const { ViewerConnection } = jest.requireMock('../lib/webrtc');
     const normalConstructor = ViewerConnection.getMockImplementation();
