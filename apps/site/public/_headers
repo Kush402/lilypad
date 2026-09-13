@@ -29,9 +29,18 @@
   Cache-Control: no-cache
   Content-Type: application/json
 
+# Neither file below is versioned in its URL, so a cached copy is a previous
+# release under the current name (L-332). Without a Cache-Control of their own
+# they took Cloudflare's default four hours: on 2026-09-13 the page said
+# v0.1.40 while the DMG it handed out was v0.1.39, and an updater reading the
+# fresh manifest above could fetch the old tarball and fail its signature. The
+# ETag makes revalidation a 304, so this costs a round trip, not the bytes.
+
 /download/Lilypad.dmg
+  Cache-Control: no-cache
   Content-Type: application/x-apple-diskimage
   Content-Disposition: attachment; filename="Lilypad.dmg"
 
 /download/Lilypad.app.tar.gz
+  Cache-Control: no-cache
   Content-Type: application/gzip
