@@ -4,6 +4,9 @@ import { SoftwareUpdate } from './SoftwareUpdate';
 import { updater } from '../lib/tauri';
 import { AUTO_CHECK_INTERVAL_MS } from '../lib/useUpdater';
 
+const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }));
+vi.mock('@tauri-apps/api/core', () => ({ invoke }));
+
 vi.mock('../lib/tauri', () => ({
   updater: {
     currentVersion: vi.fn().mockResolvedValue('0.1.0'),
@@ -66,6 +69,45 @@ describe('SoftwareUpdate — the automatic check', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe('SoftwareUpdate — what the updater learns reaches the log (L-333)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    invoke.mockResolvedValue(undefined);
+    vi.mocked(updater.currentVersion).mockResolvedValue('0.1.0');
+  });
+
+  // The webview console never reaches the desktop log. Twice a Mac sat on an
+  // old version for a day with no updater line anywhere, so nobody could say
+  // whether it had asked, found the release, or failed to fetch it.
+  const logged = () =>
+    invoke.mock.calls
+      .filter(([command]) => command === 'log_update_event')
+      .map(([, args]) => (args as { event: string }).event);
+
+  it('names the release it found and the version it is replacing', async () => {
+    vi.mocked(updater.check).mockResolvedValue(fakeUpdate('0.2.0') as never);
+    render(<SoftwareUpdate variant="banner" />);
+    await waitFor(() => expect(logged()).toContain('update 0.2.0 available (running 0.1.0)'));
+  });
+
+  it('records a failed check rather than leaving only a UI state behind', async () => {
+    vi.mocked(updater.check).mockRejectedValue(new Error('feed unreachable'));
+    render(<SoftwareUpdate variant="banner" />);
+    await waitFor(() =>
+      expect(
+        logged().some((e) => e.startsWith('update check failed') && e.includes('feed unreachable')),
+      ).toBe(true),
+    );
+  });
+
+  it('never lets a logging failure break the update itself', async () => {
+    invoke.mockRejectedValue(new Error('no such command'));
+    vi.mocked(updater.check).mockResolvedValue(fakeUpdate('0.2.0') as never);
+    render(<SoftwareUpdate variant="banner" />);
+    expect(await screen.findByText(/0\.2\.0/)).toBeTruthy();
   });
 });
 

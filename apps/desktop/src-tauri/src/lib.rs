@@ -546,6 +546,7 @@ pub fn run() {
             commands::show_setup_window,
             commands::show_control_window,
             commands::log_ui_error,
+            commands::log_update_event,
             commands::log_file_path,
             commands::reveal_log_file,
             commands::get_account_state,

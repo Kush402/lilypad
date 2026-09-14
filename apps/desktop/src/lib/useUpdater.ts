@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { updater, type Update } from './tauri';
 
 /**
@@ -49,6 +50,24 @@ export interface UpdaterState {
  */
 export const AUTO_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
+/**
+ * One line in the desktop log for each thing the updater learns (L-333).
+ *
+ * A webview's console never reaches `~/Library/Logs/Lilypad`, so without this
+ * the only record of a check was React state — and twice a Mac sat on an old
+ * version for a day with nothing in its log to say whether it had even asked.
+ *
+ * It must never affect the update itself: a failed write, or no Tauri runtime
+ * at all (which makes `invoke` throw synchronously), is swallowed.
+ */
+function record(event: string): void {
+  try {
+    void invoke('log_update_event', { event }).catch(() => {});
+  } catch {
+    /* No Tauri runtime. The update flow must not care. */
+  }
+}
+
 const INITIAL: UpdaterState = {
   phase: 'idle',
   newVersion: null,
@@ -83,6 +102,11 @@ export function useUpdater(options: { auto?: boolean } = {}) {
     setState((s) => ({ ...s, phase: 'checking', error: null, failedStep: null }));
     try {
       const update = await updater.check();
+      record(
+        update
+          ? `update ${update.version} available (running ${update.currentVersion})`
+          : 'update check: up to date',
+      );
       if (!alive.current) return null;
       if (update) {
         pending.current = update;
@@ -99,6 +123,7 @@ export function useUpdater(options: { auto?: boolean } = {}) {
       setState({ ...INITIAL, phase: 'uptodate' });
       return null;
     } catch (e) {
+      record(`update check failed: ${errorText(e)}`);
       if (!alive.current) return null;
       setState((s) => ({ ...s, phase: 'error', error: errorText(e), failedStep: 'check' }));
       return null;
@@ -137,9 +162,13 @@ export function useUpdater(options: { auto?: boolean } = {}) {
             break;
         }
       });
+      record(`update ${update.version} downloaded and installed, waiting for relaunch`);
       if (!alive.current) return;
       setState((s) => ({ ...s, phase: 'ready', progress: 1 }));
     } catch (e) {
+      // A stale installer under a fresh manifest fails its signature here
+      // (L-332), which is exactly the failure nobody could see.
+      record(`update ${update.version} download failed: ${errorText(e)}`);
       if (!alive.current) return;
       // `pending.current` is deliberately left in place: the update is still
       // the right one to install, so retrying is one call rather than another

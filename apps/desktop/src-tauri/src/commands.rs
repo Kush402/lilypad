@@ -2943,6 +2943,22 @@ pub fn log_ui_error(window_label: String, message: String) {
     log::error!(target: "lilypad::ui", "{window_label} failed to render: {message}");
 }
 
+/// What the updater asked and what it got back, written to the log (L-333).
+///
+/// The updater runs in a webview, and a webview's console does not reach this
+/// log — the same gap `log_ui_error` closes for render errors. So the updater's
+/// whole history lived in React state. On 2026-09-08 a Mac sat on 0.1.30 for 28
+/// hours with no updater line in 13 days of logs; the fix for that, a repeating
+/// check on the bubble, left the same silence behind. On 2026-09-14 the same
+/// Mac was on 0.1.39 ten hours after 0.1.40 published, and nothing on it could
+/// say whether a check had run, found the release, or failed to download it.
+#[tauri::command]
+pub fn log_update_event(event: String) {
+    // Bounded by characters, so a long error message cannot split one.
+    let event: String = event.chars().take(500).collect();
+    log::info!(target: "lilypad::update", "{event}");
+}
+
 /// Where this Mac writes its log, and a way to get to it.
 ///
 /// A log a customer cannot find is a log that only helps developers. The path
