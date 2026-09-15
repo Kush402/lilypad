@@ -7,11 +7,11 @@ import { updater, type Update } from './tauri';
  * to infer "what's happening" from a tangle of booleans:
  *
  *   idle → checking → { uptodate | available }
- *   available → downloading → ready → (relaunch)
+ *   available → downloading → ready → restarting → (process exit)
  *   any → error
  */
 export type UpdatePhase =
-  'idle' | 'checking' | 'uptodate' | 'available' | 'downloading' | 'ready' | 'error';
+  'idle' | 'checking' | 'uptodate' | 'available' | 'downloading' | 'ready' | 'restarting' | 'error';
 
 export interface UpdaterState {
   phase: UpdatePhase;
@@ -26,13 +26,13 @@ export interface UpdaterState {
   /**
    * Which step failed, when one did.
    *
-   * Both steps used to collapse into a bare `error` phase, so a download that
+   * The steps used to collapse into a bare `error` phase, so a download that
    * died halfway was reported as "Update check failed" — the wrong step named,
    * and no way to retry the one that actually broke. Inferring it from
    * `newVersion` would be wrong too: a check that fails after an earlier one
    * succeeded still has a version sitting in state.
    */
-  failedStep: 'check' | 'download' | null;
+  failedStep: 'check' | 'download' | 'relaunch' | null;
 }
 
 /**
@@ -49,6 +49,11 @@ export interface UpdaterState {
  * documents this cadence.
  */
 export const AUTO_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
+
+/** A successful restart request should tear this webview down almost
+ * immediately. If it is still alive after this bound, the request stalled and
+ * the user needs an honest fallback instead of a button that appeared inert. */
+export const RELAUNCH_WATCHDOG_MS = 3_000;
 
 /**
  * One line in the desktop log for each thing the updater learns (L-333).
@@ -90,15 +95,24 @@ export function useUpdater(options: { auto?: boolean } = {}) {
   const [state, setState] = useState<UpdaterState>(INITIAL);
   const alive = useRef(true);
   const pending = useRef<Update | null>(null);
+  const relaunchWatchdog = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     alive.current = true;
     return () => {
       alive.current = false;
+      if (relaunchWatchdog.current) clearTimeout(relaunchWatchdog.current);
+      relaunchWatchdog.current = null;
     };
   }, []);
 
   const check = useCallback(async () => {
+    // A manual Check remains visible in Diagnostics while an update is
+    // pending. Re-checking at that point can return `null` because the plugin
+    // already installed the bundle, collapse `ready` to `uptodate`, and hide
+    // the only Restart button. The pending update owns the state machine until
+    // relaunch or a download error is resolved.
+    if (pending.current) return pending.current;
     setState((s) => ({ ...s, phase: 'checking', error: null, failedStep: null }));
     try {
       const update = await updater.check();
@@ -177,15 +191,42 @@ export function useUpdater(options: { auto?: boolean } = {}) {
     }
   }, []);
 
-  const relaunch = useCallback(() => updater.relaunch(), []);
+  const relaunch = useCallback(async () => {
+    const version = pending.current?.version ?? 'unknown';
+    if (relaunchWatchdog.current) clearTimeout(relaunchWatchdog.current);
+    record(`update ${version} restart requested`);
+    setState((s) => ({ ...s, phase: 'restarting', error: null, failedStep: null }));
+
+    // Schedule before awaiting. Tauri's request normally kills this webview,
+    // so the promise may never settle; if neither rejection nor process exit
+    // happens, this is the only observer that can make the inert button honest.
+    relaunchWatchdog.current = setTimeout(() => {
+      relaunchWatchdog.current = null;
+      if (!alive.current) return;
+      const message = `Lilypad is still running. Quit and reopen it to finish installing version ${version}.`;
+      record(`update ${version} restart stalled: process still running`);
+      setState((s) => ({ ...s, phase: 'error', error: message, failedStep: 'relaunch' }));
+    }, RELAUNCH_WATCHDOG_MS);
+
+    try {
+      await updater.relaunch();
+    } catch (e) {
+      if (relaunchWatchdog.current) clearTimeout(relaunchWatchdog.current);
+      relaunchWatchdog.current = null;
+      record(`update ${version} restart failed: ${errorText(e)}`);
+      if (!alive.current) return;
+      setState((s) => ({ ...s, phase: 'error', error: errorText(e), failedStep: 'relaunch' }));
+    }
+  }, []);
 
   /** Retry whichever step failed. A failed download retries the download —
    * re-checking would throw away a perfectly good update and make the user
    * wait for the feed again. */
   const retry = useCallback(async () => {
-    if (pending.current) await downloadAndInstall();
+    if (state.failedStep === 'relaunch') await relaunch();
+    else if (pending.current) await downloadAndInstall();
     else await check();
-  }, [check, downloadAndInstall]);
+  }, [check, downloadAndInstall, relaunch, state.failedStep]);
 
   useEffect(() => {
     if (!auto) return;

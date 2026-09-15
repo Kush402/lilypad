@@ -95,7 +95,12 @@ export class MobileSignaling {
           // Close before rejecting: a socket nobody is waiting on any more is
           // still a socket, and one that opens late would otherwise sit there
           // registered as this client's transport with its promise long gone.
-          ws.close();
+          if (this.ws === ws) this.ws = null;
+          try {
+            ws.close();
+          } catch {
+            /* already failed below the JS transport */
+          }
           reject(new ClassifiedError(appError('signaling_timeout')));
         });
       }, SIGNALING_OPEN_TIMEOUT_MS);
@@ -103,7 +108,21 @@ export class MobileSignaling {
         opened = true;
         settle(resolve);
       };
-      ws.onerror = () => settle(() => reject(new Error('signaling connection failed')));
+      ws.onerror = () =>
+        settle(() => {
+          // `onerror` is not guaranteed to be followed promptly (or at all)
+          // by `onclose` on native WebSocket implementations. Rejecting the
+          // promise while retaining this exact socket lets a late `onopen`
+          // turn a failed Viewer into an unregistered open ghost. Retire it at
+          // the same boundary that reports the failure.
+          if (this.ws === ws) this.ws = null;
+          try {
+            ws.close();
+          } catch {
+            /* the native transport has already gone */
+          }
+          reject(new Error('signaling connection failed'));
+        });
       ws.onmessage = (e: WebSocketMessageEvent) => {
         // Native callbacks already queued when a socket drops can arrive
         // after reconnect. They belong to that transport, not its successor.

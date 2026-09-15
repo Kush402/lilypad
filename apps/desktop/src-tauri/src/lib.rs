@@ -391,9 +391,11 @@ pub fn run() {
     // manual/dev launch would otherwise both register the same presence room
     // and fight over it at ~1 Hz — the phone-visible "keeps reconnecting"
     // churn. Whoever holds the lock owns the tray, bubble, and presence; a
-    // later instance exits here before wiring any of them up. The lock is
-    // leaked on purpose so it lives for the whole process (closing its fd
-    // would release it).
+    // later instance exits here before wiring any of them up. Acquisition has
+    // one short bounded wait because Tauri starts an updater successor just
+    // before its predecessor exits; rejecting that handoff made "Restart to
+    // update" capable of closing both copies. The lock is leaked on purpose so
+    // it lives for the whole process (closing its fd would release it).
     match single_instance::try_acquire() {
         Some(lock) => {
             Box::leak(Box::new(lock));
@@ -421,6 +423,11 @@ pub fn run() {
 
     builder
         .setup(|app| {
+            log::info!(
+                target: "lilypad::update",
+                "desktop started version {}",
+                app.package_info().version
+            );
             let device_id = load_or_create_device_id(app);
             let backend = std::env::var("LILYPAD_BACKEND_URL")
                 .unwrap_or_else(|_| DEFAULT_BACKEND_URL.to_string());

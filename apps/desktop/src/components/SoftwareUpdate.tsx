@@ -39,10 +39,14 @@ export function SoftwareUpdate({ variant }: { variant: 'banner' | 'panel' }) {
    * died halfway is the wrong sentence and sends the reader looking in the
    * wrong place. */
   const failureText =
-    failedStep === 'download'
-      ? `Couldn’t download the update. ${error}`
-      : `Couldn’t check for updates. ${error}`;
-  const busy = phase === 'downloading';
+    failedStep === 'relaunch'
+      ? `Couldn’t restart Lilypad. ${error}`
+      : failedStep === 'download'
+        ? `Couldn’t download the update. ${error}`
+        : `Couldn’t check for updates. ${error}`;
+  const busy = phase === 'downloading' || phase === 'restarting';
+  const updatePending =
+    phase === 'available' || phase === 'downloading' || phase === 'ready' || phase === 'restarting';
 
   const actions = (
     <div className="row update__actions">
@@ -59,6 +63,11 @@ export function SoftwareUpdate({ variant }: { variant: 'banner' | 'panel' }) {
       {phase === 'ready' ? (
         <button className="btn btn--primary btn--small" onClick={() => void relaunch()}>
           Restart to update
+        </button>
+      ) : null}
+      {phase === 'restarting' ? (
+        <button className="btn btn--primary btn--small" disabled>
+          Restarting…
         </button>
       ) : null}
       {/* Without this, a failed download was a dead end: the banner showed a
@@ -79,8 +88,7 @@ export function SoftwareUpdate({ variant }: { variant: 'banner' | 'panel' }) {
 
   // Banner: silent unless there's something actionable to show.
   if (variant === 'banner') {
-    const actionable =
-      phase === 'available' || phase === 'downloading' || phase === 'ready' || phase === 'error';
+    const actionable = updatePending || phase === 'error';
     if (!actionable || dismissed) return null;
     return (
       <section className="update-banner card" role="status">
@@ -89,7 +97,11 @@ export function SoftwareUpdate({ variant }: { variant: 'banner' | 'panel' }) {
             <p className="update__msg">{failureText}</p>
           ) : phase === 'ready' ? (
             <p className="update__msg">
-              <strong>Lilypad {newVersion}</strong> is ready to install.
+              <strong>Lilypad {newVersion}</strong> is downloaded. Restart to finish.
+            </p>
+          ) : phase === 'restarting' ? (
+            <p className="update__msg">
+              Restarting <strong>Lilypad {newVersion}</strong>…
             </p>
           ) : (
             <p className="update__msg">
@@ -118,7 +130,9 @@ export function SoftwareUpdate({ variant }: { variant: 'banner' | 'panel' }) {
         <h2 className="section-title">Software update</h2>
         <button
           className="btn btn--small"
-          disabled={phase === 'checking' || busy}
+          disabled={
+            phase === 'checking' || updatePending || (phase === 'error' && failedStep !== 'check')
+          }
           onClick={() => void check()}
         >
           {phase === 'checking' ? 'Checking…' : 'Check for updates'}
@@ -134,12 +148,16 @@ export function SoftwareUpdate({ variant }: { variant: 'banner' | 'panel' }) {
         <p className="muted update__msg">You’re on the latest version.</p>
       ) : null}
       {phase === 'error' ? <p className="muted update__msg">{failureText}</p> : null}
-      {phase === 'available' || phase === 'downloading' || phase === 'ready' ? (
+      {updatePending ? (
         <>
           <p className="update__msg">
             {phase === 'ready' ? (
               <>
                 <strong>Version {newVersion}</strong> downloaded. Restart to finish.
+              </>
+            ) : phase === 'restarting' ? (
+              <>
+                Restarting into <strong>version {newVersion}</strong>…
               </>
             ) : (
               <>

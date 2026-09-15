@@ -1625,8 +1625,33 @@ pub async fn run_session(
     mut control_rx: UnboundedReceiver<Control>,
     events: UnboundedSender<SessionEvent>,
 ) -> Result<()> {
-    let mut sig =
-        SignalingClient::connect(signaling_url, room_id.clone(), device_id, lan_loopback).await?;
+    // The first socket open is part of the session and must remain cancellable.
+    // Before this select, a hung TCP/TLS/WS handshake held the runner outside
+    // its control loop: Disconnect did nothing and a takeover had to wait for
+    // the outer abort deadline. Keep the one connect future pinned while
+    // ignoring impossible pre-registration approval decisions; a real
+    // Disconnect retires the attempt immediately.
+    let connect = SignalingClient::connect(signaling_url, room_id.clone(), device_id, lan_loopback);
+    tokio::pin!(connect);
+    let mut sig = loop {
+        tokio::select! {
+            result = &mut connect => break result?,
+            control = control_rx.recv() => match control {
+                Some(Control::Disconnect) | None => {
+                    let _ = events.send(SessionEvent::Ended {
+                        reason: "disconnected while signaling was connecting".to_owned(),
+                    });
+                    return Ok(());
+                }
+                Some(Control::Approve { .. } | Control::Deny) => {
+                    log::info!(
+                        target: "lilypad::session",
+                        "ignoring approval decision before signaling registered"
+                    );
+                }
+            }
+        }
+    };
     let _ = events.send(SessionEvent::Registered);
     log::info!(target: "lilypad::session", "registered as desktop in room {room_id}");
 
@@ -1733,10 +1758,7 @@ pub async fn run_session(
                         // the peer still negotiating the first. Only the first
                         // approval, while awaiting it, is honored.
                         let state = runner.fsm.state();
-                        if !matches!(
-                            state,
-                            SessionState::Registered | SessionState::AwaitingApproval
-                        ) {
+                        if state != SessionState::AwaitingApproval {
                             log::info!(
                                 target: "lilypad::session",
                                 "ignoring duplicate approve while session is {state:?}"
@@ -1750,12 +1772,26 @@ pub async fn run_session(
                                 runner.end(format!("signaling send failed: {e}"));
                                 break;
                             }
+                            // Approval is a one-shot ownership transfer, not a
+                            // button that remains valid until session-start
+                            // happens to make the round trip. Retire the
+                            // AwaitingApproval state immediately so a queued
+                            // stale Deny cannot cancel the approved session.
+                            runner.fsm.transition(SessionState::Negotiating);
                         }
                     }
                     Some(Control::Deny) => {
-                        let _ = sig.send(Envelope::pair_denied(&room_id, Some("denied by user")));
-                        runner.end("denied");
-                        break;
+                        let state = runner.fsm.state();
+                        if state != SessionState::AwaitingApproval {
+                            log::info!(
+                                target: "lilypad::session",
+                                "ignoring stale deny while session is {state:?}"
+                            );
+                        } else {
+                            let _ = sig.send(Envelope::pair_denied(&room_id, Some("denied by user")));
+                            runner.end("denied");
+                            break;
+                        }
                     }
                     Some(Control::Disconnect) | None => {
                         let _ = sig.send(Envelope::disconnect(&room_id, Some("desktop disconnected")));

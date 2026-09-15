@@ -43,10 +43,17 @@
 //! ### What this does
 //!
 //! While a run is alive, a sampler reads the real parent links from `ps` and
-//! records every pid whose ancestry reaches this run. Ancestry comes from the
-//! kernel, so a recorded pid genuinely belongs to the run and killing it is
-//! authorized; a process merely *mentioning* the run directory never is. A pid
-//! stays recorded after it is reparented, which is the whole point.
+//! records every process whose ancestry reaches this run. Ancestry comes from
+//! the kernel, so a recorded process genuinely belongs to the run and killing it
+//! is authorized; a process merely *mentioning* the run directory never is. A
+//! process stays recorded after it is reparented, which is the whole point.
+//!
+//! A process is recorded as its pid **and its start time** (L-337). The kernel
+//! hands an exited process's pid to a later, unrelated one, and a bare pid then
+//! made that stranger look owned: its children were adopted and it was put in
+//! line for `SIGKILL`. The start time is re-read immediately before every
+//! signal and every liveness check, and a pid whose start time no longer
+//! matches is not this run's.
 //!
 //! The limit that remains, stated plainly: a process that forks, calls
 //! `setsid`, and is reparented entirely between two samples is never observed.
@@ -54,7 +61,7 @@
 //! exited" — accurate for an ordinary script, and not proof against one written
 //! to evade observation.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -156,10 +163,67 @@ fn parent_links() -> Option<HashMap<i32, i32>> {
     Some(links)
 }
 
+/// When the process holding `pid` started, in microseconds since the epoch.
+///
+/// With the pid, this names one process for good: a pid is recycled once its
+/// process exits, and the recycled pid comes with a later start time (L-337).
+///
+/// `Ok(None)` means no live process holds `pid`: it exited, or it is a zombie,
+/// which the kernel reports the same way. `Err(())` means a process is there
+/// but could not be read (another user's, for instance), which is not gone.
+#[cfg(target_os = "macos")]
+fn start_time(pid: i32) -> Result<Option<u64>, ()> {
+    let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    // SAFETY: a plain C struct the kernel fills in; the buffer is exactly the
+    // size passed, and anything but a full write is treated as no answer.
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let written = unsafe {
+        libc::proc_pidinfo(
+            pid,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            (&mut info as *mut libc::proc_bsdinfo).cast(),
+            size,
+        )
+    };
+    if written == size {
+        return Ok(Some(
+            info.pbi_start_tvsec * 1_000_000 + info.pbi_start_tvusec,
+        ));
+    }
+    match std::io::Error::last_os_error().raw_os_error() {
+        Some(libc::ESRCH) => Ok(None),
+        _ => Err(()),
+    }
+}
+
+/// No identity source is wired up off macOS, so nothing can be proven to be the
+/// process that was observed, and nothing is signalled or confirmed.
+#[cfg(not(target_os = "macos"))]
+fn start_time(_pid: i32) -> Result<Option<u64>, ()> {
+    Err(())
+}
+
+/// Reads a process's start time; injected so pid reuse can be staged in tests.
+type StartTime<'a> = &'a dyn Fn(i32) -> Result<Option<u64>, ()>;
+
+/// Whether `pid` is still the process that started at `started`.
+///
+/// `None` when a process holds the pid but cannot be read: it is neither
+/// provably the one observed nor provably gone.
+fn is_same_process(pid: i32, started: u64, start_time: StartTime) -> Option<bool> {
+    match start_time(pid) {
+        Ok(Some(now)) => Some(now == started),
+        Ok(None) => Some(false),
+        Err(()) => None,
+    }
+}
+
 struct State {
-    /// Pids whose ancestry was observed to reach this run. They stay here after
-    /// reparenting, which is what makes the record useful.
-    owned: HashSet<i32>,
+    /// Processes whose ancestry was observed to reach this run: pid to start
+    /// time. They stay here after reparenting, which is what makes the record
+    /// useful, and the start time is what keeps a recycled pid out of it.
+    owned: HashMap<i32, u64>,
     /// A sample could not be taken. The record is incomplete and cannot be
     /// completed, so nothing may be confirmed from it.
     blind: bool,
@@ -174,10 +238,19 @@ pub struct Tracker {
 impl Tracker {
     /// Begin recording the descendants of `root`.
     pub fn start(root: i32) -> Tracker {
-        let state = Arc::new(Mutex::new(State {
-            owned: HashSet::from([root]),
+        let mut initial = State {
+            owned: HashMap::new(),
             blind: false,
-        }));
+        };
+        match start_time(root) {
+            Ok(Some(started)) => {
+                initial.owned.insert(root, started);
+            }
+            // Already gone, so there is nothing of it left to own.
+            Ok(None) => {}
+            Err(()) => initial.blind = true,
+        }
+        let state = Arc::new(Mutex::new(initial));
         let stop = Arc::new(AtomicBool::new(false));
         let thread = {
             let state = Arc::clone(&state);
@@ -207,7 +280,7 @@ impl Tracker {
     /// Stop everything recorded as belonging to this run, then report whether
     /// that can be confirmed.
     ///
-    /// Only pids with kernel-observed ancestry to this run are signalled.
+    /// Only processes with kernel-observed ancestry to this run are signalled.
     /// `run_dir`, when given, is used for the evidence check described on
     /// [`argv_mentions`] — which can lower the verdict and never raise it.
     pub fn terminate_in(&self, grace: Duration, run_dir: Option<&std::path::Path>) -> Cleanup {
@@ -239,8 +312,15 @@ impl Tracker {
         // recorded before anything is killed.
         sample_into(&self.state);
 
-        for pid in self.owned() {
-            // SAFETY: `pid` was observed to descend from this run's own child.
+        for (pid, started) in self.owned() {
+            // Re-read identity immediately before the signal: this pid may
+            // have exited since it was recorded and been handed to an
+            // unrelated process. An unreadable one is not signalled either.
+            if is_same_process(pid, started, &start_time) != Some(true) {
+                continue;
+            }
+            // SAFETY: `pid` was observed to descend from this run's own child
+            // and still names the process that was observed.
             #[cfg(unix)]
             unsafe {
                 libc::kill(pid, libc::SIGKILL);
@@ -253,19 +333,23 @@ impl Tracker {
                 self.state.lock().unwrap().blind = true;
                 return Cleanup::Unknown;
             };
-            let still_alive: Vec<i32> = self
+            // A pid now held by a stranger is not a survivor of this run; one
+            // that cannot be read might be, so it counts until it is gone.
+            let still_alive = self
                 .owned()
                 .into_iter()
-                .filter(|pid| links.contains_key(pid))
-                .collect();
-            if still_alive.is_empty() {
+                .filter(|&(pid, started)| {
+                    links.contains_key(&pid)
+                        && is_same_process(pid, started, &start_time) != Some(false)
+                })
+                .count();
+            if still_alive == 0 {
                 break;
             }
             if Instant::now() >= deadline {
                 log::warn!(
                     target: "lilypad::agent",
-                    "{} process(es) from this Ask run did not exit after SIGKILL",
-                    still_alive.len()
+                    "{still_alive} process(es) from this Ask run did not exit after SIGKILL"
                 );
                 return Cleanup::Unknown;
             }
@@ -280,32 +364,40 @@ impl Tracker {
         Cleanup::Confirmed
     }
 
-    fn owned(&self) -> Vec<i32> {
+    fn owned(&self) -> Vec<(i32, u64)> {
         let me = std::process::id() as i32;
         self.state
             .lock()
             .unwrap()
             .owned
             .iter()
-            .copied()
-            .filter(|pid| *pid != me && *pid > 1)
+            .map(|(&pid, &started)| (pid, started))
+            .filter(|&(pid, _)| pid != me && pid > 1)
             .collect()
     }
 }
 
-/// Add every process whose ancestry reaches an already-owned pid.
 fn sample_into(state: &Arc<Mutex<State>>) {
     let Some(links) = parent_links() else {
         state.lock().unwrap().blind = true;
         return;
     };
-    let mut guard = state.lock().unwrap();
+    record_descendants(&mut state.lock().unwrap(), &links, &start_time);
+}
+
+/// Add every process whose ancestry reaches a process this run still owns.
+///
+/// A parent counts as owned by identity, not by pid: a recycled pid in the
+/// chain belongs to a stranger, and so do that stranger's children.
+fn record_descendants(state: &mut State, links: &HashMap<i32, i32>, start_time: StartTime) {
     // Walk each process up its parent chain. A chain that reaches something we
-    // already own means this process belongs to the run — including a chain
+    // still own means this process belongs to the run — including a chain
     // through an intermediate that has since exited, as long as it was seen.
     for &pid in links.keys() {
-        if guard.owned.contains(&pid) {
-            continue;
+        if let Some(&started) = state.owned.get(&pid) {
+            if is_same_process(pid, started, start_time) == Some(true) {
+                continue;
+            }
         }
         let mut cursor = pid;
         // Bounded: the table is finite and a chain cannot revisit a pid without
@@ -317,9 +409,31 @@ fn sample_into(state: &Arc<Mutex<State>>) {
             if parent <= 1 {
                 break;
             }
-            if guard.owned.contains(&parent) {
-                guard.owned.insert(pid);
-                break;
+            if let Some(&parent_started) = state.owned.get(&parent) {
+                match is_same_process(parent, parent_started, start_time) {
+                    Some(true) => {
+                        match start_time(pid) {
+                            Ok(Some(started)) => {
+                                state.owned.insert(pid, started);
+                            }
+                            // Exited since the sample: nothing left to own.
+                            Ok(None) => {}
+                            // Ours, and unreadable: it can be neither signalled
+                            // nor confirmed gone.
+                            Err(()) => state.blind = true,
+                        }
+                        break;
+                    }
+                    // A stranger holds that pid now. Its own ancestry decides,
+                    // so keep walking.
+                    Some(false) => {}
+                    // Something this run owned can no longer be read, so the
+                    // record cannot be trusted to be complete.
+                    None => {
+                        state.blind = true;
+                        break;
+                    }
+                }
             }
             cursor = parent;
         }
@@ -435,7 +549,12 @@ mod tests {
     /// This is the false clean the previous implementation produced.
     #[test]
     fn a_failed_inspection_is_unknown_not_confirmed() {
-        let tracker = Tracker::start(std::process::id() as i32);
+        // Never root this fixture at the test runner itself: under Rust's normal
+        // parallel test execution that makes every process spawned by a sibling
+        // test our descendant, and terminate() is then correctly authorized to
+        // kill them. A nonexistent root exercises the blind verdict without
+        // granting this fixture ownership of unrelated test processes.
+        let tracker = Tracker::start(i32::MAX);
         tracker.state.lock().unwrap().blind = true;
         assert_eq!(
             tracker.terminate(Duration::from_millis(200)),
@@ -546,5 +665,116 @@ mod tests {
         // look" must never be expressible as "looked, saw nothing".
         let links = parent_links().expect("ps works on this machine");
         assert!(links.contains_key(&(std::process::id() as i32)));
+    }
+
+    /// A staged process table, so pid reuse happens exactly when a test says.
+    /// Nothing here reaches a real process: these pids are only map keys, and
+    /// no test below calls `terminate`, which is what signals.
+    fn table(
+        entries: &[(i32, Result<Option<u64>, ()>)],
+    ) -> impl Fn(i32) -> Result<Option<u64>, ()> {
+        let entries: HashMap<_, _> = entries.iter().cloned().collect();
+        move |pid| entries.get(&pid).cloned().unwrap_or(Ok(None))
+    }
+
+    /// L-337. The run owned pid 4100, which started at t=1000 and exited. The
+    /// kernel gave 4100 to an unrelated process started at t=9000, which has a
+    /// child of its own. A bare pid made both of them the run's.
+    #[test]
+    fn a_recycled_pid_is_not_owned_and_neither_are_its_children() {
+        let mut state = State {
+            owned: HashMap::from([(4100, 1_000)]),
+            blind: false,
+        };
+        let links = HashMap::from([(4100, 77), (4200, 4100)]);
+        let now = table(&[(4100, Ok(Some(9_000))), (4200, Ok(Some(9_500)))]);
+
+        record_descendants(&mut state, &links, &now);
+
+        assert!(
+            !state.owned.contains_key(&4200),
+            "a stranger's child was adopted through a recycled pid"
+        );
+        // `terminate` signals only on `Some(true)`, and counts a survivor on
+        // anything but `Some(false)`.
+        assert_eq!(
+            is_same_process(4100, state.owned[&4100], &now),
+            Some(false),
+            "the stranger now holding a recycled pid would be signalled"
+        );
+        assert!(!state.blind);
+    }
+
+    /// The control for the test above: the same table with the original
+    /// process still under its pid adopts the child, so the refusal there is
+    /// about identity and not about adoption being broken.
+    #[test]
+    fn the_same_process_under_its_pid_still_owns_its_children() {
+        let mut state = State {
+            owned: HashMap::from([(4100, 1_000)]),
+            blind: false,
+        };
+        let links = HashMap::from([(4100, 77), (4200, 4100)]);
+        let now = table(&[(4100, Ok(Some(1_000))), (4200, Ok(Some(1_500)))]);
+
+        record_descendants(&mut state, &links, &now);
+
+        assert_eq!(state.owned.get(&4200), Some(&1_500));
+        assert_eq!(is_same_process(4100, 1_000, &now), Some(true));
+        assert!(!state.blind);
+    }
+
+    /// A recycled pid can also be the run's own new process. Then it is owned
+    /// again, under its new start time.
+    #[test]
+    fn a_recycled_pid_that_descends_from_the_run_is_owned_afresh() {
+        let mut state = State {
+            owned: HashMap::from([(4000, 500), (4100, 1_000)]),
+            blind: false,
+        };
+        let links = HashMap::from([(4000, 77), (4100, 4000)]);
+        let now = table(&[(4000, Ok(Some(500))), (4100, Ok(Some(9_000)))]);
+
+        record_descendants(&mut state, &links, &now);
+
+        assert_eq!(state.owned.get(&4100), Some(&9_000));
+    }
+
+    /// Unreadable is never gone: it is not signalled, it still counts as a
+    /// survivor, and a descendant that cannot be read makes the record blind.
+    #[test]
+    fn a_process_that_cannot_be_read_is_never_treated_as_gone() {
+        assert_eq!(
+            is_same_process(4100, 1_000, &table(&[(4100, Err(()))])),
+            None
+        );
+
+        let mut state = State {
+            owned: HashMap::from([(4100, 1_000)]),
+            blind: false,
+        };
+        let links = HashMap::from([(4100, 77), (4200, 4100)]);
+        let now = table(&[(4100, Ok(Some(1_000))), (4200, Err(()))]);
+        record_descendants(&mut state, &links, &now);
+        assert!(
+            state.blind,
+            "an unreadable descendant left the record looking complete"
+        );
+    }
+
+    /// The kernel side of identity: stable for a live process, absent once the
+    /// process has been reaped.
+    #[test]
+    fn a_reaped_process_has_no_identity_left() {
+        let me = std::process::id() as i32;
+        let started = start_time(me)
+            .expect("this process can read itself")
+            .expect("this process is alive");
+        assert_eq!(start_time(me), Ok(Some(started)));
+
+        let mut child = Command::new("/usr/bin/true").spawn().expect("spawn true");
+        let pid = child.id() as i32;
+        child.wait().unwrap();
+        assert_eq!(start_time(pid), Ok(None));
     }
 }

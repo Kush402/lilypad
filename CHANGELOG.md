@@ -6,6 +6,29 @@ All notable changes to Lilypad are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **An update can no longer disappear between installation and relaunch.** The
+  desktop logs the restart request, waits briefly for the old process to release
+  the single-instance lock, retains the installed update if the person checks
+  again, and surfaces a Quit-and-reopen fallback if relaunch stalls or fails.
+- **A stalled cloud signaling handshake is bounded and cancellable.** The
+  desktop stops an unopened WebSocket after ten seconds and still honors
+  Disconnect while it is opening; the phone retires a failed socket so a late
+  native open event cannot resurrect it as a ghost connection.
+- **A stale approval surface cannot reverse an accepted session.** Approval or
+  denial consumes the one pending decision atomically, and a late denial is
+  ignored after the session advances.
+- **The desktop log now says what the updater did.** Every check, release
+  found, download and failure writes one line, so a Mac left on an old version
+  can say why.
+- **Ask cleanup can no longer kill an unrelated process that inherited a
+  finished one's pid.** Each process a run owns is recorded with its start time,
+  and that identity is re-read immediately before every signal.
+- **The capture bridge links one copy of its Swift audio types.**
+  `screencapturekit` 8.0.1 renames its CoreMedia bridge module, which removes
+  the duplicate symbols it shared with `apple-cf`.
+
 ## [0.1.40] — 2026-09-13
 
 Connections that went stale, and the five separate reasons they did.

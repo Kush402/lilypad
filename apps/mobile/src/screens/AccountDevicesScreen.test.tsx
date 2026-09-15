@@ -2,7 +2,7 @@ import React from 'react';
 import { Alert } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react-native';
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react-native';
 import type { AccountDevice } from '@lilypad/protocol';
 import { AccountDevicesScreen } from './AccountDevicesScreen';
 import {
@@ -244,7 +244,7 @@ describe('AccountDevicesScreen', () => {
 
     renderScreen();
     fireEvent.press(await screen.findByText('Remove'));
-    confirmAlert('Remove');
+    act(() => confirmAlert('Remove'));
 
     await waitFor(() =>
       expect(revokeAccountDevice).toHaveBeenCalledWith(API, '11111111-1111-4111-8111-111111111111'),

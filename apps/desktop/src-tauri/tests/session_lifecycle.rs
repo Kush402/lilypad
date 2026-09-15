@@ -21,6 +21,44 @@ use tokio::sync::mpsc::unbounded_channel;
 const ROOM: &str = "room-1";
 const DEVICE: &str = "desktop-01";
 
+/// A first WebSocket handshake can stall before `run_session` has a
+/// `SignalingClient`. Disconnect still has to win immediately: this is the
+/// same path a newer trusted ring uses to retire the attempt it supersedes.
+#[tokio::test]
+async fn disconnect_cancels_an_initial_handshake_that_has_not_finished() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (_socket, _) = listener.accept().await.unwrap();
+        std::future::pending::<()>().await;
+    });
+    let (control_tx, control_rx) = unbounded_channel();
+    let (event_tx, mut event_rx) = unbounded_channel();
+    let handle = tokio::spawn(run_session(
+        format!("ws://{addr}/ws/signal"),
+        ROOM.to_owned(),
+        DEVICE.to_owned(),
+        None,
+        None,
+        control_rx,
+        event_tx,
+    ));
+
+    // Give the connect future one turn to enter the handshake, then cancel it.
+    tokio::task::yield_now().await;
+    control_tx.send(Control::Disconnect).unwrap();
+    let result = tokio::time::timeout(std::time::Duration::from_millis(250), handle)
+        .await
+        .expect("Disconnect must not wait for the signaling-open deadline")
+        .expect("runner task panicked");
+    assert!(result.is_ok());
+    assert!(matches!(
+        event_rx.recv().await,
+        Some(SessionEvent::Ended { reason }) if reason.contains("signaling was connecting")
+    ));
+    server.abort();
+}
+
 #[tokio::test]
 async fn registers_on_connect() {
     let (url, _to_desktop, mut from_desktop) = fake_signaling_server().await;
@@ -119,7 +157,7 @@ async fn relays_pair_request_and_denies_on_control_deny() {
 async fn approve_sends_pair_approved_with_granted_scopes() {
     let (url, to_desktop, mut from_desktop) = fake_signaling_server().await;
     let (control_tx, control_rx) = unbounded_channel::<Control>();
-    let (event_tx, _event_rx) = unbounded_channel::<SessionEvent>();
+    let (event_tx, mut event_rx) = unbounded_channel::<SessionEvent>();
 
     let handle = tokio::spawn(run_session(
         url,
@@ -144,6 +182,14 @@ async fn approve_sends_pair_approved_with_granted_scopes() {
             }),
         ))
         .expect("send pair-request");
+    // The real UI cannot approve until PairRequested has been processed and
+    // rendered. Preserve that causal boundary in the fixture: otherwise the
+    // control and signaling channels are simultaneously ready and select may
+    // correctly observe Approve before there is a decision to consume.
+    expect_event(&mut event_rx, "PairRequested", |e| {
+        matches!(e, SessionEvent::PairRequested { .. })
+    })
+    .await;
 
     control_tx
         .send(Control::Approve {
@@ -160,6 +206,71 @@ async fn approve_sends_pair_approved_with_granted_scopes() {
 
     // Tear down: no session-start was sent back (test ends before a peer would
     // ever be created), so the runner is just waiting on signaling/control.
+    drop(control_tx);
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
+}
+
+#[tokio::test]
+async fn approve_consumes_the_decision_before_a_stale_deny_can_arrive() {
+    let (url, to_desktop, mut from_desktop) = fake_signaling_server().await;
+    let (control_tx, control_rx) = unbounded_channel::<Control>();
+    let (event_tx, mut event_rx) = unbounded_channel::<SessionEvent>();
+
+    let handle = tokio::spawn(run_session(
+        url,
+        ROOM.to_owned(),
+        DEVICE.to_owned(),
+        None,
+        None,
+        control_rx,
+        event_tx,
+    ));
+
+    expect_outbound(&mut from_desktop, "register").await;
+    to_desktop
+        .send(inbound(
+            "pair-request",
+            ROOM,
+            DeviceKind::Mobile,
+            serde_json::json!({
+                "deviceId": "mobile-01",
+                "deviceName": "Test iPhone",
+                "requestedScopes": ["view", "control"],
+            }),
+        ))
+        .expect("send pair-request");
+    expect_event(&mut event_rx, "PairRequested", |e| {
+        matches!(e, SessionEvent::PairRequested { .. })
+    })
+    .await;
+
+    control_tx
+        .send(Control::Approve {
+            scopes: vec!["view".into(), "control".into()],
+            trust: true,
+        })
+        .expect("send approve");
+    expect_outbound(&mut from_desktop, "pair-approved").await;
+
+    // This is the live v0.1.40 failure: a stale dashboard kept both buttons
+    // clickable after approval, and Deny killed the already-connected session.
+    // Even before session-start returns, the first decision must own the room.
+    control_tx.send(Control::Deny).expect("send stale deny");
+    let stale_deny = tokio::time::timeout(std::time::Duration::from_millis(250), async {
+        loop {
+            match from_desktop.recv().await {
+                Some(env) if env.msg_type == "pair-denied" => return true,
+                Some(_) => continue,
+                None => return false,
+            }
+        }
+    })
+    .await;
+    assert!(
+        stale_deny.is_err(),
+        "a stale Deny was sent after approval had already won"
+    );
+
     drop(control_tx);
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
 }

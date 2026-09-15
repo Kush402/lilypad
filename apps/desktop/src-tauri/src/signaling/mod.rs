@@ -6,6 +6,7 @@ pub mod messages;
 
 use anyhow::{anyhow, Result};
 use futures_util::{SinkExt, StreamExt};
+use std::time::Duration;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio_tungstenite::{
     connect_async,
@@ -13,6 +14,11 @@ use tokio_tungstenite::{
 };
 
 pub use messages::Envelope;
+
+/// A WebSocket that never finishes TCP/TLS/HTTP negotiation must not own a
+/// session forever. Mirrors `SIGNALING_OPEN_TIMEOUT_MS` in
+/// `packages/protocol/src/constants.ts` / the mobile client.
+const SIGNALING_OPEN_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Handle for sending envelopes to the signaling server.
 #[derive(Clone)]
@@ -56,6 +62,14 @@ pub async fn connect(
     url: &str,
     token: Option<&str>,
 ) -> Result<(SignalingHandle, UnboundedReceiver<Envelope>)> {
+    connect_with_timeout(url, token, SIGNALING_OPEN_TIMEOUT).await
+}
+
+async fn connect_with_timeout(
+    url: &str,
+    token: Option<&str>,
+    timeout: Duration,
+) -> Result<(SignalingHandle, UnboundedReceiver<Envelope>)> {
     let mut request = url
         .into_client_request()
         .map_err(|e| anyhow!("bad signaling url {url}: {e}"))?;
@@ -65,8 +79,14 @@ pub async fn connect(
             .map_err(|e| anyhow!("device token is not a valid header value: {e}"))?;
         request.headers_mut().insert(AUTHORIZATION, value);
     }
-    let (ws, _resp) = connect_async(request)
+    let (ws, _resp) = tokio::time::timeout(timeout, connect_async(request))
         .await
+        .map_err(|_| {
+            anyhow!(
+                "signaling connect timed out after {}ms",
+                timeout.as_millis()
+            )
+        })?
         .map_err(|e| anyhow!("signaling connect failed: {e}"))?;
     let (mut sink, mut stream) = ws.split();
 
@@ -106,4 +126,39 @@ pub async fn connect(
     });
 
     Ok((SignalingHandle { out: out_tx }, in_rx))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Hardware evidence, 2026-09-14: a trusted ring sat inside
+    /// `connect_async` for 59 seconds and could neither register nor fail back
+    /// to a retry. The phone's equivalent has had a 10-second bound since
+    /// v0.1.21; the desktop must make the same guarantee.
+    #[tokio::test]
+    async fn a_server_that_accepts_tcp_but_never_finishes_the_handshake_is_bounded() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (_socket, _) = listener.accept().await.unwrap();
+            std::future::pending::<()>().await;
+        });
+
+        let error = match connect_with_timeout(
+            &format!("ws://{addr}/ws/signal"),
+            None,
+            Duration::from_millis(40),
+        )
+        .await
+        {
+            Ok(_) => panic!("an unfinished handshake unexpectedly connected"),
+            Err(error) => error,
+        };
+        assert!(
+            error.to_string().contains("timed out after 40ms"),
+            "unexpected error: {error:#}"
+        );
+        server.abort();
+    }
 }

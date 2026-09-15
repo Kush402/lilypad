@@ -767,6 +767,42 @@ verbatim, whether Pro appeared, and — for the ones that are about recovery —
 how long it took and whether any tap was needed. A run that needed a Restore
 tap is a **failure** of that run, not a pass with a caveat.
 
+## v0.1.41 recovery and relaunch gate
+
+These checks are additive. None is passed by a source test or by a v0.1.40
+observation.
+
+1. **Signed updater handoff.** Start from signed v0.1.40, install v0.1.41 through
+   the updater, and accept Restart. Expect the old PID to exit and a v0.1.41
+   process to appear without a manual launch. Record the durable `restart
+requested` and new-version startup lines. Repeat once with another Lilypad
+   surface open so the single-instance handoff is exercised.
+2. **Updater failure recovery.** While an installed update is awaiting restart,
+   press Check again. Expect the pending restart to remain visible. Exercise a
+   deliberately inert relaunch in a development candidate; after three seconds
+   expect an explicit Quit-and-reopen action rather than a frozen Restart.
+3. **One approval decision.** Open every desktop surface that can show the
+   pending session. Approve from one, then immediately attempt Approve and Deny
+   from the others and from the menu. Expect exactly one decision, retired
+   controls everywhere, and uninterrupted media/input.
+4. **Trusted reaccept.** After each of normal phone exit, desktop denial, forced
+   phone termination and forced desktop termination, Ring again from the trusted
+   phone. Expect automatic reaccept with no QR screen, stale room or duplicate
+   approval.
+5. **Stalled signaling open.** Route the desktop to a TCP endpoint that accepts
+   but never completes the WebSocket handshake. Expect failure within ten
+   seconds; Disconnect must react immediately. Reconnect through the real
+   service and confirm that no late desktop or phone socket appears as a ghost.
+6. **Network and lifecycle matrix.** Repeat Ring on same Wi-Fi, Wi-Fi-to-cellular,
+   cellular-to-Wi-Fi, foreground-after-background, terminate-and-relaunch, and
+   rapid repeated Ring. Record room id, both versions, selected route, first
+   frame time, input-channel time and every recovery action.
+7. **Release automation.** Run the entire JavaScript/TypeScript gate with real
+   PostgreSQL ordering tests, then the entire Rust gate at its normal parallelism.
+   L-337 and L-338 must be fixed, the parallel run must pass, and the macOS link
+   must contain no duplicate Swift bridge definitions. A serial-only pass is a
+   failure of this gate.
+
 ## Results
 
 Copy this in and fill it out. "Not run" is a legitimate answer; a guess is not.

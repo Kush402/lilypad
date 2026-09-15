@@ -57,6 +57,34 @@ describe('useAppState', () => {
     );
   });
 
+  it('attaches the event listener before taking the initial state snapshot', async () => {
+    const { listen } = await import('@tauri-apps/api/event');
+    let finishListen!: (unlisten: () => void) => void;
+    vi.mocked(listen).mockReturnValue(
+      new Promise((resolve) => {
+        finishListen = resolve;
+      }),
+    );
+    vi.mocked(api.getState).mockResolvedValue(dto({ session: 'active' }));
+
+    const { result } = renderHook(() => useAppState());
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    // No pre-subscription read: an approval event landing here would otherwise
+    // be lost after an already-stale snapshot.
+    expect(api.getState).not.toHaveBeenCalled();
+    expect(result.current).toBeNull();
+
+    await act(async () => {
+      finishListen(vi.fn());
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(result.current?.session).toBe('active'));
+    expect(api.getState).toHaveBeenCalledTimes(1);
+  });
+
   it('re-fetches state when the event fires, without a timer', async () => {
     vi.useFakeTimers();
     vi.mocked(api.getState)

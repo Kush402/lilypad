@@ -22,6 +22,15 @@
 
 use std::os::unix::io::AsRawFd;
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
+
+/// Tauri restarts by spawning the successor immediately before the old process
+/// exits. The predecessor still owns this process-lifetime lock in that small
+/// window, so a purely non-blocking acquisition can reject the one successor
+/// the updater just launched. Wait briefly for an orderly handoff; a genuine
+/// second manual launch still exits after this bounded delay.
+const INSTANCE_HANDOFF_WAIT: Duration = Duration::from_secs(2);
+const INSTANCE_HANDOFF_POLL: Duration = Duration::from_millis(20);
 
 /// Held for the whole process lifetime — dropping it (closing the fd) releases
 /// the advisory lock, so we deliberately keep it alive by storing it in a
@@ -48,13 +57,16 @@ fn lock_path() -> PathBuf {
 /// only reintroduces the two-instance case in the rare event the temp dir is
 /// unwritable, which is strictly better than never launching.
 pub fn try_acquire() -> Option<InstanceLock> {
-    let path = lock_path();
+    try_acquire_path(&lock_path(), INSTANCE_HANDOFF_WAIT)
+}
+
+fn try_acquire_path(path: &std::path::Path, wait: Duration) -> Option<InstanceLock> {
     let file = match std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
         .truncate(false)
-        .open(&path)
+        .open(path)
     {
         Ok(f) => f,
         Err(e) => {
@@ -71,11 +83,79 @@ pub fn try_acquire() -> Option<InstanceLock> {
         }
     };
 
-    // Non-blocking exclusive advisory lock. EWOULDBLOCK ⇒ someone holds it.
-    let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-    if rc == 0 {
-        Some(InstanceLock { _file: file })
-    } else {
-        None
+    // Non-blocking per attempt so a genuinely live predecessor cannot hang
+    // launch. EWOULDBLOCK means either a second manual instance OR the updater
+    // successor arriving a few milliseconds before its parent exits; only the
+    // bounded handoff wait can distinguish those outcomes safely.
+    let deadline = Instant::now() + wait;
+    loop {
+        let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        if rc == 0 {
+            return Some(InstanceLock { _file: file });
+        }
+        let error = std::io::Error::last_os_error();
+        let error_code = error.raw_os_error();
+        if error_code != Some(libc::EWOULDBLOCK) && error_code != Some(libc::EAGAIN) {
+            // Same fail-open posture as an unopenable lock file: an advisory
+            // guard malfunction must not make the app impossible to launch.
+            log::warn!(
+                target: "lilypad::instance",
+                "could not lock instance file {}: {error} — proceeding without single-instance guard",
+                path.display()
+            );
+            return Some(InstanceLock { _file: file });
+        }
+        if Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(
+            INSTANCE_HANDOFF_POLL.min(deadline.saturating_duration_since(Instant::now())),
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scratch(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "lilypad-instance-{name}-{}-{:?}.lock",
+            std::process::id(),
+            std::thread::current().id()
+        ))
+    }
+
+    /// The updater's process order is successor starts → predecessor exits.
+    /// A zero-wait lock rejects that successor; the production wait must let it
+    /// take ownership once the predecessor releases the descriptor.
+    #[test]
+    fn a_relaunch_successor_waits_for_the_predecessors_lock_handoff() {
+        let path = scratch("handoff");
+        let first = try_acquire_path(&path, Duration::ZERO).expect("first instance");
+        let contender_path = path.clone();
+        let contender = std::thread::spawn(move || {
+            try_acquire_path(&contender_path, Duration::from_millis(500))
+        });
+        std::thread::sleep(Duration::from_millis(60));
+        drop(first);
+
+        let second = contender.join().unwrap();
+        assert!(second.is_some(), "the updater successor was discarded");
+        drop(second);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn a_real_second_instance_still_gives_up_after_the_bound() {
+        let path = scratch("occupied");
+        let first = try_acquire_path(&path, Duration::ZERO).expect("first instance");
+        let started = Instant::now();
+        let second = try_acquire_path(&path, Duration::from_millis(60));
+
+        assert!(second.is_none());
+        assert!(started.elapsed() >= Duration::from_millis(40));
+        drop(first);
+        let _ = std::fs::remove_file(path);
     }
 }

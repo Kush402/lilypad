@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import { SoftwareUpdate } from './SoftwareUpdate';
 import { updater } from '../lib/tauri';
-import { AUTO_CHECK_INTERVAL_MS } from '../lib/useUpdater';
+import { AUTO_CHECK_INTERVAL_MS, RELAUNCH_WATCHDOG_MS } from '../lib/useUpdater';
 
 const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke }));
@@ -40,6 +40,7 @@ describe('SoftwareUpdate — the automatic check', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(updater.currentVersion).mockResolvedValue('0.1.0');
+    vi.mocked(updater.relaunch).mockResolvedValue(undefined);
   });
 
   it('keeps asking, because an app that never restarts never gets a launch check', async () => {
@@ -115,6 +116,7 @@ describe('SoftwareUpdate — panel (Diagnostics)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(updater.currentVersion).mockResolvedValue('0.1.0');
+    vi.mocked(updater.relaunch).mockResolvedValue(undefined);
   });
 
   it('shows the current version', async () => {
@@ -173,6 +175,7 @@ describe('SoftwareUpdate — when a step fails', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(updater.currentVersion).mockResolvedValue('0.1.0');
+    vi.mocked(updater.relaunch).mockResolvedValue(undefined);
   });
 
   it('names the check when the check is what failed', async () => {
@@ -225,5 +228,70 @@ describe('SoftwareUpdate — when a step fails', () => {
 
     expect(await screen.findByText(/Lilypad 0\.2\.0/)).toBeInTheDocument();
     expect(updater.check).toHaveBeenCalledTimes(2);
+  });
+
+  it('shows a relaunch rejection and retries only the restart', async () => {
+    const update = fakeUpdate();
+    vi.mocked(updater.check).mockResolvedValue(update as never);
+    vi.mocked(updater.relaunch)
+      .mockRejectedValueOnce(new Error('restart command unavailable'))
+      .mockResolvedValueOnce(undefined);
+
+    render(<SoftwareUpdate variant="panel" />);
+    screen.getByText('Check for updates').click();
+    (await screen.findByRole('button', { name: 'Download & install' })).click();
+    (await screen.findByRole('button', { name: 'Restart to update' })).click();
+
+    expect(
+      await screen.findByText(/Couldn’t restart Lilypad\. restart command unavailable/),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Check for updates' })).toBeDisabled();
+    screen.getByTestId('update-retry').click();
+    await waitFor(() => expect(updater.relaunch).toHaveBeenCalledTimes(2));
+    expect(update.downloadAndInstall).toHaveBeenCalledTimes(1);
+    expect(updater.check).toHaveBeenCalledTimes(1);
+  });
+
+  it('turns an inert successful restart request into an explicit reopen fallback', async () => {
+    vi.useFakeTimers();
+    try {
+      const update = fakeUpdate();
+      vi.mocked(updater.check).mockResolvedValue(update as never);
+      vi.mocked(updater.relaunch).mockReturnValue(new Promise(() => {}));
+
+      render(<SoftwareUpdate variant="panel" />);
+      screen.getByText('Check for updates').click();
+      await vi.waitFor(() =>
+        expect(screen.getByRole('button', { name: 'Download & install' })).toBeInTheDocument(),
+      );
+      screen.getByRole('button', { name: 'Download & install' }).click();
+      await vi.waitFor(() =>
+        expect(screen.getByRole('button', { name: 'Restart to update' })).toBeInTheDocument(),
+      );
+      screen.getByRole('button', { name: 'Restart to update' }).click();
+      await vi.waitFor(() =>
+        expect(screen.getByRole('button', { name: 'Restarting…' })).toBeDisabled(),
+      );
+
+      await vi.advanceTimersByTimeAsync(RELAUNCH_WATCHDOG_MS);
+      expect(
+        screen.getByText(/Quit and reopen it to finish installing version 0\.2\.0/),
+      ).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('cannot re-check away an update that is already waiting for restart', async () => {
+    const update = fakeUpdate();
+    vi.mocked(updater.check).mockResolvedValue(update as never);
+
+    render(<SoftwareUpdate variant="panel" />);
+    screen.getByText('Check for updates').click();
+    (await screen.findByRole('button', { name: 'Download & install' })).click();
+    await screen.findByRole('button', { name: 'Restart to update' });
+
+    expect(screen.getByRole('button', { name: 'Check for updates' })).toBeDisabled();
+    expect(updater.check).toHaveBeenCalledTimes(1);
   });
 });

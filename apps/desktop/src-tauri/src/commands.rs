@@ -749,19 +749,27 @@ pub fn approve_session(
     state: State<'_, SharedState>,
     trust: Option<bool>,
 ) -> Result<(), String> {
-    let (tx, scopes) = {
-        let s = lock_state(&state);
-        (s.control_tx.clone(), s.offered_scopes.clone())
+    let Some(claim) = ({
+        let mut s = lock_state(&state);
+        claim_pending_approval(&mut s, SessionStatus::Connecting)
+    }) else {
+        // A hidden/stale webview can still invoke its old button after the
+        // session has moved on. Treat that as an idempotent no-op at the
+        // command boundary; it must not enqueue another decision.
+        log::info!(target: "lilypad::session", "ignoring stale approve — no approval is pending");
+        close_window(&app, "qr-overlay");
+        crate::sync_tray_menu(&app);
+        return Ok(());
     };
     // The audit `session_start` line is NOT written here: this command fires
     // on every Approve tap, including duplicates the runner ignores (its
     // idempotent-approval guard). The runner writes the audit event in the
     // one branch where the approval is actually honored — an audit trail
     // must record sessions that started, not buttons that were pressed.
-    let result = match tx {
+    let result = match claim.tx {
         Some(tx) => tx
             .send(Control::Approve {
-                scopes,
+                scopes: claim.scopes,
                 trust: trust.unwrap_or(false),
             })
             .map_err(|e| e.to_string()),
@@ -771,6 +779,17 @@ pub fn approve_session(
             Ok(())
         }
     };
+    if result.is_err() {
+        let mut s = lock_state(&state);
+        reset_claimed_room_if_current(&mut s, claim.room.as_deref());
+    }
+    // The shared state changed synchronously above, before the runner/backend
+    // round trip. Wake every webview now so the decision buttons retire after
+    // the first tap rather than remaining live long enough to race each other.
+    let _ = app.emit(
+        "lilypad://session",
+        serde_json::json!({ "kind": "approval_decided" }),
+    );
     crate::sync_tray_menu(&app);
     close_window(&app, "qr-overlay");
     result
@@ -778,8 +797,31 @@ pub fn approve_session(
 
 #[tauri::command]
 pub fn deny_session(app: AppHandle, state: State<'_, SharedState>) -> Result<(), String> {
-    send_control_or_reset(&state, Control::Deny);
+    let Some(claim) = ({
+        let mut s = lock_state(&state);
+        // There is no long-lived "ending" UI state. Idle is already the true
+        // local result of denying the request; retain the room/control sender
+        // only until the runner emits its terminal event.
+        claim_pending_approval(&mut s, SessionStatus::Idle)
+    }) else {
+        log::info!(target: "lilypad::session", "ignoring stale deny — no approval is pending");
+        close_window(&app, "qr-overlay");
+        crate::sync_tray_menu(&app);
+        return Ok(());
+    };
+    if let Some(tx) = claim.tx {
+        if tx.send(Control::Deny).is_err() {
+            let mut s = lock_state(&state);
+            reset_claimed_room_if_current(&mut s, claim.room.as_deref());
+        }
+    } else {
+        reset_to_idle(&state);
+    }
     log::info!(target: "lilypad::audit", "pair_denied — denied by user");
+    let _ = app.emit(
+        "lilypad://session",
+        serde_json::json!({ "kind": "approval_decided" }),
+    );
     close_window(&app, "qr-overlay");
     crate::sync_tray_menu(&app);
     Ok(())
@@ -873,17 +915,16 @@ pub fn open_permission_settings(
         .map_err(|e| e.to_string())
 }
 
-/// Re-exec the current binary then exit — the only way some TCC grants
+/// Restart through Tauri's process lifecycle — the only way some TCC grants
 /// (notably Accessibility, on non-notarized dev builds) take effect for a
-/// process already running. Manual respawn rather than a new
-/// `tauri-plugin-process` dependency: this is a three-line operation, not
-/// worth a whole plugin's integration surface.
+/// process already running. A raw `Command::spawn` followed by `exit` silently
+/// ignored a spawn failure and did not preserve Tauri's relaunch environment.
+/// The single-instance guard has a bounded predecessor handoff for the child
+/// this starts; see `single_instance`.
 #[tauri::command]
 pub fn restart_app(app: AppHandle) {
-    if let Ok(exe) = std::env::current_exe() {
-        let _ = std::process::Command::new(exe).spawn();
-    }
-    app.exit(0);
+    log::info!(target: "lilypad::update", "desktop restart requested");
+    app.request_restart();
 }
 
 /// Whether a setup-permission poll is already running. See `show_setup`.
@@ -971,6 +1012,49 @@ pub fn show_control_window(app: AppHandle) -> Result<(), String> {
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
+
+/// Atomically consume the one pending human decision.
+///
+/// The returned sender may be absent only in the debug/offline simulation.
+/// Moving the coarse state before releasing the lock means two webviews (or a
+/// double tap) cannot both win: every later Approve/Deny observes that the
+/// approval has already been consumed.
+struct PendingApprovalClaim {
+    tx: Option<UnboundedSender<Control>>,
+    scopes: Vec<String>,
+    room: Option<String>,
+}
+
+fn claim_pending_approval(
+    state: &mut AppState,
+    next: SessionStatus,
+) -> Option<PendingApprovalClaim> {
+    if state.session != SessionStatus::AwaitingApproval {
+        return None;
+    }
+    state.session = next;
+    state.pending_request = None;
+    Some(PendingApprovalClaim {
+        tx: state.control_tx.clone(),
+        scopes: state.offered_scopes.clone(),
+        room: state.current_room_id.clone(),
+    })
+}
+
+/// A command can win the pending-decision claim just as its runner exits. If
+/// its control send then fails, release only the room it claimed; a concurrent
+/// takeover must keep its newer state.
+fn reset_claimed_room_if_current(state: &mut AppState, expected_room: Option<&str>) {
+    if state.current_room_id.as_deref() != expected_room {
+        return;
+    }
+    state.session = SessionStatus::Idle;
+    state.current_room_id = None;
+    state.control_tx = None;
+    state.pending_request = None;
+    state.auto_approve_room = None;
+    state.shared_display = None;
+}
 
 /// Prefer routing lifecycle commands to the active runner (which tears the
 /// WebRTC session down + emits Ended); fall back to a local reset if none.
@@ -2638,6 +2722,40 @@ mod tests {
 
         apply_input_channel_event(&mut state, true);
         assert_eq!(state.session, SessionStatus::Active);
+    }
+
+    #[test]
+    fn the_first_approval_decision_atomically_retires_every_later_one() {
+        let mut state = AppState::new("desktop".to_owned(), "https://example.test".to_owned());
+        state.session = SessionStatus::AwaitingApproval;
+        state.pending_request = Some(PendingRequest::new(
+            Some("Phone".to_owned()),
+            vec!["view".to_owned(), "control".to_owned()],
+        ));
+        let (control_tx, _control_rx) = unbounded_channel();
+        state.control_tx = Some(control_tx);
+
+        let claimed = claim_pending_approval(&mut state, SessionStatus::Connecting);
+        assert!(claimed.is_some());
+        assert_eq!(state.session, SessionStatus::Connecting);
+        assert!(state.pending_request.is_none());
+
+        // A second webview still rendering the old card cannot turn the first
+        // Approve into a late Deny (the sequence observed on v0.1.40).
+        assert!(claim_pending_approval(&mut state, SessionStatus::Idle).is_none());
+        assert_eq!(state.session, SessionStatus::Connecting);
+    }
+
+    #[test]
+    fn a_failed_decision_send_cannot_reset_a_newer_room() {
+        let mut state = AppState::new("desktop".to_owned(), "https://example.test".to_owned());
+        state.current_room_id = Some("new-room".to_owned());
+        state.session = SessionStatus::Connecting;
+
+        reset_claimed_room_if_current(&mut state, Some("old-room"));
+
+        assert_eq!(state.current_room_id.as_deref(), Some("new-room"));
+        assert_eq!(state.session, SessionStatus::Connecting);
     }
 
     #[test]

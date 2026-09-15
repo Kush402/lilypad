@@ -25,18 +25,27 @@ export function useTauriEvent(event: string, onEvent: () => void): void {
   handler.current = onEvent;
 
   useEffect(() => {
-    handler.current();
     let alive = true;
     let unlisten: (() => void) | undefined;
     listen(event, () => handler.current())
       .then((fn) => {
         // The effect may have cleaned up (a fast unmount) before the listener
         // finished attaching — tear it down now rather than leak it.
-        if (alive) unlisten = fn;
-        else fn();
+        if (alive) {
+          unlisten = fn;
+          // Subscribe before the first read. Reading first leaves a lost-wakeup
+          // gap: state can change after that snapshot but before `listen`
+          // finishes attaching, and a quiet session then leaves this webview
+          // frozen forever on the old answer. A read after attachment observes
+          // everything that happened in the gap; a simultaneous event merely
+          // causes a second race-safe refresh.
+          handler.current();
+        } else fn();
       })
       .catch(() => {
-        /* not running inside Tauri (e.g. a plain `vite` preview) */
+        // Outside Tauri (e.g. a plain `vite` preview) there is no event source,
+        // but the resource should still get its ordinary mount-time read.
+        if (alive) handler.current();
       });
     return () => {
       alive = false;

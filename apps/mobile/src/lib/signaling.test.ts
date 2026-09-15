@@ -192,8 +192,16 @@ describe('MobileSignaling', () => {
   it('connect() rejects if the socket errors before opening', async () => {
     const sig = new MobileSignaling('wss://x', 'room1', () => {});
     const p = sig.connect();
-    lastSocket().fail();
+    const failed = lastSocket();
+    failed.fail();
     await expect(p).rejects.toThrow('signaling connection failed');
+    expect(failed.readyState).toBe(FakeWebSocket.CLOSED);
+    expect(sig.isOpen()).toBe(false);
+
+    // Some native stacks deliver an already-queued open callback after error.
+    // It belongs to the retired socket and cannot resurrect this client.
+    failed.open();
+    expect(sig.isOpen()).toBe(false);
   });
 
   /**
