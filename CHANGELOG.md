@@ -6,6 +6,10 @@ All notable changes to Lilypad are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.42] — 2026-09-15
+
+Pairing a phone works again, and the TLS library is patched.
+
 ### Security
 
 - **`rustls` is updated to 0.23.45** for RUSTSEC-2026-0285, TLS 1.3 handshake
