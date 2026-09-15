@@ -183,9 +183,9 @@ impl TrayHandles {
 /// left to each call site to remember, since forgetting one is exactly how
 /// `TrayHandles` went stale in the first place.
 pub(crate) fn sync_tray_menu(app: &AppHandle) {
-    let Some(tray) = app.try_state::<TrayHandles>() else {
+    if app.try_state::<TrayHandles>().is_none() {
         return; // not yet built (e.g. very early in setup), or running headless in a test
-    };
+    }
     let state = app.state::<SharedState>();
     let guard = state
         .lock()
@@ -193,7 +193,18 @@ pub(crate) fn sync_tray_menu(app: &AppHandle) {
     let status = guard.session;
     let pairable = pairing_is_meaningful(&guard.link_state);
     drop(guard);
-    tray.apply(status, pairable);
+    // Queue the update and never wait for it. `MenuItem::set_enabled` called
+    // off the main thread blocks until the main thread runs it, and this is
+    // called from session and presence tasks. On 2026-09-15 a busy main thread
+    // held a pairing runner's event forwarder right here past the 8s seat
+    // wait, so every pairing failed. Updates are queued in call order and each
+    // reads state when it is queued, so the last one to run is the latest.
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        if let Some(tray) = handle.try_state::<TrayHandles>() {
+            tray.apply(status, pairable);
+        }
+    });
 }
 
 /// Whether offering to pair is meaningful right now.

@@ -80,6 +80,44 @@ function dto(overrides: Partial<AppStateDto> = {}): AppStateDto {
 }
 
 /**
+ * 2026-09-15: the system panel refetched in a loop for as long as the dashboard
+ * was mounted. Each Tauri answer is a freshly deserialized object, so every
+ * answer re-rendered, and the effect depended on objects that are new on every
+ * render. The mocks above return the SAME object each call, which lets React
+ * bail out after one extra round, and that is why no test ever saw it.
+ */
+describe('the system panel does not refetch in a loop', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('reads each setting once on mount when every answer is a new object, as over IPC', async () => {
+    vi.mocked(useAppState).mockReturnValue(dto({ session: 'idle' }));
+    vi.mocked(api.getAgentConfig).mockImplementation(async () => ({
+      providerKind: null,
+      model: null,
+      baseUrl: null,
+      vision: false,
+      hasKey: false,
+      source: 'none',
+    }));
+    vi.mocked(api.getPermissionStatus).mockImplementation(async () => ({
+      screen_capture: true,
+      accessibility: true,
+    }));
+
+    render(<Control />);
+    await waitFor(() => expect(api.getAgentConfig).toHaveBeenCalled());
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    });
+
+    expect(vi.mocked(api.getAgentConfig).mock.calls.length).toBeLessThanOrEqual(2);
+    expect(vi.mocked(api.getPermissionStatus).mock.calls.length).toBeLessThanOrEqual(2);
+  });
+});
+
+/**
  * A Mac with two monitors can now be watched on either one, chosen from the
  * phone. The person sitting at the Mac is the one who cannot see that choice,
  * so the dashboard has to say it.

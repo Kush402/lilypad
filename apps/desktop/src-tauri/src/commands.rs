@@ -1392,8 +1392,19 @@ pub struct AgentConfigDto {
     pub source: &'static str,
 }
 
+/// Off the main thread. A synchronous command runs ON the main thread, and this
+/// one reads the keychain twice through `security(1)`, about 50 to 100 ms each.
+/// Called in a loop by the dashboard on 2026-09-15, it kept the main thread busy
+/// enough that tray updates, and the pairing seat waiting behind them, missed
+/// their deadline. The work is unchanged; only where it runs moved.
 #[tauri::command]
-pub fn get_agent_config() -> AgentConfigDto {
+pub async fn get_agent_config() -> Result<AgentConfigDto, String> {
+    tauri::async_runtime::spawn_blocking(agent_config_snapshot)
+        .await
+        .map_err(|e| format!("reading the AI settings failed: {e}"))
+}
+
+fn agent_config_snapshot() -> AgentConfigDto {
     use crate::agent::llm::{store, ProviderChoice};
     let settings = store::load_settings();
     let kind = settings.provider_kind.clone();
@@ -1626,7 +1637,7 @@ pub fn set_agent_config(args: SetAgentConfigArgs) -> Result<AgentConfigDto, Stri
     };
     store::save_settings(&settings).map_err(|e| e.to_string())?;
     log::info!(target: "lilypad::audit", "agent_provider_configured — settings saved");
-    Ok(get_agent_config())
+    Ok(agent_config_snapshot())
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -2064,12 +2075,12 @@ pub fn disconnect_agent_provider() -> Result<AgentConfigDto, String> {
     use crate::agent::llm::store;
     let settings = store::load_settings();
     let Some(kind) = settings.provider_kind.clone() else {
-        return Ok(get_agent_config());
+        return Ok(agent_config_snapshot());
     };
     store::forget_credential(&kind, settings.base_url.as_deref()).map_err(|e| e.to_string())?;
     store::save_settings(&store::AgentSettings::default()).map_err(|e| e.to_string())?;
     log::info!(target: "lilypad::audit", "agent_provider_disconnected");
-    Ok(get_agent_config())
+    Ok(agent_config_snapshot())
 }
 
 fn now_rfc3339() -> String {

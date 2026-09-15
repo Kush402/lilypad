@@ -13,6 +13,11 @@ All notable changes to Lilypad are documented here. The format follows
 
 ### Fixed
 
+- **Pairing a phone works again.** The dashboard's system panel refetched its
+  settings in an endless loop, which kept the Mac's main thread busy enough that
+  the pairing room was never confirmed in time ("This Mac couldn’t join the
+  pairing room"). The loop is gone, tray updates no longer wait on the main
+  thread, and reading the AI settings has moved off it.
 - **Ask cleanup no longer loses a descendant whose parent exits mid-sample.**
   v0.1.41's process-identity check treated a parent that had just exited as a
   different process, so its child could go unrecorded and survive a run

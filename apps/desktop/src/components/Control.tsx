@@ -618,12 +618,22 @@ function SystemPanel({ backendUrl }: { backendUrl: string | null }) {
   const login = useLiveResource(api.getLoginItemEnabled);
   const bubble = useLiveResource(api.getBubbleVisible);
 
+  // Depend on the stable `refresh` callbacks, never on the resource objects.
+  // `useLiveResource` returns a new object on every render, so depending on
+  // those re-ran the effect below after every answer it caused, forever: four
+  // synchronous commands on the main thread per pass, one of them a keychain
+  // read. That starved the tray update a pairing runner waits on, and every
+  // pairing failed as "couldn't join the pairing room" (2026-09-15).
+  const refreshPerms = perms.refresh;
+  const refreshAgent = agent.refresh;
+  const refreshLogin = login.refresh;
+  const refreshBubble = bubble.refresh;
   const refreshAll = useCallback(() => {
-    perms.refresh();
-    agent.refresh();
-    login.refresh();
-    bubble.refresh();
-  }, [perms, agent, login, bubble]);
+    refreshPerms();
+    refreshAgent();
+    refreshLogin();
+    refreshBubble();
+  }, [refreshPerms, refreshAgent, refreshLogin, refreshBubble]);
 
   useEffect(() => {
     refreshAll();
