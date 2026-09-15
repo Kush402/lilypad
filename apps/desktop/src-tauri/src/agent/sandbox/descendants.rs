@@ -410,30 +410,38 @@ fn record_descendants(state: &mut State, links: &HashMap<i32, i32>, start_time: 
                 break;
             }
             if let Some(&parent_started) = state.owned.get(&parent) {
-                match is_same_process(parent, parent_started, start_time) {
-                    Some(true) => {
-                        match start_time(pid) {
-                            Ok(Some(started)) => {
-                                state.owned.insert(pid, started);
-                            }
-                            // Exited since the sample: nothing left to own.
-                            Ok(None) => {}
-                            // Ours, and unreadable: it can be neither signalled
-                            // nor confirmed gone.
-                            Err(()) => state.blind = true,
-                        }
-                        break;
-                    }
+                match start_time(parent) {
+                    // Still the process that was recorded.
+                    Ok(Some(now)) if now == parent_started => {}
+                    // Gone since the links were read, which is not replaced:
+                    // the link was read while it was alive. Only a stranger
+                    // that had taken the pid and exited inside that gap could
+                    // make it wrong, and refusing it loses a real descendant.
+                    Ok(None) => {}
                     // A stranger holds that pid now. Its own ancestry decides,
                     // so keep walking.
-                    Some(false) => {}
+                    Ok(Some(_)) => {
+                        cursor = parent;
+                        continue;
+                    }
                     // Something this run owned can no longer be read, so the
                     // record cannot be trusted to be complete.
-                    None => {
+                    Err(()) => {
                         state.blind = true;
                         break;
                     }
                 }
+                match start_time(pid) {
+                    Ok(Some(started)) => {
+                        state.owned.insert(pid, started);
+                    }
+                    // Exited since the sample: nothing left to own.
+                    Ok(None) => {}
+                    // Ours, and unreadable: it can be neither signalled nor
+                    // confirmed gone.
+                    Err(()) => state.blind = true,
+                }
+                break;
             }
             cursor = parent;
         }
@@ -738,6 +746,31 @@ mod tests {
         record_descendants(&mut state, &links, &now);
 
         assert_eq!(state.owned.get(&4100), Some(&9_000));
+    }
+
+    /// A sample reads the parent links first and identities afterwards. A
+    /// parent that exits in between is gone, not replaced: its link was read
+    /// while it was alive, so its child is still the run's. Refusing it means
+    /// the child is never recorded, and once the parent is reaped the child is
+    /// reparented out of reach, so the run is confirmed clean while it keeps
+    /// running. That is the path that explains the false `Confirmed` seen once
+    /// in a loaded full suite on L-337's first cut.
+    #[test]
+    fn a_parent_that_exits_after_the_sample_still_hands_over_its_child() {
+        let mut state = State {
+            owned: HashMap::from([(4100, 1_000)]),
+            blind: false,
+        };
+        let links = HashMap::from([(4100, 77), (4200, 4100)]);
+        let now = table(&[(4100, Ok(None)), (4200, Ok(Some(1_500)))]);
+
+        record_descendants(&mut state, &links, &now);
+
+        assert_eq!(
+            state.owned.get(&4200),
+            Some(&1_500),
+            "a descendant was dropped because its parent exited mid-sample"
+        );
     }
 
     /// Unreadable is never gone: it is not signalled, it still counts as a

@@ -6,6 +6,18 @@ All notable changes to Lilypad are documented here. The format follows
 
 ## [Unreleased]
 
+### Security
+
+- **`rustls` is updated to 0.23.45** for RUSTSEC-2026-0285, TLS 1.3 handshake
+  messages accepted across encryption levels. v0.1.41 shipped with 0.23.41.
+
+### Fixed
+
+- **Ask cleanup no longer loses a descendant whose parent exits mid-sample.**
+  v0.1.41's process-identity check treated a parent that had just exited as a
+  different process, so its child could go unrecorded and survive a run
+  reported clean. Scripts are not offered to the model in this build.
+
 ## [0.1.41] — 2026-09-14
 
 A decision that stays made, an update that finishes, and a connection attempt that can be abandoned.
