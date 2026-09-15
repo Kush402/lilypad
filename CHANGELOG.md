@@ -6,6 +6,10 @@ All notable changes to Lilypad are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.41] — 2026-09-14
+
+A decision that stays made, an update that finishes, and a connection attempt that can be abandoned.
+
 ### Fixed
 
 - **An update can no longer disappear between installation and relaunch.** The
