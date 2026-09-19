@@ -431,6 +431,32 @@ jobs:
             }
           done
 
+      # The site serves these files, and Cloudflare Pages refuses any single
+      # file over 25 MiB — site.yml checks the same limit when it stages them.
+      # That check runs only after this release is public, so v0.1.43's
+      # 26.3 MB updater archive became GitHub's Latest while the site kept
+      # serving v0.1.42 (L-355). Checked here as well, while it is a draft.
+      - name: Verify every download fits the site
+        run: |
+          set -euo pipefail
+          limit=26214400
+          bundle=apps/desktop/src-tauri/target/universal-apple-darwin/release/bundle
+          found=0
+          for f in "$bundle"/macos/*.app.tar.gz "$bundle"/dmg/*.dmg; do
+            [ -e "$f" ] || continue
+            found=$((found + 1))
+            bytes=$(wc -c < "$f" | tr -d ' ')
+            printf '  %-40s %s bytes\n' "$(basename "$f")" "$bytes"
+            if [ "$bytes" -gt "$limit" ]; then
+              echo "::error::$(basename "$f") is $bytes bytes, over Cloudflare Pages' 25 MiB per-file limit: the site could not serve this release, so it stays a draft."
+              exit 1
+            fi
+          done
+          if [ "$found" -eq 0 ]; then
+            echo "::error::no DMG or updater archive under $bundle to check"
+            exit 1
+          fi
+
       - name: Publish the verified release
         if: steps.preflight.outputs.publish == 'true'
         env:

@@ -121,6 +121,21 @@ test('release artifacts stay draft until notarization and Gatekeeper checks fini
   assert.equal(publish, steps.length - 1);
 });
 
+test('a download the site cannot serve is never published (L-355)', () => {
+  const size = steps.findIndex((step) => step.name === 'Verify every download fits the site');
+  const gatekeeper = steps.findIndex(
+    (step) => step.name === 'Verify Gatekeeper will actually accept it',
+  );
+  const publish = steps.findIndex((step) => step.name === 'Publish the verified release');
+  assert.ok(size > gatekeeper && size < publish, 'checked while the release is still a draft');
+  assert.equal(steps[size].if, undefined, 'checked on every run, signed or not');
+  const limit = steps[size].run.match(/limit=(\d+)/)?.[1];
+  const site = readFileSync(new URL('../.github/workflows/site.yml', import.meta.url), 'utf8');
+  assert.ok(limit && site.includes(`-gt ${limit}`), 'the same limit the site stages against');
+  assert.match(steps[size].run, /\.app\.tar\.gz/);
+  assert.match(steps[size].run, /\.dmg/);
+});
+
 const targetGate = steps.find((step) => step.id === 'release_target');
 const targetTag = 'v0.1.29';
 const matchingDraft = { tag_name: targetTag, draft: true };

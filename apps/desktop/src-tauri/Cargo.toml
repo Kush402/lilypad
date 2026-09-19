@@ -111,3 +111,11 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 # available on every Unix `libc` already resolves for, no new OS dependency.
 libc = "0.2"
 ctor = "0.2"
+
+# The site serves the updater archive and the DMG, and Cloudflare Pages
+# refuses any single file over 25 MiB. v0.1.43's universal archive was
+# 26.3 MB, most of the overshoot being symbol tables in both slices (L-355).
+# Nothing reads them: the panic hook logs the message and file:line from
+# `Location`, never a backtrace. Serving downloads from R2 is the durable fix.
+[profile.release]
+strip = true
