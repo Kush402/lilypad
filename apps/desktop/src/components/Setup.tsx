@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { AgentProviderCard } from './AgentProviderCard';
+import { InstantActionsCard } from './InstantActionsCard';
 import { IconCheck } from './Icon';
 import { AccountSignIn } from './AccountSignIn';
 import { LinkStep } from './LinkStep';
@@ -565,6 +566,7 @@ export function Setup() {
         <div data-testid="ask-optional">
           <h2 className="section-title">{wizard ? 'Optional · Ask' : 'Ask AI'}</h2>
           <AgentProviderCard />
+          <InstantActionsCard />
         </div>
       )}
 

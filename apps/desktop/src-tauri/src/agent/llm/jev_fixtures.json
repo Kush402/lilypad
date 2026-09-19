@@ -1,0 +1,2880 @@
+{
+  "archive it": {
+    "answers": {
+      "control": {
+        "choice": "e7",
+        "confidence": 0.99,
+        "probabilities": {
+          "e10": 0.0,
+          "e11": 0.0,
+          "e14": 0.0,
+          "e15": 0.0,
+          "e16": 0.0,
+          "e20": 0.0,
+          "e21": 0.0,
+          "e22": 0.0,
+          "e3": 0.0,
+          "e4": 0.0,
+          "e5": 0.0,
+          "e6": 0.0,
+          "e7": 0.99,
+          "e8": 0.0,
+          "e9": 0.0,
+          "none": 0.01
+        },
+        "type": "choice"
+      },
+      "direction": {
+        "choice": "down",
+        "confidence": 0.33,
+        "probabilities": {
+          "bottom": 0.09,
+          "down": 0.43,
+          "left": 0.04,
+          "right": 0.07,
+          "top": 0.16,
+          "up": 0.21
+        },
+        "type": "choice"
+      },
+      "intent": {
+        "choice": "press",
+        "confidence": 1.0,
+        "probabilities": {
+          "key": 0.0,
+          "open_app": 0.0,
+          "open_website": 0.0,
+          "other": 0.0,
+          "press": 1.0,
+          "scroll": 0.0
+        },
+        "type": "choice"
+      },
+      "key": {
+        "choice": "save",
+        "confidence": 0.34,
+        "probabilities": {
+          "back": 0.07,
+          "close_tab": 0.06,
+          "copy": 0.01,
+          "cut": 0.03,
+          "escape": 0.04,
+          "find": 0.0,
+          "forward": 0.04,
+          "full_screen": 0.0,
+          "minimize": 0.01,
+          "new_tab": 0.0,
+          "new_window": 0.0,
+          "next_tab": 0.0,
+          "page_down": 0.0,
+          "page_up": 0.0,
+          "paste": 0.0,
+          "previous_tab": 0.0,
+          "redo": 0.0,
+          "reload": 0.0,
+          "return": 0.34,
+          "save": 0.37,
+          "select_all": 0.0,
+          "spotlight": 0.01,
+          "tab_key": 0.01,
+          "undo": 0.01,
+          "zoom_in": 0.0,
+          "zoom_out": 0.0
+        },
+        "type": "choice"
+      }
+    },
+    "model": "jev-1.13.0",
+    "usage": {
+      "input_tokens": 1453,
+      "output_tokens": 479
+    }
+  },
+  "click compose": {
+    "answers": {
+      "control": {
+        "choice": "e3",
+        "confidence": 1.0,
+        "probabilities": {
+          "e10": 0.0,
+          "e11": 0.0,
+          "e14": 0.0,
+          "e15": 0.0,
+          "e16": 0.0,
+          "e20": 0.0,
+          "e21": 0.0,
+          "e22": 0.0,
+          "e3": 1.0,
+          "e4": 0.0,
+          "e5": 0.0,
+          "e6": 0.0,
+          "e7": 0.0,
+          "e8": 0.0,
+          "e9": 0.0,
+          "none": 0.0
+        },
+        "type": "choice"
+      },
+      "direction": {
+        "choice": "down",
+        "confidence": 0.44,
+        "probabilities": {
+          "bottom": 0.03,
+          "down": 0.54,
+          "left": 0.01,
+          "right": 0.01,
+          "top": 0.29,
+          "up": 0.12
+        },
+        "type": "choice"
+      },
+      "intent": {
+        "choice": "press",
+        "confidence": 1.0,
+        "probabilities": {
+          "key": 0.0,
+          "open_app": 0.0,
+          "open_website": 0.0,
+          "other": 0.0,
+          "press": 1.0,
+          "scroll": 0.0
+        },
+        "type": "choice"
+      },
+      "key": {
+        "choice": "new_window",
+        "confidence": 0.51,
+        "probabilities": {
+          "back": 0.0,
+          "close_tab": 0.0,
+          "copy": 0.0,
+          "cut": 0.0,
+          "escape": 0.01,
+          "find": 0.0,
+          "forward": 0.0,
+          "full_screen": 0.0,
+          "minimize": 0.0,
+          "new_tab": 0.27,
+          "new_window": 0.53,
+          "next_tab": 0.0,
+          "page_down": 0.0,
+          "page_up": 0.0,
+          "paste": 0.0,
+          "previous_tab": 0.0,
+          "redo": 0.0,
+          "reload": 0.0,
+          "return": 0.16,
+          "save": 0.0,
+          "select_all": 0.0,
+          "spotlight": 0.0,
+          "tab_key": 0.02,
+          "undo": 0.0,
+          "zoom_in": 0.0,
+          "zoom_out": 0.0
+        },
+        "type": "choice"
+      }
+    },
+    "model": "jev-1.13.0",
+    "usage": {
+      "input_tokens": 1453,
+      "output_tokens": 480
+    }
+  },
+  "click send": {
+    "answers": {
+      "control": {
+        "choice": "none",
+        "confidence": 1.0,
+        "probabilities": {
+          "e10": 0.0,
+          "e11": 0.0,
+          "e14": 0.0,
+          "e15": 0.0,
+          "e16": 0.0,
+          "e20": 0.0,
+          "e21": 0.0,
+          "e22": 0.0,
+          "e3": 0.0,
+          "e4": 0.0,
+          "e5": 0.0,
+          "e6": 0.0,
+          "e7": 0.0,
+          "e8": 0.0,
+          "e9": 0.0,
+          "none": 1.0
+        },
+        "type": "choice"
+      },
+      "direction": {
+        "choice": "down",
+        "confidence": 0.37,
+        "probabilities": {
+          "bottom": 0.13,
+          "down": 0.47,
+          "left": 0.01,
+          "right": 0.02,
+          "top": 0.22,
+          "up": 0.15
+        },
+        "type": "choice"
+      },
+      "intent": {
+        "choice": "press",
+        "confidence": 1.0,
+        "probabilities": {
+          "key": 0.0,
+          "open_app": 0.0,
+          "open_website": 0.0,
+          "other": 0.0,
+          "press": 1.0,
+          "scroll": 0.0
+        },
+        "type": "choice"
+      },
+      "key": {
+        "choice": "return",
+        "confidence": 0.91,
+        "probabilities": {
+          "back": 0.0,
+          "close_tab": 0.0,
+          "copy": 0.0,
+          "cut": 0.0,
+          "escape": 0.0,
+          "find": 0.0,
+          "forward": 0.01,
+          "full_screen": 0.0,
+          "minimize": 0.0,
+          "new_tab": 0.0,
+          "new_window": 0.0,
+          "next_tab": 0.0,
+          "page_down": 0.0,
+          "page_up": 0.0,
+          "paste": 0.0,
+          "previous_tab": 0.0,
+          "redo": 0.0,
+          "reload": 0.0,
+          "return": 0.92,
+          "save": 0.03,
+          "select_all": 0.0,
+          "spotlight": 0.0,
+          "tab_key": 0.04,
+          "undo": 0.0,
+          "zoom_in": 0.0,
+          "zoom_out": 0.0
+        },
+        "type": "choice"
+      }
+    },
+    "model": "jev-1.13.0",
+    "usage": {
+      "input_tokens": 1453,
+      "output_tokens": 478
+    }
+  },
+  "close this tab": {
+    "answers": {
+      "control": {
+        "choice": "none",
+        "confidence": 0.99,
+        "probabilities": {
+          "e12": 0.0,
+          "e13": 0.0,
+          "e14": 0.0,
+          "e15": 0.0,
+          "e16": 0.0,
+          "e2": 0.0,
+          "e3": 0.0,
+          "e4": 0.0,
+          "e5": 0.0,
+          "e6": 0.0,
+          "e7": 0.01,
+          "none": 0.99
+        },
+        "type": "choice"
+      },
+      "direction": {
+        "choice": "down",
+        "confidence": 0.16,
+        "probabilities": {
+          "bottom": 0.05,
+          "down": 0.3,
+          "left": 0.12,
+          "right": 0.03,
+          "top": 0.3,
+          "up": 0.2
+        },
+        "type": "choice"
+      },
+      "intent": {
+        "choice": "key",
+        "confidence": 1.0,
+        "probabilities": {
+          "key": 1.0,
+          "open_app": 0.0,
+          "open_website": 0.0,
+          "other": 0.0,
+          "press": 0.0,
+          "scroll": 0.0
+        },
+        "type": "choice"
+      },
+      "key": {
+        "choice": "close_tab",
+        "confidence": 1.0,
+        "probabilities": {
+          "back": 0.0,
+          "close_tab": 1.0,
+          "copy": 0.0,
+          "cut": 0.0,
+          "escape": 0.0,
+          "find": 0.0,
+          "forward": 0.0,
+          "full_screen": 0.0,
+          "minimize": 0.0,
+          "new_tab": 0.0,
+          "new_window": 0.0,
+          "next_tab": 0.0,
+          "page_down": 0.0,
+          "page_up": 0.0,
+          "paste": 0.0,
+          "previous_tab": 0.0,
+          "redo": 0.0,
+          "reload": 0.0,
+          "return": 0.0,
+          "save": 0.0,
+          "select_all": 0.0,
+          "spotlight": 0.0,
+          "tab_key": 0.0,
+          "undo": 0.0,
+          "zoom_in": 0.0,
+          "zoom_out": 0.0
+        },
+        "type": "choice"
+      }
+    },
+    "model": "jev-1.13.0",
+    "usage": {
+      "input_tokens": 1361,
+      "output_tokens": 444
+    }
+  },
+  "compose an email to bob about lunch": {
+    "answers": {
+      "control": {
+        "choice": "e3",
+        "confidence": 0.99,
+        "probabilities": {
+          "e10": 0.0,
+          "e11": 0.0,
+          "e14": 0.0,
+          "e15": 0.0,
+          "e16": 0.0,
+          "e20": 0.0,
+          "e21": 0.0,
+          "e22": 0.0,
+          "e3": 0.99,
+          "e4": 0.0,
+          "e5": 0.0,
+          "e6": 0.0,
+          "e7": 0.0,
+          "e8": 0.0,
+          "e9": 0.0,
+          "none": 0.01
+        },
+        "type": "choice"
+      },
+      "direction": {
+        "choice": "down",
+        "confidence": 0.67,
+        "probabilities": {
+          "bottom": 0.03,
+          "down": 0.71,
+          "left": 0.01,
+          "right": 0.01,
+          "top": 0.18,
+          "up": 0.06
+        },
+        "type": "choice"
+      },
+      "intent": {
+        "choice": "other",
+        "confidence": 0.96,
+        "probabilities": {
+          "key": 0.0,
+          "open_app": 0.01,
+          "open_website": 0.0,
+          "other": 0.96,
+          "press": 0.03,
+          "scroll": 0.0
+        },
+        "type": "choice"
+      },
+      "key": {
+        "choice": "new_window",
+        "confidence": 0.42,
+        "probabilities": {
+          "back": 0.0,
+          "close_tab": 0.0,
+          "copy": 0.0,
+          "cut": 0.0,
+          "escape": 0.01,
+          "find": 0.0,
+          "forward": 0.0,
+          "full_screen": 0.0,
+          "minimize": 0.0,
+          "new_tab": 0.15,
+          "new_window": 0.46,
+          "next_tab": 0.0,
+          "page_down": 0.0,
+          "page_up": 0.0,
+          "paste": 0.0,
+          "previous_tab": 0.0,
+          "redo": 0.0,
+          "reload": 0.0,
+          "return": 0.26,
+          "save": 0.01,
+          "select_all": 0.0,
+          "spotlight": 0.02,
+          "tab_key": 0.09,
+          "undo": 0.0,
+          "zoom_in": 0.0,
+          "zoom_out": 0.0
+        },
+        "type": "choice"
+      }
+    },
+    "model": "jev-1.13.0",
+    "usage": {
+      "input_tokens": 1458,
+      "output_tokens": 480
+    }
+  },
+  "find flights to Tokyo": {
+    "answers": {
+      "control": {
+        "choice": "e4",
+        "confidence": 0.49,
+        "probabilities": {
+          "e12": 0.0,
+          "e13": 0.0,
+          "e14": 0.0,
+          "e15": 0.0,
+          "e16": 0.0,
+          "e2": 0.0,
+          "e3": 0.0,
+          "e4": 0.53,
+          "e5": 0.0,
+          "e6": 0.01,
+          "e7": 0.0,
+          "none": 0.46
+        },
+        "type": "choice"
+      },
+      "direction": {
+        "choice": "down",
+        "confidence": 0.85,
+        "probabilities": {
+          "bottom": 0.02,
+          "down": 0.87,
+          "left": 0.0,
+          "right": 0.0,
+          "top": 0.08,
+          "up": 0.03
+        },
+        "type": "choice"
+      },
+      "intent": {
+        "choice": "other",
+        "confidence": 0.99,
+        "probabilities": {
+          "key": 0.0,
+          "open_app": 0.0,
+          "open_website": 0.0,
+          "other": 1.0,
+          "press": 0.0,
+          "scroll": 0.0
+        },
+        "type": "choice"
+      },
+      "key": {
+        "choice": "find",
+        "confidence": 0.82,
+        "probabilities": {
+          "back": 0.0,
+          "close_tab": 0.0,
+          "copy": 0.0,
+          "cut": 0.0,
+          "escape": 0.0,
+          "find": 0.83,
+          "forward": 0.0,
+          "full_screen": 0.0,
+          "minimize": 0.0,
+          "new_tab": 0.01,
+          "new_window": 0.0,
+          "next_tab": 0.0,
+          "page_down": 0.0,
+          "page_up": 0.0,
+          "paste": 0.0,
+          "previous_tab": 0.0,
+          "redo": 0.0,
+          "reload": 0.0,
+          "return": 0.09,
+          "save": 0.0,
+          "select_all": 0.0,
+          "spotlight": 0.07,
+          "tab_key": 0.0,
+          "undo": 0.0,
+          "zoom_in": 0.0,
+          "zoom_out": 0.0
+        },
+        "type": "choice"
+      }
+    },
+    "model": "jev-1.13.0",
+    "usage": {
+      "input_tokens": 1362,
+      "output_tokens": 444
+    }
+  },
+  "go back": {
+    "answers": {
+      "control": {
+        "choice": "e2",
+        "confidence": 0.99,
+        "probabilities": {
+          "e12": 0.0,
+          "e13": 0.0,
+          "e14": 0.0,
+          "e15": 0.0,
+          "e16": 0.0,
+          "e2": 0.99,
+          "e3": 0.0,
+          "e4": 0.0,
+          "e5": 0.0,
+          "e6": 0.0,
+          "e7": 0.0,
+          "none": 0.01
+        },
+        "type": "choice"
+      },
+      "direction": {
+        "choice": "up",
+        "confidence": 0.58,
+        "probabilities": {
+          "bottom": 0.0,
+          "down": 0.01,
+          "left": 0.2,
+          "right": 0.02,
+          "top": 0.12,
+          "up": 0.65
+        },
+        "type": "choice"
+      },
+      "intent": {
+        "choice": "key",
+        "confidence": 1.0,
+        "probabilities": {
+          "key": 1.0,
+          "open_app": 0.0,
+          "open_website": 0.0,
+          "other": 0.0,
+          "press": 0.0,
+          "scroll": 0.0
+        },
+        "type": "choice"
+      },
+      "key": {
+        "choice": "back",
+        "confidence": 1.0,
+        "probabilities": {
+          "back": 1.0,
+          "close_tab": 0.0,
+          "copy": 0.0,
+          "cut": 0.0,
+          "escape": 0.0,
+          "find": 0.0,
+          "forward": 0.0,
+          "full_screen": 0.0,
+          "minimize": 0.0,
+          "new_tab": 0.0,
+          "new_window": 0.0,
+          "next_tab": 0.0,
+          "page_down": 0.0,
+          "page_up": 0.0,
+          "paste": 0.0,
+          "previous_tab": 0.0,
+          "redo": 0.0,
+          "reload": 0.0,
+          "return": 0.0,
+          "save": 0.0,
+          "select_all": 0.0,
+          "spotlight": 0.0,
+          "tab_key": 0.0,
+          "undo": 0.0,
+          "zoom_in": 0.0,
+          "zoom_out": 0.0
+        },
+        "type": "choice"
+      }
+    },
+    "model": "jev-1.13.0",
+    "usage": {
+      "input_tokens": 1360,
+      "output_tokens": 444
+    }
+  },
+  "go to youtube.com": {
+    "answers": {
+      "control": {
+        "choice": "e4",
+        "confidence": 0.86,
+        "probabilities": {
+          "e12": 0.0,
+          "e13": 0.0,
+          "e14": 0.0,
+          "e15": 0.0,
+          "e16": 0.0,
+          "e2": 0.0,
+          "e3": 0.0,
+          "e4": 0.88,
+          "e5": 0.0,
+          "e6": 0.0,
+          "e7": 0.0,
+          "none": 0.12
+        },
+        "type": "choice"
+      },
+      "direction": {
+        "choice": "top",
+        "confidence": 0.4,
+        "probabilities": {
+          "bottom": 0.05,
+          "down": 0.42,
+          "left": 0.0,
+          "right": 0.01,
+          "top": 0.5,
+          "up": 0.02
+        },
+        "type": "choice"
+      },
+      "intent": {
+        "choice": "open_website",
+        "confidence": 1.0,
+        "probabilities": {
+          "key": 0.0,
+          "open_app": 0.0,
+          "open_website": 1.0,
+          "other": 0.0,
+          "press": 0.0,
+          "scroll": 0.0
+        },
+        "type": "choice"
+      },
+      "key": {
+        "choice": "return",
+        "confidence": 0.69,
+        "probabilities": {
+          "back": 0.0,
+          "close_tab": 0.0,
+          "copy": 0.0,
+          "cut": 0.0,
+          "escape": 0.0,
+          "find": 0.01,
+          "forward": 0.03,
+          "full_screen": 0.0,
+          "minimize": 0.0,
+          "new_tab": 0.19,
+          "new_window": 0.02,
+          "next_tab": 0.0,
+          "page_down": 0.0,
+          "page_up": 0.0,
+          "paste": 0.0,
+          "previous_tab": 0.0,
+          "redo": 0.0,
+          "reload": 0.01,
+          "return": 0.71,
+          "save": 0.0,
+          "select_all": 0.0,
+          "spotlight": 0.01,
+          "tab_key": 0.02,
+          "undo": 0.0,
+          "zoom_in": 0.0,
+          "zoom_out": 0.0
+        },
+        "type": "choice"
+      }
+    },
+    "model": "jev-1.13.0",
+    "usage": {
+      "input_tokens": 1362,
+      "output_tokens": 446
+    }
+  },
+  "make a new folder called invoices": {
+    "answers": {
+      "control": {
+        "choice": "none",
+        "confidence": 0.99,
+        "probabilities": {
+          "e12": 0.0,
+          "e13": 0.0,
+          "e14": 0.0,
+          "e15": 0.0,
+          "e2": 0.0,
+          "e3": 0.0,
+          "e5": 0.0,
+          "e6": 0.0,
+          "e7": 0.0,
+          "e8": 0.0,
+          "none": 1.0
+        },
+        "type": "choice"
+      },
+      "direction": {
+        "choice": "down",
+        "confidence": 0.73,
+        "probabilities": {
+          "bottom": 0.04,
+          "down": 0.78,
+          "left": 0.01,
+          "right": 0.01,
+          "top": 0.11,
+          "up": 0.05
+        },
+        "type": "choice"
+      },
+      "intent": {
+        "choice": "other",
+        "confidence": 0.91,
+        "probabilities": {
+          "key": 0.02,
+          "open_app": 0.0,
+          "open_website": 0.0,
+          "other": 0.92,
+          "press": 0.06,
+          "scroll": 0.0
+        },
+        "type": "choice"
+      },
+      "key": {
+        "choice": "return",
+        "confidence": 0.6,
+        "probabilities": {
+          "back": 0.0,
+          "close_tab": 0.0,
+          "copy": 0.0,
+          "cut": 0.0,
+          "escape": 0.01,
+          "find": 0.01,
+          "forward": 0.0,
+          "full_screen": 0.0,
+          "minimize": 0.0,
+          "new_tab": 0.04,
+          "new_window": 0.29000000000000004,
+          "next_tab": 0.0,
+          "page_down": 0.0,
+          "page_up": 0.0,
+          "paste": 0.0,
+          "previous_tab": 0.0,
+          "redo": 0.0,
+          "reload": 0.0,
+          "return": 0.62,
+          "save": 0.0,
+          "select_all": 0.0,
+          "spotlight": 0.02,
+          "tab_key": 0.01,
+          "undo": 0.0,
+          "zoom_in": 0.0,
+          "zoom_out": 0.0
+        },
+        "type": "choice"
+      }
+    },
+    "model": "jev-1.13.0",
+    "usage": {
+      "input_tokens": 1345,
+      "output_tokens": 434
+    }
+  },
+  "mark it as read": {
+    "answers": {
+      "control": {
+        "choice": "none",
+        "confidence": 0.93,
+        "probabilities": {
+          "e10": 0.0,
+          "e11": 0.0,
+          "e14": 0.0,
+          "e15": 0.0,
+          "e16": 0.0,
+          "e20": 0.03,
+          "e21": 0.0,
+          "e22": 0.01,
+          "e3": 0.0,
+          "e4": 0.0,
+          "e5": 0.0,
+          "e6": 0.0,
+          "e7": 0.01,
+          "e8": 0.0,
+          "e9": 0.0,
+          "none": 0.95
+        },
+        "type": "choice"
+      },
+      "direction": {
+        "choice": "down",
+        "confidence": 0.37,
+        "probabilities": {
+          "bottom": 0.03,
+          "down": 0.48,
+          "left": 0.02,
+          "right": 0.03,
+          "top": 0.25,
+          "up": 0.19
+        },
+        "type": "choice"
+      },
+      "intent": {
+        "choice": "press",
+        "confidence": 0.95,
+        "probabilities": {
+          "key": 0.01,
+          "open_app": 0.0,
+          "open_website": 0.0,
+          "other": 0.02,
+          "press": 0.97,
+          "scroll": 0.0
+        },
+        "type": "choice"
+      },
+      "key": {
+        "choice": "return",
+        "confidence": 0.71,
+        "probabilities": {
+          "back": 0.01,
+          "close_tab": 0.03,
+          "copy": 0.0,
+          "cut": 0.0,
+          "escape": 0.1,
+          "find": 0.0,
+          "forward": 0.01,
+          "full_screen": 0.0,
+          "minimize": 0.0,
+          "new_tab": 0.0,
+          "new_window": 0.0,
+          "next_tab": 0.0,
+          "page_down": 0.01,
+          "page_up": 0.0,
+          "paste": 0.0,
+          "previous_tab": 0.0,
+          "redo": 0.0,
+          "reload": 0.01,
+          "return": 0.74,
+          "save": 0.05,
+          "select_all": 0.02,
+          "spotlight": 0.0,
+          "tab_key": 0.01,
+          "undo": 0.01,
+          "zoom_in": 0.0,
+          "zoom_out": 0.0
+        },
+        "type": "choice"
+      }
+    },
+    "model": "jev-1.13.0",
+    "usage": {
+      "input_tokens": 1455,
+      "output_tokens": 478
+    }
+  },
+  "new tab": {
+    "answers": {
+      "control": {
+        "choice": "e6",
+        "confidence": 0.95,
+        "probabilities": {
+          "e12": 0.0,
+          "e13": 0.0,
+          "e14": 0.0,
+          "e15": 0.0,
+          "e16": 0.0,
+          "e2": 0.0,
+          "e3": 0.0,
+          "e4": 0.0,
+          "e5": 0.0,
+          "e6": 0.96,
+          "e7": 0.0,
+          "none": 0.04
+        },
+        "type": "choice"
+      },
+      "direction": {
+        "choice": "top",
+        "confidence": 0.57,
+        "probabilities": {
+          "bottom": 0.01,
+          "down": 0.25,
+          "left": 0.01,
+          "right": 0.04,
+          "top": 0.65,
+          "up": 0.04
+        },
+        "type": "choice"
+      },
+      "intent": {
+        "choice": "key",
+        "confidence": 1.0,
+        "probabilities": {
+          "key": 1.0,
+          "open_app": 0.0,
+          "open_website": 0.0,
+          "other": 0.0,
+          "press": 0.0,
+          "scroll": 0.0
+        },
+        "type": "choice"
+      },
+      "key": {
+        "choice": "new_tab",
+        "confidence": 1.0,
+        "probabilities": {
+          "back": 0.0,
+          "close_tab": 0.0,
+          "copy": 0.0,
+          "cut": 0.0,
+          "escape": 0.0,
+          "find": 0.0,
+          "forward": 0.0,
+          "full_screen": 0.0,
+          "minimize": 0.0,
+          "new_tab": 1.0,
+          "new_window": 0.0,
+          "next_tab": 0.0,
+          "page_down": 0.0,
+          "page_up": 0.0,
+          "paste": 0.0,
+          "previous_tab": 0.0,
+          "redo": 0.0,
+          "reload": 0.0,
+          "return": 0.0,
+          "save": 0.0,
+          "select_all": 0.0,
+          "spotlight": 0.0,
+          "tab_key": 0.0,
+          "undo": 0.0,
+          "zoom_in": 0.0,
+          "zoom_out": 0.0
+        },
+        "type": "choice"
+      }
+    },
+    "model": "jev-1.13.0",
+    "usage": {
+      "input_tokens": 1360,
+      "output_tokens": 445
+    }
+  },
+  "open chrome and go to gmail": {
+    "answers": {
+      "app": {
+        "choice": "Google Chrome",
+        "confidence": 1.0,
+        "probabilities": {
+          "Google Chrome": 1.0,
+          "none": 0.0
+        },
+        "type": "choice"
+      },
+      "control": {
+        "choice": "none",
+        "confidence": 0.95,
+        "probabilities": {
+          "e12": 0.0,
+          "e13": 0.0,
+          "e14": 0.0,
+          "e15": 0.01,
+          "e2": 0.0,
+          "e3": 0.0,
+          "e5": 0.0,
+          "e6": 0.0,
+          "e7": 0.0,
+          "e8": 0.04,
+          "none": 0.95
+        },
+        "type": "choice"
+      },
+      "direction": {
+        "choice": "down",
+        "confidence": 0.74,
+        "probabilities": {
+          "bottom": 0.02,
+          "down": 0.78,
+          "left": 0.01,
+          "right": 0.01,
+          "top": 0.14,
+          "up": 0.04
+        },
+        "type": "choice"
+      },
+      "intent": {
+        "choice": "other",
+        "confidence": 0.74,
+        "probabilities": {
+          "key": 0.0,
+          "open_app": 0.18,
+          "open_website": 0.04,
+          "other": 0.78,
+          "press": 0.0,
+          "scroll": 0.0
+        },
+        "type": "choice"
+      },
+      "key": {
+        "choice": "spotlight",
+        "confidence": 0.42,
+        "probabilities": {
+          "back": 0.0,
+          "close_tab": 0.0,
+          "copy": 0.0,
+          "cut": 0.0,
+          "escape": 0.0,
+          "find": 0.0,
+          "forward": 0.0,
+          "full_screen": 0.0,
+          "minimize": 0.0,
+          "new_tab": 0.09,
+          "new_window": 0.31,
+          "next_tab": 0.0,
+          "page_down": 0.0,
+          "page_up": 0.0,
+          "paste": 0.0,
+          "previous_tab": 0.0,
+          "redo": 0.0,
+          "reload": 0.0,
+          "return": 0.15000000000000002,
+          "save": 0.0,
+          "select_all": 0.0,
+          "spotlight": 0.45,
+          "tab_key": 0.0,
+          "undo": 0.0,
+          "zoom_in": 0.0,
+          "zoom_out": 0.0
+        },
+        "type": "choice"
+      }
+    },
+    "model": "jev-1.13.0",
+    "usage": {
+      "input_tokens": 1396,
+      "output_tokens": 465
+    }
+  },
+  "open downloads": {
+    "answers": {
+      "control": {
+        "choice": "e7",
+        "confidence": 0.97,
+        "probabilities": {
+          "e12": 0.0,
+          "e13": 0.0,
+          "e14": 0.0,
+          "e15": 0.0,
+          "e2": 0.0,
+          "e3": 0.0,
+          "e5": 0.0,
+          "e6": 0.0,
+          "e7": 0.98,
+          "e8": 0.0,
+          "none": 0.02
+        },
+        "type": "choice"
+      },
+      "direction": {
+        "choice": "down",
+        "confidence": 0.64,
+        "probabilities": {
+          "bottom": 0.12,
+          "down": 0.71,
+          "left": 0.0,
+          "right": 0.0,
+          "top": 0.11,
+          "up": 0.06
+        },
+        "type": "choice"
+      },
+      "intent": {
+        "choice": "press",
+        "confidence": 0.97,
+        "probabilities": {
+          "key": 0.0,
+          "open_app": 0.02,
+          "open_website": 0.0,
+          "other": 0.01,
+          "press": 0.97,
+          "scroll": 0.0
+        },
+        "type": "choice"
+      },
+      "key": {
+        "choice": "new_window",
+        "confidence": 0.48,
+        "probabilities": {
+          "back": 0.02,
+          "close_tab": 0.0,
+          "copy": 0.0,
+          "cut": 0.0,
+          "escape": 0.0,
+          "find": 0.02,
+          "forward": 0.05,
+          "full_screen": 0.0,
+          "minimize": 0.0,
+          "new_tab": 0.01,
+          "new_window": 0.51,
+          "next_tab": 0.0,
+          "page_down": 0.0,
+          "page_up": 0.0,
+          "paste": 0.0,
+          "previous_tab": 0.0,
+          "redo": 0.0,
+          "reload": 0.0,
+          "return": 0.31,
+          "save": 0.0,
+          "select_all": 0.0,
+          "spotlight": 0.08,
+          "tab_key": 0.0,
+          "undo": 0.0,
+          "zoom_in": 0.0,
+          "zoom_out": 0.0
+        },
+        "type": "choice"
+      }
+    },
+    "model": "jev-1.13.0",
+    "usage": {
+      "input_tokens": 1341,
+      "output_tokens": 436
+    }
+  },
+  "open google chrome": {
+    "answers": {
+      "app": {
+        "choice": "Google Chrome",
+        "confidence": 1.0,
+        "probabilities": {
+          "Google Chrome": 1.0,
+          "none": 0.0
+        },
+        "type": "choice"
+      },
+      "control": {
+        "choice": "none",
+        "confidence": 0.89,
+        "probabilities": {
+          "e12": 0.0,
+          "e13": 0.0,
+          "e14": 0.0,
+          "e15": 0.01,
+          "e2": 0.0,
+          "e3": 0.0,
+          "e5": 0.0,
+          "e6": 0.0,
+          "e7": 0.0,
+          "e8": 0.09,
+          "none": 0.9
+        },
+        "type": "choice"
+      },
+      "direction": {
+        "choice": "down",
+        "confidence": 0.73,
+        "probabilities": {
+          "bottom": 0.02,
+          "down": 0.78,
+          "left": 0.01,
+          "right": 0.02,
+          "top": 0.12,
+          "up": 0.05
+        },
+        "type": "choice"
+      },
+      "intent": {
+        "choice": "open_app",
+        "confidence": 1.0,
+        "probabilities": {
+          "key": 0.0,
+          "open_app": 1.0,
+          "open_website": 0.0,
+          "other": 0.0,
+          "press": 0.0,
+          "scroll": 0.0
+        },
+        "type": "choice"
+      },
+      "key": {
+        "choice": "spotlight",
+        "confidence": 0.49,
+        "probabilities": {
+          "back": 0.0,
+          "close_tab": 0.0,
+          "copy": 0.0,
+          "cut": 0.0,
+          "escape": 0.0,
+          "find": 0.0,
+          "forward": 0.0,
+          "full_screen": 0.0,
+          "minimize": 0.0,
+          "new_tab": 0.01,
+          "new_window": 0.35,
+          "next_tab": 0.0,
+          "page_down": 0.0,
+          "page_up": 0.0,
+          "paste": 0.0,
+          "previous_tab": 0.0,
+          "redo": 0.0,
+          "reload": 0.0,
+          "return": 0.12,
+          "save": 0.0,
+          "select_all": 0.0,
+          "spotlight": 0.52,
+          "tab_key": 0.0,
+          "undo": 0.0,
+          "zoom_in": 0.0,
+          "zoom_out": 0.0
+        },
+        "type": "choice"
+      }
+    },
+    "model": "jev-1.13.0",
+    "usage": {
+      "input_tokens": 1393,
+      "output_tokens": 466
+    }
+  },
+  "open safari": {
+    "answers": {
+      "app": {
+        "choice": "Safari",
+        "confidence": 1.0,
+        "probabilities": {
+          "Safari": 1.0,
+          "none": 0.0
+        },
+        "type": "choice"
+      },
+      "control": {
+        "choice": "none",
+        "confidence": 0.89,
+        "probabilities": {
+          "e12": 0.0,
+          "e13": 0.0,
+          "e14": 0.0,
+          "e15": 0.01,
+          "e2": 0.0,
+          "e3": 0.0,
+          "e5": 0.0,
+          "e6": 0.0,
+          "e7": 0.0,
+          "e8": 0.09,
+          "none": 0.9
+        },
+        "type": "choice"
+      },
+      "direction": {
+        "choice": "down",
+        "confidence": 0.52,
+        "probabilities": {
+          "bottom": 0.03,
+          "down": 0.6,
+          "left": 0.01,
+          "right": 0.02,
+          "top": 0.27,
+          "up": 0.07
+        },
+        "type": "choice"
+      },
+      "intent": {
+        "choice": "open_app",
+        "confidence": 1.0,
+        "probabilities": {
+          "key": 0.0,
+          "open_app": 1.0,
+          "open_website": 0.0,
+          "other": 0.0,
+          "press": 0.0,
+          "scroll": 0.0
+        },
+        "type": "choice"
+      },
+      "key": {
+        "choice": "new_window",
+        "confidence": 0.59,
+        "probabilities": {
+          "back": 0.0,
+          "close_tab": 0.0,
+          "copy": 0.0,
+          "cut": 0.0,
+          "escape": 0.0,
+          "find": 0.0,
+          "forward": 0.0,
+          "full_screen": 0.0,
+          "minimize": 0.0,
+          "new_tab": 0.02,
+          "new_window": 0.62,
+          "next_tab": 0.0,
+          "page_down": 0.0,
+          "page_up": 0.0,
+          "paste": 0.0,
+          "previous_tab": 0.0,
+          "redo": 0.0,
+          "reload": 0.0,
+          "return": 0.07,
+          "save": 0.0,
+          "select_all": 0.0,
+          "spotlight": 0.29,
+          "tab_key": 0.0,
+          "undo": 0.0,
+          "zoom_in": 0.0,
+          "zoom_out": 0.0
+        },
+        "type": "choice"
+      }
+    },
+    "model": "jev-1.13.0",
+    "usage": {
+      "input_tokens": 1392,
+      "output_tokens": 466
+    }
+  },
+  "open youtube": {
+    "answers": {
+      "control": {
+        "choice": "none",
+        "confidence": 0.47,
+        "probabilities": {
+          "e12": 0.0,
+          "e13": 0.0,
+          "e14": 0.0,
+          "e15": 0.0,
+          "e16": 0.0,
+          "e2": 0.0,
+          "e3": 0.0,
+          "e4": 0.47,
+          "e5": 0.0,
+          "e6": 0.01,
+          "e7": 0.0,
+          "none": 0.52
+        },
+        "type": "choice"
+      },
+      "direction": {
+        "choice": "down",
+        "confidence": 0.7,
+        "probabilities": {
+          "bottom": 0.03,
+          "down": 0.75,
+          "left": 0.0,
+          "right": 0.01,
+          "top": 0.18,
+          "up": 0.03
+        },
+        "type": "choice"
+      },
+      "intent": {
+        "choice": "open_website",
+        "confidence": 0.51,
+        "probabilities": {
+          "key": 0.0,
+          "open_app": 0.37,
+          "open_website": 0.6,
+          "other": 0.03,
+          "press": 0.0,
+          "scroll": 0.0
+        },
+        "type": "choice"
+      },
+      "key": {
+        "choice": "new_tab",
+        "confidence": 0.37,
+        "probabilities": {
+          "back": 0.0,
+          "close_tab": 0.0,
+          "copy": 0.0,
+          "cut": 0.0,
+          "escape": 0.0,
+          "find": 0.01,
+          "forward": 0.0,
+          "full_screen": 0.0,
+          "minimize": 0.0,
+          "new_tab": 0.41,
+          "new_window": 0.21,
+          "next_tab": 0.0,
+          "page_down": 0.0,
+          "page_up": 0.0,
+          "paste": 0.0,
+          "previous_tab": 0.0,
+          "redo": 0.0,
+          "reload": 0.0,
+          "return": 0.1,
+          "save": 0.0,
+          "select_all": 0.0,
+          "spotlight": 0.27,
+          "tab_key": 0.0,
+          "undo": 0.0,
+          "zoom_in": 0.0,
+          "zoom_out": 0.0
+        },
+        "type": "choice"
+      }
+    },
+    "model": "jev-1.13.0",
+    "usage": {
+      "input_tokens": 1360,
+      "output_tokens": 446
+    }
+  },
+  "quit safari": {
+    "answers": {
+      "app": {
+        "choice": "none",
+        "confidence": 0.85,
+        "probabilities": {
+          "Safari": 0.08,
+          "none": 0.92
+        },
+        "type": "choice"
+      },
+      "control": {
+        "choice": "none",
+        "confidence": 1.0,
+        "probabilities": {
+          "e12": 0.0,
+          "e13": 0.0,
+          "e14": 0.0,
+          "e15": 0.0,
+          "e16": 0.0,
+          "e2": 0.0,
+          "e3": 0.0,
+          "e4": 0.0,
+          "e5": 0.0,
+          "e6": 0.0,
+          "e7": 0.0,
+          "none": 1.0
+        },
+        "type": "choice"
+      },
+      "direction": {
+        "choice": "down",
+        "confidence": 0.2,
+        "probabilities": {
+          "bottom": 0.32,
+          "down": 0.34,
+          "left": 0.01,
+          "right": 0.01,
+          "top": 0.26,
+          "up": 0.06
+        },
+        "type": "choice"
+      },
+      "intent": {
+        "choice": "other",
+        "confidence": 0.85,
+        "probabilities": {
+          "key": 0.05,
+          "open_app": 0.03,
+          "open_website": 0.0,
+          "other": 0.88,
+          "press": 0.04,
+          "scroll": 0.0
+        },
+        "type": "choice"
+      },
+      "key": {
+        "choice": "close_tab",
+        "confidence": 0.53,
+        "probabilities": {
+          "back": 0.0,
+          "close_tab": 0.56,
+          "copy": 0.0,
+          "cut": 0.0,
+          "escape": 0.27,
+          "find": 0.0,
+          "forward": 0.0,
+          "full_screen": 0.0,
+          "minimize": 0.08,
+          "new_tab": 0.0,
+          "new_window": 0.0,
+          "next_tab": 0.0,
+          "page_down": 0.0,
+          "page_up": 0.0,
+          "paste": 0.0,
+          "previous_tab": 0.0,
+          "redo": 0.0,
+          "reload": 0.0,
+          "return": 0.06,
+          "save": 0.0,
+          "select_all": 0.0,
+          "spotlight": 0.02,
+          "tab_key": 0.0,
+          "undo": 0.0,
+          "zoom_in": 0.0,
+          "zoom_out": 0.0
+        },
+        "type": "choice"
+      }
+    },
+    "model": "jev-1.13.0",
+    "usage": {
+      "input_tokens": 1411,
+      "output_tokens": 473
+    }
+  },
+  "refresh the page": {
+    "answers": {
+      "control": {
+        "choice": "e5",
+        "confidence": 0.98,
+        "probabilities": {
+          "e12": 0.0,
+          "e13": 0.0,
+          "e14": 0.0,
+          "e15": 0.0,
+          "e16": 0.0,
+          "e2": 0.0,
+          "e3": 0.0,
+          "e4": 0.0,
+          "e5": 0.99,
+          "e6": 0.0,
+          "e7": 0.0,
+          "none": 0.01
+        },
+        "type": "choice"
+      },
+      "direction": {
+        "choice": "top",
+        "confidence": 0.85,
+        "probabilities": {
+          "bottom": 0.0,
+          "down": 0.06,
+          "left": 0.0,
+          "right": 0.0,
+          "top": 0.88,
+          "up": 0.06
+        },
+        "type": "choice"
+      },
+      "intent": {
+        "choice": "key",
+        "confidence": 1.0,
+        "probabilities": {
+          "key": 1.0,
+          "open_app": 0.0,
+          "open_website": 0.0,
+          "other": 0.0,
+          "press": 0.0,
+          "scroll": 0.0
+        },
+        "type": "choice"
+      },
+      "key": {
+        "choice": "reload",
+        "confidence": 1.0,
+        "probabilities": {
+          "back": 0.0,
+          "close_tab": 0.0,
+          "copy": 0.0,
+          "cut": 0.0,
+          "escape": 0.0,
+          "find": 0.0,
+          "forward": 0.0,
+          "full_screen": 0.0,
+          "minimize": 0.0,
+          "new_tab": 0.0,
+          "new_window": 0.0,
+          "next_tab": 0.0,
+          "page_down": 0.0,
+          "page_up": 0.0,
+          "paste": 0.0,
+          "previous_tab": 0.0,
+          "redo": 0.0,
+          "reload": 1.0,
+          "return": 0.0,
+          "save": 0.0,
+          "select_all": 0.0,
+          "spotlight": 0.0,
+          "tab_key": 0.0,
+          "undo": 0.0,
+          "zoom_in": 0.0,
+          "zoom_out": 0.0
+        },
+        "type": "choice"
+      }
+    },
+    "model": "jev-1.13.0",
+    "usage": {
+      "input_tokens": 1361,
+      "output_tokens": 444
+    }
+  },
+  "rename notes.txt to todo.txt": {
+    "answers": {
+      "app": {
+        "choice": "none",
+        "confidence": 0.94,
+        "probabilities": {
+          "Notes": 0.03,
+          "none": 0.97
+        },
+        "type": "choice"
+      },
+      "control": {
+        "choice": "e14",
+        "confidence": 0.88,
+        "probabilities": {
+          "e12": 0.0,
+          "e13": 0.0,
+          "e14": 0.89,
+          "e15": 0.0,
+          "e2": 0.0,
+          "e3": 0.0,
+          "e5": 0.0,
+          "e6": 0.0,
+          "e7": 0.0,
+          "e8": 0.0,
+          "none": 0.11
+        },
+        "type": "choice"
+      },
+      "direction": {
+        "choice": "down",
+        "confidence": 0.57,
+        "probabilities": {
+          "bottom": 0.04,
+          "down": 0.66,
+          "left": 0.04,
+          "right": 0.03,
+          "top": 0.16,
+          "up": 0.07
+        },
+        "type": "choice"
+      },
+      "intent": {
+        "choice": "other",
+        "confidence": 0.91,
+        "probabilities": {
+          "key": 0.02,
+          "open_app": 0.0,
+          "open_website": 0.0,
+          "other": 0.93,
+          "press": 0.05,
+          "scroll": 0.0
+        },
+        "type": "choice"
+      },
+      "key": {
+        "choice": "return",
+        "confidence": 0.93,
+        "probabilities": {
+          "back": 0.0,
+          "close_tab": 0.0,
+          "copy": 0.0,
+          "cut": 0.0,
+          "escape": 0.01,
+          "find": 0.01,
+          "forward": 0.0,
+          "full_screen": 0.0,
+          "minimize": 0.0,
+          "new_tab": 0.0,
+          "new_window": 0.0,
+          "next_tab": 0.0,
+          "page_down": 0.0,
+          "page_up": 0.0,
+          "paste": 0.0,
+          "previous_tab": 0.0,
+          "redo": 0.0,
+          "reload": 0.0,
+          "return": 0.94,
+          "save": 0.01,
+          "select_all": 0.0,
+          "spotlight": 0.01,
+          "tab_key": 0.01,
+          "undo": 0.0,
+          "zoom_in": 0.0,
+          "zoom_out": 0.0
+        },
+        "type": "choice"
+      }
+    },
+    "model": "jev-1.13.0",
+    "usage": {
+      "input_tokens": 1395,
+      "output_tokens": 464
+    }
+  },
+  "reply": {
+    "answers": {
+      "control": {
+        "choice": "e4",
+        "confidence": 0.99,
+        "probabilities": {
+          "e10": 0.0,
+          "e11": 0.0,
+          "e14": 0.0,
+          "e15": 0.0,
+          "e16": 0.0,
+          "e20": 0.0,
+          "e21": 0.0,
+          "e22": 0.0,
+          "e3": 0.0,
+          "e4": 0.99,
+          "e5": 0.0,
+          "e6": 0.0,
+          "e7": 0.0,
+          "e8": 0.0,
+          "e9": 0.0,
+          "none": 0.01
+        },
+        "type": "choice"
+      },
+      "direction": {
+        "choice": "down",
+        "confidence": 0.47,
+        "probabilities": {
+          "bottom": 0.07,
+          "down": 0.55,
+          "left": 0.01,
+          "right": 0.02,
+          "top": 0.08,
+          "up": 0.27
+        },
+        "type": "choice"
+      },
+      "intent": {
+        "choice": "press",
+        "confidence": 1.0,
+        "probabilities": {
+          "key": 0.0,
+          "open_app": 0.0,
+          "open_website": 0.0,
+          "other": 0.0,
+          "press": 1.0,
+          "scroll": 0.0
+        },
+        "type": "choice"
+      },
+      "key": {
+        "choice": "return",
+        "confidence": 0.76,
+        "probabilities": {
+          "back": 0.02,
+          "close_tab": 0.0,
+          "copy": 0.01,
+          "cut": 0.0,
+          "escape": 0.02,
+          "find": 0.0,
+          "forward": 0.060000000000000005,
+          "full_screen": 0.0,
+          "minimize": 0.0,
+          "new_tab": 0.01,
+          "new_window": 0.02,
+          "next_tab": 0.0,
+          "page_down": 0.0,
+          "page_up": 0.0,
+          "paste": 0.01,
+          "previous_tab": 0.0,
+          "redo": 0.02,
+          "reload": 0.01,
+          "return": 0.78,
+          "save": 0.0,
+          "select_all": 0.0,
+          "spotlight": 0.0,
+          "tab_key": 0.04,
+          "undo": 0.0,
+          "zoom_in": 0.0,
+          "zoom_out": 0.0
+        },
+        "type": "choice"
+      }
+    },
+    "model": "jev-1.13.0",
+    "usage": {
+      "input_tokens": 1452,
+      "output_tokens": 479
+    }
+  },
+  "reply all": {
+    "answers": {
+      "control": {
+        "choice": "e5",
+        "confidence": 0.99,
+        "probabilities": {
+          "e10": 0.0,
+          "e11": 0.0,
+          "e14": 0.0,
+          "e15": 0.0,
+          "e16": 0.0,
+          "e20": 0.0,
+          "e21": 0.0,
+          "e22": 0.0,
+          "e3": 0.0,
+          "e4": 0.0,
+          "e5": 0.99,
+          "e6": 0.0,
+          "e7": 0.0,
+          "e8": 0.0,
+          "e9": 0.0,
+          "none": 0.01
+        },
+        "type": "choice"
+      },
+      "direction": {
+        "choice": "down",
+        "confidence": 0.46,
+        "probabilities": {
+          "bottom": 0.09,
+          "down": 0.55,
+          "left": 0.01,
+          "right": 0.02,
+          "top": 0.12,
+          "up": 0.21
+        },
+        "type": "choice"
+      },
+      "intent": {
+        "choice": "press",
+        "confidence": 0.96,
+        "probabilities": {
+          "key": 0.03,
+          "open_app": 0.0,
+          "open_website": 0.0,
+          "other": 0.01,
+          "press": 0.96,
+          "scroll": 0.0
+        },
+        "type": "choice"
+      },
+      "key": {
+        "choice": "return",
+        "confidence": 0.68,
+        "probabilities": {
+          "back": 0.01,
+          "close_tab": 0.0,
+          "copy": 0.02,
+          "cut": 0.0,
+          "escape": 0.04,
+          "find": 0.0,
+          "forward": 0.12,
+          "full_screen": 0.0,
+          "minimize": 0.0,
+          "new_tab": 0.0,
+          "new_window": 0.01,
+          "next_tab": 0.0,
+          "page_down": 0.0,
+          "page_up": 0.0,
+          "paste": 0.01,
+          "previous_tab": 0.0,
+          "redo": 0.02,
+          "reload": 0.0,
+          "return": 0.7,
+          "save": 0.0,
+          "select_all": 0.01,
+          "spotlight": 0.0,
+          "tab_key": 0.05,
+          "undo": 0.01,
+          "zoom_in": 0.0,
+          "zoom_out": 0.0
+        },
+        "type": "choice"
+      }
+    },
+    "model": "jev-1.13.0",
+    "usage": {
+      "input_tokens": 1453,
+      "output_tokens": 479
+    }
+  },
+  "reply to Rae saying I'll be there": {
+    "answers": {
+      "control": {
+        "choice": "e4",
+        "confidence": 0.76,
+        "probabilities": {
+          "e10": 0.0,
+          "e11": 0.0,
+          "e14": 0.0,
+          "e15": 0.0,
+          "e16": 0.0,
+          "e20": 0.21,
+          "e21": 0.0,
+          "e22": 0.0,
+          "e3": 0.0,
+          "e4": 0.78,
+          "e5": 0.0,
+          "e6": 0.0,
+          "e7": 0.0,
+          "e8": 0.0,
+          "e9": 0.0,
+          "none": 0.01
+        },
+        "type": "choice"
+      },
+      "direction": {
+        "choice": "down",
+        "confidence": 0.49,
+        "probabilities": {
+          "bottom": 0.08,
+          "down": 0.58,
+          "left": 0.01,
+          "right": 0.01,
+          "top": 0.11,
+          "up": 0.21
+        },
+        "type": "choice"
+      },
+      "intent": {
+        "choice": "other",
+        "confidence": 0.81,
+        "probabilities": {
+          "key": 0.0,
+          "open_app": 0.0,
+          "open_website": 0.0,
+          "other": 0.85,
+          "press": 0.15,
+          "scroll": 0.0
+        },
+        "type": "choice"
+      },
+      "key": {
+        "choice": "return",
+        "confidence": 0.82,
+        "probabilities": {
+          "back": 0.01,
+          "close_tab": 0.0,
+          "copy": 0.0,
+          "cut": 0.0,
+          "escape": 0.01,
+          "find": 0.01,
+          "forward": 0.01,
+          "full_screen": 0.0,
+          "minimize": 0.0,
+          "new_tab": 0.0,
+          "new_window": 0.01,
+          "next_tab": 0.0,
+          "page_down": 0.0,
+          "page_up": 0.0,
+          "paste": 0.060000000000000005,
+          "previous_tab": 0.0,
+          "redo": 0.0,
+          "reload": 0.0,
+          "return": 0.84,
+          "save": 0.01,
+          "select_all": 0.0,
+          "spotlight": 0.0,
+          "tab_key": 0.04,
+          "undo": 0.0,
+          "zoom_in": 0.0,
+          "zoom_out": 0.0
+        },
+        "type": "choice"
+      }
+    },
+    "model": "jev-1.13.0",
+    "usage": {
+      "input_tokens": 1459,
+      "output_tokens": 479
+    }
+  },
+  "scroll down": {
+    "answers": {
+      "control": {
+        "choice": "none",
+        "confidence": 1.0,
+        "probabilities": {
+          "e10": 0.0,
+          "e11": 0.0,
+          "e14": 0.0,
+          "e15": 0.0,
+          "e16": 0.0,
+          "e20": 0.0,
+          "e21": 0.0,
+          "e22": 0.0,
+          "e3": 0.0,
+          "e4": 0.0,
+          "e5": 0.0,
+          "e6": 0.0,
+          "e7": 0.0,
+          "e8": 0.0,
+          "e9": 0.0,
+          "none": 1.0
+        },
+        "type": "choice"
+      },
+      "direction": {
+        "choice": "down",
+        "confidence": 1.0,
+        "probabilities": {
+          "bottom": 0.0,
+          "down": 1.0,
+          "left": 0.0,
+          "right": 0.0,
+          "top": 0.0,
+          "up": 0.0
+        },
+        "type": "choice"
+      },
+      "intent": {
+        "choice": "scroll",
+        "confidence": 1.0,
+        "probabilities": {
+          "key": 0.0,
+          "open_app": 0.0,
+          "open_website": 0.0,
+          "other": 0.0,
+          "press": 0.0,
+          "scroll": 1.0
+        },
+        "type": "choice"
+      },
+      "key": {
+        "choice": "page_down",
+        "confidence": 1.0,
+        "probabilities": {
+          "back": 0.0,
+          "close_tab": 0.0,
+          "copy": 0.0,
+          "cut": 0.0,
+          "escape": 0.0,
+          "find": 0.0,
+          "forward": 0.0,
+          "full_screen": 0.0,
+          "minimize": 0.0,
+          "new_tab": 0.0,
+          "new_window": 0.0,
+          "next_tab": 0.0,
+          "page_down": 1.0,
+          "page_up": 0.0,
+          "paste": 0.0,
+          "previous_tab": 0.0,
+          "redo": 0.0,
+          "reload": 0.0,
+          "return": 0.0,
+          "save": 0.0,
+          "select_all": 0.0,
+          "spotlight": 0.0,
+          "tab_key": 0.0,
+          "undo": 0.0,
+          "zoom_in": 0.0,
+          "zoom_out": 0.0
+        },
+        "type": "choice"
+      }
+    },
+    "model": "jev-1.13.0",
+    "usage": {
+      "input_tokens": 1453,
+      "output_tokens": 479
+    }
+  },
+  "scroll to the bottom": {
+    "answers": {
+      "control": {
+        "choice": "none",
+        "confidence": 1.0,
+        "probabilities": {
+          "e12": 0.0,
+          "e13": 0.0,
+          "e14": 0.0,
+          "e15": 0.0,
+          "e16": 0.0,
+          "e2": 0.0,
+          "e3": 0.0,
+          "e4": 0.0,
+          "e5": 0.0,
+          "e6": 0.0,
+          "e7": 0.0,
+          "none": 1.0
+        },
+        "type": "choice"
+      },
+      "direction": {
+        "choice": "bottom",
+        "confidence": 0.99,
+        "probabilities": {
+          "bottom": 0.99,
+          "down": 0.01,
+          "left": 0.0,
+          "right": 0.0,
+          "top": 0.0,
+          "up": 0.0
+        },
+        "type": "choice"
+      },
+      "intent": {
+        "choice": "scroll",
+        "confidence": 1.0,
+        "probabilities": {
+          "key": 0.0,
+          "open_app": 0.0,
+          "open_website": 0.0,
+          "other": 0.0,
+          "press": 0.0,
+          "scroll": 1.0
+        },
+        "type": "choice"
+      },
+      "key": {
+        "choice": "page_down",
+        "confidence": 1.0,
+        "probabilities": {
+          "back": 0.0,
+          "close_tab": 0.0,
+          "copy": 0.0,
+          "cut": 0.0,
+          "escape": 0.0,
+          "find": 0.0,
+          "forward": 0.0,
+          "full_screen": 0.0,
+          "minimize": 0.0,
+          "new_tab": 0.0,
+          "new_window": 0.0,
+          "next_tab": 0.0,
+          "page_down": 1.0,
+          "page_up": 0.0,
+          "paste": 0.0,
+          "previous_tab": 0.0,
+          "redo": 0.0,
+          "reload": 0.0,
+          "return": 0.0,
+          "save": 0.0,
+          "select_all": 0.0,
+          "spotlight": 0.0,
+          "tab_key": 0.0,
+          "undo": 0.0,
+          "zoom_in": 0.0,
+          "zoom_out": 0.0
+        },
+        "type": "choice"
+      }
+    },
+    "model": "jev-1.13.0",
+    "usage": {
+      "input_tokens": 1362,
+      "output_tokens": 444
+    }
+  },
+  "search for invoices": {
+    "answers": {
+      "control": {
+        "choice": "e11",
+        "confidence": 0.97,
+        "probabilities": {
+          "e10": 0.0,
+          "e11": 0.97,
+          "e14": 0.0,
+          "e15": 0.0,
+          "e16": 0.0,
+          "e20": 0.0,
+          "e21": 0.0,
+          "e22": 0.0,
+          "e3": 0.0,
+          "e4": 0.0,
+          "e5": 0.0,
+          "e6": 0.0,
+          "e7": 0.0,
+          "e8": 0.0,
+          "e9": 0.0,
+          "none": 0.03
+        },
+        "type": "choice"
+      },
+      "direction": {
+        "choice": "down",
+        "confidence": 0.63,
+        "probabilities": {
+          "bottom": 0.02,
+          "down": 0.69,
+          "left": 0.0,
+          "right": 0.01,
+          "top": 0.19,
+          "up": 0.09
+        },
+        "type": "choice"
+      },
+      "intent": {
+        "choice": "other",
+        "confidence": 0.9,
+        "probabilities": {
+          "key": 0.08,
+          "open_app": 0.0,
+          "open_website": 0.0,
+          "other": 0.92,
+          "press": 0.0,
+          "scroll": 0.0
+        },
+        "type": "choice"
+      },
+      "key": {
+        "choice": "find",
+        "confidence": 1.0,
+        "probabilities": {
+          "back": 0.0,
+          "close_tab": 0.0,
+          "copy": 0.0,
+          "cut": 0.0,
+          "escape": 0.0,
+          "find": 1.0,
+          "forward": 0.0,
+          "full_screen": 0.0,
+          "minimize": 0.0,
+          "new_tab": 0.0,
+          "new_window": 0.0,
+          "next_tab": 0.0,
+          "page_down": 0.0,
+          "page_up": 0.0,
+          "paste": 0.0,
+          "previous_tab": 0.0,
+          "redo": 0.0,
+          "reload": 0.0,
+          "return": 0.0,
+          "save": 0.0,
+          "select_all": 0.0,
+          "spotlight": 0.0,
+          "tab_key": 0.0,
+          "undo": 0.0,
+          "zoom_in": 0.0,
+          "zoom_out": 0.0
+        },
+        "type": "choice"
+      }
+    },
+    "model": "jev-1.13.0",
+    "usage": {
+      "input_tokens": 1454,
+      "output_tokens": 480
+    }
+  },
+  "send it": {
+    "answers": {
+      "control": {
+        "choice": "none",
+        "confidence": 0.96,
+        "probabilities": {
+          "e10": 0.0,
+          "e11": 0.0,
+          "e14": 0.0,
+          "e15": 0.0,
+          "e16": 0.0,
+          "e20": 0.0,
+          "e21": 0.0,
+          "e22": 0.0,
+          "e3": 0.02,
+          "e4": 0.0,
+          "e5": 0.0,
+          "e6": 0.01,
+          "e7": 0.0,
+          "e8": 0.0,
+          "e9": 0.0,
+          "none": 0.97
+        },
+        "type": "choice"
+      },
+      "direction": {
+        "choice": "down",
+        "confidence": 0.34,
+        "probabilities": {
+          "bottom": 0.3,
+          "down": 0.44,
+          "left": 0.01,
+          "right": 0.02,
+          "top": 0.08,
+          "up": 0.15
+        },
+        "type": "choice"
+      },
+      "intent": {
+        "choice": "press",
+        "confidence": 0.9,
+        "probabilities": {
+          "key": 0.03,
+          "open_app": 0.01,
+          "open_website": 0.0,
+          "other": 0.05,
+          "press": 0.91,
+          "scroll": 0.0
+        },
+        "type": "choice"
+      },
+      "key": {
+        "choice": "return",
+        "confidence": 0.9,
+        "probabilities": {
+          "back": 0.0,
+          "close_tab": 0.0,
+          "copy": 0.0,
+          "cut": 0.0,
+          "escape": 0.0,
+          "find": 0.0,
+          "forward": 0.04,
+          "full_screen": 0.0,
+          "minimize": 0.0,
+          "new_tab": 0.0,
+          "new_window": 0.0,
+          "next_tab": 0.0,
+          "page_down": 0.0,
+          "page_up": 0.0,
+          "paste": 0.0,
+          "previous_tab": 0.0,
+          "redo": 0.0,
+          "reload": 0.0,
+          "return": 0.92,
+          "save": 0.03,
+          "select_all": 0.0,
+          "spotlight": 0.0,
+          "tab_key": 0.01,
+          "undo": 0.0,
+          "zoom_in": 0.0,
+          "zoom_out": 0.0
+        },
+        "type": "choice"
+      }
+    },
+    "model": "jev-1.13.0",
+    "usage": {
+      "input_tokens": 1453,
+      "output_tokens": 478
+    }
+  },
+  "sign in": {
+    "answers": {
+      "control": {
+        "choice": "e14",
+        "confidence": 0.94,
+        "probabilities": {
+          "e12": 0.0,
+          "e13": 0.0,
+          "e14": 0.95,
+          "e15": 0.0,
+          "e16": 0.0,
+          "e2": 0.0,
+          "e3": 0.0,
+          "e4": 0.0,
+          "e5": 0.0,
+          "e6": 0.0,
+          "e7": 0.0,
+          "none": 0.05
+        },
+        "type": "choice"
+      },
+      "direction": {
+        "choice": "down",
+        "confidence": 0.37,
+        "probabilities": {
+          "bottom": 0.05,
+          "down": 0.48,
+          "left": 0.0,
+          "right": 0.0,
+          "top": 0.37,
+          "up": 0.1
+        },
+        "type": "choice"
+      },
+      "intent": {
+        "choice": "press",
+        "confidence": 1.0,
+        "probabilities": {
+          "key": 0.0,
+          "open_app": 0.0,
+          "open_website": 0.0,
+          "other": 0.0,
+          "press": 1.0,
+          "scroll": 0.0
+        },
+        "type": "choice"
+      },
+      "key": {
+        "choice": "return",
+        "confidence": 0.64,
+        "probabilities": {
+          "back": 0.0,
+          "close_tab": 0.0,
+          "copy": 0.0,
+          "cut": 0.0,
+          "escape": 0.02,
+          "find": 0.03,
+          "forward": 0.0,
+          "full_screen": 0.0,
+          "minimize": 0.0,
+          "new_tab": 0.01,
+          "new_window": 0.01,
+          "next_tab": 0.0,
+          "page_down": 0.0,
+          "page_up": 0.0,
+          "paste": 0.0,
+          "previous_tab": 0.0,
+          "redo": 0.0,
+          "reload": 0.01,
+          "return": 0.66,
+          "save": 0.0,
+          "select_all": 0.0,
+          "spotlight": 0.01,
+          "tab_key": 0.25,
+          "undo": 0.0,
+          "zoom_in": 0.0,
+          "zoom_out": 0.0
+        },
+        "type": "choice"
+      }
+    },
+    "model": "jev-1.13.0",
+    "usage": {
+      "input_tokens": 1360,
+      "output_tokens": 445
+    }
+  },
+  "switch to mail": {
+    "answers": {
+      "app": {
+        "choice": "Mail",
+        "confidence": 1.0,
+        "probabilities": {
+          "Mail": 1.0,
+          "none": 0.0
+        },
+        "type": "choice"
+      },
+      "control": {
+        "choice": "none",
+        "confidence": 0.98,
+        "probabilities": {
+          "e12": 0.0,
+          "e13": 0.0,
+          "e14": 0.0,
+          "e15": 0.0,
+          "e2": 0.0,
+          "e3": 0.0,
+          "e5": 0.0,
+          "e6": 0.0,
+          "e7": 0.0,
+          "e8": 0.01,
+          "none": 0.99
+        },
+        "type": "choice"
+      },
+      "direction": {
+        "choice": "down",
+        "confidence": 0.43,
+        "probabilities": {
+          "bottom": 0.02,
+          "down": 0.52,
+          "left": 0.14,
+          "right": 0.17,
+          "top": 0.09,
+          "up": 0.06
+        },
+        "type": "choice"
+      },
+      "intent": {
+        "choice": "open_app",
+        "confidence": 1.0,
+        "probabilities": {
+          "key": 0.0,
+          "open_app": 1.0,
+          "open_website": 0.0,
+          "other": 0.0,
+          "press": 0.0,
+          "scroll": 0.0
+        },
+        "type": "choice"
+      },
+      "key": {
+        "choice": "next_tab",
+        "confidence": 0.76,
+        "probabilities": {
+          "back": 0.0,
+          "close_tab": 0.0,
+          "copy": 0.0,
+          "cut": 0.0,
+          "escape": 0.0,
+          "find": 0.01,
+          "forward": 0.01,
+          "full_screen": 0.0,
+          "minimize": 0.0,
+          "new_tab": 0.0,
+          "new_window": 0.0,
+          "next_tab": 0.78,
+          "page_down": 0.0,
+          "page_up": 0.0,
+          "paste": 0.0,
+          "previous_tab": 0.14,
+          "redo": 0.0,
+          "reload": 0.0,
+          "return": 0.01,
+          "save": 0.0,
+          "select_all": 0.0,
+          "spotlight": 0.02,
+          "tab_key": 0.03,
+          "undo": 0.0,
+          "zoom_in": 0.0,
+          "zoom_out": 0.0
+        },
+        "type": "choice"
+      }
+    },
+    "model": "jev-1.13.0",
+    "usage": {
+      "input_tokens": 1392,
+      "output_tokens": 464
+    }
+  },
+  "tap archive": {
+    "answers": {
+      "control": {
+        "choice": "e7",
+        "confidence": 1.0,
+        "probabilities": {
+          "e10": 0.0,
+          "e11": 0.0,
+          "e14": 0.0,
+          "e15": 0.0,
+          "e16": 0.0,
+          "e20": 0.0,
+          "e21": 0.0,
+          "e22": 0.0,
+          "e3": 0.0,
+          "e4": 0.0,
+          "e5": 0.0,
+          "e6": 0.0,
+          "e7": 1.0,
+          "e8": 0.0,
+          "e9": 0.0,
+          "none": 0.0
+        },
+        "type": "choice"
+      },
+      "direction": {
+        "choice": "down",
+        "confidence": 0.25,
+        "probabilities": {
+          "bottom": 0.02,
+          "down": 0.38,
+          "left": 0.1,
+          "right": 0.1,
+          "top": 0.17,
+          "up": 0.23
+        },
+        "type": "choice"
+      },
+      "intent": {
+        "choice": "press",
+        "confidence": 1.0,
+        "probabilities": {
+          "key": 0.0,
+          "open_app": 0.0,
+          "open_website": 0.0,
+          "other": 0.0,
+          "press": 1.0,
+          "scroll": 0.0
+        },
+        "type": "choice"
+      },
+      "key": {
+        "choice": "return",
+        "confidence": 0.37,
+        "probabilities": {
+          "back": 0.1,
+          "close_tab": 0.08,
+          "copy": 0.02,
+          "cut": 0.02,
+          "escape": 0.05,
+          "find": 0.0,
+          "forward": 0.02,
+          "full_screen": 0.0,
+          "minimize": 0.02,
+          "new_tab": 0.0,
+          "new_window": 0.0,
+          "next_tab": 0.0,
+          "page_down": 0.0,
+          "page_up": 0.0,
+          "paste": 0.0,
+          "previous_tab": 0.0,
+          "redo": 0.0,
+          "reload": 0.0,
+          "return": 0.41,
+          "save": 0.22,
+          "select_all": 0.0,
+          "spotlight": 0.0,
+          "tab_key": 0.04,
+          "undo": 0.02,
+          "zoom_in": 0.0,
+          "zoom_out": 0.0
+        },
+        "type": "choice"
+      }
+    },
+    "model": "jev-1.13.0",
+    "usage": {
+      "input_tokens": 1453,
+      "output_tokens": 479
+    }
+  },
+  "type hello world": {
+    "answers": {
+      "control": {
+        "choice": "none",
+        "confidence": 0.55,
+        "probabilities": {
+          "e12": 0.0,
+          "e13": 0.0,
+          "e14": 0.0,
+          "e15": 0.0,
+          "e16": 0.0,
+          "e2": 0.0,
+          "e3": 0.0,
+          "e4": 0.41,
+          "e5": 0.0,
+          "e6": 0.0,
+          "e7": 0.0,
+          "none": 0.59
+        },
+        "type": "choice"
+      },
+      "direction": {
+        "choice": "down",
+        "confidence": 0.64,
+        "probabilities": {
+          "bottom": 0.04,
+          "down": 0.7,
+          "left": 0.02,
+          "right": 0.02,
+          "top": 0.18,
+          "up": 0.04
+        },
+        "type": "choice"
+      },
+      "intent": {
+        "choice": "other",
+        "confidence": 1.0,
+        "probabilities": {
+          "key": 0.0,
+          "open_app": 0.0,
+          "open_website": 0.0,
+          "other": 1.0,
+          "press": 0.0,
+          "scroll": 0.0
+        },
+        "type": "choice"
+      },
+      "key": {
+        "choice": "return",
+        "confidence": 0.47,
+        "probabilities": {
+          "back": 0.0,
+          "close_tab": 0.0,
+          "copy": 0.0,
+          "cut": 0.0,
+          "escape": 0.03,
+          "find": 0.13,
+          "forward": 0.0,
+          "full_screen": 0.01,
+          "minimize": 0.0,
+          "new_tab": 0.02,
+          "new_window": 0.0,
+          "next_tab": 0.0,
+          "page_down": 0.0,
+          "page_up": 0.0,
+          "paste": 0.24,
+          "previous_tab": 0.0,
+          "redo": 0.0,
+          "reload": 0.0,
+          "return": 0.5,
+          "save": 0.0,
+          "select_all": 0.0,
+          "spotlight": 0.01,
+          "tab_key": 0.06,
+          "undo": 0.0,
+          "zoom_in": 0.0,
+          "zoom_out": 0.0
+        },
+        "type": "choice"
+      }
+    },
+    "model": "jev-1.13.0",
+    "usage": {
+      "input_tokens": 1361,
+      "output_tokens": 443
+    }
+  },
+  "undo": {
+    "answers": {
+      "control": {
+        "choice": "none",
+        "confidence": 0.98,
+        "probabilities": {
+          "e12": 0.0,
+          "e13": 0.0,
+          "e14": 0.0,
+          "e15": 0.0,
+          "e2": 0.02,
+          "e3": 0.0,
+          "e5": 0.0,
+          "e6": 0.0,
+          "e7": 0.0,
+          "e8": 0.0,
+          "none": 0.98
+        },
+        "type": "choice"
+      },
+      "direction": {
+        "choice": "up",
+        "confidence": 0.88,
+        "probabilities": {
+          "bottom": 0.0,
+          "down": 0.01,
+          "left": 0.01,
+          "right": 0.0,
+          "top": 0.06999999999999999,
+          "up": 0.91
+        },
+        "type": "choice"
+      },
+      "intent": {
+        "choice": "key",
+        "confidence": 1.0,
+        "probabilities": {
+          "key": 1.0,
+          "open_app": 0.0,
+          "open_website": 0.0,
+          "other": 0.0,
+          "press": 0.0,
+          "scroll": 0.0
+        },
+        "type": "choice"
+      },
+      "key": {
+        "choice": "undo",
+        "confidence": 1.0,
+        "probabilities": {
+          "back": 0.0,
+          "close_tab": 0.0,
+          "copy": 0.0,
+          "cut": 0.0,
+          "escape": 0.0,
+          "find": 0.0,
+          "forward": 0.0,
+          "full_screen": 0.0,
+          "minimize": 0.0,
+          "new_tab": 0.0,
+          "new_window": 0.0,
+          "next_tab": 0.0,
+          "page_down": 0.0,
+          "page_up": 0.0,
+          "paste": 0.0,
+          "previous_tab": 0.0,
+          "redo": 0.0,
+          "reload": 0.0,
+          "return": 0.0,
+          "save": 0.0,
+          "select_all": 0.0,
+          "spotlight": 0.0,
+          "tab_key": 0.0,
+          "undo": 1.0,
+          "zoom_in": 0.0,
+          "zoom_out": 0.0
+        },
+        "type": "choice"
+      }
+    },
+    "model": "jev-1.13.0",
+    "usage": {
+      "input_tokens": 1340,
+      "output_tokens": 434
+    }
+  },
+  "what is this page about": {
+    "answers": {
+      "control": {
+        "choice": "none",
+        "confidence": 0.99,
+        "probabilities": {
+          "e12": 0.0,
+          "e13": 0.0,
+          "e14": 0.0,
+          "e15": 0.0,
+          "e16": 0.0,
+          "e2": 0.0,
+          "e3": 0.0,
+          "e4": 0.01,
+          "e5": 0.0,
+          "e6": 0.0,
+          "e7": 0.0,
+          "none": 0.99
+        },
+        "type": "choice"
+      },
+      "direction": {
+        "choice": "top",
+        "confidence": 0.39,
+        "probabilities": {
+          "bottom": 0.02,
+          "down": 0.43,
+          "left": 0.0,
+          "right": 0.0,
+          "top": 0.5,
+          "up": 0.05
+        },
+        "type": "choice"
+      },
+      "intent": {
+        "choice": "other",
+        "confidence": 1.0,
+        "probabilities": {
+          "key": 0.0,
+          "open_app": 0.0,
+          "open_website": 0.0,
+          "other": 1.0,
+          "press": 0.0,
+          "scroll": 0.0
+        },
+        "type": "choice"
+      },
+      "key": {
+        "choice": "find",
+        "confidence": 0.63,
+        "probabilities": {
+          "back": 0.0,
+          "close_tab": 0.0,
+          "copy": 0.0,
+          "cut": 0.0,
+          "escape": 0.06,
+          "find": 0.66,
+          "forward": 0.0,
+          "full_screen": 0.0,
+          "minimize": 0.0,
+          "new_tab": 0.0,
+          "new_window": 0.0,
+          "next_tab": 0.0,
+          "page_down": 0.0,
+          "page_up": 0.0,
+          "paste": 0.0,
+          "previous_tab": 0.0,
+          "redo": 0.0,
+          "reload": 0.07,
+          "return": 0.08,
+          "save": 0.0,
+          "select_all": 0.01,
+          "spotlight": 0.11,
+          "tab_key": 0.0,
+          "undo": 0.0,
+          "zoom_in": 0.0,
+          "zoom_out": 0.0
+        },
+        "type": "choice"
+      }
+    },
+    "model": "jev-1.13.0",
+    "usage": {
+      "input_tokens": 1363,
+      "output_tokens": 443
+    }
+  }
+}

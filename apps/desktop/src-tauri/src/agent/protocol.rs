@@ -62,6 +62,22 @@ where
 {
     deserialize_bounded(d, MAX_ID_LEN)
 }
+fn de_opt_id<'de, D>(d: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    match Option::<String>::deserialize(d)? {
+        None => Ok(None),
+        Some(s) if s.is_empty() || s.len() > MAX_ID_LEN => {
+            Err(serde::de::Error::custom("continues must be a run id"))
+        }
+        Some(s) => Ok(Some(s)),
+    }
+}
+
+/// What this Mac's Ask can do beyond the protocol version, announced in
+/// `agent_ready` so a phone only offers what the Mac will honour.
+pub const AGENT_FEATURES: &[&str] = &["computer_use", "full_control", "resume"];
 
 /// Which executor tier backs a step. Ordered cheap → expensive.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -143,6 +159,17 @@ pub enum AgentInbound {
         /// command carrying none is not run.
         #[serde(default, rename = "consentRevision")]
         consent_revision: Option<String>,
+        /// How much the person handed over for this run: `"full"` for full
+        /// control, anything else — including nothing, which is what a phone
+        /// that predates full control sends — is supervised (ADR-0018).
+        /// Read leniently on purpose: an unknown value falls back to the
+        /// cautious mode instead of dropping the command.
+        #[serde(default)]
+        autonomy: Option<String>,
+        /// The run this answers, when the previous run ended asking the
+        /// person something. The Mac carries on from that conversation.
+        #[serde(default, deserialize_with = "de_opt_id")]
+        continues: Option<String>,
         ts: u64,
     },
     AgentStop {
@@ -335,6 +362,30 @@ pub struct AgentDestination {
     /// pointing somewhere else is a different destination, and the person is
     /// entitled to see that it is in force.
     pub source: String,
+    /// Where short commands go to be done as one instant action, when this
+    /// Mac has that on (ADR-0019). A second destination, disclosed beside the
+    /// first rather than folded into it.
+    ///
+    /// Boxed: every `agent_ready` frame is sized by its largest variant.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instant: Option<Box<InstantDestination>>,
+}
+
+/// The instant-actions destination (ADR-0019). What it receives is narrower
+/// than the model's: the command, the app in front, and the names of the
+/// controls on screen — never a screenshot.
+#[derive(Debug, Clone, Serialize)]
+pub struct InstantDestination {
+    #[serde(rename = "providerName")]
+    pub provider_name: String,
+    pub origin: String,
+    pub model: String,
+    /// Digest of the main destination's revision plus this one. A phone that
+    /// showed both echoes this; a phone that showed only the main destination
+    /// echoes that one's revision, and the Mac then runs without instant
+    /// actions. Either way the command matches what the person saw.
+    #[serde(rename = "consentRevision")]
+    pub consent_revision: String,
 }
 
 /// Revision of the consent wording. Must match `AI_CONSENT_POLICY` in
@@ -362,6 +413,10 @@ pub enum AgentOutbound {
         /// never as the destination it agreed to last time.
         #[serde(skip_serializing_if = "Option::is_none")]
         destination: Option<AgentDestination>,
+        /// What this Mac's Ask supports; see [`AGENT_FEATURES`]. An older
+        /// phone ignores it; a newer phone paired with an older Mac sees none
+        /// and does not offer full control.
+        features: &'static [&'static str],
         ts: u64,
     },
     AgentStep {
@@ -478,6 +533,42 @@ mod tests {
             }
             _ => panic!("wrong variant"),
         }
+    }
+
+    #[test]
+    fn a_command_carries_autonomy_and_what_it_answers_and_older_ones_still_parse() {
+        let json = r#"{"kind":"agent_command","runId":"run-2","text":"the work one","autonomy":"full","continues":"run-1","ts":5}"#;
+        match serde_json::from_str::<AgentInbound>(json).unwrap() {
+            AgentInbound::AgentCommand {
+                autonomy,
+                continues,
+                ..
+            } => {
+                assert_eq!(autonomy.as_deref(), Some("full"));
+                assert_eq!(continues.as_deref(), Some("run-1"));
+            }
+            _ => panic!("wrong variant"),
+        }
+        // A phone that predates both sends neither.
+        let old = r#"{"kind":"agent_command","runId":"r","text":"t","ts":1}"#;
+        match serde_json::from_str::<AgentInbound>(old).unwrap() {
+            AgentInbound::AgentCommand {
+                autonomy,
+                continues,
+                ..
+            } => assert!(autonomy.is_none() && continues.is_none()),
+            _ => panic!("wrong variant"),
+        }
+        // An unknown mode still parses — and is read as supervised upstream —
+        // rather than dropping the command.
+        let odd = r#"{"kind":"agent_command","runId":"r","text":"t","autonomy":"turbo","ts":1}"#;
+        assert!(parse_inbound(odd.as_bytes()).is_some());
+        // `continues` is a run id, bounded like one.
+        let long = format!(
+            r#"{{"kind":"agent_command","runId":"r","text":"t","continues":"{}","ts":1}}"#,
+            "x".repeat(MAX_ID_LEN + 1)
+        );
+        assert!(parse_inbound(long.as_bytes()).is_none());
     }
 
     #[test]

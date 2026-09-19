@@ -44,7 +44,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use super::effective::EffectiveConfig;
-use super::{anthropic, openai_compat, ProviderChoice};
+use super::{anthropic, jev, openai_compat, ProviderChoice};
+use crate::agent::protocol::{AgentDestination, InstantDestination};
 
 /// How long a resolution is trusted before it is refreshed. Short, because the
 /// person may have just added a key in another window; long enough that a burst
@@ -73,6 +74,54 @@ pub enum Readiness {
 pub struct Resolved {
     pub choice: ProviderChoice,
     pub config: EffectiveConfig,
+    /// Instant actions, when a key for them is set (ADR-0019).
+    pub instant: Option<jev::InstantConfig>,
+}
+
+impl Resolved {
+    /// What the phone is told: the model's destination, and the instant
+    /// step's beside it when that is on.
+    pub fn destination(&self) -> AgentDestination {
+        let mut destination = self.config.destination();
+        destination.instant = self.instant.as_ref().map(|i| {
+            let origin = i.origin();
+            Box::new(InstantDestination {
+                provider_name: jev::PROVIDER_NAME.to_string(),
+                consent_revision: self.config.instant_revision(&origin, &i.model),
+                origin,
+                model: i.model.clone(),
+            })
+        });
+        destination
+    }
+
+    /// Which disclosure a command's echoed revision agreed to:
+    /// `Some(false)` the model's destination alone, `Some(true)` that and
+    /// instant actions, `None` neither — a command for a configuration that
+    /// is no longer in force (L-265).
+    pub fn agreed(&self, revision: Option<&str>) -> Option<bool> {
+        let revision = revision?;
+        if revision == self.config.consent_revision {
+            return Some(false);
+        }
+        let with_instant = self.destination().instant?.consent_revision;
+        (revision == with_instant).then_some(true)
+    }
+}
+
+/// The instant-actions key: the developer override, else the keychain. A
+/// keychain that will not answer means no instant actions, never no Ask.
+fn resolve_instant() -> Option<jev::InstantConfig> {
+    if let Some(config) = jev::InstantConfig::from_env() {
+        return Some(config);
+    }
+    match super::store::credential_for(jev::KEY_KIND, None) {
+        Ok(key) => key.map(jev::InstantConfig::new),
+        Err(e) => {
+            log::warn!(target: "lilypad::agent", "instant actions unavailable: {e}");
+            None
+        }
+    }
 }
 
 impl Readiness {
@@ -253,7 +302,11 @@ fn resolve_once() -> (Readiness, u64) {
         Err(unavailable) => Readiness::Unavailable(unavailable.0),
         Ok(None) => Readiness::NotConfigured,
         Ok(Some((config, key))) => match build_choice(&settings, &config, key) {
-            Some(choice) => Readiness::Ready(Box::new(Resolved { choice, config })),
+            Some(choice) => Readiness::Ready(Box::new(Resolved {
+                choice,
+                config,
+                instant: resolve_instant(),
+            })),
             None => Readiness::NotConfigured,
         },
     };
@@ -266,13 +319,23 @@ fn build_choice(
     key: String,
 ) -> Option<ProviderChoice> {
     let vision = super::store::effective_vision(settings);
-    let model = config.model.clone();
+    // A blank model means the preset's own default, decided per provider
+    // (L-292) — never the dialect's. Falling back to the dialect default sent
+    // `gpt-4o-mini` to Gemini and every other OpenAI-compatible endpoint whose
+    // model field was left empty. No default at all is a configuration that
+    // cannot run, and says so rather than guessing.
+    let model = match config.model.clone() {
+        Some(model) => model,
+        None => super::presets::default_model_for(
+            settings.profile_id.as_deref(),
+            config.dialect,
+            settings.base_url.as_deref(),
+        )?
+        .to_string(),
+    };
     match config.dialect {
         "anthropic" => {
-            let mut c = anthropic::AnthropicConfig::new(
-                key,
-                model.unwrap_or_else(|| anthropic::DEFAULT_MODEL.to_string()),
-            );
+            let mut c = anthropic::AnthropicConfig::new(key, model);
             c.base_url = config.base_url.clone();
             c.vision = vision;
             Some(ProviderChoice::Anthropic(c))
@@ -280,10 +343,11 @@ fn build_choice(
         "openai_compat" => {
             let mut c = openai_compat::OpenAiCompatConfig::new(
                 if key.is_empty() { "none".into() } else { key },
-                model.unwrap_or_else(|| openai_compat::DEFAULT_MODEL.to_string()),
+                model,
             );
             c.base_url = config.base_url.clone();
             c.vision = vision;
+            c.grid = openai_compat::parse_grid(settings.grid.as_deref());
             Some(ProviderChoice::OpenAiCompat(c))
         }
         _ => None,
@@ -388,5 +452,117 @@ mod tests {
             "a resolution from a previous epoch was published"
         );
         assert!(cached.at.is_none());
+    }
+
+    /// ADR-0019: instant actions are a second destination. A command agrees
+    /// to the model's destination alone, or to both — and a phone that only
+    /// ever showed the first can never switch the second on.
+    #[test]
+    fn a_command_agrees_to_the_model_alone_or_to_both_and_nothing_else() {
+        let config = EffectiveConfig::draft(
+            "openai_compat",
+            None,
+            "https://api.openai.com/v1".into(),
+            Some("m".into()),
+            Some("k".into()),
+        )
+        .unwrap();
+        let choice = ProviderChoice::OpenAiCompat(openai_compat::OpenAiCompatConfig::new("k", "m"));
+        let base = config.consent_revision.clone();
+        let without = Resolved {
+            choice,
+            config,
+            instant: None,
+        };
+        assert!(without.destination().instant.is_none());
+        assert_eq!(without.agreed(Some(&base)), Some(false));
+        assert_eq!(without.agreed(Some("something else")), None);
+        assert_eq!(without.agreed(None), None);
+
+        let with = Resolved {
+            instant: Some(jev::InstantConfig::new("ts_key")),
+            ..without.clone()
+        };
+        let shown = with.destination().instant.expect("disclosed");
+        assert_eq!(shown.origin, "https://api.typesafe.ai");
+        assert_eq!(shown.provider_name, jev::PROVIDER_NAME);
+        assert_ne!(shown.consent_revision, base);
+        assert_eq!(with.agreed(Some(&shown.consent_revision)), Some(true));
+        assert_eq!(
+            with.agreed(Some(&base)),
+            Some(false),
+            "a phone that showed only the model's destination"
+        );
+        // The revision for both is not accepted once instant actions are off.
+        assert_eq!(without.agreed(Some(&shown.consent_revision)), None);
+        // Rotating the key is not a new destination.
+        let rotated = Resolved {
+            instant: Some(jev::InstantConfig::new("ts_other")),
+            ..without
+        };
+        assert_eq!(
+            rotated.destination().instant.unwrap().consent_revision,
+            shown.consent_revision
+        );
+        // On the wire: camelCase, and absent when off.
+        let wire = serde_json::to_value(with.destination()).unwrap();
+        assert_eq!(wire["instant"]["origin"], "https://api.typesafe.ai");
+        assert!(wire["instant"]["consentRevision"].is_string());
+        let wire = serde_json::to_value(
+            Resolved {
+                instant: None,
+                ..with
+            }
+            .destination(),
+        )
+        .unwrap();
+        assert!(wire.get("instant").is_none());
+    }
+
+    /// L-292, again: the resolver kept a dialect-wide fallback after
+    /// `ProviderChoice::from_settings` lost it, so a Gemini preset with an
+    /// empty model field ran every task against `gpt-4o-mini`.
+    #[test]
+    fn a_blank_model_takes_the_presets_default_or_does_not_run() {
+        use super::super::store::AgentSettings;
+        let settings = |profile: &str, base: &str| AgentSettings {
+            provider_kind: Some("openai_compat".into()),
+            profile_id: Some(profile.into()),
+            base_url: Some(base.into()),
+            model: None,
+            ..Default::default()
+        };
+        let config = |s: &AgentSettings| {
+            EffectiveConfig::draft(
+                "openai_compat",
+                s.profile_id.clone(),
+                s.base_url.clone().unwrap(),
+                None,
+                Some("k".into()),
+            )
+            .unwrap()
+        };
+        let gemini = settings(
+            "gemini",
+            "https://generativelanguage.googleapis.com/v1beta/openai",
+        );
+        match build_choice(&gemini, &config(&gemini), "k".into()) {
+            None => {}
+            Some(ProviderChoice::OpenAiCompat(c)) => {
+                assert_ne!(
+                    c.model,
+                    openai_compat::DEFAULT_MODEL,
+                    "another vendor's default"
+                )
+            }
+            Some(other) => panic!("{other:?}"),
+        }
+        let openai = settings("openai", "https://api.openai.com/v1");
+        match build_choice(&openai, &config(&openai), "k".into()) {
+            Some(ProviderChoice::OpenAiCompat(c)) => {
+                assert_eq!(c.model, openai_compat::DEFAULT_MODEL)
+            }
+            other => panic!("{other:?}"),
+        }
     }
 }

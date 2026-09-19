@@ -25,7 +25,15 @@ import { useKeepAwake } from '@sayem314/react-native-keep-awake';
 import Clipboard from '@react-native-clipboard/clipboard';
 import { journalText } from '../lib/journal';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
-import type { Modifier, CaptureMode, DisplayInfo, AgentDestination } from '@lilypad/protocol';
+import {
+  AGENT_FEATURE_FULL_CONTROL,
+  AGENT_FEATURE_RESUME,
+  type Modifier,
+  type CaptureMode,
+  type DisplayInfo,
+  type AgentDestination,
+  type AgentAutonomy,
+} from '@lilypad/protocol';
 import type { RootStackParamList } from '../types';
 import { theme } from '../theme';
 import { ViewerConnection, type ViewerState, type RecoveryDetail } from '../lib/webrtc';
@@ -48,6 +56,7 @@ import { ACK_DEADLINE_MS, agentFeedReducer, INITIAL_AGENT_FEED } from '../lib/ag
 import { forgetPair, loadPairs, setPairLanEndpoints, setPairSecret } from '../lib/pairs';
 import { requestConnectForPair } from '../lib/api';
 import { AgentPanel, type HandshakeView } from './AgentPanel';
+import { autonomyFor, setAutonomy } from '../lib/aiAutonomy';
 import { clearResumeHandle, saveResumeHandle } from '../lib/sessionResume';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Viewer'>;
@@ -198,6 +207,11 @@ export function ViewerScreen({ route, navigation }: Props) {
    * cleared on disconnect so a reconnect cannot reuse the previous answer
    * (L-265). */
   const [askDestination, setAskDestination] = useState<AgentDestination | undefined>(undefined);
+  /** What the Mac's Ask supports, from the handshake (ADR-0018). */
+  const [askFeatures, setAskFeatures] = useState<string[]>([]);
+  /** Full control or supervised, as chosen for this Mac; `null` not chosen,
+   * `undefined` not read yet. */
+  const [autonomy, setAutonomyChoice] = useState<AgentAutonomy | null | undefined>(undefined);
   const [agentFeed, dispatchAgent] = useReducer(agentFeedReducer, INITIAL_AGENT_FEED);
   // Source video pixel size, from the desktop's `frame-size` signal. `null`
   // until it arrives (full-bleed fallback) — see Finding 1.
@@ -376,10 +390,11 @@ export function ViewerScreen({ route, navigation }: Props) {
             CLIPBOARD_TOAST_MS,
           );
         },
-        onAgentReady: (state, destination) => {
+        onAgentReady: (state, destination, features) => {
           if (!active) return;
           setAskHandshake(state);
           setAskDestination(destination);
+          setAskFeatures(features ?? []);
         },
         onAgentStep: (step) => {
           if (active) dispatchAgent({ type: 'step', step });
@@ -809,23 +824,52 @@ export function ViewerScreen({ route, navigation }: Props) {
   // command is never retried under a new identity, which is how one instruction
   // runs twice.
   const [unsentCommand, setUnsentCommand] = useState<string | null>(null);
-  const sendAgentCommand = useCallback((text: string) => {
-    const result = connRef.current?.sendAgentCommand(text);
-    if (!result) {
-      setUnsentCommand(text);
-      return false;
-    }
-    if (result.sent) {
-      setUnsentCommand(null);
-      dispatchAgent({ type: 'command_sent', runId: result.runId });
-      return true;
-    } else {
-      // Preserve what the person typed: it is theirs, and it never arrived.
-      setUnsentCommand(text);
-      dispatchAgent({ type: 'command_unsent', runId: result.runId });
-      return false;
-    }
-  }, []);
+  // The last task ended asking a question: the next message is the answer,
+  // and the Mac carries on in the same conversation.
+  const answering =
+    agentFeed.phase === 'ended' &&
+    agentFeed.outcome === 'needs_input' &&
+    askFeatures.includes(AGENT_FEATURE_RESUME);
+  const sendAgentCommand = useCallback(
+    (text: string) => {
+      const result = connRef.current?.sendAgentCommand(text, {
+        autonomy: autonomy ?? undefined,
+        continues: answering && agentFeed.runId ? agentFeed.runId : undefined,
+      });
+      if (!result) {
+        setUnsentCommand(text);
+        return false;
+      }
+      if (result.sent) {
+        setUnsentCommand(null);
+        dispatchAgent({ type: 'command_sent', runId: result.runId });
+        return true;
+      } else {
+        // Preserve what the person typed: it is theirs, and it never arrived.
+        setUnsentCommand(text);
+        dispatchAgent({ type: 'command_unsent', runId: result.runId });
+        return false;
+      }
+    },
+    [autonomy, answering, agentFeed.runId],
+  );
+  useEffect(() => {
+    let alive = true;
+    setAutonomyChoice(undefined);
+    void autonomyFor(desktopDeviceId ?? '').then((a) => {
+      if (alive) setAutonomyChoice(a);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [desktopDeviceId]);
+  const chooseAutonomy = useCallback(
+    (a: AgentAutonomy) => {
+      setAutonomyChoice(a);
+      if (desktopDeviceId) void setAutonomy(desktopDeviceId, a);
+    },
+    [desktopDeviceId],
+  );
   const stopAgent = useCallback(() => {
     if (!agentFeed.runId) return;
     // No optimistic terminal state. Stop is a request, and the desktop's
@@ -1048,6 +1092,10 @@ export function ViewerScreen({ route, navigation }: Props) {
           onStop={stopAgent}
           onDecide={decideAgent}
           unsentCommand={unsentCommand}
+          fullControlAvailable={askFeatures.includes(AGENT_FEATURE_FULL_CONTROL)}
+          autonomy={autonomy ?? null}
+          onChooseAutonomy={autonomy === undefined ? undefined : chooseAutonomy}
+          awaitingAnswer={answering}
         />
       ) : null}
 

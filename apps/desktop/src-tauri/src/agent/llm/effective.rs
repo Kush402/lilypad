@@ -321,7 +321,15 @@ impl EffectiveConfig {
             consent_policy: AI_CONSENT_POLICY,
             consent_revision: self.consent_revision.clone(),
             source: self.source.as_str().to_string(),
+            instant: None,
         }
+    }
+
+    /// The revision for this destination together with instant actions sent
+    /// to `origin` (ADR-0019). Agreeing to both is a different decision from
+    /// agreeing to this one alone, so it is a different digest.
+    pub fn instant_revision(&self, origin: &str, model: &str) -> String {
+        digest(&[&self.consent_revision, "instant", origin, model])
     }
 
     /// Does a verification result about `other` describe this configuration?

@@ -1764,6 +1764,29 @@ describe('ViewerConnection', () => {
       expect(command.consentRevision).toBe('rev-abc');
     });
 
+    it('echoes the revision covering instant actions when the Mac disclosed them (ADR-0019)', async () => {
+      const { conn, peer } = await startConnected(makeCallbacks());
+      const critical = peer.dispatchDataChannel(INPUT_CHANNEL_LABEL);
+      conn.prepareAsk();
+      const probe = JSON.parse(critical.send.mock.calls[0][0]);
+      critical.emitMessage(
+        readyFrame(probe.runId, {
+          destination: {
+            ...JSON.parse(readyFrame('x')).destination,
+            instant: {
+              providerName: 'TypeSafe Jev',
+              origin: 'https://api.typesafe.ai',
+              model: 'jev-1.13.0',
+              consentRevision: 'rev-both',
+            },
+          },
+        }),
+      );
+      expect(conn.sendAgentCommand('scroll down').sent).toBe(true);
+      const command = JSON.parse(critical.send.mock.calls[1][0]);
+      expect(command.consentRevision).toBe('rev-both');
+    });
+
     /* ── L-285 ────────────────────────────────────────────────────────── */
 
     it('reports each handshake state instead of an absent destination', async () => {
@@ -1778,7 +1801,7 @@ describe('ViewerConnection', () => {
 
       for (const state of ['checking', 'unconfigured', 'unavailable'] as const) {
         critical.emitMessage(readyFrame(probe.runId, { state, destination: undefined }));
-        expect(cb.onAgentReady).toHaveBeenLastCalledWith(state, undefined);
+        expect(cb.onAgentReady).toHaveBeenLastCalledWith(state, undefined, []);
         // None of these is permission to send.
         expect(conn.sendAgentCommand('open Safari').sent).toBe(false);
       }
@@ -1788,6 +1811,7 @@ describe('ViewerConnection', () => {
       expect(cb.onAgentReady).toHaveBeenLastCalledWith(
         'ready',
         expect.objectContaining({ origin: 'https://api.openai.com' }),
+        [],
       );
       expect(conn.sendAgentCommand('open Safari').sent).toBe(true);
     });
@@ -1803,8 +1827,43 @@ describe('ViewerConnection', () => {
       const probe = JSON.parse(critical.send.mock.calls[0][0]);
 
       critical.emitMessage(readyFrame(probe.runId, { protocolVersion: 2 }));
-      expect(cb.onAgentReady).toHaveBeenCalledWith('incompatible', undefined);
+      expect(cb.onAgentReady).toHaveBeenCalledWith('incompatible', undefined, []);
       expect(conn.sendAgentCommand('open Safari').sent).toBe(false);
+    });
+
+    /* ── ADR-0018 ───────────────────────────────────────────────────── */
+
+    it('asks for full control and resumes only on a Mac that honours them', async () => {
+      const cb = makeCallbacks();
+      const { conn, peer } = await startConnected(cb);
+      const critical = peer.dispatchDataChannel(INPUT_CHANNEL_LABEL);
+      conn.prepareAsk();
+      const probe = JSON.parse(critical.send.mock.calls[0][0]);
+      const lastCommand = () => JSON.parse(critical.send.mock.calls.at(-1)?.[0] as string);
+
+      // A Mac that predates full control: the fields are left off, so the
+      // phone never claims a mode the Mac would not run.
+      critical.emitMessage(readyFrame(probe.runId));
+      conn.sendAgentCommand('open Safari', { autonomy: 'full', continues: 'run-1' });
+      expect(lastCommand().autonomy).toBeUndefined();
+      expect(lastCommand().continues).toBeUndefined();
+
+      critical.emitMessage(
+        readyFrame(probe.runId, { features: ['full_control', 'resume', 'computer_use'] }),
+      );
+      expect(cb.onAgentReady).toHaveBeenLastCalledWith('ready', expect.anything(), [
+        'full_control',
+        'resume',
+        'computer_use',
+      ]);
+      conn.sendAgentCommand('the work account', { autonomy: 'full', continues: 'run-1' });
+      expect(lastCommand()).toMatchObject({ autonomy: 'full', continues: 'run-1' });
+      // Supervised is sent as said; nothing is added when nothing is asked.
+      conn.sendAgentCommand('open Notes', { autonomy: 'supervised' });
+      expect(lastCommand().autonomy).toBe('supervised');
+      conn.sendAgentCommand('open Notes');
+      expect(lastCommand().autonomy).toBeUndefined();
+      expect(lastCommand().continues).toBeUndefined();
     });
 
     it('does not mistake an unparseable frame for an out-of-date Mac', async () => {

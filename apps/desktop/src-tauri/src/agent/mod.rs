@@ -59,6 +59,7 @@ mod agnosticism {
             ),
             ("executor/ax_exec.rs", include_str!("executor/ax_exec.rs")),
             ("executor/vision.rs", include_str!("executor/vision.rs")),
+            ("executor/computer.rs", include_str!("executor/computer.rs")),
             ("executor/verify.rs", include_str!("executor/verify.rs")),
             ("sandbox/mod.rs", include_str!("sandbox/mod.rs")),
             ("sandbox/profile.rs", include_str!("sandbox/profile.rs")),
@@ -77,6 +78,8 @@ mod agnosticism {
             "openrouter",
             "ollama",
             "mistral",
+            "typesafe",
+            "jev",
         ];
         for (file, source) in engine_sources {
             let lower = source.to_lowercase();

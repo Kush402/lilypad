@@ -76,6 +76,27 @@ export type RunOutcome = z.infer<typeof RunOutcomeSchema>;
 
 // ── phone → desktop ────────────────────────────────────────────────────────
 
+/**
+ * How much the person hands over for one run (ADR-0018).
+ *
+ * `full`: Ask clicks, types and opens what the task needs without asking
+ * first — except what the Mac refuses in every mode (password fields,
+ * Lilypad itself, security prompts, locking or logging out).
+ * `supervised`: every click, value change, URL and consequential key waits
+ * for an approve on the phone. Absent means supervised, which is what a
+ * phone that predates full control sends.
+ */
+export const AgentAutonomySchema = z.enum(['supervised', 'full']);
+export type AgentAutonomy = z.infer<typeof AgentAutonomySchema>;
+
+/**
+ * What a Mac's Ask supports beyond the protocol version, from `agent_ready`.
+ * The phone offers full control only to a Mac that lists it.
+ */
+export const AGENT_FEATURE_FULL_CONTROL = 'full_control';
+export const AGENT_FEATURE_RESUME = 'resume';
+export const AGENT_FEATURE_COMPUTER_USE = 'computer_use';
+
 const agentCommand = WithTs.extend({
   kind: z.literal('agent_command'),
   runId: RunId,
@@ -84,6 +105,15 @@ const agentCommand = WithTs.extend({
   protocolVersion: z.literal(ASK_PROTOCOL_VERSION).optional(),
   /** The `consentRevision` the person agreed to, echoed back. */
   consentRevision: z.string().max(64).optional(),
+  /** Full control or supervised; absent is supervised. */
+  autonomy: AgentAutonomySchema.optional(),
+  /**
+   * The run this message answers, when that run ended asking the person
+   * something (`needs_input`). The Mac carries on in the same conversation
+   * for a while; after that, or if its AI setup changed, the text is a new
+   * task.
+   */
+  continues: RunId.optional(),
 });
 
 /**
@@ -136,6 +166,24 @@ export const AgentDestinationSchema = z.object({
    * comparing them.
    */
   source: z.string().max(32),
+  /**
+   * Where short commands go to be done as one instant action, when the Mac
+   * has that on (ADR-0019). A second destination, disclosed beside the first:
+   * it receives the command, the app in front and the names of the controls
+   * on screen, never a screenshot.
+   *
+   * A phone that shows it echoes `instant.consentRevision`; one that does not
+   * (every phone before this field) echoes the destination's own revision,
+   * and the Mac runs without instant actions. Absent when they are off.
+   */
+  instant: z
+    .object({
+      providerName: z.string().max(64),
+      origin: z.string().max(256),
+      model: z.string().max(128),
+      consentRevision: z.string().min(1).max(64),
+    })
+    .optional(),
 });
 export type AgentDestination = z.infer<typeof AgentDestinationSchema>;
 
@@ -186,6 +234,9 @@ const agentReady = WithTs.extend({
    * Present exactly when `state` is `ready`.
    */
   destination: AgentDestinationSchema.optional(),
+  /** What this Mac's Ask supports (`full_control`, `resume`, `computer_use`).
+   * Absent from a Mac that predates them. */
+  features: z.array(z.string().max(32)).max(16).optional(),
 });
 
 /**

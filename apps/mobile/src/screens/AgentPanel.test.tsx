@@ -1,7 +1,7 @@
 import React from 'react';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react-native';
 import { StyleSheet } from 'react-native';
-import { AgentPanel, describeForScreenReader, readsLabel } from './AgentPanel';
+import { AgentPanel, describeForScreenReader, destinationSentence, readsLabel } from './AgentPanel';
 import type { AgentFeedState, AgentStepView } from '../lib/agentFeed';
 
 /**
@@ -611,5 +611,131 @@ describe('the approval card stays reachable', () => {
     screen.unmount();
     render(<AgentPanel {...DISCLOSED} feed={feed()} onSend={noop} onStop={noop} onDecide={noop} />);
     expect(StyleSheet.flatten((await shown('agent-panel')).props.style).maxHeight).toBe(260);
+  });
+});
+
+// ── ADR-0018: full control ─────────────────────────────────────────────────
+
+describe('full control', () => {
+  it('asks once, after consent, and only on a Mac that honours it', async () => {
+    const choose = jest.fn();
+    render(
+      <AgentPanel
+        {...DISCLOSED}
+        feed={feed()}
+        onSend={noop}
+        onStop={noop}
+        onDecide={noop}
+        fullControlAvailable
+        autonomy={null}
+        onChooseAutonomy={choose}
+      />,
+    );
+    await shown('agent-autonomy');
+    // The card spells out what full control still never does.
+    expect(screen.getByText(/never types into password fields/)).toBeTruthy();
+    fireEvent.press(screen.getByTestId('agent-autonomy-full'));
+    expect(choose).toHaveBeenCalledWith('full');
+
+    screen.unmount();
+    render(
+      <AgentPanel
+        {...DISCLOSED}
+        feed={feed()}
+        onSend={noop}
+        onStop={noop}
+        onDecide={noop}
+        fullControlAvailable={false}
+        autonomy={null}
+        onChooseAutonomy={choose}
+      />,
+    );
+    await shown('agent-panel');
+    expect(screen.queryByTestId('agent-autonomy')).toBeNull();
+    expect(screen.queryByTestId('agent-autonomy-toggle')).toBeNull();
+  });
+
+  it('shows the mode, switches it, and cannot be switched mid-task', async () => {
+    const choose = jest.fn();
+    render(
+      <AgentPanel
+        {...DISCLOSED}
+        feed={feed()}
+        onSend={noop}
+        onStop={noop}
+        onDecide={noop}
+        fullControlAvailable
+        autonomy="full"
+        onChooseAutonomy={choose}
+      />,
+    );
+    const toggle = await shown('agent-autonomy-toggle');
+    expect(toggle.props.accessibilityState).toMatchObject({ checked: true });
+    fireEvent.press(toggle);
+    expect(choose).toHaveBeenCalledWith('supervised');
+
+    screen.unmount();
+    render(
+      <AgentPanel
+        {...DISCLOSED}
+        feed={feed({ phase: 'running', running: true, runId: 'r' })}
+        onSend={noop}
+        onStop={noop}
+        onDecide={noop}
+        fullControlAvailable
+        autonomy="full"
+        onChooseAutonomy={choose}
+      />,
+    );
+    expect(await screen.findByText('Touch the screen to take over')).toBeTruthy();
+    expect(screen.getByTestId('agent-autonomy-toggle').props.accessibilityState).toMatchObject({
+      disabled: true,
+    });
+  });
+
+  it('turns the next message into the answer after a question', async () => {
+    render(
+      <AgentPanel
+        {...DISCLOSED}
+        feed={feed({ phase: 'ended', outcome: 'needs_input', runId: 'r' })}
+        onSend={noop}
+        onStop={noop}
+        onDecide={noop}
+        awaitingAnswer
+      />,
+    );
+    await shown('agent-panel');
+    expect(screen.getByPlaceholderText('Answer the question above…')).toBeTruthy();
+    expect(screen.getByText(/Answer it above to carry on/)).toBeTruthy();
+  });
+});
+
+describe('the destination sentence names instant actions too (ADR-0019)', () => {
+  const destination = {
+    profileId: 'ollama',
+    providerName: 'Ollama',
+    origin: 'http://localhost:11434',
+    model: 'qwen3-vl',
+    local: true,
+    consentPolicy: 1,
+    consentRevision: 'rev-model',
+    source: 'settings',
+  };
+
+  it('says what goes to the second destination, and what never does', () => {
+    const both = destinationSentence({
+      ...destination,
+      instant: {
+        providerName: 'TypeSafe Jev',
+        origin: 'https://api.typesafe.ai',
+        model: 'jev-1.13.0',
+        consentRevision: 'rev-both',
+      },
+    });
+    expect(both).toMatch(/runs its model locally/);
+    expect(both).toMatch(/TypeSafe Jev at https:\/\/api\.typesafe\.ai/);
+    expect(both).toMatch(/names of the controls on screen/);
+    expect(both).toMatch(/never a screenshot/);
+    expect(destinationSentence(destination)).not.toMatch(/TypeSafe/);
   });
 });

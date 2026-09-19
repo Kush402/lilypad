@@ -8,18 +8,19 @@
 //! trait; for now the tier-1 [`skills::SkillsExecutor`] is the whole surface.
 
 pub mod ax_exec;
+pub mod computer;
 pub mod sandbox_exec;
 pub mod skills;
 pub mod verify;
 pub mod vision;
 
 pub use ax_exec::AxExecutor;
+pub use computer::{ComputerConfig, ComputerExecutor, Grid};
 pub use sandbox_exec::SandboxExecutor;
 pub use skills::{plan_command, CommandSpec, SkillsExecutor};
 pub use verify::{check, postcondition, resolve_user_path, Postcondition};
-pub use vision::VisionExecutor;
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -68,49 +69,81 @@ impl SharedDisplay {
 
 /// Routes each [`Action`] to the executor that owns its tier — the single
 /// `Executor` the runner drives:
-///   - `Screenshot` → the vision tier (P4)
-///   - `ReadAxTree` / `AxPress` → the accessibility tier (P3)
+///   - looking, pointing, clicking, typing and keys → the computer tier
+///   - `ReadAxTree` / `AxPress` → the accessibility tier (inside it)
 ///   - `RunScript` → the sandbox tier (P2)
-///   - everything else → tier-1 skills (P1)
+///   - everything else → tier-1 skills (P1), followed by a look
 pub struct TieredExecutor {
     skills: SkillsExecutor,
     sandbox: SandboxExecutor,
-    ax: AxExecutor,
-    vision: VisionExecutor,
+    computer: ComputerExecutor,
 }
 
 impl TieredExecutor {
-    /// Build the executor bound to the display the session is sharing, so the
-    /// vision tier can never look at a screen the phone is not watching.
-    pub fn from_env(display: SharedDisplay) -> Result<Self> {
+    /// Build the executor bound to the display the session is sharing, so no
+    /// tier can look at or act on a screen the phone is not watching. `input`
+    /// is the session's input thread; without it Ask can look but not act.
+    pub fn new(
+        display: SharedDisplay,
+        input: Option<crate::input::AgentInput>,
+        stop: Arc<AtomicBool>,
+        config: ComputerConfig,
+    ) -> Result<Self> {
         Ok(TieredExecutor {
             skills: SkillsExecutor,
             sandbox: SandboxExecutor::from_env()?,
-            ax: AxExecutor::new(display.clone()),
-            vision: VisionExecutor::new(display),
+            computer: ComputerExecutor::new(display, input, stop, config),
         })
+    }
+
+    /// Perception and skills only — no input thread.
+    pub fn from_env(display: SharedDisplay) -> Result<Self> {
+        Self::new(
+            display,
+            None,
+            Arc::new(AtomicBool::new(false)),
+            ComputerConfig::default(),
+        )
     }
 }
 
 impl Executor for TieredExecutor {
     async fn execute(&mut self, action: &Action) -> Result<Observation> {
         match action {
-            Action::Screenshot => self.vision.execute(action).await,
-            Action::ReadAxTree | Action::AxPress { .. } => self.ax.execute(action).await,
+            Action::ReadAxTree => self.computer.ax.execute(action).await,
+            Action::AxPress { .. } => {
+                let obs = self.computer.ax.execute(action).await?;
+                Ok(self.computer.observe_after(obs).await)
+            }
             Action::RunScript { .. } => self.sandbox.execute(action).await,
-            _ => self.skills.execute(action).await,
+            a if ComputerExecutor::handles(a) => self.computer.execute(a).await,
+            _ => {
+                let obs = self.skills.execute(action).await?;
+                // Opening an app or a page changes the screen; show it.
+                Ok(self.computer.observe_after(obs).await)
+            }
         }
     }
 
     fn resolve(&self, action: Action) -> Action {
-        // Two tiers need to see an action before it is classified and shown:
+        // Tiers that need to see an action before it is classified and shown:
         // the accessibility tier, because an element id means nothing without
-        // the tree it came from, and the sandbox tier, because a granted path
-        // must be jailed and bound to the object it names *before* the card is
-        // built from it.
+        // the tree it came from; the computer tier, because a point means
+        // nothing without what is under it; and the sandbox tier, because a
+        // granted path must be jailed and bound to the object it names
+        // *before* the card is built from it.
         match action {
             a @ Action::RunScript { .. } => self.sandbox.resolve(a),
-            other => self.ax.resolve(other),
+            a @ Action::AxPress { .. } => self.computer.ax.resolve(a),
+            other => self.computer.resolve(other),
         }
+    }
+
+    fn set_observe(&mut self, observe: bool) {
+        self.computer.set_observe(observe);
+    }
+
+    async fn finish(&mut self) {
+        self.computer.release().await;
     }
 }

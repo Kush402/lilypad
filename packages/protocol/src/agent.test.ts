@@ -136,3 +136,81 @@ describe('the handshake state is stated, not inferred (L-285)', () => {
     expect(probe.success && probe.data.runId).toBe('probe-1');
   });
 });
+
+describe('full control and resuming (ADR-0018)', () => {
+  it('carries autonomy and the run a command answers, both optional', async () => {
+    const { AgentInboundSchema, AgentOutboundSchema } = await import('./agent.js');
+    const command = {
+      kind: 'agent_command',
+      runId: 'run-2',
+      text: 'the work one',
+      protocolVersion: 3,
+      consentRevision: 'rev',
+      autonomy: 'full',
+      continues: 'run-1',
+      ts: 1,
+    };
+    expect(AgentInboundSchema.parse(command)).toMatchObject({
+      autonomy: 'full',
+      continues: 'run-1',
+    });
+    const { autonomy: _a, continues: _c, ...older } = command;
+    expect(AgentInboundSchema.safeParse(older).success).toBe(true);
+    // The phone only ever sends the two modes there are.
+    expect(AgentInboundSchema.safeParse({ ...command, autonomy: 'turbo' }).success).toBe(false);
+
+    const ready = {
+      kind: 'agent_ready',
+      runId: 'probe',
+      protocolVersion: 3,
+      state: 'unconfigured',
+      features: ['computer_use', 'full_control', 'resume'],
+      ts: 1,
+    };
+    expect(AgentOutboundSchema.parse(ready)).toMatchObject({ features: ready.features });
+    const { features: _f, ...olderReady } = ready;
+    expect(AgentOutboundSchema.safeParse(olderReady).success).toBe(true);
+  });
+});
+
+describe('instant actions are a second, disclosed destination (ADR-0019)', () => {
+  it('carries the instant destination beside the model one, and parses without it', () => {
+    const destination = {
+      profileId: 'openrouter',
+      providerName: 'OpenRouter',
+      origin: 'https://openrouter.ai',
+      model: 'openai/gpt-4o-mini',
+      local: false,
+      consentPolicy: 1,
+      consentRevision: 'rev-model',
+      source: 'settings',
+      instant: {
+        providerName: 'TypeSafe Jev',
+        origin: 'https://api.typesafe.ai',
+        model: 'jev-1.13.0',
+        consentRevision: 'rev-both',
+      },
+    };
+    const ready = {
+      kind: 'agent_ready',
+      runId: 'probe',
+      protocolVersion: 3,
+      state: 'ready',
+      destination,
+      ts: 1,
+    };
+    expect(AgentOutboundSchema.parse(ready)).toEqual(ready);
+    // Nowhere for a key here either.
+    expect(Object.keys(destination.instant)).not.toContain('apiKey');
+    const { instant: _i, ...modelOnly } = destination;
+    expect(AgentOutboundSchema.safeParse({ ...ready, destination: modelOnly }).success).toBe(true);
+    // A disclosure missing its revision cannot be agreed to.
+    const { consentRevision: _r, ...unagreeable } = destination.instant;
+    expect(
+      AgentOutboundSchema.safeParse({
+        ...ready,
+        destination: { ...destination, instant: unagreeable },
+      }).success,
+    ).toBe(false);
+  });
+});

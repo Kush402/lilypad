@@ -244,11 +244,17 @@ mod tests {
     #[test]
     fn refuses_non_tier1_actions() {
         assert!(plan_command(&Action::Click {
-            x: 0.5,
-            y: 0.5,
-            count: 1
+            target: crate::agent::security::Target::Point { x: 0.5, y: 0.5 },
+            button: crate::input::PointerButton::Left,
+            count: 1,
+            modifiers: vec![],
+            hit: None,
         })
         .is_err());
-        assert!(plan_command(&Action::TypeText { text: "hi".into() }).is_err());
+        assert!(plan_command(&Action::TypeText {
+            text: "hi".into(),
+            focus: None
+        })
+        .is_err());
     }
 }

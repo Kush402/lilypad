@@ -11,13 +11,54 @@
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Value};
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use super::{
-    AssistantReply, Block, ChatMessage, LlmProvider, ProviderCaps, Role, ToolCall, ToolSpec,
+    AssistantReply, Block, ChatMessage, Grid, Image, LlmProvider, ProviderCaps, Role, ToolCall,
+    ToolSpec,
 };
 
 pub const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
 pub const DEFAULT_MODEL: &str = "gpt-4o-mini";
-const DEFAULT_MAX_TOKENS: u32 = 1024;
+/// Room for a batch of actions with their reasoning. The old 1024 was sized
+/// for one call per reply.
+const DEFAULT_MAX_TOKENS: u32 = 4096;
+/// Reasoning models spend completion tokens on thinking before they answer,
+/// so the ceiling that means "about 4096 of answer" is higher.
+const REASONING_MAX_TOKENS: u32 = 16384;
+
+/// A stored grid name, as the setup check records it.
+pub fn parse_grid(name: Option<&str>) -> Option<Grid> {
+    match name {
+        Some("pixels") => Some(Grid::Pixels),
+        Some("thousand") => Some(Grid::Thousand),
+        _ => None,
+    }
+}
+
+/// The coordinate space a model family points in when asked about a
+/// screenshot. Families trained to ground on a fixed 0–1000 grid answer in it
+/// whatever the image size; asking them for pixels gets answers in the wrong
+/// space. Everything else answers in the pixels it was shown.
+pub fn grid_for_model(model: &str) -> Grid {
+    // ponytail: a family table, refined per configuration by the setup check
+    // (`probe::judge_pointing`); add families here as they are verified.
+    let m = model.to_ascii_lowercase();
+    let thousand = [
+        "gemini",
+        "qwen3-vl",
+        "qwen3.5",
+        "qwen-vl-max",
+        "glm-4.5v",
+        "glm-4.6v",
+        "ui-tars",
+    ];
+    if thousand.iter().any(|family| m.contains(family)) {
+        Grid::Thousand
+    } else {
+        Grid::Pixels
+    }
+}
 
 /// Config for any chat-completions endpoint. `base_url` includes the version
 /// prefix (e.g. `https://api.openai.com/v1`, `http://localhost:11434/v1`).
@@ -29,6 +70,9 @@ pub struct OpenAiCompatConfig {
     pub max_tokens: u32,
     /// Whether the selected model accepts image input (gates tier-3 vision).
     pub vision: bool,
+    /// The coordinate space the setup check saw this model point in, when it
+    /// could tell. `None` uses the family's known convention.
+    pub grid: Option<Grid>,
 }
 
 impl OpenAiCompatConfig {
@@ -39,6 +83,7 @@ impl OpenAiCompatConfig {
             base_url: DEFAULT_BASE_URL.to_string(),
             max_tokens: DEFAULT_MAX_TOKENS,
             vision: false,
+            grid: None,
         }
     }
 
@@ -81,6 +126,9 @@ impl OpenAiCompatConfig {
 pub struct OpenAiCompatProvider {
     client: reqwest::Client,
     config: OpenAiCompatConfig,
+    /// The endpoint refused `max_tokens` and asked for `max_completion_tokens`
+    /// (newer OpenAI reasoning models do). Learned once per provider.
+    completion_tokens: AtomicBool,
 }
 
 impl OpenAiCompatProvider {
@@ -93,7 +141,11 @@ impl OpenAiCompatProvider {
     /// Construct with an explicit client — the seam tests use to apply short
     /// deadlines against a stalling endpoint.
     pub fn with_client(config: OpenAiCompatConfig, client: reqwest::Client) -> Self {
-        OpenAiCompatProvider { client, config }
+        OpenAiCompatProvider {
+            client,
+            config,
+            completion_tokens: AtomicBool::new(false),
+        }
     }
 }
 
@@ -131,7 +183,7 @@ fn message_to_json(msg: &ChatMessage) -> Vec<Value> {
                         }
                         tool_calls.push(call);
                     }
-                    Block::ToolResult { .. } => {} // never authored by the assistant
+                    Block::ToolResult { .. } | Block::Image(_) => {} // never authored by the assistant
                 }
             }
             let mut m = json!({ "role": "assistant" });
@@ -146,18 +198,23 @@ fn message_to_json(msg: &ChatMessage) -> Vec<Value> {
             vec![m]
         }
         Role::User => {
-            // A user turn may mix tool results and text; each tool result must
-            // be its own `role: "tool"` message in this dialect.
+            // A user turn may mix tool results, text and images. Every tool
+            // result must be its own `role: "tool"` message, and all of them
+            // must come straight after the assistant message that made the
+            // calls — a user message in between is rejected. So the tool
+            // messages go first, and everything else follows in one user
+            // message.
             let mut out = Vec::new();
-            let mut text_parts = Vec::new();
+            let mut parts: Vec<Value> = Vec::new();
             for block in &msg.blocks {
                 match block {
-                    Block::Text(t) => text_parts.push(t.clone()),
+                    Block::Text(t) => parts.push(json!({ "type": "text", "text": t })),
+                    Block::Image(image) => parts.push(image_part(image)),
                     Block::ToolResult {
                         tool_use_id,
                         content,
                         is_error,
-                        image_base64,
+                        image,
                     } => {
                         let text = if *is_error {
                             format!("ERROR: {content}")
@@ -170,28 +227,37 @@ fn message_to_json(msg: &ChatMessage) -> Vec<Value> {
                             "content": text,
                         }));
                         // The chat-completions `tool` role can't carry an
-                        // image, so a screenshot rides in a following user
-                        // message (image_url data URL) — the standard way to
-                        // feed a vision model an image mid-conversation.
-                        if let Some(png) = image_base64 {
-                            out.push(json!({
-                                "role": "user",
-                                "content": [{
-                                    "type": "image_url",
-                                    "image_url": { "url": format!("data:image/png;base64,{png}") },
-                                }],
-                            }));
+                        // image, so a screenshot rides in the user message
+                        // that follows — the standard way to feed a vision
+                        // model an image mid-conversation.
+                        if let Some(image) = image {
+                            parts.push(image_part(image));
                         }
                     }
                     Block::ToolUse { .. } => {} // never authored by the user
                 }
             }
-            if !text_parts.is_empty() {
-                out.push(json!({ "role": "user", "content": text_parts.join("\n") }));
+            match parts.as_slice() {
+                [] => {}
+                // Text alone stays a plain string: some local servers accept
+                // nothing else.
+                _ if parts.iter().all(|p| p["type"] == "text") => {
+                    let joined: Vec<&str> =
+                        parts.iter().filter_map(|p| p["text"].as_str()).collect();
+                    out.push(json!({ "role": "user", "content": joined.join("\n") }));
+                }
+                _ => out.push(json!({ "role": "user", "content": parts })),
             }
             out
         }
     }
+}
+
+fn image_part(image: &Image) -> Value {
+    json!({
+        "type": "image_url",
+        "image_url": { "url": format!("data:{};base64,{}", image.media_type, image.data) },
+    })
 }
 
 /// Build the JSON request body. Pure.
@@ -201,6 +267,19 @@ pub fn build_body(
     tools: &[ToolSpec],
     model: &str,
     max_tokens: u32,
+) -> Value {
+    build_body_with(system, messages, tools, model, max_tokens, false)
+}
+
+/// Build the JSON request body, naming the output limit the way the endpoint
+/// wants it. Pure.
+pub fn build_body_with(
+    system: &str,
+    messages: &[ChatMessage],
+    tools: &[ToolSpec],
+    model: &str,
+    max_tokens: u32,
+    completion_tokens: bool,
 ) -> Value {
     let mut msgs: Vec<Value> = vec![json!({ "role": "system", "content": system })];
     for m in messages {
@@ -221,36 +300,51 @@ pub fn build_body(
         .collect();
     let mut body = json!({
         "model": model,
-        "max_tokens": max_tokens,
         "messages": msgs,
         "tools": tool_defs,
     });
-    if !tool_defs.is_empty() {
-        // Ask for one call at a time (L-269). The agent executes a single
-        // action per step, each with its own approval, and a batch it silently
-        // discarded the tail of is a batch the model believed had run. Ask
-        // first, then check the answer below — a gateway that ignores this
-        // field is exactly why the check exists.
-        body["parallel_tool_calls"] = json!(false);
+    if completion_tokens {
+        body["max_completion_tokens"] = json!(max_tokens.max(REASONING_MAX_TOKENS));
+    } else {
+        body["max_tokens"] = json!(max_tokens);
     }
+    // No `parallel_tool_calls: false` any more: several calls in one reply
+    // run as a batch and each is answered (see `LlmBrain`). Leaving the field
+    // out is also what every local server understands.
     body
+}
+
+/// Did the endpoint refuse `max_tokens` and ask for `max_completion_tokens`?
+fn wants_completion_tokens(failure: &super::http::ProviderFailure) -> bool {
+    failure.status == Some(400) && failure.message.contains("max_completion_tokens")
 }
 
 /// Parse a chat-completions response into an [`AssistantReply`]. Pure.
 ///
-/// The agent acts one step at a time, so exactly one tool call is expected.
-/// More than one is refused rather than trimmed (L-269): dropping the tail
-/// leaves the model's next turn reasoning about work that never happened, and
-/// with consequential actions that is a step the person never saw and never
-/// approved. `arguments` arrives as a JSON string; malformed JSON is an error,
-/// never guessed at.
+/// Every tool call is returned, in order; the brain runs them as a batch and
+/// answers each (L-269's rule, kept by answering rather than refusing).
+/// `arguments` arrives as a JSON string; malformed JSON is an error the model
+/// is told about, never guessed at.
 pub fn parse_reply(body: &Value) -> Result<AssistantReply> {
-    let message = body
+    let choice = body
         .get("choices")
         .and_then(|c| c.as_array())
         .and_then(|c| c.first())
-        .and_then(|c| c.get("message"))
         .ok_or_else(|| anyhow!("response has no choices[0].message"))?;
+    let message = choice
+        .get("message")
+        .ok_or_else(|| anyhow!("response has no choices[0].message"))?;
+
+    if choice.get("finish_reason").and_then(Value::as_str) == Some("length") {
+        // A reply cut off at the limit can end inside a call's arguments, and
+        // a half-written action must never run (L-343: told, not fatal).
+        return Err(super::Correctable(
+            "your reply was cut off at the length limit before it finished. Say less, and ask \
+             for fewer actions at a time."
+                .into(),
+        )
+        .into());
+    }
 
     let text = message
         .get("content")
@@ -258,54 +352,46 @@ pub fn parse_reply(body: &Value) -> Result<AssistantReply> {
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string());
 
-    let calls = message.get("tool_calls").and_then(|t| t.as_array());
-    if let Some(calls) = calls {
-        if calls.len() > 1 {
-            let names: Vec<&str> = calls
-                .iter()
-                .filter_map(|c| c.get("function")?.get("name")?.as_str())
-                .collect();
-            bail!(
-                "the model asked for {} actions at once ({}). Lilypad runs one action per step, \
-                 each with its own approval — ask for them one at a time.",
-                calls.len(),
-                names.join(", ")
-            );
-        }
+    let mut tool_calls = Vec::new();
+    for call in message
+        .get("tool_calls")
+        .and_then(|t| t.as_array())
+        .into_iter()
+        .flatten()
+    {
+        let id = call
+            .get("id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow!("tool call missing id"))?;
+        let function = call
+            .get("function")
+            .ok_or_else(|| anyhow!("tool call missing function"))?;
+        let name = function
+            .get("name")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow!("tool call missing function.name"))?;
+        let input: Value = match function.get("arguments") {
+            // Some servers send the arguments as an object rather than a
+            // string of JSON.
+            Some(Value::Object(o)) => Value::Object(o.clone()),
+            Some(Value::String(raw)) if raw.trim().is_empty() => json!({}),
+            Some(Value::String(raw)) => serde_json::from_str(raw).map_err(|e| {
+                super::Correctable(format!("tool `{name}` arguments are not valid JSON ({e})."))
+            })?,
+            _ => json!({}),
+        };
+        tool_calls.push(ToolCall {
+            id: id.to_string(),
+            name: name.to_string(),
+            input,
+            // Preserve any provider-specific payload riding on the call
+            // (e.g. `extra_content` carrying a reasoning signature) so
+            // message_to_json can echo it back on the next turn.
+            extra: call.get("extra_content").cloned(),
+        });
     }
-    let tool_call = match calls.and_then(|t| t.first()) {
-        Some(call) => {
-            let id = call
-                .get("id")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow!("tool call missing id"))?;
-            let function = call
-                .get("function")
-                .ok_or_else(|| anyhow!("tool call missing function"))?;
-            let name = function
-                .get("name")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow!("tool call missing function.name"))?;
-            let args_raw = function
-                .get("arguments")
-                .and_then(|v| v.as_str())
-                .unwrap_or("{}");
-            let input: Value = serde_json::from_str(args_raw)
-                .with_context(|| format!("tool `{name}` arguments are not valid JSON"))?;
-            Some(ToolCall {
-                id: id.to_string(),
-                name: name.to_string(),
-                input,
-                // Preserve any provider-specific payload riding on the call
-                // (e.g. `extra_content` carrying a reasoning signature) so
-                // message_to_json can echo it back on the next turn.
-                extra: call.get("extra_content").cloned(),
-            })
-        }
-        None => None,
-    };
 
-    Ok(AssistantReply { text, tool_call })
+    Ok(AssistantReply { text, tool_calls })
 }
 
 impl LlmProvider for OpenAiCompatProvider {
@@ -315,12 +401,54 @@ impl LlmProvider for OpenAiCompatProvider {
         messages: &[ChatMessage],
         tools: &[ToolSpec],
     ) -> Result<AssistantReply> {
-        let body = build_body(
+        match self.send(system, messages, tools).await {
+            Err(e)
+                if !self.completion_tokens.load(Ordering::Relaxed)
+                    && e.downcast_ref::<super::http::ProviderFailure>()
+                        .is_some_and(wants_completion_tokens) =>
+            {
+                log::info!(
+                    target: "lilypad::agent",
+                    "endpoint wants max_completion_tokens; retrying with it"
+                );
+                self.completion_tokens.store(true, Ordering::Relaxed);
+                self.send(system, messages, tools).await
+            }
+            other => other,
+        }
+    }
+
+    fn caps(&self) -> ProviderCaps {
+        ProviderCaps {
+            vision: self.config.vision,
+            tool_calling: true,
+            json_mode: false,
+            streaming: false,
+            // Unknown endpoint zoo (local models included) — don't assume.
+            long_context: false,
+            computer_use: false,
+            grid: self
+                .config
+                .grid
+                .unwrap_or_else(|| grid_for_model(&self.config.model)),
+        }
+    }
+}
+
+impl OpenAiCompatProvider {
+    async fn send(
+        &self,
+        system: &str,
+        messages: &[ChatMessage],
+        tools: &[ToolSpec],
+    ) -> Result<AssistantReply> {
+        let body = build_body_with(
             system,
             messages,
             tools,
             &self.config.model,
             self.config.max_tokens,
+            self.completion_tokens.load(Ordering::Relaxed),
         );
         let url = format!(
             "{}/chat/completions",
@@ -382,18 +510,6 @@ impl LlmProvider for OpenAiCompatProvider {
             return parse_reply(&json);
         }
     }
-
-    fn caps(&self) -> ProviderCaps {
-        ProviderCaps {
-            vision: self.config.vision,
-            tool_calling: true,
-            json_mode: false,
-            streaming: false,
-            // Unknown endpoint zoo (local models included) — don't assume.
-            long_context: false,
-            computer_use: false,
-        }
-    }
 }
 
 #[cfg(test)]
@@ -408,22 +524,30 @@ mod tests {
         }
     }
 
+    fn png() -> Image {
+        Image {
+            data: "QUJD".into(),
+            media_type: "image/png".into(),
+            width: 4,
+            height: 4,
+        }
+    }
+
     #[test]
-    fn two_tool_calls_are_refused_rather_than_silently_trimmed() {
-        // L-269. The tail used to be dropped, which left the model's next turn
-        // reasoning about an action nobody ran and nobody approved.
+    fn every_tool_call_is_returned_in_order() {
+        // Was `two_tool_calls_are_refused_rather_than_silently_trimmed`
+        // (L-269), then L-343 made the refusal correctable. Batches are now
+        // run and every call answered, so nothing is trimmed and nothing is
+        // refused.
         let body = serde_json::json!({
             "choices": [{ "message": { "tool_calls": [
-                { "id": "a", "function": { "name": "open_app", "arguments": "{}" } },
-                { "id": "b", "function": { "name": "run_script", "arguments": "{}" } }
+                { "id": "a", "function": { "name": "open_app", "arguments": "{\"name\":\"Safari\"}" } },
+                { "id": "b", "function": { "name": "open_url", "arguments": "{\"url\":\"https://apple.com\"}" } }
             ]}}]
         });
-        let err = parse_reply(&body).unwrap_err().to_string();
-        assert!(err.contains("2 actions at once"), "{err}");
-        assert!(
-            err.contains("open_app") && err.contains("run_script"),
-            "{err}"
-        );
+        let reply = parse_reply(&body).unwrap();
+        let ids: Vec<&str> = reply.tool_calls.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, ["a", "b"]);
     }
 
     #[test]
@@ -434,13 +558,64 @@ mod tests {
             ]}}]
         });
         let reply = parse_reply(&body).unwrap();
-        assert_eq!(reply.tool_call.unwrap().name, "open_app");
+        assert_eq!(reply.tool_calls[0].name, "open_app");
     }
 
     #[test]
-    fn the_request_asks_for_one_call_at_a_time() {
+    fn arguments_sent_as_an_object_or_empty_are_accepted() {
+        let body = serde_json::json!({
+            "choices": [{ "message": { "tool_calls": [
+                { "id": "a", "function": { "name": "open_app", "arguments": {"name": "Safari"} } },
+                { "id": "b", "function": { "name": "screenshot", "arguments": "" } }
+            ]}}]
+        });
+        let reply = parse_reply(&body).unwrap();
+        assert_eq!(reply.tool_calls[0].input["name"], "Safari");
+        assert_eq!(reply.tool_calls[1].input, json!({}));
+    }
+
+    #[test]
+    fn a_reply_cut_off_at_the_length_limit_is_never_run() {
+        let body = serde_json::json!({
+            "choices": [{ "finish_reason": "length", "message": { "tool_calls": [
+                { "id": "a", "function": { "name": "type", "arguments": "{\"text\":\"half" } }
+            ]}}]
+        });
+        let err = parse_reply(&body).unwrap_err();
+        assert!(err.is::<super::super::Correctable>(), "{err}");
+    }
+
+    #[test]
+    fn the_request_allows_a_batch_and_names_the_limit_the_endpoint_wants() {
         let body = build_body(SYSTEM_PROMPT, &[user("t")], &base_tools(), "m", 512);
-        assert_eq!(body["parallel_tool_calls"], false);
+        assert!(body.get("parallel_tool_calls").is_none());
+        assert_eq!(body["max_tokens"], 512);
+        let body = build_body_with(SYSTEM_PROMPT, &[user("t")], &base_tools(), "m", 512, true);
+        assert!(body.get("max_tokens").is_none());
+        assert_eq!(body["max_completion_tokens"], REASONING_MAX_TOKENS);
+
+        let asks = |msg: &str| {
+            wants_completion_tokens(&super::super::http::ProviderFailure {
+                kind: super::super::http::FailureKind::BadRequest,
+                status: Some(400),
+                message: msg.into(),
+            })
+        };
+        assert!(asks("Unsupported parameter: 'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead."));
+        assert!(!asks("Invalid model"));
+    }
+
+    #[test]
+    fn grounding_families_point_on_the_thousand_grid() {
+        assert_eq!(grid_for_model("google/gemini-3-flash"), Grid::Thousand);
+        assert_eq!(grid_for_model("gemini-2.5-pro"), Grid::Thousand);
+        assert_eq!(
+            grid_for_model("qwen/qwen3-vl-235b-a22b-instruct"),
+            Grid::Thousand
+        );
+        assert_eq!(grid_for_model("gpt-5.2"), Grid::Pixels);
+        assert_eq!(grid_for_model("openai/gpt-4o-mini"), Grid::Pixels);
+        assert_eq!(grid_for_model("llama3.2-vision"), Grid::Pixels);
     }
 
     #[test]
@@ -497,7 +672,7 @@ mod tests {
                 "function": { "name": "open_app", "arguments": "{\"name\":\"Safari\"}" },
             }]}}]
         });
-        let call = parse_reply(&resp).unwrap().tool_call.unwrap();
+        let call = parse_reply(&resp).unwrap().tool_calls.remove(0);
         assert_eq!(call.extra, Some(json!({ "signature": "abc123" })));
 
         // …and build: it is echoed back verbatim when the turn is replayed
@@ -538,7 +713,7 @@ mod tests {
                 tool_use_id: "c1".into(),
                 content: "no such app".into(),
                 is_error: true,
-                image_base64: None,
+                image: None,
             }],
         };
         let body = build_body("s", &[msg], &[], "m", 10);
@@ -549,30 +724,62 @@ mod tests {
     }
 
     #[test]
-    fn tool_result_image_rides_in_a_following_user_message() {
+    fn a_batch_answers_every_call_before_the_screenshot_follows() {
+        // The dialect rejects a user message between the tool messages that
+        // answer one assistant turn — so a screenshot on the second of three
+        // results still goes after all three.
+        let result = |id: &str, image: Option<Image>| Block::ToolResult {
+            tool_use_id: id.into(),
+            content: format!("result {id}"),
+            is_error: image.is_none() && id == "c3",
+            image,
+        };
         let msg = ChatMessage {
             role: Role::User,
-            blocks: vec![Block::ToolResult {
-                tool_use_id: "c1".into(),
-                content: "screenshot".into(),
-                is_error: false,
-                image_base64: Some("QUJD".into()),
-            }],
+            blocks: vec![
+                result("c1", None),
+                result("c2", Some(png())),
+                result("c3", None),
+            ],
         };
         let body = build_body("s", &[msg], &[], "m", 10);
-        // messages[0] is the system prompt; then the tool message; then the
-        // image as a user message (the chat API can't put images in `tool`).
-        assert_eq!(body["messages"][1]["role"], "tool");
-        assert_eq!(body["messages"][2]["role"], "user");
-        let img = &body["messages"][2]["content"][0];
+        let roles: Vec<&str> = body["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["role"].as_str().unwrap())
+            .collect();
+        assert_eq!(roles, ["system", "tool", "tool", "tool", "user"]);
+        let img = &body["messages"][4]["content"][0];
         assert_eq!(img["type"], "image_url");
         assert_eq!(img["image_url"]["url"], "data:image/png;base64,QUJD");
     }
 
     #[test]
+    fn a_first_look_carries_text_and_image_in_one_user_message() {
+        let msg = ChatMessage {
+            role: Role::User,
+            blocks: vec![
+                Block::Text("Task: x".into()),
+                Block::Text("The screen now: …".into()),
+                Block::Image(Image {
+                    media_type: "image/jpeg".into(),
+                    ..png()
+                }),
+            ],
+        };
+        let body = build_body("s", &[msg], &[], "m", 10);
+        let content = &body["messages"][1]["content"];
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(content[2]["type"], "image_url");
+        assert!(content[2]["image_url"]["url"]
+            .as_str()
+            .unwrap()
+            .starts_with("data:image/jpeg;base64,"));
+    }
+
+    #[test]
     fn parse_reply_extracts_the_tool_call_and_parses_arguments() {
-        // Was two calls with an assertion that the second was discarded; that
-        // discard was L-269. One call here, refusal covered separately.
         let body = json!({
             "choices": [{
                 "message": {
@@ -587,7 +794,7 @@ mod tests {
         });
         let reply = parse_reply(&body).unwrap();
         assert_eq!(reply.text.as_deref(), Some("Opening Safari."));
-        let call = reply.tool_call.unwrap();
+        let call = &reply.tool_calls[0];
         assert_eq!(call.id, "c1");
         assert_eq!(call.input["name"], "Safari");
     }
@@ -597,7 +804,7 @@ mod tests {
         let prose = json!({ "choices": [{ "message": { "content": "All done." } }] });
         let reply = parse_reply(&prose).unwrap();
         assert_eq!(reply.text.as_deref(), Some("All done."));
-        assert!(reply.tool_call.is_none());
+        assert!(reply.tool_calls.is_empty());
 
         let bad = json!({
             "choices": [{ "message": { "tool_calls": [

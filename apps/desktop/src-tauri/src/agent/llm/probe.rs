@@ -37,6 +37,9 @@ struct Shapes {
     rgb: [u8; 3],
 }
 
+const CELL: u32 = 48;
+const PAD: u32 = 12;
+
 const COLOURS: [(&str, [u8; 3]); 3] = [
     ("red", [220, 38, 38]),
     ("green", [22, 163, 74]),
@@ -59,16 +62,18 @@ impl Shapes {
         }
     }
 
+    /// The pixel size of the test image and the centre of its first square —
+    /// what a model is asked to point at.
+    const SIZE: (u32, u32) = (PAD + (CELL + PAD) * 5, CELL + PAD * 2);
+    const FIRST_CENTRE: (f64, f64) = ((PAD + CELL / 2) as f64, (PAD + CELL / 2) as f64);
+
     /// A white canvas with `count` filled squares in a row. No text, so no
     /// font, and nothing a text-only endpoint could infer from metadata.
     fn png_base64(&self) -> Result<String> {
         use base64::Engine;
         use image::{ImageFormat, RgbaImage};
 
-        const CELL: u32 = 48;
-        const PAD: u32 = 12;
-        let width = PAD + (CELL + PAD) * 5;
-        let height = CELL + PAD * 2;
+        let (width, height) = Self::SIZE;
         let mut img = RgbaImage::from_pixel(width, height, image::Rgba([255, 255, 255, 255]));
         for i in 0..self.count {
             let x0 = PAD + i * (CELL + PAD);
@@ -87,6 +92,66 @@ impl Shapes {
             .write_to(&mut std::io::Cursor::new(&mut png), ImageFormat::Png)?;
         Ok(base64::engine::general_purpose::STANDARD.encode(png))
     }
+}
+
+/// How a model points at a picture, measured by asking it for the centre of
+/// the first square (see [`Shapes`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Pointing {
+    /// The coordinate space its answer was in — known only when it landed
+    /// inside the square under one reading. A miss says nothing about which
+    /// space it meant.
+    pub grid: Option<PointingGrid>,
+    /// Whether it landed inside the square.
+    pub accurate: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PointingGrid {
+    Pixels,
+    Thousand,
+}
+
+impl PointingGrid {
+    /// How it is stored in settings.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PointingGrid::Pixels => "pixels",
+            PointingGrid::Thousand => "thousand",
+        }
+    }
+}
+
+/// Judge a model's answer for the first square's centre. The square is 48
+/// pixels across, so within 24 of the centre is inside it; the two readings
+/// of the same numbers — pixels, or a 0–1000 grid — land far apart on this
+/// image, which is what makes the grid tell-able.
+pub fn judge_pointing(answer: (f64, f64)) -> Option<Pointing> {
+    let (w, h) = Shapes::SIZE;
+    let (cx, cy) = Shapes::FIRST_CENTRE;
+    let off = |x: f64, y: f64| ((x - cx).powi(2) + (y - cy).powi(2)).sqrt();
+    let as_pixels = off(answer.0, answer.1);
+    let as_thousand = off(
+        answer.0 * f64::from(w) / 1000.0,
+        answer.1 * f64::from(h) / 1000.0,
+    );
+    let inside = f64::from(CELL) / 2.0;
+    if !answer.0.is_finite() || !answer.1.is_finite() {
+        return None;
+    }
+    let grid = if as_pixels <= inside && as_pixels <= as_thousand {
+        Some(PointingGrid::Pixels)
+    } else if as_thousand <= inside {
+        Some(PointingGrid::Thousand)
+    } else {
+        None
+    };
+    Some(Pointing {
+        grid,
+        accurate: grid.is_some(),
+    })
 }
 
 /// What one capability check concluded.
@@ -110,6 +175,10 @@ pub struct ProbeReport {
     pub ok: bool,
     pub tools: Capability,
     pub vision: Capability,
+    /// How the model points at a screenshot, when vision was checked and it
+    /// answered. Decides the coordinate space Ask asks it for.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pointing: Option<Pointing>,
     /// Present when something failed, in the person's words.
     pub message: Option<String>,
     /// Present when something failed, for the UI to choose a recovery action.
@@ -131,6 +200,7 @@ impl ProbeReport {
             ok: false,
             tools: Capability::Untested,
             vision: Capability::Untested,
+            pointing: None,
             message: Some(failure.message.clone()),
             failure: Some(failure.kind),
             origin,
@@ -141,21 +211,26 @@ impl ProbeReport {
 }
 
 fn probe_tool() -> ToolSpec {
-    ToolSpec {
-        name: "probe_report",
-        description: "Report the answer to the question you were asked. \
-                      Always answer by calling this tool, never in prose.",
-        input_schema: serde_json::json!({
+    ToolSpec::new(
+        "probe_report",
+        "Report the answer to the question you were asked. \
+         Always answer by calling this tool, never in prose.",
+        serde_json::json!({
             "type": "object",
             "properties": {
                 "count": { "type": "integer", "description": "How many squares are in the image." },
                 "colour": { "type": "string", "description": "The colour of the squares." },
                 "ready": { "type": "boolean", "description": "Set to true." },
-                "echo": { "type": "string", "description": "Copy the exact value you were asked to echo." }
+                "echo": { "type": "string", "description": "Copy the exact value you were asked to echo." },
+                "point": {
+                    "type": "array",
+                    "items": { "type": "number" },
+                    "description": "[x, y] of a point in the image, when asked for one."
+                }
             },
             "required": []
         }),
-    }
+    )
 }
 
 const PROBE_SYSTEM: &str = "You are being checked for connectivity. \
@@ -203,7 +278,11 @@ pub async fn run<P: LlmProvider>(
         Ok(reply) => reply,
         Err(err) => return ProbeReport::failed(origin, model, &downcast(&err)),
     };
-    let Some(call) = reply.tool_call.filter(|c| c.name == "probe_report") else {
+    let Some(call) = reply
+        .tool_calls
+        .into_iter()
+        .find(|c| c.name == "probe_report")
+    else {
         return no_tools(
             origin,
             model,
@@ -239,7 +318,9 @@ pub async fn run<P: LlmProvider>(
     let instruction = match &shapes {
         Some(_) if image.is_some() => format!(
             "Here is an image. Call `probe_report` again with the number of squares as \
-             `count`, their colour as `colour`, and `echo` set to \"{nonce}\"."
+             `count`, their colour as `colour`, `point` set to [x, y] — the centre of the \
+             leftmost square in pixels of this image, origin top-left — and `echo` set to \
+             \"{nonce}\"."
         ),
         _ => format!("Call `probe_report` again with `echo` set to \"{nonce}\"."),
     };
@@ -258,7 +339,12 @@ pub async fn run<P: LlmProvider>(
             tool_use_id: call.id.clone(),
             content: instruction,
             is_error: false,
-            image_base64: image.clone(),
+            image: image.clone().map(|data| super::Image {
+                data,
+                media_type: "image/png".into(),
+                width: 0,
+                height: 0,
+            }),
         }],
     };
     let second = provider
@@ -284,10 +370,15 @@ pub async fn run<P: LlmProvider>(
                 origin,
                 model,
                 recorded: false,
+                pointing: None,
             };
         }
     };
-    let Some(follow_up) = second.tool_call.filter(|c| c.name == "probe_report") else {
+    let Some(follow_up) = second
+        .tool_calls
+        .into_iter()
+        .find(|c| c.name == "probe_report")
+    else {
         return no_tools(
             origin,
             model,
@@ -328,10 +419,22 @@ pub async fn run<P: LlmProvider>(
         }
         _ => Capability::Untested,
     };
+    // Where it points, only for a model that demonstrably read the image.
+    let pointing = match vision {
+        Capability::Supported => follow_up
+            .input
+            .get("point")
+            .and_then(|v| v.as_array())
+            .filter(|a| a.len() == 2)
+            .and_then(|a| Some((a[0].as_f64()?, a[1].as_f64()?)))
+            .and_then(judge_pointing),
+        _ => None,
+    };
     ProbeReport {
         ok: true,
         tools: Capability::Supported,
         vision,
+        pointing,
         message: match vision {
             Capability::Unsupported => Some(
                 "Text works, but this model did not read the test image correctly. Ask will \
@@ -353,6 +456,7 @@ fn no_tools(origin: String, model: String, message: &str) -> ProbeReport {
         ok: false,
         tools: Capability::Unsupported,
         vision: Capability::Untested,
+        pointing: None,
         message: Some(message.to_string()),
         failure: Some(FailureKind::BadRequest),
         origin,
@@ -442,7 +546,7 @@ mod tests {
                 })),
                 SecondTurn::Prose => Ok(AssistantReply {
                     text: Some("All done!".into()),
-                    tool_call: None,
+                    tool_calls: vec![],
                 }),
                 SecondTurn::IgnoreResult => {
                     Ok(call(serde_json::json!({ "echo": "not-the-nonce" })))
@@ -465,12 +569,12 @@ mod tests {
     fn call(input: serde_json::Value) -> AssistantReply {
         AssistantReply {
             text: None,
-            tool_call: Some(ToolCall {
+            tool_calls: vec![ToolCall {
                 id: "1".into(),
                 name: "probe_report".into(),
                 input,
                 extra: None,
-            }),
+            }],
         }
     }
 
@@ -515,7 +619,7 @@ mod tests {
         let p = probe(
             AssistantReply {
                 text: Some("Sure! I am ready.".into()),
-                tool_call: None,
+                tool_calls: vec![],
             },
             SecondTurn::EchoNonce,
             false,
@@ -594,6 +698,84 @@ mod tests {
         assert!(report.ok, "text still works");
         assert_eq!(report.tools, Capability::Supported);
         assert_eq!(report.vision, Capability::Unsupported);
+    }
+
+    #[test]
+    fn pointing_tells_pixels_from_the_thousand_grid_and_hits_from_misses() {
+        // Dead centre of the first square, in pixels.
+        assert_eq!(
+            judge_pointing((36.0, 36.0)),
+            Some(Pointing {
+                grid: Some(PointingGrid::Pixels),
+                accurate: true
+            })
+        );
+        // The same point on a 0–1000 grid over a 312×72 image.
+        assert_eq!(
+            judge_pointing((115.0, 500.0)),
+            Some(Pointing {
+                grid: Some(PointingGrid::Thousand),
+                accurate: true
+            })
+        );
+        // The wrong square: a miss, and no claim about the grid.
+        assert_eq!(
+            judge_pointing((156.0, 36.0)),
+            Some(Pointing {
+                grid: None,
+                accurate: false
+            })
+        );
+        assert_eq!(judge_pointing((f64::NAN, 1.0)), None);
+    }
+
+    #[tokio::test]
+    async fn a_model_that_sees_is_asked_where_it_points() {
+        struct Points(serde_json::Value);
+        impl LlmProvider for Points {
+            async fn complete(
+                &self,
+                _s: &str,
+                m: &[ChatMessage],
+                _t: &[ToolSpec],
+            ) -> Result<AssistantReply> {
+                if !has_tool_result(m) {
+                    return Ok(ready_first());
+                }
+                // Read the colour and count back out of what was asked is not
+                // possible here, so this model "sees" by being told: the test
+                // only cares about the point.
+                let shapes_answer = Shapes::pick();
+                Ok(call(serde_json::json!({
+                    "echo": nonce_from(m),
+                    "count": shapes_answer.count,
+                    "colour": shapes_answer.colour,
+                    "point": self.0,
+                })))
+            }
+            fn caps(&self) -> ProviderCaps {
+                ProviderCaps::default()
+            }
+        }
+        let report = run(
+            &Points(serde_json::json!([36, 36])),
+            "https://x".into(),
+            "m".into(),
+            true,
+        )
+        .await;
+        // Vision may or may not match the random shapes this fake reports;
+        // pointing is only judged when it does.
+        match report.vision {
+            Capability::Supported => assert_eq!(
+                report.pointing,
+                Some(Pointing {
+                    grid: Some(PointingGrid::Pixels),
+                    accurate: true
+                })
+            ),
+            _ => assert_eq!(report.pointing, None),
+        }
     }
 
     #[test]

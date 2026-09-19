@@ -89,7 +89,7 @@ libc = "0.2"
 # Screenshot capture → downscale → PNG for the agent's tier-3 vision fallback
 # (agent/executor/vision). `image` with only the png codec; the base64 the
 # model receives comes from the cross-platform dependency above.
-image = { version = "0.25", default-features = false, features = ["png"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 
 [features]
 # by default Tauri runs in production mode unless `tauri dev` sets this.

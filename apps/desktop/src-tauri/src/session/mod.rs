@@ -493,11 +493,14 @@ impl SessionRunner {
         events: UnboundedSender<SessionEvent>,
         lan_ad: Option<crate::lan::LanEndpoints>,
     ) -> Self {
+        let gate = InputGate::new();
+        let mut agent = AgentController::new();
+        agent.set_input(gate.agent_input());
         Self {
             room_id,
             fsm: SessionFsm::new(),
             media: MediaController::new(),
-            gate: InputGate::new(),
+            gate,
             clipboard: ClipboardWatcher::new(),
             displays: Vec::new(),
             peer: None,
@@ -511,7 +514,7 @@ impl SessionRunner {
             pending_offer: None,
             counterpart_signaling_offline: false,
             events,
-            agent: AgentController::new(),
+            agent,
             granted_control: false,
             ice_servers: Vec::new(),
             ice_policy: IcePolicy::All,
@@ -1487,6 +1490,9 @@ impl SessionRunner {
             return false;
         }
         self.gate.set_target_display(None);
+        // Ask follows the same display as input: a run that kept pointing at
+        // the unplugged one would act on coordinates of a screen that is gone.
+        self.agent.set_display(None);
         self.send_frame_size(sig);
         self.emit_shared_display();
         true
@@ -1511,6 +1517,7 @@ impl SessionRunner {
                     return; // the media-failure path owns ending the session
                 }
                 self.gate.set_target_display(None);
+                self.agent.set_display(None);
             }
         }
         self.send_frame_size(sig);

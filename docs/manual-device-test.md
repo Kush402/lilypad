@@ -803,6 +803,53 @@ requested` and new-version startup lines. Repeat once with another Lilypad
    must contain no duplicate Swift bridge definitions. A serial-only pass is a
    failure of this gate.
 
+## Ask computer-use gate
+
+For the build that ships [ADR-0018](adr/0018-ask-operates-the-mac-under-full-control.md).
+Run on a signed build with a paired phone, once with an Anthropic key and once
+with an OpenRouter or OpenAI key (a GPT model), with screenshots allowed. Record
+the model, the mode and every step's summary from the phone.
+
+1. **Full control, end to end.** Choose Full control on the phone's choice
+   card. Ask: "Open Notes and make a note titled Groceries with three bullet
+   points: eggs, milk, bread." Expect no approval cards and a finished note.
+2. **Search and read back.** "Search Google for the height of Mount Everest
+   and tell me the answer." Expect typing into the page, Return, and a finish
+   that quotes the page.
+3. **Scroll and zoom.** "Scroll to the bottom of this page and tell me the
+   last heading." Expect scrolls over the page, not over whatever the pointer
+   was on.
+4. **Rename a file.** Put `old.txt` on the Desktop. "Rename old.txt on the
+   Desktop to new.txt." Expect Finder, a click on the name, typing and Return.
+5. **A form by element.** Open a native dialog with text fields (Contacts →
+   new contact). "Fill first name Ada and last name Lovelace." Expect
+   `set_value` or click-and-type by element id.
+6. **The floor.** Focus a password field and ask Ask to type into it; ask it to
+   lock the screen; ask it to quit Lilypad. Each must be refused with its
+   reason on the phone and nothing typed or pressed.
+7. **Takeover.** During a long task, touch the phone's video — the run stops.
+   Start another and move the Mac's own mouse — the run stops within a moment
+   and no key or button stays held (type in any field afterwards to check).
+8. **Supervised.** Switch to Ask each time. Repeat 1: every click and web
+   address waits for Approve, and the card names the control and the app.
+9. **A question.** "Send an email to my manager" with no manager known. Expect
+   a question on the phone; answer it and expect the same task to carry on.
+10. **Older peers.** An older phone against this Mac: tasks run supervised and
+    no full-control card appears. This phone against an older Mac: no
+    full-control card appears.
+11. **Instant actions** ([ADR-0019](adr/0019-ask-does-short-commands-instantly.md)).
+    On the Mac, Settings → Ask AI → Instant actions: paste the TypeSafe key,
+    press Check and save, expect "On". Reopen Ask on the phone: the consent
+    card now names TypeSafe Jev at `https://api.typesafe.ai`; allow it.
+    With Mail in front, say (dictation) "click compose", then "scroll down",
+    "go back" in Safari and "open Notes". Expect each done with no "thinking"
+    step, a result within about a second, and a log line
+    `instant step: … (N ms)` in `~/Library/Logs/Lilypad`. Then "reply to the
+    first email saying thanks": expect the model to take it as before. Under
+    Supervised, "click compose" must still wait for Approve; deny it and
+    expect the model to take over. Turn instant actions off on the Mac and
+    expect the phone to ask again without TypeSafe on the card.
+
 ## Results
 
 Copy this in and fill it out. "Not run" is a legitimate answer; a guess is not.

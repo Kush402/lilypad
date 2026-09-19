@@ -1,0 +1,1111 @@
+//! The computer-use surface: pointing, clicking, typing and looking.
+//!
+//! Every gesture goes through the session's input thread
+//! ([`crate::input::AgentInput`]) — the same gates, the same display
+//! targeting and the same release-on-revoke as the phone's own input — so Ask
+//! can never do more with the Mac than the person's session allows.
+//!
+//! Perception is fused. One look is a screenshot (for a model that can see),
+//! the accessibility elements that can be acted on, what is in front and what
+//! has keyboard focus. The elements carry ids a model can point at instead of
+//! guessing coordinates, and a model that cannot see works from the ids alone.
+//!
+//! Vendor-blind like the rest of the engine: a model's coordinate convention
+//! arrives here as a [`Grid`], never as a provider.
+
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
+
+use anyhow::{anyhow, bail, Result};
+
+use crate::agent::ax::{self, tree};
+use crate::agent::executor::vision::{self, Frame, Mark};
+use crate::agent::executor::{AxExecutor, SharedDisplay};
+use crate::agent::runner::{Executor, Observation, ReadElement, ScreenReading};
+use crate::agent::security::{AxTarget, Hit, ScrollDirection, Target};
+use crate::agent::Action;
+use crate::input::agent_ops::{AgentOp, AgentReport};
+use crate::input::AgentInput;
+
+/// How a model states a point — see `llm::Grid`. Mirrored here so the engine
+/// never depends on the provider layer.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Grid {
+    #[default]
+    Pixels,
+    Thousand,
+}
+
+/// What this run's model can use.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ComputerConfig {
+    /// The model takes screenshots.
+    pub vision: bool,
+    pub grid: Grid,
+    /// Draw numbered marks over targetable elements. Off for a model with a
+    /// trained computer tool, which works from the plain screen.
+    pub marks: bool,
+}
+
+/// Most elements listed in one look. Enough for a busy window; past this the
+/// list costs more than it helps, and the model can zoom or scroll.
+const MAX_LISTED: usize = 120;
+
+/// Settling bounds after an action: long enough for a page or a sheet to
+/// appear, short enough that an animation does not stall the run.
+const SETTLE_MIN: Duration = Duration::from_millis(150);
+const SETTLE_MAX: Duration = Duration::from_millis(2500);
+const SETTLE_MAX_QUICK: Duration = Duration::from_millis(900);
+/// After launching an app or opening a URL.
+const SETTLE_MAX_LAUNCH: Duration = Duration::from_millis(4000);
+
+/// How far the pointer may drift between two of Ask's gestures before it
+/// counts as a person moving the mouse, in points. Generous: a false takeover
+/// stops a run the person wanted, and the event tap catches real movement
+/// sooner anyway.
+const DRIFT_POINTS: f64 = 12.0;
+
+pub struct ComputerExecutor {
+    pub(super) ax: AxExecutor,
+    display: SharedDisplay,
+    input: Option<AgentInput>,
+    stop: Arc<AtomicBool>,
+    config: ComputerConfig,
+    /// Whether the next action ends with a look (see `Executor::set_observe`).
+    observe: bool,
+    /// The display the previous look was of, to call out a switch.
+    last_looked: Option<Option<u32>>,
+    /// Pixel size of the last screenshot the model was shown, for stating
+    /// positions in its coordinates.
+    last_image: Option<(u32, u32)>,
+    /// Where Ask left the pointer, normalized — a person moving it since is a
+    /// takeover.
+    left_pointer: Option<(f64, f64)>,
+    /// Set when a person used the Mac mid-run; the run is being stopped.
+    taken_over: bool,
+}
+
+impl ComputerExecutor {
+    pub fn new(
+        display: SharedDisplay,
+        input: Option<AgentInput>,
+        stop: Arc<AtomicBool>,
+        config: ComputerConfig,
+    ) -> Self {
+        ComputerExecutor {
+            ax: AxExecutor::new(display.clone()),
+            display,
+            input,
+            stop,
+            config,
+            observe: true,
+            last_looked: None,
+            last_image: None,
+            left_pointer: None,
+            taken_over: false,
+        }
+    }
+
+    pub fn set_observe(&mut self, observe: bool) {
+        self.observe = observe;
+    }
+
+    pub fn handles(action: &Action) -> bool {
+        matches!(
+            action,
+            Action::ReadScreen
+                | Action::Screenshot
+                | Action::Zoom { .. }
+                | Action::Wait { .. }
+                | Action::CursorPosition
+                | Action::MoveMouse { .. }
+                | Action::Click { .. }
+                | Action::Drag { .. }
+                | Action::MouseDown { .. }
+                | Action::MouseUp { .. }
+                | Action::Scroll { .. }
+                | Action::TypeText { .. }
+                | Action::Key { .. }
+                | Action::HoldKey { .. }
+                | Action::SetValue { .. }
+                | Action::AxPerform { .. }
+        )
+    }
+
+    // ── resolution ─────────────────────────────────────────────────────
+
+    /// The shared display's global rectangle in points.
+    fn bounds(&self) -> [f64; 4] {
+        #[cfg(target_os = "macos")]
+        {
+            let (x, y, w, h) = ax::macos::shared_display_bounds(self.display.get());
+            [x, y, w, h]
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            [0.0, 0.0, 1.0, 1.0]
+        }
+    }
+
+    /// A target as a normalized point on the shared display.
+    fn point_of(&self, target: &Target) -> Result<(f64, f64)> {
+        match target {
+            Target::Point { x, y } => Ok((*x, *y)),
+            Target::Here => vision::pointer_in(self.bounds())
+                .ok_or_else(|| anyhow!("the pointer is not on the shared screen")),
+            Target::Element(id) => {
+                let snapshot =
+                    self.ax.last.as_ref().ok_or_else(|| {
+                        anyhow!("no screen reading yet — look at the screen first")
+                    })?;
+                if self.ax.read_on != self.display.get() {
+                    bail!("the shared screen changed since that reading — look again");
+                }
+                let node = snapshot
+                    .nodes
+                    .get(*id)
+                    .ok_or_else(|| anyhow!("element [{id}] is not in the latest reading"))?;
+                let frame = node.frame.ok_or_else(|| {
+                    anyhow!(
+                        "element [{id}] has no position on screen; use element_action with \
+                         AXPress, or point at it by coordinate"
+                    )
+                })?;
+                let [x, y, w, h] =
+                    tree::normalized_frame(frame, snapshot.bounds).ok_or_else(|| {
+                        anyhow!("element [{id}] is not on the shared screen; scroll it into view")
+                    })?;
+                Ok((x + w / 2.0, y + h / 2.0))
+            }
+        }
+    }
+
+    /// What is under a target, for the gate and the card.
+    fn hit_at(&self, target: &Target) -> Option<Hit> {
+        let (x, y) = self.point_of(target).ok()?;
+        let [bx, by, bw, bh] = self.bounds();
+        let info = ax::hit_test(bx + x * bw, by + y * bh)?;
+        Some(to_hit(info, false))
+    }
+
+    /// What has keyboard focus, for typing and keys.
+    fn focus_hit(&self) -> Option<Hit> {
+        focus_of(ax::focus(), ax::secure_input_enabled())
+    }
+
+    /// What an element from the latest reading is, and whose it is.
+    fn element_hit(&self, id: usize) -> (Option<AxTarget>, Option<Hit>) {
+        let Some(snapshot) = self.ax.last.as_ref() else {
+            return (None, None);
+        };
+        let target = tree::describe_by_id(&snapshot.nodes, id).map(|(r, l)| AxTarget::new(r, l));
+        let hit = target.as_ref().map(|t| {
+            let (protected, terminal) = ax::surface_of(&snapshot.path);
+            Hit {
+                element: Some(t.clone()),
+                app: snapshot.app.clone(),
+                own: snapshot.pid == std::process::id() as i32,
+                protected: protected.map(str::to_string),
+                secure: t.role == "AXSecureTextField"
+                    || snapshot
+                        .nodes
+                        .get(id)
+                        .and_then(|n| n.value.as_deref())
+                        .is_some_and(|v| v == "‹password field›"),
+                terminal,
+            }
+        });
+        (target, hit)
+    }
+
+    /// Attach what an action would touch, before the gate sees it.
+    pub fn resolve(&self, action: Action) -> Action {
+        match action {
+            Action::Click {
+                target,
+                button,
+                count,
+                modifiers,
+                ..
+            } => Action::Click {
+                hit: self.hit_at(&target),
+                target,
+                button,
+                count,
+                modifiers,
+            },
+            Action::Drag {
+                from,
+                to,
+                modifiers,
+                ..
+            } => Action::Drag {
+                hit: self.hit_at(&from),
+                hit_to: self.hit_at(&to),
+                from,
+                to,
+                modifiers,
+            },
+            // Without a target they act where the pointer is, so that is what
+            // is identified.
+            Action::MouseDown { target, button, .. } => Action::MouseDown {
+                hit: self.hit_at(target.as_ref().unwrap_or(&Target::Here)),
+                target,
+                button,
+            },
+            Action::MouseUp { target, button, .. } => Action::MouseUp {
+                hit: self.hit_at(target.as_ref().unwrap_or(&Target::Here)),
+                target,
+                button,
+            },
+            Action::Scroll {
+                target,
+                direction,
+                amount,
+                modifiers,
+                ..
+            } => Action::Scroll {
+                hit: self.hit_at(target.as_ref().unwrap_or(&Target::Here)),
+                target,
+                direction,
+                amount,
+                modifiers,
+            },
+            Action::TypeText { text, .. } => Action::TypeText {
+                text,
+                focus: self.focus_hit(),
+            },
+            Action::Key { chords, repeat, .. } => Action::Key {
+                chords,
+                repeat,
+                focus: self.focus_hit(),
+            },
+            Action::HoldKey { chord, ms, .. } => Action::HoldKey {
+                chord,
+                ms,
+                focus: self.focus_hit(),
+            },
+            Action::SetValue {
+                element_id, text, ..
+            } => {
+                let (target, hit) = self.element_hit(element_id);
+                Action::SetValue {
+                    element_id,
+                    text,
+                    target,
+                    hit,
+                }
+            }
+            Action::AxPerform {
+                element_id, action, ..
+            } => {
+                let (target, hit) = self.element_hit(element_id);
+                Action::AxPerform {
+                    element_id,
+                    action,
+                    target,
+                    hit,
+                }
+            }
+            other => other,
+        }
+    }
+
+    // ── acting ─────────────────────────────────────────────────────────
+
+    async fn perform(&mut self, op: AgentOp) -> Result<AgentReport> {
+        let Some(input) = self.input.clone() else {
+            bail!("this session cannot control the Mac's mouse and keyboard");
+        };
+        let report = input.perform(op, Arc::clone(&self.stop)).await?;
+        // Unknown (off the shared display) is recorded as unknown, so a stale
+        // position is never compared against.
+        self.left_pointer = report.cursor;
+        Ok(report)
+    }
+
+    /// A person moving the pointer since Ask last left it is taking over.
+    /// Checked before every gesture: the event tap (when macOS allows one)
+    /// catches it sooner, and this catches it when it does not.
+    fn someone_moved_the_mouse(&self) -> bool {
+        let (Some(left), Some(now)) = (self.left_pointer, vision::pointer_in(self.bounds())) else {
+            return false;
+        };
+        let [_, _, w, h] = self.bounds();
+        let (dx, dy) = ((now.0 - left.0) * w, (now.1 - left.1) * h);
+        (dx * dx + dy * dy).sqrt() > DRIFT_POINTS
+    }
+
+    /// Carry out one gesture-type action. `Ok` is what happened in words.
+    async fn act(&mut self, action: &Action) -> Result<String> {
+        if self.someone_moved_the_mouse() {
+            self.taken_over = true;
+            self.stop.store(true, Ordering::SeqCst);
+            bail!("stopped — someone moved the mouse at the Mac, so Ask handed control back");
+        }
+        match action {
+            Action::MoveMouse { to } => {
+                let at = self.point_of(to)?;
+                self.perform(AgentOp::Move { to: at }).await?;
+                Ok("moved the pointer".into())
+            }
+            Action::Click {
+                target,
+                button,
+                count,
+                modifiers,
+                hit,
+            } => {
+                let at = self.point_of(target)?;
+                // The approval named what was under the point. If something
+                // else is there now — a page that moved, a dialog that
+                // appeared — this is a different click (L-272's rule, for
+                // points).
+                if let Some(approved) = hit.as_ref().and_then(|h| h.element.as_ref()) {
+                    let now = self.hit_at(target).and_then(|h| h.element);
+                    if let Some(now) = now {
+                        if &now != approved {
+                            bail!(
+                                "what is under that point changed since this click was chosen \
+                                 (it was {:?}, now {:?}) — look again",
+                                approved.label,
+                                now.label
+                            );
+                        }
+                    }
+                }
+                self.perform(AgentOp::Click {
+                    at,
+                    button: *button,
+                    count: *count,
+                    modifiers: modifiers.clone(),
+                })
+                .await?;
+                Ok("clicked".into())
+            }
+            Action::Drag {
+                from,
+                to,
+                modifiers,
+                ..
+            } => {
+                let (from, to) = (self.point_of(from)?, self.point_of(to)?);
+                self.perform(AgentOp::Drag {
+                    from,
+                    to,
+                    modifiers: modifiers.clone(),
+                })
+                .await?;
+                Ok("dragged".into())
+            }
+            Action::MouseDown { target, button, .. } => {
+                let at = target.as_ref().map(|t| self.point_of(t)).transpose()?;
+                self.perform(AgentOp::MouseDown {
+                    at,
+                    button: *button,
+                })
+                .await?;
+                Ok("pressed and holding the mouse button".into())
+            }
+            Action::MouseUp { target, button, .. } => {
+                let at = target.as_ref().map(|t| self.point_of(t)).transpose()?;
+                self.perform(AgentOp::MouseUp {
+                    at,
+                    button: *button,
+                })
+                .await?;
+                Ok("released the mouse button".into())
+            }
+            Action::Scroll {
+                target,
+                direction,
+                amount,
+                modifiers,
+                ..
+            } => {
+                let at = target.as_ref().map(|t| self.point_of(t)).transpose()?;
+                let n = *amount as i32;
+                let (dx, dy) = match direction {
+                    ScrollDirection::Up => (0, -n),
+                    ScrollDirection::Down => (0, n),
+                    ScrollDirection::Left => (-n, 0),
+                    ScrollDirection::Right => (n, 0),
+                };
+                self.perform(AgentOp::Scroll {
+                    at,
+                    dx,
+                    dy,
+                    modifiers: modifiers.clone(),
+                })
+                .await?;
+                Ok("scrolled".into())
+            }
+            Action::TypeText { text, .. } => {
+                self.perform(AgentOp::Type { text: text.clone() }).await?;
+                Ok(format!("typed {} characters", text.chars().count()))
+            }
+            Action::Key { chords, repeat, .. } => {
+                self.perform(AgentOp::Keys {
+                    chords: chords.clone(),
+                    repeat: *repeat,
+                })
+                .await?;
+                Ok("pressed".into())
+            }
+            Action::HoldKey { chord, ms, .. } => {
+                self.perform(AgentOp::HoldKeys {
+                    chord: chord.clone(),
+                    ms: *ms,
+                })
+                .await?;
+                Ok("held and released".into())
+            }
+            Action::SetValue {
+                element_id, text, ..
+            } => {
+                self.element_effect(*element_id, |handle| ax::set_value(handle, text))?;
+                Ok("set the value".into())
+            }
+            Action::AxPerform {
+                element_id, action, ..
+            } => {
+                self.element_effect(*element_id, |handle| ax::perform(handle, action))?;
+                Ok(format!("performed {action}"))
+            }
+            other => bail!("not a computer action: {other:?}"),
+        }
+    }
+
+    /// Run an accessibility effect on an element from the latest reading.
+    fn element_effect(
+        &self,
+        id: usize,
+        effect: impl FnOnce(&ax::AxHandle) -> Result<()>,
+    ) -> Result<()> {
+        let snapshot = self
+            .ax
+            .last
+            .as_ref()
+            .ok_or_else(|| anyhow!("no screen reading yet — look at the screen first"))?;
+        if self.ax.read_on != self.display.get() {
+            bail!("the shared screen changed since that reading — look again");
+        }
+        let handle = snapshot
+            .handle(id)
+            .ok_or_else(|| anyhow!("element [{id}] is not in the latest reading"))?;
+        effect(handle)
+    }
+
+    // ── looking ────────────────────────────────────────────────────────
+
+    /// Take a fused look: settle, screenshot, read the elements.
+    async fn look(&mut self, settle_max: Duration) -> Observation {
+        let target = self.display.get();
+        let changed = matches!(self.last_looked, Some(prev) if prev != target);
+        self.last_looked = Some(target);
+
+        let min = if settle_max.is_zero() {
+            Duration::ZERO
+        } else {
+            SETTLE_MIN
+        };
+        // A model that cannot see is never sent a picture, so none is taken:
+        // it needs neither the Screen Recording grant nor the capture time.
+        let frame = if self.config.vision {
+            match tokio::task::spawn_blocking(move || vision::settle(target, min, settle_max)).await
+            {
+                Ok(Ok(frame)) => Some(frame),
+                Ok(Err(e)) => {
+                    return Observation::fail(format!(
+                        "Could not see {}: {e}",
+                        vision::display_name(target)
+                    ))
+                }
+                Err(e) => return Observation::fail(format!("the screen capture stopped: {e}")),
+            }
+        } else {
+            tokio::time::sleep(min * 2).await;
+            None
+        };
+
+        // The element reading. A failure here is not a failure to see — the
+        // screenshot still stands — so it is reported, not returned.
+        let reading = self.ax.read().await;
+
+        let bounds = frame
+            .as_ref()
+            .map(|f| f.bounds)
+            .unwrap_or_else(|| self.bounds());
+        let pointer = vision::pointer_in(bounds);
+        let listed: Vec<(usize, [f64; 4])> = match (&reading, self.ax.last.as_ref()) {
+            (Ok(()), Some(snapshot)) => tree::on_screen_actionable(&snapshot.nodes, bounds)
+                .into_iter()
+                .take(MAX_LISTED)
+                .map(|(n, rect)| (n.id, rect))
+                .collect(),
+            _ => Vec::new(),
+        };
+
+        let image = match (&frame, self.config.vision) {
+            (Some(frame), true) => {
+                let marks: Vec<Mark> = if self.config.marks {
+                    listed
+                        .iter()
+                        .map(|(id, rect)| Mark {
+                            id: *id,
+                            rect: *rect,
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                match vision::render(frame, pointer, &marks) {
+                    Ok(image) => Some(image),
+                    Err(e) => {
+                        return Observation::fail(format!(
+                            "the screenshot could not be encoded: {e}"
+                        ))
+                    }
+                }
+            }
+            _ => None,
+        };
+        if let Some(image) = &image {
+            self.last_image = Some((image.width, image.height));
+        }
+
+        let structured = match (&reading, self.ax.last.as_ref()) {
+            (Ok(()), Some(snapshot)) => Some(screen_reading(snapshot, &listed)),
+            _ => None,
+        };
+        let text = self.describe_screen(
+            target,
+            changed,
+            image.as_ref().map(|i| (i.width, i.height)),
+            pointer,
+            &listed,
+            reading.err(),
+        );
+        Observation {
+            summary: text,
+            ok: true,
+            screen: frame.as_ref().map(Frame::fingerprint),
+            image,
+            reading: structured,
+        }
+    }
+
+    /// A normalized point in the model's coordinates.
+    fn in_model_space(&self, (x, y): (f64, f64)) -> Option<[i64; 2]> {
+        match self.config.grid {
+            Grid::Thousand => Some([(x * 1000.0).round() as i64, (y * 1000.0).round() as i64]),
+            Grid::Pixels => {
+                let (w, h) = self.last_image?;
+                Some([
+                    (x * f64::from(w)).round() as i64,
+                    (y * f64::from(h)).round() as i64,
+                ])
+            }
+        }
+    }
+
+    fn describe_screen(
+        &self,
+        target: Option<u32>,
+        changed: bool,
+        image: Option<(u32, u32)>,
+        pointer: Option<(f64, f64)>,
+        listed: &[(usize, [f64; 4])],
+        reading_error: Option<String>,
+    ) -> String {
+        let mut out = String::new();
+        out.push_str(vision::staleness_note(changed));
+        match image {
+            Some((w, h)) => {
+                let space = match self.config.grid {
+                    Grid::Pixels => format!("coordinates are pixels of this {w}×{h} image"),
+                    Grid::Thousand => "coordinates are on the 0–1000 grid".to_string(),
+                };
+                out.push_str(&format!(
+                    "Screenshot of {} ({space}).",
+                    vision::display_name(target)
+                ));
+            }
+            None => out.push_str(&format!(
+                "Reading of {} (no screenshot for this model; act on elements by id).",
+                vision::display_name(target)
+            )),
+        }
+        if let Some(p) = pointer.and_then(|p| self.in_model_space(p)) {
+            if image.is_some() {
+                out.push_str(&format!(" The pointer is at [{}, {}].", p[0], p[1]));
+            }
+        }
+        out.push('\n');
+        if let Some(snapshot) = self.ax.last.as_ref().filter(|_| reading_error.is_none()) {
+            let window = snapshot
+                .window
+                .as_deref()
+                .map(|w| format!(" — \u{201c}{}\u{201d}", tree::clip(w)))
+                .unwrap_or_default();
+            out.push_str(&format!("In front: {}{window}.", snapshot.app));
+            if let Some(f) = snapshot.nodes.iter().find(|n| n.focused) {
+                out.push_str(&format!(
+                    " Keyboard focus: [{}] {}{}.",
+                    f.id,
+                    f.role.trim_start_matches("AX"),
+                    f.label
+                        .as_deref()
+                        .map(|l| format!(" \u{201c}{}\u{201d}", tree::clip(l)))
+                        .unwrap_or_default()
+                ));
+            }
+            out.push('\n');
+            out.push_str(tree::ELEMENTS_HEADING);
+            out.push_str(" (id, role, label = value");
+            if image.is_some() {
+                out.push_str(", centre");
+            }
+            out.push_str("):\n");
+            if listed.is_empty() {
+                out.push_str("(none found in the focused app on this screen)\n");
+            }
+            for (id, rect) in listed {
+                let Some(node) = snapshot.nodes.get(*id) else {
+                    continue;
+                };
+                out.push_str(&format!("[{id}] {}", node.role.trim_start_matches("AX")));
+                if let Some(l) = node.label.as_deref().filter(|l| !l.is_empty()) {
+                    out.push_str(&format!(" \u{201c}{}\u{201d}", tree::clip(l)));
+                }
+                if let Some(v) = node.value.as_deref().filter(|v| !v.is_empty()) {
+                    out.push_str(&format!(" = {}", tree::clip(v)));
+                }
+                if image.is_some() {
+                    if let Some([x, y]) =
+                        self.in_model_space((rect[0] + rect[2] / 2.0, rect[1] + rect[3] / 2.0))
+                    {
+                        out.push_str(&format!(" at [{x}, {y}]"));
+                    }
+                }
+                if node.focused {
+                    out.push_str(" (focused)");
+                }
+                out.push('\n');
+            }
+            // A model that cannot see needs the words on the screen too, not
+            // just the controls.
+            if image.is_none() {
+                out.push_str("\nEverything in the window:\n");
+                out.push_str(&tree::serialize(&snapshot.nodes));
+            }
+        } else if let Some(e) = reading_error {
+            out.push_str(&format!(
+                "The accessibility elements could not be read ({e}); point by coordinate.\n"
+            ));
+        }
+        out
+    }
+
+    async fn after(&mut self, head: Result<String>, settle: Duration) -> Observation {
+        match head {
+            Ok(done) => {
+                if !self.observe {
+                    // More of the same reply follows. Still let the screen
+                    // catch up before the next gesture lands on it.
+                    tokio::time::sleep(SETTLE_MIN).await;
+                    return Observation::ok(format!("{done}."));
+                }
+                let mut look = self.look(settle).await;
+                look.summary = format!("{done}. {}", look.summary);
+                look
+            }
+            Err(e) => {
+                let mut fail = Observation::fail(format!("{e}"));
+                if self.taken_over {
+                    return fail;
+                }
+                // A failure is always shown with the screen, whatever the
+                // batch — the model has to see why.
+                let look = self.look(SETTLE_MAX_QUICK).await;
+                if look.ok {
+                    fail.summary = format!("{}\n{}", fail.summary, look.summary);
+                    fail.image = look.image;
+                    fail.screen = look.screen;
+                    fail.reading = look.reading;
+                }
+                fail
+            }
+        }
+    }
+
+    /// Add a look to an observation from another tier (an app launch, a
+    /// URL), so the model sees what it did.
+    pub async fn observe_after(&mut self, obs: Observation) -> Observation {
+        if !self.observe && obs.ok {
+            return obs;
+        }
+        let look = self.look(SETTLE_MAX_LAUNCH).await;
+        if !look.ok {
+            return obs;
+        }
+        Observation {
+            summary: format!("{}\n{}", obs.summary, look.summary),
+            image: look.image,
+            screen: look.screen,
+            ..obs
+        }
+    }
+
+    /// Let go of anything a `left_mouse_down` left held.
+    pub async fn release(&mut self) {
+        if let Some(input) = self.input.clone() {
+            let _ = input
+                .perform(AgentOp::ReleaseHeld, Arc::new(AtomicBool::new(false)))
+                .await;
+        }
+    }
+}
+
+/// The listed elements as structure: what a step that chooses among them
+/// needs, and nothing it does not — no values, no positions. An element with
+/// no label cannot be asked for by name, so it is left out.
+fn screen_reading(snapshot: &ax::AxSnapshot, listed: &[(usize, [f64; 4])]) -> ScreenReading {
+    let elements = listed
+        .iter()
+        .filter_map(|(id, _)| {
+            let node = snapshot.nodes.get(*id)?;
+            let label = node
+                .label
+                .as_deref()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())?;
+            Some(ReadElement {
+                id: *id,
+                role: role_in_words(&node.role),
+                label: tree::clip(label),
+            })
+        })
+        .collect();
+    ScreenReading {
+        app: snapshot.app.clone(),
+        // The first root is the front window on the shared screen.
+        window: snapshot
+            .nodes
+            .first()
+            .filter(|n| n.depth == 0 && n.frame.is_some())
+            .map(|n| n.id),
+        elements,
+    }
+}
+
+/// "AXPopUpButton" → "pop up button".
+fn role_in_words(role: &str) -> String {
+    let mut out = String::new();
+    for ch in role.trim_start_matches("AX").chars() {
+        if ch.is_uppercase() && !out.is_empty() {
+            out.push(' ');
+        }
+        out.extend(ch.to_lowercase());
+    }
+    out
+}
+
+/// What has the keyboard. When the focused element cannot be read, macOS
+/// secure keyboard input is still a fact about the whole session — a password
+/// field has the keyboard somewhere — so typing is refused on that alone.
+fn focus_of(info: Option<ax::HitInfo>, secure_input: bool) -> Option<Hit> {
+    match info {
+        Some(info) => Some(to_hit(info, secure_input)),
+        None if secure_input => Some(Hit {
+            secure: true,
+            ..Hit::default()
+        }),
+        None => None,
+    }
+}
+
+fn to_hit(info: ax::HitInfo, secure_input: bool) -> Hit {
+    let (protected, terminal) = ax::surface_of(&info.path);
+    Hit {
+        element: Some(AxTarget::new(info.role.clone(), info.label.clone())),
+        app: info.app,
+        own: info.pid == std::process::id() as i32,
+        protected: protected.map(str::to_string),
+        secure: info.secure || secure_input,
+        terminal,
+    }
+}
+
+impl Executor for ComputerExecutor {
+    async fn execute(&mut self, action: &Action) -> Result<Observation> {
+        match action {
+            Action::ReadScreen | Action::Screenshot => Ok(self.look(Duration::ZERO).await),
+            Action::Zoom { region } => {
+                let target = self.display.get();
+                let region = *region;
+                let frame = tokio::task::spawn_blocking(move || vision::grab(target)).await?;
+                Ok(match frame.and_then(|f| vision::zoom(&f, region)) {
+                    Ok(image) => Observation {
+                        summary: "A closer look at that region (coordinates still refer to the \
+                                  full screenshot)."
+                            .into(),
+                        ok: true,
+                        image: Some(image),
+                        screen: None,
+                        reading: None,
+                    },
+                    Err(e) => Observation::fail(format!("Could not zoom: {e}")),
+                })
+            }
+            Action::Wait { ms } => {
+                tokio::time::sleep(Duration::from_millis(*ms)).await;
+                Ok(self.after(Ok("waited".into()), SETTLE_MAX_QUICK).await)
+            }
+            Action::CursorPosition => {
+                let at = vision::pointer_in(self.bounds());
+                Ok(match at.and_then(|p| self.in_model_space(p)) {
+                    Some([x, y]) => Observation::ok(format!("The pointer is at [{x}, {y}].")),
+                    None if at.is_some() => Observation::ok(
+                        "The pointer is on the shared screen; take a screenshot to see where.",
+                    ),
+                    None => Observation::ok("The pointer is not on the shared screen."),
+                })
+            }
+            other => {
+                let head = self.act(other).await;
+                let settle = match other {
+                    Action::MoveMouse { .. } | Action::HoldKey { .. } => SETTLE_MAX_QUICK,
+                    _ => SETTLE_MAX,
+                };
+                Ok(self.after(head, settle).await)
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn executor(grid: Grid) -> ComputerExecutor {
+        ComputerExecutor::new(
+            SharedDisplay::default(),
+            None,
+            Arc::new(AtomicBool::new(false)),
+            ComputerConfig {
+                vision: true,
+                grid,
+                marks: true,
+            },
+        )
+    }
+
+    #[test]
+    fn positions_are_stated_in_the_models_own_coordinates() {
+        let mut ex = executor(Grid::Pixels);
+        assert_eq!(ex.in_model_space((0.5, 0.5)), None, "no screenshot yet");
+        ex.last_image = Some((1331, 864));
+        assert_eq!(ex.in_model_space((0.5, 0.25)), Some([666, 216]));
+        let ex = executor(Grid::Thousand);
+        assert_eq!(ex.in_model_space((0.5, 0.25)), Some([500, 250]));
+    }
+
+    #[test]
+    fn an_element_target_needs_a_reading_with_a_position() {
+        let mut ex = executor(Grid::Pixels);
+        let err = ex.point_of(&Target::Element(3)).unwrap_err().to_string();
+        assert!(err.contains("look at the screen first"), "{err}");
+
+        let mut nodes = vec![
+            tree::AxNode {
+                id: 0,
+                role: "AXWindow".into(),
+                ..Default::default()
+            },
+            tree::AxNode {
+                id: 1,
+                depth: 1,
+                role: "AXButton".into(),
+                label: Some("Send".into()),
+                pressable: true,
+                frame: Some([100.0, 50.0, 100.0, 50.0]),
+                ..Default::default()
+            },
+            tree::AxNode {
+                id: 2,
+                depth: 1,
+                role: "AXButton".into(),
+                label: Some("Hidden".into()),
+                pressable: true,
+                ..Default::default()
+            },
+        ];
+        nodes[0].frame = Some([0.0, 0.0, 1000.0, 500.0]);
+        let mut snapshot = ax::AxSnapshot::for_test(nodes);
+        snapshot.bounds = [0.0, 0.0, 1000.0, 500.0];
+        ex.ax.last = Some(snapshot);
+        ex.ax.read_on = ex.display.get();
+
+        let (x, y) = ex.point_of(&Target::Element(1)).unwrap();
+        assert!(
+            (x - 0.15).abs() < 1e-9 && (y - 0.15).abs() < 1e-9,
+            "{x}, {y}"
+        );
+        let err = ex.point_of(&Target::Element(2)).unwrap_err().to_string();
+        assert!(err.contains("no position"), "{err}");
+        let err = ex.point_of(&Target::Element(9)).unwrap_err().to_string();
+        assert!(err.contains("not in the latest reading"), "{err}");
+
+        // A display switch retires the reading.
+        ex.display.set(Some(4));
+        let err = ex.point_of(&Target::Element(1)).unwrap_err().to_string();
+        assert!(err.contains("changed"), "{err}");
+    }
+
+    #[test]
+    fn the_screen_description_lists_elements_with_ids_and_centres() {
+        let mut ex = executor(Grid::Pixels);
+        ex.last_image = Some((1000, 500));
+        let mut nodes = vec![
+            tree::AxNode {
+                id: 0,
+                role: "AXWindow".into(),
+                label: Some("Inbox".into()),
+                ..Default::default()
+            },
+            tree::AxNode {
+                id: 1,
+                depth: 1,
+                role: "AXTextField".into(),
+                label: Some("To".into()),
+                value: Some("rae@example.com".into()),
+                frame: Some([0.0, 0.0, 200.0, 20.0]),
+                focused: true,
+                ..Default::default()
+            },
+        ];
+        nodes[0].frame = Some([0.0, 0.0, 1000.0, 500.0]);
+        let mut snapshot = ax::AxSnapshot::for_test(nodes);
+        snapshot.bounds = [0.0, 0.0, 1000.0, 500.0];
+        snapshot.app = "Mail".into();
+        snapshot.window = Some("Inbox".into());
+        ex.ax.last = Some(snapshot);
+        let listed = vec![(1usize, [0.0, 0.0, 0.2, 0.04])];
+        let text = ex.describe_screen(
+            None,
+            false,
+            Some((1000, 500)),
+            Some((0.5, 0.5)),
+            &listed,
+            None,
+        );
+        assert!(text.contains("pixels of this 1000×500 image"), "{text}");
+        assert!(text.contains("The pointer is at [500, 250]"), "{text}");
+        assert!(
+            text.contains("In front: Mail — \u{201c}Inbox\u{201d}"),
+            "{text}"
+        );
+        assert!(text.contains("Keyboard focus: [1] TextField"), "{text}");
+        assert!(
+            text.contains(
+                "[1] TextField \u{201c}To\u{201d} = rae@example.com at [100, 10] (focused)"
+            ),
+            "{text}"
+        );
+        // The pruner recognizes it as a reading.
+        assert!(text.contains(tree::ELEMENTS_HEADING));
+
+        // A model that cannot see gets ids and the window's words, no
+        // coordinates.
+        let text = ex.describe_screen(None, false, None, Some((0.5, 0.5)), &listed, None);
+        assert!(text.contains("no screenshot"), "{text}");
+        assert!(!text.contains(" at ["), "{text}");
+        assert!(text.contains("Everything in the window"), "{text}");
+    }
+
+    #[test]
+    fn secure_keyboard_input_refuses_typing_even_when_focus_cannot_be_read() {
+        use crate::agent::security::{floor, Action};
+        let typing = |focus| Action::TypeText {
+            text: "hunter2".into(),
+            focus,
+        };
+        // The focused element could not be read, but secure input is on.
+        let focus = focus_of(None, true);
+        assert!(focus.as_ref().is_some_and(|h| h.secure));
+        assert!(floor(&typing(focus)).is_some());
+        // Nothing known and nothing secure: nothing for the floor to refuse.
+        assert_eq!(focus_of(None, false), None);
+        // A readable focus carries secure input too.
+        let field = ax::HitInfo {
+            role: "AXTextField".into(),
+            app: "Safari".into(),
+            ..Default::default()
+        };
+        assert!(focus_of(Some(field.clone()), true).is_some_and(|h| h.secure));
+        assert!(focus_of(Some(field), false).is_some_and(|h| !h.secure));
+    }
+
+    #[test]
+    fn a_reading_lists_named_elements_only_and_finds_the_window() {
+        let mut nodes = vec![
+            tree::AxNode {
+                id: 0,
+                role: "AXWindow".into(),
+                label: Some("Inbox".into()),
+                frame: Some([0.0, 0.0, 100.0, 100.0]),
+                ..Default::default()
+            },
+            tree::AxNode {
+                id: 1,
+                depth: 1,
+                role: "AXPopUpButton".into(),
+                label: Some("  Mailbox  ".into()),
+                value: Some("secret draft text".into()),
+                ..Default::default()
+            },
+            tree::AxNode {
+                id: 2,
+                depth: 1,
+                role: "AXButton".into(),
+                label: None,
+                ..Default::default()
+            },
+        ];
+        let mut snapshot = ax::AxSnapshot::for_test(nodes.clone());
+        snapshot.app = "Mail".into();
+        let listed = vec![(1usize, [0.0; 4]), (2usize, [0.0; 4])];
+        let reading = screen_reading(&snapshot, &listed);
+        assert_eq!(reading.app, "Mail");
+        assert_eq!(reading.window, Some(0));
+        assert_eq!(
+            reading.elements,
+            vec![ReadElement {
+                id: 1,
+                role: "pop up button".into(),
+                label: "Mailbox".into(),
+            }],
+            "no value, and nothing unnamed"
+        );
+        // A window with no position is no place to scroll.
+        nodes[0].frame = None;
+        let snapshot = ax::AxSnapshot::for_test(nodes);
+        assert_eq!(screen_reading(&snapshot, &listed).window, None);
+    }
+
+    #[tokio::test]
+    async fn without_the_input_thread_an_action_fails_with_a_reason() {
+        let mut ex = executor(Grid::Pixels);
+        ex.observe = false;
+        let err = ex
+            .act(&Action::TypeText {
+                text: "x".into(),
+                focus: None,
+            })
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("cannot control"), "{err}");
+    }
+}

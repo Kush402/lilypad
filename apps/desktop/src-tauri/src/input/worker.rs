@@ -4,18 +4,30 @@
 //! revoke events already waiting ahead of a queued `SetEnabled(false)`.
 
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{sync_channel, SyncSender};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
+use super::agent_ops::{AgentOp, AgentReport, Pace};
 use super::{
     create_input_backend, decode_input_batch, InputBackend, InputDispatcher, InputMetrics,
     PermissionStatus, Scope,
 };
 
 enum Msg {
-    Bytes { generation: u64, bytes: Vec<u8> },
+    Bytes {
+        generation: u64,
+        bytes: Vec<u8>,
+    },
+    /// One Ask gesture. Runs on this thread, in queue order with the phone's
+    /// input, so the two can never interleave inside a gesture.
+    Agent {
+        generation: u64,
+        op: AgentOp,
+        stop: Arc<AtomicBool>,
+        reply: tokio::sync::oneshot::Sender<anyhow::Result<AgentReport>>,
+    },
     SetEnabled(bool),
     ResetPeer,
     SetScopes(HashSet<Scope>),
@@ -98,6 +110,29 @@ impl InputWorker {
                                 }
                             }
                         }
+                        Msg::Agent {
+                            generation,
+                            op,
+                            stop,
+                            reply,
+                        } => {
+                            let authority = &worker_authority;
+                            // Revoked since it was queued, or revoked part way
+                            // through: either way it stops, like phone input.
+                            let revoked = || {
+                                generation % 2 == 0
+                                    || authority.load(Ordering::Acquire) != generation
+                            };
+                            let result = if revoked() {
+                                Err(anyhow::anyhow!(
+                                    "control of this Mac was withdrawn before the action ran"
+                                ))
+                            } else {
+                                let halt = || stop.load(Ordering::SeqCst) || revoked();
+                                dispatcher.run_agent(&op, &halt, Pace::REAL)
+                            };
+                            let _ = reply.send(result);
+                        }
                         Msg::SetEnabled(enabled) => dispatcher.set_enabled(enabled),
                         Msg::ResetPeer => dispatcher.reset_peer(),
                         Msg::SetScopes(scopes) => dispatcher.set_scopes(scopes),
@@ -171,6 +206,47 @@ impl InputWorker {
     pub fn metrics(&self) -> Arc<InputMetrics> {
         Arc::clone(&self.metrics)
     }
+
+    /// A handle Ask uses to act through this worker — and therefore through
+    /// the same gates, display targeting and release-on-revoke as the phone.
+    pub fn agent_input(&self) -> AgentInput {
+        AgentInput {
+            tx: self.tx.clone(),
+            authority: Arc::clone(&self.authority),
+        }
+    }
+}
+
+/// Ask's way into the input thread. Cloneable into a run's task; holds no
+/// authority of its own — every gesture is checked against the session's
+/// current grant when it runs.
+#[derive(Clone)]
+pub struct AgentInput {
+    tx: SyncSender<Msg>,
+    authority: Arc<AtomicU64>,
+}
+
+impl AgentInput {
+    /// Perform `op` and wait for it to finish. `stop` is polled between the
+    /// steps of a gesture, so Stop does not wait for a long type to end.
+    pub async fn perform(&self, op: AgentOp, stop: Arc<AtomicBool>) -> anyhow::Result<AgentReport> {
+        let generation = self.authority.load(Ordering::Acquire);
+        if generation % 2 == 0 {
+            anyhow::bail!("the phone is not connected with control of this Mac right now");
+        }
+        let (reply, answer) = tokio::sync::oneshot::channel();
+        self.tx
+            .try_send(Msg::Agent {
+                generation,
+                op,
+                stop,
+                reply,
+            })
+            .map_err(|_| anyhow::anyhow!("this Mac's input queue is full; try again"))?;
+        answer
+            .await
+            .map_err(|_| anyhow::anyhow!("the input thread stopped"))?
+    }
 }
 
 impl Drop for InputWorker {
@@ -187,6 +263,7 @@ impl Drop for InputWorker {
 mod tests {
     use super::super::{KeyAction, Modifier, MouseAction, ScrollAction};
     use super::*;
+    use std::sync::atomic::AtomicBool;
     use std::sync::mpsc::{channel, Receiver, Sender};
     use std::time::Duration;
 
@@ -216,7 +293,7 @@ mod tests {
         }
         fn inject_text(&mut self, text: &str) -> anyhow::Result<()> {
             self.injected.send(text.into())?;
-            if text == "in-flight" {
+            if text == "in-flight" || text == "⏸" {
                 self.resume.recv_timeout(Duration::from_secs(5))?;
             }
             Ok(())
@@ -272,6 +349,84 @@ mod tests {
         );
         drop(worker);
         assert!(injected_rx.try_recv().is_err());
+    }
+
+    fn agent_worker() -> (InputWorker, Receiver<String>, Sender<()>) {
+        let (injected_tx, injected_rx) = channel();
+        let (resume_tx, resume_rx) = channel();
+        let worker = InputWorker::spawn_with_backend(move || {
+            Box::new(BlockingBackend {
+                injected: injected_tx,
+                resume: resume_rx,
+            })
+        });
+        (worker, injected_rx, resume_tx)
+    }
+
+    fn typing(text: &str) -> AgentOp {
+        AgentOp::Type { text: text.into() }
+    }
+
+    #[tokio::test]
+    async fn ask_has_no_more_authority_than_the_phone_session() {
+        let (worker, injected, _resume) = agent_worker();
+        let ask = worker.agent_input();
+        let go = Arc::new(AtomicBool::new(false));
+
+        // Not connected: refused before it reaches the thread.
+        assert!(ask.perform(typing("a"), go.clone()).await.is_err());
+        // Connected but view-only: refused on the thread.
+        worker.set_scopes(HashSet::from([Scope::View]));
+        worker.set_enabled(true);
+        let err = ask.perform(typing("a"), go.clone()).await.unwrap_err();
+        assert!(err.to_string().contains("view-only"), "{err}");
+        // Control granted: it types.
+        worker.set_scopes(HashSet::from([Scope::Control]));
+        ask.perform(typing("ok"), go.clone()).await.unwrap();
+        assert_eq!(injected.recv_timeout(Duration::from_secs(2)).unwrap(), "o");
+        assert_eq!(injected.recv_timeout(Duration::from_secs(2)).unwrap(), "k");
+        // Revoked: refused again, including by a handle taken earlier.
+        worker.set_enabled(false);
+        assert!(ask.perform(typing("a"), go).await.is_err());
+        assert!(injected.try_recv().is_err());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn revoking_control_stops_a_gesture_part_way() {
+        let (worker, injected, resume) = agent_worker();
+        worker.set_scopes(HashSet::from([Scope::Control]));
+        worker.set_enabled(true);
+        let ask = worker.agent_input();
+        let pending = tokio::spawn({
+            let ask = ask.clone();
+            async move {
+                ask.perform(typing("⏸abc"), Arc::new(AtomicBool::new(false)))
+                    .await
+            }
+        });
+        // The first unit blocks inside the backend; revoke while it does.
+        assert_eq!(injected.recv_timeout(Duration::from_secs(2)).unwrap(), "⏸");
+        worker.set_enabled(false);
+        resume.send(()).unwrap();
+        let result = pending.await.unwrap();
+        assert!(result.is_err(), "a revoked gesture kept typing");
+        // At most the unit already inside the OS call went through.
+        assert!(injected.recv_timeout(Duration::from_millis(200)).is_err());
+    }
+
+    #[tokio::test]
+    async fn stop_ends_a_gesture_between_units() {
+        let (worker, injected, _resume) = agent_worker();
+        worker.set_scopes(HashSet::from([Scope::Control]));
+        worker.set_enabled(true);
+        let stop = Arc::new(AtomicBool::new(true));
+        let err = worker
+            .agent_input()
+            .perform(typing("abc"), stop)
+            .await
+            .unwrap_err();
+        assert_eq!(err.to_string(), "stopped");
+        assert!(injected.try_recv().is_err());
     }
 
     #[test]

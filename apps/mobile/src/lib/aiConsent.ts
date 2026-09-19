@@ -74,6 +74,12 @@ export type ConsentTarget = {
   /** Which wording revision the Mac disclosed under. */
   policy: number;
   /**
+   * Where short commands also go for instant actions (ADR-0019), when the
+   * Mac disclosed that. A second destination: agreeing to the model's alone
+   * is not agreeing to this.
+   */
+  instantOrigin?: string;
+  /**
    * The Mac's own digest of the destination, echoed back on every command so
    * the Mac can refuse one aimed at a destination that has since changed.
    *
@@ -99,13 +105,16 @@ type Grant = Omit<ConsentTarget, 'revision'> & { grantedAt: string };
  * the other device to compute a digest honestly.
  */
 function keyOf(target: Omit<ConsentTarget, 'revision'>): string {
-  return [
+  const key = [
     target.desktopDeviceId,
     target.origin,
     target.model,
     target.local ? 'local' : 'remote',
     String(target.policy),
   ].join('|');
+  // Appended only when present, so every grant made before instant actions
+  // existed keeps meaning exactly what it meant.
+  return target.instantOrigin ? `${key}|instant:${target.instantOrigin}` : key;
 }
 
 /**
@@ -129,7 +138,9 @@ export function targetFor(
     model: destination.model ?? '',
     local: destination.local,
     policy: destination.consentPolicy,
-    revision: destination.consentRevision,
+    ...(destination.instant ? { instantOrigin: destination.instant.origin } : {}),
+    // The revision covering everything the card named.
+    revision: destination.instant?.consentRevision ?? destination.consentRevision,
   };
 }
 

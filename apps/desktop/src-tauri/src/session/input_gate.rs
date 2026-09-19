@@ -59,6 +59,12 @@ impl InputGate {
         self.worker.handle_message(bytes);
     }
 
+    /// Ask's handle on this session's input thread: it acts through the same
+    /// gates as the phone, so it can never do more than the session allows.
+    pub fn agent_input(&self) -> crate::input::AgentInput {
+        self.worker.agent_input()
+    }
+
     /// Record the scopes granted for the current session (from
     /// `session-start`'s `grantedScopes`) and forward them to the
     /// `InputDispatcher`, which rejects any control-plane input (pointer,

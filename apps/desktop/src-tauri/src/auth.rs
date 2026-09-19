@@ -50,6 +50,11 @@ pub struct DeviceAuth {
 /// the presence loop's `bearer` alike.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 
+/// Stop transient fallback before the estimated server deadline. The protocol
+/// returns a relative TTL rather than an absolute `exp`, so response transit
+/// means this process cannot know the server's exact instant byte-for-byte.
+const FALLBACK_EXPIRY_SKEW: Duration = Duration::from_secs(5);
+
 struct CachedToken {
     value: String,
     /// When to stop using it. Deliberately EARLIER than the server's expiry —
@@ -66,6 +71,10 @@ struct CachedToken {
     /// like from the server's side. The phone showed that Mac as offline the
     /// whole time.
     renew_after: SystemTime,
+    /// The server's estimated bearer deadline. Between `renew_after` and this
+    /// instant the token is reserved for a transient renewal fallback, which
+    /// also stops at `FALLBACK_EXPIRY_SKEW` before this point.
+    expires_at: SystemTime,
     /// Who the backend says this device belongs to. Kept beside the token so
     /// the dashboard can answer "is this computer linked?" without a network
     /// round trip on every render.
@@ -128,6 +137,23 @@ pub enum AuthError {
     /// The device was revoked. Re-enrolling is the deliberate way back.
     Revoked,
 }
+
+/// A token exchange refusal that may safely fall back to the still-unexpired
+/// bearer. Authentication/authorization refusals deliberately never use this
+/// type: the caller invalidates the old token for every non-transient error.
+#[derive(Debug)]
+struct TransientAuthError;
+
+impl std::fmt::Display for TransientAuthError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Lilypad’s server is temporarily unavailable. Try again in a moment."
+        )
+    }
+}
+
+impl std::error::Error for TransientAuthError {}
 
 impl std::fmt::Display for AuthError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -203,15 +229,19 @@ impl DeviceAuth {
             .send()
             .await
             .context("could not reach the backend for a device challenge")?;
-        if !response.status().is_success() {
+        let status = response.status();
+        if !status.is_success() {
             // Same reasoning as `enrollment_code_failure`: this surfaces
             // through `start_enrollment` onto the dashboard, so it is written
             // for the person reading it. The status goes to the log.
             log::warn!(
                 target: "lilypad::auth",
                 "device challenge refused (HTTP {})",
-                response.status(),
+                status,
             );
+            if status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
+                return Err(TransientAuthError.into());
+            }
             bail!("Lilypad’s server isn’t responding properly. Try again in a moment.");
         }
         let ChallengeResponse { challenge } = response
@@ -448,8 +478,27 @@ impl DeviceAuth {
         if let Some(token) = self.cached_token() {
             return Ok(token);
         }
-        let session = self.sign_in().await?;
-        Ok(session.access_token)
+        match self.sign_in().await {
+            Ok(session) => Ok(session.access_token),
+            Err(error) if is_transient_renewal_error(&error) => {
+                if let Some(token) = self.unexpired_token() {
+                    log::warn!(
+                        target: "lilypad::auth",
+                        "device token renewal failed transiently; using the still-valid cached token: {error}"
+                    );
+                    Ok(token)
+                } else {
+                    Err(error)
+                }
+            }
+            Err(error) => {
+                // A rejection or malformed response is not permission to use a
+                // bearer the server may no longer accept. It must also prevent
+                // a later transport failure from reviving that bearer.
+                self.invalidate();
+                Err(error)
+            }
+        }
     }
 
     /// Prove key possession and take a fresh device token. This is how the app
@@ -504,6 +553,9 @@ impl DeviceAuth {
                 target: "lilypad::auth",
                 "device sign-in refused (HTTP {status}): {body}",
             );
+            if status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
+                return Err(TransientAuthError.into());
+            }
             bail!("Lilypad couldn’t confirm this computer with the server. Try again in a moment.");
         }
         let session: DeviceSession = response
@@ -536,16 +588,29 @@ impl DeviceAuth {
             .then(|| (token.user_id.clone(), token.device_id.clone()))
     }
 
+    fn unexpired_token(&self) -> Option<String> {
+        self.unexpired_token_at(SystemTime::now())
+    }
+
+    fn unexpired_token_at(&self, now: SystemTime) -> Option<String> {
+        let guard = self.cached.lock().ok()?;
+        let token = guard.as_ref()?;
+        let safe_now = now.checked_add(FALLBACK_EXPIRY_SKEW)?;
+        (safe_now < token.expires_at).then(|| token.value.clone())
+    }
+
     fn cache(&self, session: &DeviceSession) {
         // A TTL at or below the margin would make `renew_after` land in the
         // past and every call re-authenticate. Keep a floor so a
         // short-TTL server still gets some caching rather than none.
         let ttl = Duration::from_secs(session.expires_in_seconds);
-        let renew_after = SystemTime::now() + ttl.saturating_sub(RENEW_MARGIN).max(ttl / 2);
+        let now = SystemTime::now();
+        let renew_after = now + ttl.saturating_sub(RENEW_MARGIN).max(ttl / 2);
         if let Ok(mut guard) = self.cached.lock() {
             *guard = Some(CachedToken {
                 value: session.access_token.clone(),
                 renew_after,
+                expires_at: now + ttl,
                 user_id: session.user_id.clone(),
                 device_id: session.device_id.clone(),
             });
@@ -560,6 +625,17 @@ impl DeviceAuth {
             *guard = None;
         }
     }
+}
+
+fn is_transient_renewal_error(error: &anyhow::Error) -> bool {
+    if error.downcast_ref::<TransientAuthError>().is_some() {
+        return true;
+    }
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<reqwest::Error>()
+            .is_some_and(|e| e.is_connect() || e.is_timeout() || e.is_body())
+    })
 }
 
 /// Where `DesktopAuth` reports the wire id the backend actually knows this
@@ -1034,6 +1110,84 @@ mod tests {
         format!("http://{addr}")
     }
 
+    /// A challenge endpoint that returns one stable response. This keeps the
+    /// renewal tests at the real HTTP boundary, including the distinction
+    /// between an outage, an authentication refusal and malformed success.
+    async fn stub_challenge_response(status: &'static str, body: &'static str) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    return;
+                };
+                tokio::spawn(async move {
+                    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                    let mut buf = vec![0u8; 4096];
+                    let _ = socket.read(&mut buf).await;
+                    let response = format!(
+                        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = socket.write_all(response.as_bytes()).await;
+                    let _ = socket.shutdown().await;
+                });
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    /// A successful challenge followed by a token-endpoint response selected
+    /// by the test. A separate helper matters: either half of sign-in can fail,
+    /// and classifying only the first would leave a production-only branch.
+    async fn stub_token_response(status: &'static str, body: &'static str) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    return;
+                };
+                tokio::spawn(async move {
+                    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                    let mut buf = vec![0u8; 4096];
+                    let n = socket.read(&mut buf).await.unwrap_or(0);
+                    let request = String::from_utf8_lossy(&buf[..n]);
+                    let (response_status, response_body) = if request.contains("/devices/challenge")
+                    {
+                        ("200 OK", r#"{"challenge":"nonce-abcdefgh"}"#)
+                    } else {
+                        (status, body)
+                    };
+                    let response = format!(
+                        "HTTP/1.1 {response_status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response_body}",
+                        response_body.len()
+                    );
+                    let _ = socket.write_all(response.as_bytes()).await;
+                    let _ = socket.shutdown().await;
+                });
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    /// Reserve a port and release it immediately so the next request receives
+    /// a deterministic local connection refusal rather than depending on an
+    /// external network or DNS failure.
+    async fn closed_local_backend() -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        format!("http://{addr}")
+    }
+
+    fn force_renewal(auth: &DeviceAuth, expires_at: SystemTime) {
+        let mut guard = auth.cached.lock().unwrap();
+        let token = guard.as_mut().expect("the test cached a token");
+        token.renew_after = SystemTime::now() - Duration::from_secs(1);
+        token.expires_at = expires_at;
+    }
+
     /// The regression for `DeviceAuth::signing_in`.
     ///
     /// Every launch races the tray's `link_state` against the presence loop's
@@ -1463,6 +1617,113 @@ mod tests {
         let auth = auth();
         auth.cache(&session(0));
         assert!(auth.cached_token().is_none());
+    }
+
+    /// Renewal begins before the bearer expires. That interval is deliberate:
+    /// ordinary calls refresh, while a brief outage can still use the bearer
+    /// the server has not expired yet.
+    #[test]
+    fn the_renewal_margin_reserves_but_does_not_expire_the_cached_token() {
+        let auth = auth();
+        auth.cache(&session(600));
+        let now = SystemTime::now();
+
+        let inside_margin = now + Duration::from_secs(570);
+        assert!(auth.cached_token_at(inside_margin).is_none());
+        assert_eq!(
+            auth.unexpired_token_at(inside_margin).as_deref(),
+            Some("a-token")
+        );
+
+        let after_expiry = now + Duration::from_secs(601);
+        assert!(auth.unexpired_token_at(after_expiry).is_none());
+
+        let inside_safety_skew = now + Duration::from_secs(596);
+        assert!(auth.unexpired_token_at(inside_safety_skew).is_none());
+    }
+
+    /// A backend outage during the renewal margin must not turn an online Mac
+    /// into an offline one while its existing bearer is still valid.
+    #[tokio::test]
+    async fn a_transient_renewal_failure_uses_the_still_valid_bearer() {
+        let base =
+            stub_challenge_response("503 Service Unavailable", r#"{"error":"unavailable"}"#).await;
+        let auth = auth_for(base);
+        auth.cache(&session(600));
+        force_renewal(&auth, SystemTime::now() + Duration::from_secs(60));
+
+        assert_eq!(auth.access_token().await.unwrap(), "a-token");
+    }
+
+    #[tokio::test]
+    async fn token_endpoint_rate_limits_and_outages_use_the_still_valid_bearer() {
+        for status in ["429 Too Many Requests", "503 Service Unavailable"] {
+            let base = stub_token_response(status, r#"{"error":"temporary"}"#).await;
+            let auth = auth_for(base);
+            auth.cache(&session(600));
+            force_renewal(&auth, SystemTime::now() + Duration::from_secs(60));
+
+            assert_eq!(auth.access_token().await.unwrap(), "a-token", "{status}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_transport_failure_uses_the_still_valid_bearer() {
+        let auth = auth_for(closed_local_backend().await);
+        auth.cache(&session(600));
+        force_renewal(&auth, SystemTime::now() + Duration::from_secs(60));
+
+        assert_eq!(auth.access_token().await.unwrap(), "a-token");
+    }
+
+    /// The fallback is bounded by the server's real bearer deadline, not by
+    /// whether the old value is still present in memory.
+    #[tokio::test]
+    async fn a_transient_renewal_failure_never_revives_an_expired_bearer() {
+        let base =
+            stub_challenge_response("503 Service Unavailable", r#"{"error":"unavailable"}"#).await;
+        let auth = auth_for(base);
+        auth.cache(&session(600));
+        force_renewal(&auth, SystemTime::now() - Duration::from_secs(1));
+
+        assert!(auth.access_token().await.is_err());
+        assert!(auth.unexpired_token().is_none());
+    }
+
+    /// A 4xx is a decision, not an outage. Reusing the old bearer after one
+    /// would be fail-open, and retaining it could let a later outage revive a
+    /// credential the server already rejected.
+    #[tokio::test]
+    async fn a_permanent_renewal_refusal_invalidates_the_old_bearer() {
+        let base = stub_challenge_response("403 Forbidden", r#"{"error":"forbidden"}"#).await;
+        let auth = auth_for(base);
+        auth.cache(&session(600));
+        force_renewal(&auth, SystemTime::now() + Duration::from_secs(60));
+
+        assert!(auth.access_token().await.is_err());
+        assert!(auth.unexpired_token().is_none());
+    }
+
+    #[tokio::test]
+    async fn a_token_endpoint_refusal_invalidates_the_old_bearer() {
+        let base = stub_token_response("403 Forbidden", r#"{"error":"device_revoked"}"#).await;
+        let auth = auth_for(base);
+        auth.cache(&session(600));
+        force_renewal(&auth, SystemTime::now() + Duration::from_secs(60));
+
+        assert!(auth.access_token().await.is_err());
+        assert!(auth.unexpired_token().is_none());
+    }
+
+    #[tokio::test]
+    async fn malformed_renewal_json_invalidates_the_old_bearer() {
+        let base = stub_challenge_response("200 OK", "not-json").await;
+        let auth = auth_for(base);
+        auth.cache(&session(600));
+        force_renewal(&auth, SystemTime::now() + Duration::from_secs(60));
+
+        assert!(auth.access_token().await.is_err());
+        assert!(auth.unexpired_token().is_none());
     }
 
     /// A computer with no durable identity must degrade to "unauthenticated",

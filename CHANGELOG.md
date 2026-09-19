@@ -6,6 +6,46 @@ All notable changes to Lilypad are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Ask can now use the Mac like a person does.** It clicks, double-clicks,
+  drags, scrolls, types and presses shortcuts, and it looks at the screen
+  before and after every step — with any AI provider set up in Lilypad. It can
+  also fill a field or press a control by name when the app exposes one.
+- **Full control.** On the phone you can let Ask act without approving each
+  step, or keep asking first. Either way it never types into password fields,
+  operates Lilypad, answers security or permission prompts, locks the Mac or
+  logs out, and when it cannot tell what a click would land on, it asks you
+  even under full control. Touch the phone's screen, or use the Mac's own
+  mouse or keyboard, to take over at any moment.
+- **Ask can ask you something and carry on.** If it needs a detail only you
+  know, answer on the phone and the same task continues.
+- **Instant actions.** With a TypeSafe key added in the Mac's Ask settings,
+  short commands such as "click Compose", "scroll down", "go back" or "open
+  Safari" are done without waiting for the AI model. Only the command, the
+  app in front and the names of on-screen controls go to TypeSafe, never a
+  screenshot, and your phone asks before the first time. A control is only
+  pressed when your command names it, and anything with a "don't" or an "if"
+  goes to the AI model. If TypeSafe stops accepting your key, Settings says
+  so.
+
+### Fixed
+
+- **Ask no longer stops at the first step when a model asks for two actions
+  at once.** Several actions in one reply now run in order.
+- **An AI provider with no model chosen no longer receives another company's
+  default model.**
+- **Unplugging the shared display no longer leaves Ask pointed at it.**
+
+- **AI provider saves and disconnects no longer perform keychain work on the
+  desktop main thread.** They now use the same blocking-worker boundary as the
+  settings read, so a slow keychain cannot freeze pairing, tray or window work.
+- **A brief backend outage during device-token renewal no longer makes an
+  otherwise authorized Mac disappear.** While the old bearer is still within
+  its real lifetime, transport failures, rate limiting and server errors may
+  use it until expiry. Authentication refusals and malformed responses still
+  invalidate it immediately.
+
 ## [0.1.42] — 2026-09-15
 
 Pairing a phone works again, and the TLS library is patched.

@@ -16,6 +16,8 @@
 //! the forbidden-pattern set wins outright.
 
 use crate::agent::protocol::{Approval, ApprovalScript, ApprovalTarget, ToolClass};
+use crate::input::keys::Chord;
+use crate::input::{Modifier, PointerButton};
 
 /// A structured, tier-independent representation of one thing the agent wants
 /// to do. Tiers 1–3 all lower their output into this enum, so the classifier
@@ -30,12 +32,50 @@ pub enum Action {
     ReadAxTree,
     /// Grab the current screen (already captured for streaming; free).
     Screenshot,
-    /// Move the cursor without pressing anything.
-    MoveMouse { x: f64, y: f64 },
-    /// Wheel scroll.
-    Scroll { x: f64, y: f64, dx: f64, dy: f64 },
-    /// A pointer click at a normalized coordinate.
-    Click { x: f64, y: f64, count: u8 },
+    /// Look at the screen: the elements that can be acted on, what is focused
+    /// and which app is in front — plus a screenshot for a model that can see.
+    /// Read-only.
+    ReadScreen,
+    /// Move the pointer without pressing anything.
+    MoveMouse { to: Target },
+    /// Wheel scroll, at a point or wherever the pointer is.
+    Scroll {
+        target: Option<Target>,
+        direction: ScrollDirection,
+        /// Wheel clicks.
+        amount: u32,
+        modifiers: Vec<Modifier>,
+        hit: Option<Hit>,
+    },
+    /// A pointer click. `count` 1..3.
+    Click {
+        target: Target,
+        button: PointerButton,
+        count: u8,
+        modifiers: Vec<Modifier>,
+        /// What is under the point, filled in by `Executor::resolve` before
+        /// classification — the same reason `AxPress` carries its target.
+        hit: Option<Hit>,
+    },
+    /// Press at `from`, move to `to`, release.
+    Drag {
+        from: Target,
+        to: Target,
+        modifiers: Vec<Modifier>,
+        hit: Option<Hit>,
+        hit_to: Option<Hit>,
+    },
+    /// Press and hold a button (released by `MouseUp` or the end of the run).
+    MouseDown {
+        target: Option<Target>,
+        button: PointerButton,
+        hit: Option<Hit>,
+    },
+    MouseUp {
+        target: Option<Target>,
+        button: PointerButton,
+        hit: Option<Hit>,
+    },
     /// Press an accessibility element by the `id` it was given in the most
     /// recent `read_ax_tree` snapshot.
     ///
@@ -48,10 +88,42 @@ pub enum Action {
         element_id: usize,
         target: Option<AxTarget>,
     },
-    /// Type literal text.
-    TypeText { text: String },
-    /// A key chord, e.g. `["meta","KeyS"]` for ⌘S.
-    Key { chord: Vec<String> },
+    /// Perform a named accessibility action (`AXPress`, `AXShowMenu`, …) on
+    /// an element from the most recent reading.
+    AxPerform {
+        element_id: usize,
+        action: String,
+        target: Option<AxTarget>,
+        hit: Option<Hit>,
+    },
+    /// Replace an element's value outright, the way a person would select all
+    /// and retype it.
+    SetValue {
+        element_id: usize,
+        text: String,
+        target: Option<AxTarget>,
+        hit: Option<Hit>,
+    },
+    /// Type literal text into whatever has keyboard focus.
+    TypeText { text: String, focus: Option<Hit> },
+    /// Press key chords in order, `repeat` times.
+    Key {
+        chords: Vec<Chord>,
+        repeat: u32,
+        focus: Option<Hit>,
+    },
+    /// Hold a chord down for a while.
+    HoldKey {
+        chord: Chord,
+        ms: u64,
+        focus: Option<Hit>,
+    },
+    /// Do nothing for a while, then look again.
+    Wait { ms: u64 },
+    /// Look closely at a region of the screen: normalized `[x0, y0, x1, y1]`.
+    Zoom { region: [f64; 4] },
+    /// Report where the pointer is.
+    CursorPosition,
     /// Launch/focus an app by name (tier-1 skill).
     OpenApp { name: String },
     /// Open a URL in the default browser (tier-1 skill).
@@ -91,6 +163,59 @@ pub enum Action {
     Done { summary: String },
 }
 
+/// Where a pointer action lands: a normalized point on the shared display, or
+/// an element from the most recent screen reading.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Target {
+    Point {
+        x: f64,
+        y: f64,
+    },
+    Element(usize),
+    /// Wherever the pointer already is.
+    Here,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScrollDirection {
+    Up,
+    Down,
+    Left,
+    Right,
+}
+
+/// What an action would actually touch, read from the live screen before the
+/// gate sees it: the element under the point (or with keyboard focus), and the
+/// app that owns it.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Hit {
+    pub element: Option<AxTarget>,
+    /// The owning app, as a person would name it ("Mail").
+    pub app: String,
+    /// The element or app is Lilypad itself.
+    pub own: bool,
+    /// The app is a surface Ask never operates (a password prompt, a privacy
+    /// consent dialog, the login window), named for the refusal.
+    pub protected: Option<String>,
+    /// A password field, or macOS secure keyboard input is on.
+    pub secure: bool,
+    /// The app is a terminal, where typed text is a command.
+    pub terminal: bool,
+}
+
+/// How much the person has handed over for this run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Autonomy {
+    /// Every click, drag, value change, URL and consequential key is held for
+    /// an explicit approve on the phone. What a phone that predates full
+    /// control gets.
+    #[default]
+    Supervised,
+    /// The person granted full control: everything runs, except what the
+    /// floor refuses in every mode.
+    Full,
+}
+
 /// What an accessibility element actually is, resolved from the live tree at
 /// the moment the action was proposed. Carried on [`Action::AxPress`] so the
 /// pure classifier can judge the *effect* rather than an opaque index.
@@ -123,11 +248,26 @@ pub enum ScriptLanguage {
 /// held even though a lone keystroke is normally `Sensitive`. Compared
 /// case-insensitively against the normalized chord.
 const DANGEROUS_CHORDS: &[&[&str]] = &[
-    &["meta", "delete"],          // ⌘⌫ — move to Trash
-    &["meta", "backspace"],       // ⌘⌫ (alt code name)
-    &["meta", "shift", "delete"], // empty Trash-ish
-    &["meta", "keyq"],            // ⌘Q — quit (may drop unsaved work)
-    &["ctrl", "keyc"],            // ^C in a terminal — interrupt/kill
+    &["meta", "delete"],                    // ⌘⌫ — move to Trash
+    &["meta", "backspace"],                 // ⌘⌫ (alt code name)
+    &["meta", "shift", "delete"],           // empty Trash-ish
+    &["meta", "shift", "backspace"],        // ⇧⌘⌫ — empty Trash
+    &["meta", "alt", "backspace"],          // ⌥⌘⌫ — delete immediately
+    &["meta", "alt", "shift", "backspace"], // ⌥⇧⌘⌫ — empty Trash, no prompt
+    &["meta", "keyq"],                      // ⌘Q — quit (may drop unsaved work)
+    &["meta", "alt", "escape"],             // ⌥⌘⎋ — Force Quit
+    &["ctrl", "keyc"],                      // ^C in a terminal — interrupt/kill
+];
+
+/// Chords that end the person's session or take the Mac away from them:
+/// lock, log out, sleep, restart, shut down. Refused in every mode — none of
+/// them is a step in a task, and every one of them strands the person who
+/// handed the Mac over.
+const SESSION_ENDING_CHORDS: &[&[&str]] = &[
+    &["ctrl", "meta", "keyq"],         // ⌃⌘Q — lock screen
+    &["meta", "shift", "keyq"],        // ⇧⌘Q — log out
+    &["meta", "alt", "shift", "keyq"], // ⌥⇧⌘Q — log out, no prompt
+    &["ctrl", "meta", "f12"],          // some keyboards map lock here
 ];
 
 /// Whole words on a control's label that make pressing it consequential: it
@@ -212,19 +352,15 @@ const FORBIDDEN_SUBSTRINGS: &[&str] = &[
     "password",
 ];
 
-fn normalize(parts: &[String]) -> Vec<String> {
-    parts.iter().map(|p| p.to_ascii_lowercase()).collect()
-}
-
-fn chord_matches(chord: &[String], pattern: &[&str]) -> bool {
-    if chord.len() != pattern.len() {
+fn chord_matches(chord: &Chord, pattern: &[&str]) -> bool {
+    let parts = chord.canonical();
+    if parts.len() != pattern.len() {
         return false;
     }
-    let norm = normalize(chord);
     // Order-independent: a chord is a set of held keys.
     pattern
         .iter()
-        .all(|p| norm.iter().any(|c| c == &p.to_ascii_lowercase()))
+        .all(|p| parts.iter().any(|c| c == &p.to_ascii_lowercase()))
 }
 
 fn looks_forbidden(text: &str) -> bool {
@@ -232,25 +368,57 @@ fn looks_forbidden(text: &str) -> bool {
     FORBIDDEN_SUBSTRINGS.iter().any(|s| lower.contains(s))
 }
 
+/// Commands that are never typed into a terminal, on top of
+/// [`FORBIDDEN_SUBSTRINGS`]: recursive deletion and taking the machine down.
+/// Typed text in a terminal is a command the moment Return follows it.
+const TERMINAL_FORBIDDEN: &[&str] = &[
+    "rm -rf", "rm -fr", "rm -r ", "rm -f ", "mkfs", "shutdown", "reboot", "halt", "killall", ":(){",
+];
+
+fn terminal_forbidden(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    looks_forbidden(text) || TERMINAL_FORBIDDEN.iter().any(|s| lower.contains(s))
+}
+
 /// Classify a proposed action. Pure and total — every `Action` maps to exactly
 /// one `ToolClass`, and unknown/raw surfaces bias toward caution.
+///
+/// This is the supervised policy. [`floor`] is checked first and wins in
+/// every mode; [`gate_class`] applies the run's autonomy on top.
 pub fn classify(action: &Action) -> ToolClass {
+    if floor(action).is_some() {
+        return ToolClass::Forbidden;
+    }
     match action {
         // Read-only / harmless motion.
         Action::ReadAxTree
         | Action::Screenshot
+        | Action::ReadScreen
         | Action::MoveMouse { .. }
         | Action::Scroll { .. }
+        | Action::Wait { .. }
+        | Action::Zoom { .. }
+        | Action::CursorPosition
         | Action::Done { .. } => ToolClass::Safe,
 
-        // Ordinary UI manipulation — real effect, but reversible and visible.
-        Action::Click { .. }
-        | Action::TypeText { .. }
+        // Ordinary input — real effect, but reversible and visible.
+        Action::TypeText { .. }
+        | Action::HoldKey { .. }
         | Action::OpenApp { .. }
         | Action::RevealInFinder { .. }
         | Action::OpenFile { .. }
         | Action::NewFolder { .. }
         | Action::RunShortcut { .. } => ToolClass::Sensitive,
+
+        // A click lands on whatever is under the point, and a point carries no
+        // meaning of its own — the same reason every accessibility press is
+        // held (L-228). Under supervision, every one is asked.
+        Action::Click { .. }
+        | Action::Drag { .. }
+        | Action::MouseDown { .. }
+        | Action::MouseUp { .. }
+        | Action::SetValue { .. }
+        | Action::AxPerform { .. } => ToolClass::Consequential,
 
         // An accessibility press is only as safe as the control it lands on.
         Action::AxPress { target, .. } => classify_ax_press(target.as_ref()),
@@ -259,8 +427,11 @@ pub fn classify(action: &Action) -> ToolClass {
         Action::OpenUrl { url } => classify_url(url),
 
         // A keystroke is normally sensitive, but a dangerous chord is held.
-        Action::Key { chord } => {
-            if DANGEROUS_CHORDS.iter().any(|p| chord_matches(chord, p)) {
+        Action::Key { chords, .. } => {
+            if chords
+                .iter()
+                .any(|c| DANGEROUS_CHORDS.iter().any(|p| chord_matches(c, p)))
+            {
                 ToolClass::Consequential
             } else {
                 ToolClass::Sensitive
@@ -295,6 +466,110 @@ pub fn classify(action: &Action) -> ToolClass {
             }
         }
     }
+}
+
+/// The class an action runs under in this run: [`classify`], with the
+/// person's grant applied. Full control runs what supervision would hold;
+/// nothing ever runs what the floor or the forbidden list refuses.
+pub fn gate_class(action: &Action, autonomy: Autonomy) -> ToolClass {
+    match (classify(action), autonomy) {
+        (ToolClass::Consequential, Autonomy::Full) if touches_known(action) => ToolClass::Sensitive,
+        (class, _) => class,
+    }
+}
+
+/// Did `Executor::resolve` find what this action lands on? The floor can only
+/// refuse what it can see: a point or a keyboard focus whose owner could not
+/// be read (a busy app, an accessibility timeout — Lilypad's own window when
+/// its main thread is busy) may be Lilypad itself or a permission prompt. So
+/// full control does not run those unasked; the person approves them, as under
+/// supervision. Actions that land on no element (a URL, an app by name) have
+/// nothing to find.
+fn touches_known(action: &Action) -> bool {
+    match action {
+        Action::Click { hit, .. }
+        | Action::MouseDown { hit, .. }
+        | Action::MouseUp { hit, .. }
+        | Action::AxPerform { hit, .. }
+        | Action::SetValue { hit, .. } => hit.is_some(),
+        Action::Drag { hit, hit_to, .. } => hit.is_some() && hit_to.is_some(),
+        Action::Key { focus, .. } | Action::HoldKey { focus, .. } => focus.is_some(),
+        _ => true,
+    }
+}
+
+/// The part of the policy that full control does not change (ADR-0018).
+///
+/// Returns why `action` is refused, in words for the person and the model, or
+/// `None`. Deliberately short: this is the basic floor the owner asked for,
+/// not a second approval system.
+pub fn floor(action: &Action) -> Option<String> {
+    let hits: Vec<&Hit> = match action {
+        Action::Click { hit, .. }
+        | Action::Scroll { hit, .. }
+        | Action::MouseDown { hit, .. }
+        | Action::MouseUp { hit, .. }
+        | Action::AxPerform { hit, .. }
+        | Action::SetValue { hit, .. } => hit.iter().collect(),
+        Action::Drag { hit, hit_to, .. } => hit.iter().chain(hit_to.iter()).collect(),
+        Action::TypeText { focus, .. }
+        | Action::Key { focus, .. }
+        | Action::HoldKey { focus, .. } => focus.iter().collect(),
+        _ => Vec::new(),
+    };
+    for hit in &hits {
+        if hit.own {
+            return Some("Ask never operates Lilypad itself.".into());
+        }
+        if let Some(surface) = &hit.protected {
+            return Some(format!(
+                "Ask never operates {surface}. Those are for the person at the Mac."
+            ));
+        }
+    }
+    let typing = matches!(
+        action,
+        Action::TypeText { .. }
+            | Action::Key { .. }
+            | Action::HoldKey { .. }
+            | Action::SetValue { .. }
+    );
+    if typing && hits.iter().any(|h| h.secure) {
+        return Some("Ask never types into a password field.".into());
+    }
+    match action {
+        Action::Key { chords, .. } => {
+            if chords
+                .iter()
+                .any(|c| SESSION_ENDING_CHORDS.iter().any(|p| chord_matches(c, p)))
+            {
+                return Some(
+                    "That shortcut locks the screen or ends the session; Ask never presses it."
+                        .into(),
+                );
+            }
+        }
+        Action::TypeText { text, focus }
+        | Action::SetValue {
+            text, hit: focus, ..
+        } => {
+            if focus.as_ref().is_some_and(|f| f.terminal) && terminal_forbidden(text) {
+                return Some(
+                    "That command deletes files, stops the Mac, or touches passwords, system \
+                     settings or the network from a terminal; Ask never types it."
+                        .into(),
+                );
+            }
+        }
+        Action::OpenApp { name } => {
+            let n = name.trim().to_ascii_lowercase();
+            if n == "lilypad" || n.starts_with("lilypad.") {
+                return Some("Ask never operates Lilypad itself.".into());
+            }
+        }
+        _ => {}
+    }
+    None
 }
 
 /// Does this control's label announce a consequential effect?
@@ -386,8 +661,20 @@ pub fn approval_for(action: &Action) -> Approval {
                 label: t.label.clone(),
             });
         }
-        Action::Key { chord } => {
-            approval.purpose = format!("Press {}", chord.join("+"));
+        Action::Click { hit, .. }
+        | Action::Drag { hit, .. }
+        | Action::MouseDown { hit, .. }
+        | Action::MouseUp { hit, .. }
+        | Action::AxPerform { hit, .. }
+        | Action::SetValue { hit, .. } => {
+            approval.purpose = describe(action);
+            approval.target =
+                hit.as_ref()
+                    .and_then(|h| h.element.as_ref())
+                    .map(|t| ApprovalTarget {
+                        role: t.role.clone(),
+                        label: t.label.clone(),
+                    });
         }
         Action::OpenUrl { url } => {
             // Origin first, then the whole URL. A long path can push the host
@@ -420,10 +707,248 @@ pub fn approval_for(action: &Action) -> Approval {
             });
         }
         other => {
-            approval.purpose = format!("{other:?}");
+            approval.purpose = describe(other);
         }
     }
     approval
+}
+
+/// One line saying what an action does, in the person's words — the step
+/// feed and the approval card both read it. Built from the resolved action,
+/// so it names the control a point lands on rather than the point.
+pub fn describe(action: &Action) -> String {
+    match action {
+        Action::ReadAxTree => "Read the screen (accessibility tree)".into(),
+        Action::Screenshot => "Look at the screen".into(),
+        Action::ReadScreen => "Look at the screen".into(),
+        Action::MoveMouse { to } => format!("Move the pointer to {}", place(to, None)),
+        Action::Click {
+            target,
+            button,
+            count,
+            modifiers,
+            hit,
+        } => {
+            let verb = match (button, count) {
+                (PointerButton::Right, _) => "Right-click",
+                (PointerButton::Middle, _) => "Middle-click",
+                (_, 2) => "Double-click",
+                (_, 3) => "Triple-click",
+                _ => "Click",
+            };
+            format!(
+                "{}{verb} {}",
+                held_modifiers(modifiers),
+                place(target, hit.as_ref())
+            )
+        }
+        Action::Drag {
+            from,
+            to,
+            modifiers,
+            hit,
+            hit_to,
+        } => format!(
+            "{}Drag {} to {}",
+            held_modifiers(modifiers),
+            place(from, hit.as_ref()),
+            place(to, hit_to.as_ref())
+        ),
+        Action::MouseDown { target, hit, .. } => match target {
+            Some(t) => format!("Press and hold the mouse on {}", place(t, hit.as_ref())),
+            None => "Press and hold the mouse".into(),
+        },
+        Action::MouseUp { .. } => "Release the mouse".into(),
+        Action::Scroll {
+            target,
+            direction,
+            amount,
+            hit,
+            ..
+        } => {
+            let dir = match direction {
+                ScrollDirection::Up => "up",
+                ScrollDirection::Down => "down",
+                ScrollDirection::Left => "left",
+                ScrollDirection::Right => "right",
+            };
+            match target {
+                Some(t) => format!("Scroll {dir} {amount} over {}", place(t, hit.as_ref())),
+                None => format!("Scroll {dir} {amount}"),
+            }
+        }
+        Action::TypeText { text, focus } => {
+            let n = text.chars().count();
+            let preview = quote_clip(text, 60);
+            let into = focus
+                .as_ref()
+                .map(|f| format!(" in {}", f.app))
+                .filter(|s| s.len() > 4)
+                .unwrap_or_default();
+            if n > 60 {
+                format!("Type {preview} ({n} characters){into}")
+            } else {
+                format!("Type {preview}{into}")
+            }
+        }
+        Action::Key { chords, repeat, .. } => {
+            let keys: Vec<String> = chords.iter().map(Chord::display).collect();
+            let times = if *repeat > 1 {
+                format!(" ×{repeat}")
+            } else {
+                String::new()
+            };
+            format!("Press {}{times}", keys.join(" then "))
+        }
+        Action::HoldKey { chord, ms, .. } => {
+            format!("Hold {} for {}", chord.display(), seconds(*ms))
+        }
+        Action::Wait { ms } => format!("Wait {}", seconds(*ms)),
+        Action::Zoom { .. } => "Look closely at part of the screen".into(),
+        Action::CursorPosition => "Check where the pointer is".into(),
+        Action::AxPress { element_id, target } => match target {
+            Some(t) if !t.label.trim().is_empty() => format!("Press \u{201c}{}\u{201d}", t.label),
+            _ => format!("Press element [{element_id}]"),
+        },
+        Action::AxPerform {
+            element_id,
+            action,
+            target,
+            ..
+        } => {
+            let verb = match action.as_str() {
+                "AXPress" => "Press",
+                "AXShowMenu" => "Open the menu of",
+                "AXIncrement" => "Increase",
+                "AXDecrement" => "Decrease",
+                "AXConfirm" => "Confirm",
+                "AXCancel" => "Cancel",
+                "AXRaise" => "Bring forward",
+                "AXPick" => "Pick",
+                other => other,
+            };
+            format!("{verb} {}", element_name(*element_id, target.as_ref()))
+        }
+        Action::SetValue {
+            element_id,
+            text,
+            target,
+            ..
+        } => format!(
+            "Set {} to {}",
+            element_name(*element_id, target.as_ref()),
+            quote_clip(text, 60)
+        ),
+        Action::OpenApp { name } => format!("Open {name}"),
+        Action::OpenUrl { url } => format!("Open {url}"),
+        Action::RevealInFinder { path } => format!("Show {path} in Finder"),
+        Action::OpenFile { path } => format!("Open {path}"),
+        Action::NewFolder { path } => format!("Create folder {path}"),
+        Action::RunShortcut { name } => format!("Run the Shortcut {name}"),
+        Action::AppleScript { .. } => "Run AppleScript".into(),
+        Action::Shell { .. } => "Run a shell command".into(),
+        Action::RunScript { language, .. } => match language {
+            ScriptLanguage::Shell => "Run a shell script".into(),
+            ScriptLanguage::Python => "Run a Python script".into(),
+        },
+        Action::Done { summary } => summary.clone(),
+    }
+}
+
+fn held_modifiers(modifiers: &[Modifier]) -> String {
+    if modifiers.is_empty() {
+        return String::new();
+    }
+    let chord = Chord {
+        modifiers: modifiers.to_vec(),
+        key: None,
+    };
+    format!("{}-", chord.display())
+}
+
+fn seconds(ms: u64) -> String {
+    if ms % 1000 == 0 {
+        format!("{} s", ms / 1000)
+    } else {
+        format!("{:.1} s", ms as f64 / 1000.0)
+    }
+}
+
+fn quote_clip(text: &str, max: usize) -> String {
+    let one_line = text.replace(['\n', '\r'], " ⏎ ");
+    let mut clipped: String = one_line.chars().take(max).collect();
+    if one_line.chars().count() > max {
+        clipped.push('…');
+    }
+    format!("\u{201c}{clipped}\u{201d}")
+}
+
+/// A role as a person says it: "AXButton" → "button".
+fn role_word(role: &str) -> String {
+    let bare = role.strip_prefix("AX").unwrap_or(role);
+    match bare {
+        "TextField" | "TextArea" | "SearchField" | "ComboBox" => "field".into(),
+        "StaticText" => "text".into(),
+        "PopUpButton" | "MenuButton" => "menu".into(),
+        "CheckBox" => "checkbox".into(),
+        "RadioButton" => "option".into(),
+        "MenuItem" | "MenuBarItem" => "menu item".into(),
+        "Link" => "link".into(),
+        "Tab" | "TabGroup" => "tab".into(),
+        other => other.to_ascii_lowercase(),
+    }
+}
+
+fn element_name(id: usize, target: Option<&AxTarget>) -> String {
+    match target {
+        Some(t) if !t.label.trim().is_empty() => {
+            format!(
+                "\u{201c}{}\u{201d} {}",
+                clip_label(&t.label),
+                role_word(&t.role)
+            )
+        }
+        Some(t) => format!("an unlabeled {} [{id}]", role_word(&t.role)),
+        None => format!("element [{id}]"),
+    }
+}
+
+fn clip_label(label: &str) -> String {
+    let mut out: String = label.chars().take(60).collect();
+    if label.chars().count() > 60 {
+        out.push('…');
+    }
+    out
+}
+
+/// Where a pointer action lands, in words.
+fn place(target: &Target, hit: Option<&Hit>) -> String {
+    let app = hit
+        .map(|h| h.app.trim())
+        .filter(|a| !a.is_empty())
+        .map(|a| format!(" in {a}"))
+        .unwrap_or_default();
+    match (target, hit.and_then(|h| h.element.as_ref())) {
+        (_, Some(t)) if !t.label.trim().is_empty() => format!(
+            "\u{201c}{}\u{201d} {}{app}",
+            clip_label(&t.label),
+            role_word(&t.role)
+        ),
+        (Target::Element(id), t) => format!("{}{app}", element_name(*id, t)),
+        (Target::Here, Some(t)) => {
+            format!("an unlabeled {} under the pointer{app}", role_word(&t.role))
+        }
+        (Target::Here, None) => format!("where the pointer is{app}"),
+        (Target::Point { x, y }, Some(t)) => format!(
+            "an unlabeled {} at {:.0}%, {:.0}%{app}",
+            role_word(&t.role),
+            x * 100.0,
+            y * 100.0
+        ),
+        (Target::Point { x, y }, None) => {
+            format!("the screen at {:.0}%, {:.0}%{app}", x * 100.0, y * 100.0)
+        }
+    }
 }
 
 /// The origin of a URL as plain text: scheme and host, nothing else.
@@ -490,7 +1015,26 @@ mod tests {
 
     fn key(parts: &[&str]) -> Action {
         Action::Key {
-            chord: parts.iter().map(|s| s.to_string()).collect(),
+            chords: crate::input::keys::parse_keys(&parts.join("+")).unwrap(),
+            repeat: 1,
+            focus: None,
+        }
+    }
+
+    fn click_on(hit: Hit) -> Action {
+        Action::Click {
+            target: Target::Point { x: 0.5, y: 0.5 },
+            button: PointerButton::Left,
+            count: 1,
+            modifiers: vec![],
+            hit: Some(hit),
+        }
+    }
+
+    fn typing_into(text: &str, focus: Hit) -> Action {
+        Action::TypeText {
+            text: text.into(),
+            focus: Some(focus),
         }
     }
 
@@ -499,15 +1043,25 @@ mod tests {
         assert_eq!(classify(&Action::ReadAxTree), ToolClass::Safe);
         assert_eq!(classify(&Action::Screenshot), ToolClass::Safe);
         assert_eq!(
-            classify(&Action::MoveMouse { x: 0.1, y: 0.2 }),
+            classify(&Action::MoveMouse {
+                to: Target::Point { x: 0.1, y: 0.2 }
+            }),
             ToolClass::Safe
         );
         assert_eq!(
             classify(&Action::Scroll {
-                x: 0.5,
-                y: 0.5,
-                dx: 0.0,
-                dy: 10.0
+                target: Some(Target::Point { x: 0.5, y: 0.5 }),
+                direction: ScrollDirection::Down,
+                amount: 3,
+                modifiers: vec![],
+                hit: None,
+            }),
+            ToolClass::Safe
+        );
+        assert_eq!(classify(&Action::Wait { ms: 500 }), ToolClass::Safe);
+        assert_eq!(
+            classify(&Action::Zoom {
+                region: [0.0, 0.0, 0.5, 0.5]
             }),
             ToolClass::Safe
         );
@@ -521,16 +1075,25 @@ mod tests {
 
     #[test]
     fn ordinary_ui_actions_are_sensitive() {
+        // A click was `Sensitive` while no tool could produce one. Once Ask
+        // can click anywhere, a point is as meaningless to the gate as an
+        // element id was (L-228), so supervision holds it. Flipped rather than
+        // deleted so the change of policy is visible here.
         assert_eq!(
             classify(&Action::Click {
-                x: 0.5,
-                y: 0.5,
-                count: 1
+                target: Target::Point { x: 0.5, y: 0.5 },
+                button: PointerButton::Left,
+                count: 1,
+                modifiers: vec![],
+                hit: None,
             }),
-            ToolClass::Sensitive
+            ToolClass::Consequential
         );
         assert_eq!(
-            classify(&Action::TypeText { text: "hi".into() }),
+            classify(&Action::TypeText {
+                text: "hi".into(),
+                focus: None
+            }),
             ToolClass::Sensitive
         );
         assert_eq!(
@@ -939,6 +1502,249 @@ mod tests {
         assert!(a.purpose.contains("unidentified"));
         assert!(a.target.is_none());
     }
+    // ── ADR-0018: full control and the floor under it ──
+
+    #[test]
+    fn full_control_runs_what_supervision_holds() {
+        let held = [
+            click_on(Hit {
+                app: "Mail".into(),
+                element: Some(AxTarget::new("AXButton", "Send")),
+                ..Default::default()
+            }),
+            Action::OpenUrl {
+                url: "https://example.com".into(),
+            },
+            Action::Key {
+                chords: crate::input::keys::parse_keys("meta+KeyQ").unwrap(),
+                repeat: 1,
+                focus: Some(Hit {
+                    app: "Safari".into(),
+                    ..Default::default()
+                }),
+            },
+            Action::SetValue {
+                element_id: 3,
+                text: "hello".into(),
+                target: Some(AxTarget::new("AXTextField", "Subject")),
+                hit: Some(Hit {
+                    app: "Mail".into(),
+                    ..Default::default()
+                }),
+            },
+        ];
+        for action in held {
+            assert_eq!(
+                gate_class(&action, Autonomy::Supervised),
+                ToolClass::Consequential,
+                "{action:?}"
+            );
+            assert_eq!(
+                gate_class(&action, Autonomy::Full),
+                ToolClass::Sensitive,
+                "{action:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn full_control_asks_when_it_cannot_see_what_it_would_touch() {
+        // Nothing resolved: the point's owner, or the keyboard's, could not
+        // be read. It may be Lilypad or a permission prompt, so the floor
+        // cannot vouch for it and the person is asked.
+        let unknown = [
+            Action::Click {
+                target: Target::Point { x: 0.5, y: 0.5 },
+                button: PointerButton::Left,
+                count: 1,
+                modifiers: vec![],
+                hit: None,
+            },
+            Action::Drag {
+                from: Target::Point { x: 0.1, y: 0.1 },
+                to: Target::Point { x: 0.9, y: 0.9 },
+                modifiers: vec![],
+                hit: Some(Hit::default()),
+                hit_to: None,
+            },
+            key(&["meta", "KeyQ"]),
+            Action::SetValue {
+                element_id: 3,
+                text: "hello".into(),
+                target: None,
+                hit: None,
+            },
+        ];
+        for action in unknown {
+            assert_eq!(
+                gate_class(&action, Autonomy::Full),
+                ToolClass::Consequential,
+                "{action:?}"
+            );
+        }
+        // What lands on no element runs as before.
+        assert_eq!(
+            gate_class(
+                &Action::OpenUrl {
+                    url: "https://example.com".into()
+                },
+                Autonomy::Full
+            ),
+            ToolClass::Sensitive
+        );
+    }
+
+    #[test]
+    fn the_floor_holds_in_every_mode() {
+        let refused = [
+            click_on(Hit {
+                app: "Lilypad".into(),
+                own: true,
+                ..Default::default()
+            }),
+            click_on(Hit {
+                app: "SecurityAgent".into(),
+                protected: Some("the macOS password prompt".into()),
+                ..Default::default()
+            }),
+            typing_into(
+                "hunter2",
+                Hit {
+                    app: "Safari".into(),
+                    secure: true,
+                    ..Default::default()
+                },
+            ),
+            typing_into(
+                "sudo rm -rf ~",
+                Hit {
+                    app: "Terminal".into(),
+                    terminal: true,
+                    ..Default::default()
+                },
+            ),
+            key(&["ctrl", "meta", "q"]),
+            key(&["meta", "shift", "q"]),
+            Action::OpenApp {
+                name: "Lilypad".into(),
+            },
+        ];
+        for action in refused {
+            assert!(floor(&action).is_some(), "{action:?}");
+            for autonomy in [Autonomy::Supervised, Autonomy::Full] {
+                assert_eq!(
+                    gate_class(&action, autonomy),
+                    ToolClass::Forbidden,
+                    "{action:?} in {autonomy:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn ordinary_terminal_commands_and_text_elsewhere_are_not_refused() {
+        let terminal = Hit {
+            app: "Terminal".into(),
+            terminal: true,
+            ..Default::default()
+        };
+        assert!(floor(&typing_into("ls -la ~/Downloads", terminal.clone())).is_none());
+        // The same words outside a terminal are just text in a document.
+        assert!(floor(&typing_into(
+            "remember to curl the hair",
+            Hit {
+                app: "Notes".into(),
+                ..Default::default()
+            }
+        ))
+        .is_none());
+        assert!(floor(&typing_into("sudo make me a sandwich", terminal.clone())).is_some());
+        assert!(floor(&typing_into("rm -rf ~/Documents", terminal.clone())).is_some());
+        assert!(floor(&typing_into("sudo shutdown -h now", terminal)).is_some());
+    }
+
+    #[test]
+    fn a_secure_field_refuses_keys_as_well_as_text() {
+        let secure = Hit {
+            app: "Safari".into(),
+            secure: true,
+            ..Default::default()
+        };
+        let press = Action::Key {
+            chords: crate::input::keys::parse_keys("a").unwrap(),
+            repeat: 1,
+            focus: Some(secure.clone()),
+        };
+        assert!(floor(&press).is_some());
+        // Clicking a password field is fine — it is typing into it that is not.
+        assert!(floor(&click_on(secure)).is_none());
+    }
+
+    #[test]
+    fn dangerous_chords_are_recognised_in_any_spelling() {
+        for spec in [
+            "cmd+q",
+            "⌘Q",
+            "Cmd-Q",
+            "super+q",
+            "meta+KeyQ",
+            "cmd+BackSpace",
+            "cmd+alt+Escape",
+        ] {
+            let action = Action::Key {
+                chords: crate::input::keys::parse_keys(spec).unwrap(),
+                repeat: 1,
+                focus: None,
+            };
+            assert_eq!(classify(&action), ToolClass::Consequential, "{spec}");
+        }
+        for spec in ["ctrl+cmd+q", "⌃⌘Q", "cmd+shift+q"] {
+            let action = Action::Key {
+                chords: crate::input::keys::parse_keys(spec).unwrap(),
+                repeat: 1,
+                focus: None,
+            };
+            assert_eq!(classify(&action), ToolClass::Forbidden, "{spec}");
+        }
+    }
+
+    #[test]
+    fn a_click_card_names_the_control_and_the_app() {
+        let card = approval_for(&click_on(Hit {
+            app: "Mail".into(),
+            element: Some(AxTarget::new("AXButton", "Send")),
+            ..Default::default()
+        }));
+        assert_eq!(card.purpose, "Click \u{201c}Send\u{201d} button in Mail");
+        assert_eq!(card.target.unwrap().label, "Send");
+        // Without a hit, the card says where rather than inventing a name.
+        let blind = describe(&Action::Click {
+            target: Target::Point { x: 0.25, y: 0.5 },
+            button: PointerButton::Left,
+            count: 2,
+            modifiers: vec![Modifier::Meta],
+            hit: None,
+        });
+        assert_eq!(blind, "⌘-Double-click the screen at 25%, 50%");
+    }
+
+    #[test]
+    fn typed_text_is_quoted_clipped_and_counted() {
+        let short = describe(&Action::TypeText {
+            text: "hello".into(),
+            focus: None,
+        });
+        assert_eq!(short, "Type \u{201c}hello\u{201d}");
+        let long = describe(&Action::TypeText {
+            text: "x".repeat(100),
+            focus: None,
+        });
+        assert!(long.contains("(100 characters)"), "{long}");
+        assert!(long.contains('…'));
+        let keys = describe(&key(&["meta", "shift", "t"]));
+        assert_eq!(keys, "Press ⇧⌘T");
+    }
+
     #[test]
     fn navigation_origin_handles_browser_backslashes_and_encoded_hosts() {
         assert_eq!(

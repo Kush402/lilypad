@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { invoke } from '@tauri-apps/api/core';
-import { AgentProviderCard } from './AgentProviderCard';
+import { AgentProviderCard, reportSentence } from './AgentProviderCard';
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 
@@ -208,7 +208,7 @@ describe('screenshot permission is not a probe result (L-286)', () => {
   it('leaves the checkbox unticked when only the model was verified', async () => {
     load(TESTED_BUT_NOT_ALLOWED);
     render(<AgentProviderCard />);
-    const box = await screen.findByRole('checkbox', { name: /take screenshots/i });
+    const box = await screen.findByRole('checkbox', { name: /see the screen/i });
     expect((box as HTMLInputElement).checked).toBe(false);
     // …and says so, rather than reporting a capability as if it were in use.
     expect(screen.getByText(/turned off above/i)).toBeTruthy();
@@ -217,14 +217,14 @@ describe('screenshot permission is not a probe result (L-286)', () => {
   it('ticks the checkbox from the permission, not from the measurement', async () => {
     load({ ...TESTED_BUT_NOT_ALLOWED, allowScreenshots: true, vision: null });
     render(<AgentProviderCard />);
-    const box = await screen.findByRole('checkbox', { name: /take screenshots/i });
+    const box = await screen.findByRole('checkbox', { name: /see the screen/i });
     expect((box as HTMLInputElement).checked).toBe(true);
   });
 
   it('sends the permission as its own field on save', async () => {
     load({ ...TESTED_BUT_NOT_ALLOWED, allowScreenshots: false, vision: null });
     render(<AgentProviderCard />);
-    const box = await screen.findByRole('checkbox', { name: /take screenshots/i });
+    const box = await screen.findByRole('checkbox', { name: /see the screen/i });
     fireEvent.click(box);
     fireEvent.click(screen.getByRole('button', { name: /save without testing/i }));
     await waitFor(() => {
@@ -538,5 +538,28 @@ describe('a pasted key picks its own provider', () => {
       'disabled',
       false,
     );
+  });
+});
+
+describe('where the model points (ADR-0018)', () => {
+  const base = {
+    ok: true,
+    tools: 'supported' as const,
+    vision: 'supported' as const,
+    message: null,
+    failure: null,
+    origin: 'https://openrouter.ai',
+    model: 'some/model',
+  };
+
+  it('says whether Ask can click what the model sees', () => {
+    expect(reportSentence({ ...base, pointing: { grid: 'pixels', accurate: true } })).toContain(
+      'points accurately',
+    );
+    expect(reportSentence({ ...base, pointing: { grid: null, accurate: false } })).toContain(
+      'click by element',
+    );
+    // A model that was not asked, or could not see, is not judged.
+    expect(reportSentence(base)).not.toContain('points');
   });
 });

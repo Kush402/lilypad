@@ -29,7 +29,7 @@ use core_graphics::geometry::{CGPoint, CGRect};
 
 use super::{
     InputBackend, KeyAction, Modifier, MouseAction, PermissionStatus, PointerButton, Result,
-    ScrollAction,
+    ScrollAction, PHONE_EVENT_TAG,
 };
 
 const PERMISSION_CACHE_TTL: Duration = Duration::from_millis(500);
@@ -84,6 +84,11 @@ pub struct MacInputBackend {
     /// The display the session is showing (`CGDirectDisplayID`), or `None` for
     /// the main one. See `screen_point`.
     target_display: Option<u32>,
+    /// Stamped into `kCGEventSourceUserData` on every event, so a listener can
+    /// tell the phone's input and Ask's input from a person at the Mac.
+    event_tag: i64,
+    /// Character → key on the current layout, and when it was read.
+    layout: Option<(Instant, layout::CharMap)>,
 }
 
 impl MacInputBackend {
@@ -92,7 +97,13 @@ impl MacInputBackend {
             initialized: false,
             permission_cache: Cell::new(None),
             target_display: None,
+            event_tag: PHONE_EVENT_TAG,
+            layout: None,
         }
+    }
+
+    fn tag(&self, event: &CGEvent) {
+        event.set_integer_value_field(EventField::EVENT_SOURCE_USER_DATA, self.event_tag);
     }
 
     fn cached_accessibility_trusted(&self) -> bool {
@@ -211,6 +222,7 @@ impl MacInputBackend {
         if !modifiers.is_empty() {
             event.set_flags(Self::modifier_flags(modifiers));
         }
+        self.tag(&event);
         event.post(CGEventTapLocation::HID);
         Ok(())
     }
@@ -246,6 +258,41 @@ impl InputBackend for MacInputBackend {
 
     fn set_target_display(&mut self, display_id: Option<u32>) {
         self.target_display = display_id;
+    }
+
+    fn set_event_tag(&mut self, tag: i64) {
+        self.event_tag = tag;
+    }
+
+    fn cursor_position(&self) -> Option<(f64, f64)> {
+        let source = CGEventSource::new(CGEventSourceStateID::HIDSystemState).ok()?;
+        let at = CGEvent::new(source).ok()?.location();
+        let b = self.target_bounds();
+        let x = (at.x - b.origin.x) / b.size.width;
+        let y = (at.y - b.origin.y) / b.size.height;
+        ((0.0..=1.0).contains(&x) && (0.0..=1.0).contains(&y)).then_some((x, y))
+    }
+
+    fn key_for_char(&mut self, c: char) -> Option<(String, bool)> {
+        // Re-read at most every few seconds: a person can switch layouts while
+        // Ask runs, and reading costs a hop to the main thread.
+        let stale = self
+            .layout
+            .as_ref()
+            .is_none_or(|(at, _)| at.elapsed() > LAYOUT_TTL);
+        if stale {
+            if let Some(map) = layout::current() {
+                self.layout = Some((Instant::now(), map));
+            }
+        }
+        match &self.layout {
+            Some((_, map)) if !map.is_empty() => {
+                let (keycode, shift) = *map.get(&c)?;
+                Some((keycode_to_code(keycode)?.to_string(), shift))
+            }
+            // The layout could not be read at all: US is the honest guess.
+            _ => super::keys::us_key_for_char(c),
+        }
     }
 
     fn permission_status(&self) -> PermissionStatus {
@@ -321,11 +368,13 @@ impl InputBackend for MacInputBackend {
                     .map_err(|_| anyhow::anyhow!("CGEventCreateMouseEvent failed"))?;
                 down.set_flags(flags);
                 down.set_integer_value_field(EventField::MOUSE_EVENT_CLICK_STATE, click_state);
+                self.tag(&down);
                 down.post(CGEventTapLocation::HID);
                 let up = CGEvent::new_mouse_event(self.source()?, up_type, point, cg_button)
                     .map_err(|_| anyhow::anyhow!("CGEventCreateMouseEvent failed"))?;
                 up.set_flags(flags);
                 up.set_integer_value_field(EventField::MOUSE_EVENT_CLICK_STATE, click_state);
+                self.tag(&up);
                 up.post(CGEventTapLocation::HID);
                 Ok(())
             }
@@ -339,6 +388,7 @@ impl InputBackend for MacInputBackend {
         let event = CGEvent::new_keyboard_event(self.source()?, keycode, action.down)
             .map_err(|_| anyhow::anyhow!("CGEventCreateKeyboardEvent failed"))?;
         event.set_flags(Self::modifier_flags(&action.modifiers));
+        self.tag(&event);
         event.post(CGEventTapLocation::HID);
         Ok(())
     }
@@ -369,6 +419,7 @@ impl InputBackend for MacInputBackend {
             0,
         )
         .map_err(|_| anyhow::anyhow!("CGEventCreateScrollWheelEvent failed"))?;
+        self.tag(&event);
         event.post(CGEventTapLocation::HID);
         Ok(())
     }
@@ -380,10 +431,12 @@ impl InputBackend for MacInputBackend {
         let down = CGEvent::new_keyboard_event(self.source()?, 0, true)
             .map_err(|_| anyhow::anyhow!("CGEventCreateKeyboardEvent failed"))?;
         down.set_string(text);
+        self.tag(&down);
         down.post(CGEventTapLocation::HID);
         let up = CGEvent::new_keyboard_event(self.source()?, 0, false)
             .map_err(|_| anyhow::anyhow!("CGEventCreateKeyboardEvent failed"))?;
         up.set_string(text);
+        self.tag(&up);
         up.post(CGEventTapLocation::HID);
         Ok(())
     }
@@ -486,8 +539,240 @@ fn code_to_keycode(code: &str) -> Option<u16> {
         "F10" => KeyCode::F10,
         "F11" => KeyCode::F11,
         "F12" => KeyCode::F12,
+        "F13" => 0x69,
+        "F14" => 0x6B,
+        "F15" => 0x71,
+        "F16" => 0x6A,
+        "F17" => 0x40,
+        "F18" => 0x4F,
+        "F19" => 0x50,
+        "F20" => 0x5A,
+        "Help" => 0x72,
+        "IntlBackslash" => 0x0A,
+        "IntlYen" => 0x5D,
+        "IntlRo" => 0x5E,
+        "NumpadDecimal" => 0x41,
+        "NumpadMultiply" => 0x43,
+        "NumpadAdd" => 0x45,
+        "NumpadClear" => 0x47,
+        "NumpadDivide" => 0x4B,
+        "NumpadEnter" => 0x4C,
+        "NumpadSubtract" => 0x4E,
+        "NumpadEqual" => 0x51,
+        "Numpad0" => 0x52,
+        "Numpad1" => 0x53,
+        "Numpad2" => 0x54,
+        "Numpad3" => 0x55,
+        "Numpad4" => 0x56,
+        "Numpad5" => 0x57,
+        "Numpad6" => 0x58,
+        "Numpad7" => 0x59,
+        "Numpad8" => 0x5B,
+        "Numpad9" => 0x5C,
         _ => return None,
     })
+}
+
+/// Every code [`code_to_keycode`] knows, for the reverse lookup.
+const KNOWN_CODES: &[&str] = &[
+    "KeyA",
+    "KeyB",
+    "KeyC",
+    "KeyD",
+    "KeyE",
+    "KeyF",
+    "KeyG",
+    "KeyH",
+    "KeyI",
+    "KeyJ",
+    "KeyK",
+    "KeyL",
+    "KeyM",
+    "KeyN",
+    "KeyO",
+    "KeyP",
+    "KeyQ",
+    "KeyR",
+    "KeyS",
+    "KeyT",
+    "KeyU",
+    "KeyV",
+    "KeyW",
+    "KeyX",
+    "KeyY",
+    "KeyZ",
+    "Digit0",
+    "Digit1",
+    "Digit2",
+    "Digit3",
+    "Digit4",
+    "Digit5",
+    "Digit6",
+    "Digit7",
+    "Digit8",
+    "Digit9",
+    "Minus",
+    "Equal",
+    "BracketLeft",
+    "BracketRight",
+    "Backslash",
+    "Semicolon",
+    "Quote",
+    "Comma",
+    "Period",
+    "Slash",
+    "Backquote",
+    "Space",
+    "IntlBackslash",
+    "IntlYen",
+    "IntlRo",
+];
+
+/// The UI Events code for a character key's virtual keycode.
+fn keycode_to_code(keycode: u16) -> Option<&'static str> {
+    KNOWN_CODES
+        .iter()
+        .copied()
+        .find(|code| code_to_keycode(code) == Some(keycode))
+}
+
+/// How long a read of the keyboard layout is trusted.
+const LAYOUT_TTL: Duration = Duration::from_secs(5);
+
+/// The current keyboard layout, read the only way macOS allows.
+///
+/// Text Input Sources must be queried on the main thread — off it, recent
+/// macOS versions assert and abort the process. The input thread therefore
+/// asks the main queue and waits a bounded time; in a process whose main
+/// thread is not running an event loop (a unit test), the answer never comes
+/// and the caller falls back to US.
+mod layout {
+    use std::collections::HashMap;
+    use std::ffi::c_void;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    use core_foundation::string::CFStringRef;
+
+    /// Character → (virtual keycode, needs Shift).
+    pub type CharMap = HashMap<char, (u16, bool)>;
+
+    #[link(name = "Carbon", kind = "framework")]
+    extern "C" {
+        fn TISCopyCurrentKeyboardLayoutInputSource() -> *mut c_void;
+        fn TISGetInputSourceProperty(source: *mut c_void, key: CFStringRef) -> *const c_void;
+        static kTISPropertyUnicodeKeyLayoutData: CFStringRef;
+        fn LMGetKbdType() -> u8;
+        #[allow(clippy::too_many_arguments)]
+        fn UCKeyTranslate(
+            layout: *const c_void,
+            virtual_key_code: u16,
+            key_action: u16,
+            modifier_key_state: u32,
+            keyboard_type: u32,
+            key_translate_options: u32,
+            dead_key_state: *mut u32,
+            max_string_length: usize,
+            actual_string_length: *mut usize,
+            unicode_string: *mut u16,
+        ) -> i32;
+    }
+
+    #[link(name = "CoreFoundation", kind = "framework")]
+    extern "C" {
+        fn CFDataGetBytePtr(data: *const c_void) -> *const u8;
+        fn CFRelease(cf: *const c_void);
+    }
+
+    extern "C" {
+        static _dispatch_main_q: u8;
+        fn dispatch_async_f(
+            queue: *const c_void,
+            context: *mut c_void,
+            work: extern "C" fn(*mut c_void),
+        );
+    }
+
+    const K_UC_KEY_ACTION_DISPLAY: u16 = 3;
+    const K_UC_KEY_TRANSLATE_NO_DEAD_KEYS: u32 = 1;
+    /// `(shiftKey >> 8) & 0xFF`, the form UCKeyTranslate wants.
+    const SHIFT_STATE: u32 = 2;
+    /// Keypad keycodes: they type digits too, but a shortcut means the main
+    /// row.
+    const KEYPAD: &[u16] = &[
+        0x41, 0x43, 0x45, 0x47, 0x4B, 0x4C, 0x4E, 0x51, 0x52, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58,
+        0x59, 0x5B, 0x5C,
+    ];
+
+    /// Only call on the main thread.
+    unsafe fn read_on_main() -> Option<CharMap> {
+        let source = TISCopyCurrentKeyboardLayoutInputSource();
+        if source.is_null() {
+            return None;
+        }
+        let data = TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData);
+        let result = if data.is_null() {
+            None
+        } else {
+            let layout = CFDataGetBytePtr(data) as *const c_void;
+            let kbd = u32::from(LMGetKbdType());
+            let mut map = CharMap::new();
+            for (shift, state) in [(false, 0), (true, SHIFT_STATE)] {
+                for keycode in 0u16..0x80 {
+                    if KEYPAD.contains(&keycode) {
+                        continue;
+                    }
+                    let mut dead = 0u32;
+                    let mut len = 0usize;
+                    let mut buf = [0u16; 4];
+                    let status = UCKeyTranslate(
+                        layout,
+                        keycode,
+                        K_UC_KEY_ACTION_DISPLAY,
+                        state,
+                        kbd,
+                        K_UC_KEY_TRANSLATE_NO_DEAD_KEYS,
+                        &mut dead,
+                        buf.len(),
+                        &mut len,
+                        buf.as_mut_ptr(),
+                    );
+                    if status != 0 || len != 1 {
+                        continue;
+                    }
+                    if let Some(c) = char::from_u32(u32::from(buf[0])) {
+                        if !c.is_control() {
+                            map.entry(c).or_insert((keycode, shift));
+                        }
+                    }
+                }
+            }
+            Some(map)
+        };
+        CFRelease(source);
+        result
+    }
+
+    extern "C" fn work(context: *mut c_void) {
+        // SAFETY: `context` is the boxed sender `current` leaked for exactly
+        // this one call.
+        let tx = unsafe { Box::from_raw(context as *mut mpsc::Sender<Option<CharMap>>) };
+        let _ = tx.send(unsafe { read_on_main() });
+    }
+
+    /// Read the layout via the main thread, waiting at most a moment.
+    pub fn current() -> Option<CharMap> {
+        let (tx, rx) = mpsc::channel::<Option<CharMap>>();
+        let context = Box::into_raw(Box::new(tx)) as *mut c_void;
+        unsafe {
+            dispatch_async_f(
+                &_dispatch_main_q as *const u8 as *const c_void,
+                context,
+                work,
+            );
+        }
+        rx.recv_timeout(Duration::from_millis(500)).ok().flatten()
+    }
 }
 
 /// Normalized 0..1 → a point inside `bounds`, in CGEvent's global space.
@@ -590,6 +875,47 @@ mod tests {
         assert_eq!(code_to_keycode("Enter"), Some(KeyCode::RETURN));
         assert_eq!(code_to_keycode("ArrowLeft"), Some(KeyCode::LEFT_ARROW));
         assert_eq!(code_to_keycode("MetaLeft"), Some(KeyCode::COMMAND));
+    }
+
+    #[test]
+    fn every_code_the_chord_parser_emits_has_a_keycode() {
+        for code in [
+            "Enter",
+            "NumpadEnter",
+            "Tab",
+            "Backspace",
+            "Delete",
+            "Escape",
+            "ArrowUp",
+            "Home",
+            "End",
+            "PageUp",
+            "PageDown",
+            "Help",
+            "CapsLock",
+            "F1",
+            "F13",
+            "F20",
+            "Numpad0",
+            "Numpad9",
+            "NumpadAdd",
+            "NumpadSubtract",
+            "NumpadMultiply",
+            "NumpadDivide",
+            "NumpadDecimal",
+            "NumpadEqual",
+            "NumpadClear",
+            "ControlLeft",
+            "AltLeft",
+            "ShiftLeft",
+            "MetaLeft",
+        ] {
+            assert!(code_to_keycode(code).is_some(), "{code}");
+        }
+        // And the reverse lookup the layout path depends on round-trips.
+        for code in KNOWN_CODES {
+            assert_eq!(keycode_to_code(code_to_keycode(code).unwrap()), Some(*code));
+        }
     }
 
     #[test]

@@ -11,7 +11,7 @@
 /// One accessibility element, snapshotted. `id` is its index in the flattened
 /// walk — stable for the lifetime of one read, and the token the model uses to
 /// refer back to it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct AxNode {
     pub id: usize,
     /// Depth in the tree (0 = the focused application root).
@@ -24,6 +24,74 @@ pub struct AxNode {
     pub value: Option<String>,
     /// Whether the element advertises the press action (`AXPress`).
     pub pressable: bool,
+    /// Global rectangle in points `[x, y, width, height]`, read for the
+    /// elements a model might point at. `None` when not read or not exposed.
+    pub frame: Option<[f64; 4]>,
+    /// Whether this element has keyboard focus.
+    pub focused: bool,
+}
+
+/// Roles a person types into or picks from, listed even when they do not
+/// advertise `AXPress`.
+const INPUT_ROLES: &[&str] = &[
+    "AXTextField",
+    "AXTextArea",
+    "AXSearchField",
+    "AXSecureTextField",
+    "AXComboBox",
+    "AXCheckBox",
+    "AXRadioButton",
+    "AXPopUpButton",
+    "AXMenuButton",
+    "AXSlider",
+    "AXIncrementor",
+    "AXLink",
+    "AXTab",
+    "AXMenuItem",
+    "AXDisclosureTriangle",
+];
+
+/// Is this an element a model would act on — so worth a frame, a line in the
+/// element list and a mark on the screenshot?
+pub fn is_actionable(node: &AxNode) -> bool {
+    node.pressable || INPUT_ROLES.contains(&node.role.as_str())
+}
+
+/// The opening line of the element list in a screen reading, which the thread
+/// pruner also recognizes (see [`OBSERVATION_PREFIX`]).
+pub const ELEMENTS_HEADING: &str = "Elements you can act on";
+
+/// `frame` relative to `display` as a normalized rectangle, clipped to the
+/// display. `None` when it is empty or entirely off the display.
+pub fn normalized_frame(frame: [f64; 4], display: [f64; 4]) -> Option<[f64; 4]> {
+    let [fx, fy, fw, fh] = frame;
+    let [dx, dy, dw, dh] = display;
+    if fw <= 0.0 || fh <= 0.0 || dw <= 0.0 || dh <= 0.0 {
+        return None;
+    }
+    let x0 = ((fx - dx) / dw).max(0.0);
+    let y0 = ((fy - dy) / dh).max(0.0);
+    let x1 = ((fx + fw - dx) / dw).min(1.0);
+    let y1 = ((fy + fh - dy) / dh).min(1.0);
+    (x1 > x0 && y1 > y0).then_some([x0, y0, x1 - x0, y1 - y0])
+}
+
+/// The elements worth listing for a model: actionable, on the display, and
+/// big enough to see — each with its normalized rectangle, focused first.
+pub fn on_screen_actionable(nodes: &[AxNode], display: [f64; 4]) -> Vec<(&AxNode, [f64; 4])> {
+    let mut out: Vec<(&AxNode, [f64; 4])> = nodes
+        .iter()
+        .filter(|n| is_actionable(n))
+        .filter_map(|n| {
+            let rect = normalized_frame(n.frame?, display)?;
+            // Two points or smaller in either direction is not a target a
+            // person could hit either.
+            let min = |span: f64, of: f64| span * of >= 2.0;
+            (min(rect[2], display[2]) && min(rect[3], display[3])).then_some((n, rect))
+        })
+        .collect();
+    out.sort_by_key(|(n, _)| !n.focused);
+    out
 }
 
 /// Caps so a huge tree can't blow the model's context or our own memory. The
@@ -107,7 +175,7 @@ pub fn same_material_context(before: &[AxNode], after: &[AxNode], id: usize) -> 
 }
 
 /// Truncate a label/value to keep one line readable and bounded.
-fn clip(s: &str) -> String {
+pub fn clip(s: &str) -> String {
     const CAP: usize = 120;
     let one_line = s.replace(['\n', '\r'], " ");
     if one_line.chars().count() <= CAP {
@@ -192,6 +260,7 @@ mod material_context_tests {
             label: (!label.is_empty()).then(|| label.to_string()),
             value: value.map(str::to_string),
             pressable: role == "AXButton",
+            ..Default::default()
         }
     }
 
@@ -339,6 +408,7 @@ mod tests {
             label: label.map(str::to_string),
             value: None,
             pressable,
+            ..Default::default()
         }
     }
 
@@ -363,6 +433,7 @@ mod tests {
             label: Some("URL".into()),
             value: Some(long),
             pressable: false,
+            ..Default::default()
         }];
         let out = serialize(&nodes);
         assert!(out.contains("[0] AXTextField \"URL\" = "));
@@ -389,6 +460,56 @@ mod tests {
             out.lines().filter(|l| l.contains("AXCell")).count(),
             MAX_NODES
         );
+    }
+
+    #[test]
+    fn only_actionable_elements_on_the_display_are_listed_focused_first() {
+        let display = [0.0, 0.0, 1000.0, 500.0];
+        let mut nodes = vec![
+            node(0, 0, "AXWindow", Some("Doc"), false),
+            node(1, 1, "AXButton", Some("Save"), true),
+            node(2, 1, "AXStaticText", Some("hello"), false),
+            node(3, 1, "AXTextField", Some("Name"), false),
+            node(4, 1, "AXButton", Some("Offscreen"), true),
+            node(5, 1, "AXButton", Some("Tiny"), true),
+        ];
+        nodes[1].frame = Some([100.0, 100.0, 50.0, 20.0]);
+        nodes[2].frame = Some([0.0, 0.0, 100.0, 20.0]);
+        nodes[3].frame = Some([200.0, 100.0, 200.0, 20.0]);
+        nodes[3].focused = true;
+        nodes[4].frame = Some([2000.0, 100.0, 50.0, 20.0]);
+        nodes[5].frame = Some([10.0, 10.0, 1.0, 1.0]);
+        let listed: Vec<usize> = on_screen_actionable(&nodes, display)
+            .iter()
+            .map(|(n, _)| n.id)
+            .collect();
+        assert_eq!(listed, [3, 1]);
+        let rect = on_screen_actionable(&nodes, display)[1].1;
+        for (got, want) in rect.iter().zip([0.1, 0.2, 0.05, 0.04]) {
+            assert!((got - want).abs() < 1e-9, "{rect:?}");
+        }
+    }
+
+    #[test]
+    fn a_frame_is_normalized_to_its_display_and_clipped() {
+        // A second display to the right of the main one.
+        let second = [1512.0, 0.0, 2000.0, 1000.0];
+        let close = |a: Option<[f64; 4]>, b: [f64; 4]| {
+            let a = a.expect("on the display");
+            a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-9)
+        };
+        assert!(close(
+            normalized_frame([2512.0, 500.0, 200.0, 100.0], second),
+            [0.5, 0.5, 0.1, 0.1]
+        ));
+        // Half off the left edge: clipped, not dropped.
+        assert!(close(
+            normalized_frame([1412.0, 0.0, 200.0, 100.0], second),
+            [0.0, 0.0, 0.05, 0.1]
+        ));
+        // On the other display entirely.
+        assert_eq!(normalized_frame([0.0, 0.0, 100.0, 100.0], second), None);
+        assert_eq!(normalized_frame([2000.0, 0.0, 0.0, 10.0], second), None);
     }
 
     #[test]

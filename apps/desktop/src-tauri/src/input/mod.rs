@@ -6,9 +6,12 @@
 //! Windows); `InputDispatcher` is the OS-agnostic gating/dedup/state logic
 //! that drives it, fully unit-testable behind a mock backend.
 
+pub mod agent_ops;
 pub mod dispatcher;
+pub mod keys;
 pub mod metrics;
 pub mod protocol;
+pub mod takeover;
 pub mod worker;
 
 #[cfg(target_os = "macos")]
@@ -21,7 +24,13 @@ pub use metrics::{InputMetrics, InputMetricsSnapshot};
 pub use protocol::{
     decode_input_batch, InputBatch, InputEvent, Modifier, PointerButton, ShortcutAction,
 };
-pub use worker::InputWorker;
+pub use worker::{AgentInput, InputWorker};
+
+/// Stamped on every event Ask injects (`kCGEventSourceUserData`), so a
+/// listener can tell the agent's own input from a person's.
+pub const AGENT_EVENT_TAG: i64 = 0x4C50_0A01;
+/// Stamped on every event the phone injects, for the same reason.
+pub const PHONE_EVENT_TAG: i64 = 0x4C50_0A02;
 
 /// Whether the OS has granted the permission real injection needs (macOS:
 /// Accessibility). Surfaced to the UI so a missing grant is never silent.
@@ -110,6 +119,22 @@ pub trait InputBackend: Send {
     /// the OS's geometry. Default no-op for a platform that only ever drives
     /// its main display.
     fn set_target_display(&mut self, _display_id: Option<u32>) {}
+    /// Mark every event posted from now on as coming from `tag` (see
+    /// [`AGENT_EVENT_TAG`]). Default no-op for a platform with no field for it.
+    fn set_event_tag(&mut self, _tag: i64) {}
+    /// Where the pointer is, normalized to the target display, or `None` when
+    /// the platform cannot say or the pointer is on another display.
+    fn cursor_position(&self) -> Option<(f64, f64)> {
+        None
+    }
+    /// The physical key (UI Events code) that types `c` on the current
+    /// keyboard layout, and whether Shift is needed. Defaults to the US
+    /// layout; a backend that can read the real layout overrides this, because
+    /// on AZERTY the key in QWERTY's Z position types W — and ⌘W closes the
+    /// window that ⌘Z was meant to undo in.
+    fn key_for_char(&mut self, c: char) -> Option<(String, bool)> {
+        keys::us_key_for_char(c)
+    }
     fn inject_mouse(&mut self, action: MouseAction) -> Result<()>;
     fn inject_keyboard(&mut self, action: KeyAction) -> Result<()>;
     fn inject_scroll(&mut self, action: ScrollAction) -> Result<()>;

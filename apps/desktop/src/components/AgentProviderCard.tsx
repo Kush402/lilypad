@@ -51,6 +51,8 @@ interface ProbeReport {
   ok: boolean;
   tools: Capability;
   vision: Capability;
+  /** Where the model pointed on the test image, when it could see it. */
+  pointing?: { grid: 'pixels' | 'thousand' | null; accurate: boolean };
   message: string | null;
   failure: string | null;
   origin: string;
@@ -609,7 +611,8 @@ export function AgentProviderCard() {
                 checked={wantVision}
                 onChange={(e) => setWantVision(e.target.checked)}
               />{' '}
-              Let Ask take screenshots when it needs to see the screen
+              Let Ask see the screen. Needed to click and type by sight; without it, Ask works only
+              from the list of controls macOS reports.
             </label>
           </div>
           <p className="muted">
@@ -704,7 +707,12 @@ export function capabilitySentence(config: AgentConfigDto): string {
 export function reportSentence(report: ProbeReport): string {
   if (report.message) return report.message;
   if (report.ok && report.vision === 'supported') {
-    return `Connected to ${report.origin}. ${report.model} calls tools and reads images.`;
+    const pointing = report.pointing
+      ? report.pointing.accurate
+        ? ' It points accurately, so Ask can click what it sees.'
+        : ' It points imprecisely, so Ask will click by element rather than by position where it can.'
+      : '';
+    return `Connected to ${report.origin}. ${report.model} calls tools and reads images.${pointing}`;
   }
   if (report.ok) return `Connected to ${report.origin}. ${report.model} calls tools.`;
   return `Could not use ${report.origin}.`;

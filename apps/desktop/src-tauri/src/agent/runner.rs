@@ -27,9 +27,12 @@ use tokio::sync::Notify;
 use crate::agent::protocol::{
     AgentInbound, AgentOutbound, AgentTier, RunOutcome, StepKind, StepState, ToolClass,
 };
-use crate::agent::security::{classify, Action};
+use crate::agent::security::{describe, floor, gate_class, Action, Autonomy};
 
 /// The model's chosen next move.
+// One of these exists at a time, for the length of one step; boxing the
+// action would cost an allocation per step to save stack nobody is short of.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 pub enum Decision {
     /// Perform `action`; `summary` is the human-readable one-liner for the feed.
@@ -83,9 +86,51 @@ pub struct Observation {
     pub summary: String,
     /// Whether the action succeeded (false → the brain should adapt/retry).
     pub ok: bool,
-    /// Optional PNG screenshot (base64) the brain folds back as an image block
-    /// — the tier-3 vision observation. `None` for every text-only tier.
-    pub image_png_base64: Option<String>,
+    /// A screenshot for a vision-capable model to look at. `None` for every
+    /// text-only observation.
+    pub image: Option<ObservedImage>,
+    /// A fingerprint of the screen after the action, when one was taken. Two
+    /// equal fingerprints mean nothing visible changed — what the loop guard
+    /// reads.
+    pub screen: Option<u64>,
+    /// What a look found, as structure rather than words: for a step that
+    /// chooses among the listed elements instead of reading about them.
+    /// `None` for everything but a look whose element reading succeeded.
+    pub reading: Option<ScreenReading>,
+}
+
+/// The app in front and the elements a look listed, in listing order.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ScreenReading {
+    pub app: String,
+    /// The front window's own element id, when it has a position — the place
+    /// a scroll aimed at "the window" lands.
+    pub window: Option<usize>,
+    pub elements: Vec<ReadElement>,
+}
+
+/// One listed element: the id actions name it by, its role in words
+/// ("button", "text field") and its label.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReadElement {
+    pub id: usize,
+    pub role: String,
+    pub label: String,
+}
+
+/// An encoded screenshot and the pixel size the model will see it at. The
+/// size is part of the observation because a model's coordinates are only
+/// meaningful against the image it was shown.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObservedImage {
+    pub base64: String,
+    /// "image/jpeg" or "image/png".
+    pub media_type: &'static str,
+    pub width: u32,
+    pub height: u32,
+    /// The whole shared display, as opposed to a zoomed-in part of it. Only a
+    /// whole-screen image defines what the model's coordinates refer to.
+    pub is_screen: bool,
 }
 
 impl Observation {
@@ -93,23 +138,29 @@ impl Observation {
         Observation {
             summary: summary.into(),
             ok: true,
-            image_png_base64: None,
+            image: None,
+            screen: None,
+            reading: None,
         }
     }
     pub fn fail(summary: impl Into<String>) -> Self {
         Observation {
             summary: summary.into(),
             ok: false,
-            image_png_base64: None,
+            image: None,
+            screen: None,
+            reading: None,
         }
     }
-    /// A successful observation carrying a PNG screenshot (base64) for a
-    /// vision-capable model to look at.
-    pub fn ok_with_image(summary: impl Into<String>, png_base64: String) -> Self {
+    /// A successful observation carrying a screenshot for a vision-capable
+    /// model to look at.
+    pub fn ok_with_image(summary: impl Into<String>, image: ObservedImage) -> Self {
         Observation {
             summary: summary.into(),
             ok: true,
-            image_png_base64: Some(png_base64),
+            image: Some(image),
+            screen: None,
+            reading: None,
         }
     }
 }
@@ -122,6 +173,15 @@ pub trait Brain {
         task: &str,
         history: &[Observation],
     ) -> impl std::future::Future<Output = Result<Decision>> + Send;
+
+    /// Whether the model will look at the result of the action it just
+    /// proposed. False while more actions from the same reply are queued
+    /// behind it: the model asked for them as one batch and sees one
+    /// screenshot at the end, so capturing after each would be spent on
+    /// images nobody reads.
+    fn wants_observation(&self) -> bool {
+        true
+    }
 }
 
 /// The action surface. Same native-async-fn shape as [`Brain`].
@@ -143,6 +203,17 @@ pub trait Executor {
     fn resolve(&self, action: Action) -> Action {
         action
     }
+
+    /// Whether the next `execute` should end with a look at the screen (see
+    /// [`Brain::wants_observation`]). Executors with nothing to look at ignore
+    /// it.
+    fn set_observe(&mut self, _observe: bool) {}
+
+    /// The run is over: let go of anything still held. Called once, whatever
+    /// ended the run.
+    fn finish(&mut self) -> impl std::future::Future<Output = ()> + Send {
+        async {}
+    }
 }
 
 /// The pure gating verdict for a proposed action.
@@ -156,10 +227,10 @@ pub enum Gate {
     Refuse,
 }
 
-/// Map an action to its gating verdict via the security classifier. Pure and
-/// total; the loop's entire safety policy lives here.
-pub fn gate(action: &Action) -> Gate {
-    match classify(action) {
+/// Map an action to its gating verdict via the security classifier, under the
+/// run's autonomy. Pure and total; the loop's entire safety policy lives here.
+pub fn gate(action: &Action, autonomy: Autonomy) -> Gate {
+    match gate_class(action, autonomy) {
         c @ (ToolClass::Safe | ToolClass::Sensitive) => Gate::Run(c),
         c @ ToolClass::Consequential => Gate::Hold(c),
         ToolClass::Forbidden => Gate::Refuse,
@@ -185,6 +256,11 @@ impl Cancel {
     }
     pub fn is_cancelled(&self) -> bool {
         self.flag.load(Ordering::SeqCst)
+    }
+    /// The raw flag, for code that polls rather than awaits — the input
+    /// thread checks it between the steps of a gesture.
+    pub fn flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.flag)
     }
     /// Resolve as soon as cancellation is requested (immediately if already).
     /// Registers with `Notify` before re-checking the flag, so a `cancel()`
@@ -247,18 +323,60 @@ fn retain_recent_images(history: &mut [Observation]) {
     let mut kept = 0;
     let mut bytes = 0usize;
     for obs in history.iter_mut().rev() {
-        let Some(image) = obs.image_png_base64.as_ref() else {
+        let Some(image) = obs.image.as_ref() else {
             continue;
         };
         kept += 1;
+        let size = image.base64.len();
         let over_count = kept > RETAINED_HISTORY_IMAGES;
-        let over_bytes = bytes + image.len() > RETAINED_HISTORY_IMAGE_BYTES;
+        let over_bytes = bytes + size > RETAINED_HISTORY_IMAGE_BYTES;
         if over_count || over_bytes {
-            obs.image_png_base64 = None;
+            obs.image = None;
             obs.summary.push_str(" [screenshot no longer retained]");
         } else {
-            bytes += image.len();
+            bytes += size;
         }
+    }
+}
+
+/// How many times in a row the same action may leave the screen unchanged
+/// before the model is told so, and before the run is ended.
+const LOOP_NOTE_AT: usize = 3;
+const LOOP_END_AT: usize = 6;
+
+/// Notices a model pressing the same thing over and over while nothing on
+/// screen changes — the commonest way a computer-use run burns its budget.
+#[derive(Default)]
+struct LoopGuard {
+    last: Option<(String, String)>,
+    count: usize,
+}
+
+impl LoopGuard {
+    /// Record one executed action and what it left behind; returns how many
+    /// times in a row this exact action has now changed nothing.
+    fn record(&mut self, action: &Action, obs: &Observation) -> usize {
+        // Waiting is supposed to repeat while something loads.
+        if matches!(action, Action::Wait { .. }) {
+            self.last = None;
+            self.count = 0;
+            return 0;
+        }
+        let what = format!("{action:?}");
+        let screen = match obs.screen {
+            Some(fingerprint) => fingerprint.to_string(),
+            // No screenshot (a text-only model): what the action reported is
+            // the only view of the screen there is.
+            None => obs.summary.clone(),
+        };
+        let now = (what, screen);
+        if self.last.as_ref() == Some(&now) {
+            self.count += 1;
+        } else {
+            self.last = Some(now);
+            self.count = 1;
+        }
+        self.count
     }
 }
 
@@ -275,13 +393,20 @@ pub struct RunnerConfig {
     /// "running". Bounds the run itself, on top of the per-request deadlines
     /// in `llm` (L-236).
     pub max_run_ms: u64,
+    /// What the person handed over for this run (ADR-0018).
+    pub autonomy: Autonomy,
 }
 
 impl Default for RunnerConfig {
     fn default() -> Self {
+        // A computer-use task is many small steps — a form is a dozen clicks
+        // and keystrokes — so the budget is sized for that, not for the
+        // handful of skill calls Ask used to make. Still a backstop, not a
+        // target: the loop guard ends a stuck run long before this.
         RunnerConfig {
-            max_steps: 40,
-            max_run_ms: 15 * 60 * 1000,
+            max_steps: 150,
+            max_run_ms: 45 * 60 * 1000,
+            autonomy: Autonomy::Supervised,
         }
     }
 }
@@ -399,7 +524,27 @@ where
         decisions_rx: &mut Receiver<AgentInbound>,
         cancel: &Cancel,
     ) -> RunOutcome {
+        let outcome = self.run_steps(run_id, task, decisions_rx, cancel).await;
+        // Whatever ended the run, nothing it pressed stays pressed.
+        self.executor.finish().await;
+        outcome
+    }
+
+    /// The brain, handed back once the run is over — so a run that ended
+    /// asking the person something can carry on from the same thread.
+    pub fn into_brain(self) -> B {
+        self.brain
+    }
+
+    async fn run_steps(
+        &mut self,
+        run_id: &str,
+        task: &str,
+        decisions_rx: &mut Receiver<AgentInbound>,
+        cancel: &Cancel,
+    ) -> RunOutcome {
         let mut history: Vec<Observation> = Vec::new();
+        let mut loop_guard = LoopGuard::default();
         let started_ms = (self.now_ms)();
         let deadline =
             tokio::time::Instant::now() + std::time::Duration::from_millis(self.config.max_run_ms);
@@ -451,7 +596,8 @@ where
                 }
             };
 
-            let (summary, tier, action) = match decision {
+            let observe = self.brain.wants_observation();
+            let (_proposed, tier, action) = match decision {
                 Decision::Finish { summary, reason } => {
                     let sid = self.next_step_id(run_id);
                     // Only a declared completion is rendered as a result; the
@@ -476,23 +622,29 @@ where
             // precede classification: an `ax_press` carries only an index
             // until the executor says what that index currently points at.
             let action = self.executor.resolve(action);
+            // Described from the resolved action, so the feed and the card
+            // name the control a point lands on rather than the point.
+            let summary = describe(&action);
 
             let step_id = self.next_step_id(run_id);
 
             // ── gate ──
-            let class = match gate(&action) {
+            let class = match gate(&action, self.config.autonomy) {
                 Gate::Refuse => {
+                    let why = floor(&action)
+                        .unwrap_or_else(|| "it touches a security-critical surface.".into());
                     self.emit(
                         run_id,
                         &step_id,
                         StepKind::Action,
-                        format!("refused (forbidden): {summary}"),
+                        format!("Refused: {summary} — {why}"),
                         Some(tier),
                         Some(ToolClass::Forbidden),
                         StepState::Failed,
                     );
                     history.push(Observation::fail(format!(
-                        "action refused by security policy: {summary}"
+                        "Not run — refused by this Mac's safety rules: {why} Choose another way, \
+                         or finish and say what the person needs to do themselves."
                     )));
                     continue;
                 }
@@ -568,6 +720,7 @@ where
                 Some(class),
                 StepState::Running,
             );
+            self.executor.set_observe(observe);
             let result = tokio::select! {
                 biased;
                 _ = cancel.wait() => return self.end(run_id, RunOutcome::Stopped),
@@ -575,7 +728,32 @@ where
                 r = self.executor.execute(&action) => r,
             };
             match result {
-                Ok(obs) => {
+                Ok(mut obs) => {
+                    let repeats = loop_guard.record(&action, &obs);
+                    if repeats >= LOOP_END_AT {
+                        let sid = self.next_step_id(run_id);
+                        self.emit(
+                            run_id,
+                            &sid,
+                            StepKind::Error,
+                            format!(
+                                "Stopped: the same action ran {repeats} times in a row without \
+                                 changing anything on the screen"
+                            ),
+                            None,
+                            None,
+                            StepState::Failed,
+                        );
+                        return self.end(run_id, RunOutcome::Failed);
+                    }
+                    if repeats >= LOOP_NOTE_AT {
+                        obs.summary.push_str(&format!(
+                            " [Note: this exact action has now run {repeats} times in a row and \
+                             the screen did not change. Repeating it will not help. Try something \
+                             different — another element, a keyboard shortcut, scrolling, or \
+                             ask_user if you are stuck.]"
+                        ));
+                    }
                     self.emit(
                         run_id,
                         &step_id,
@@ -653,6 +831,16 @@ mod tests {
     use std::collections::VecDeque;
     use tokio::sync::mpsc;
 
+    fn image(data: &str) -> ObservedImage {
+        ObservedImage {
+            base64: data.into(),
+            media_type: "image/jpeg",
+            width: 10,
+            height: 10,
+            is_screen: true,
+        }
+    }
+
     fn act(action: Action) -> Decision {
         Decision::Act {
             summary: format!("{action:?}"),
@@ -720,27 +908,55 @@ mod tests {
         })
     }
 
+    /// A click whose target `resolve` identified, as it does on a working
+    /// Mac. (One it could not identify is asked in every mode.)
+    fn click() -> Action {
+        Action::Click {
+            target: crate::agent::security::Target::Point { x: 0.5, y: 0.5 },
+            button: crate::input::PointerButton::Left,
+            count: 1,
+            modifiers: vec![],
+            hit: Some(crate::agent::security::Hit {
+                app: "Mail".into(),
+                ..Default::default()
+            }),
+        }
+    }
+
     #[test]
     fn gate_maps_classes_to_verdicts() {
-        assert_eq!(gate(&Action::ReadAxTree), Gate::Run(ToolClass::Safe));
+        let s = Autonomy::Supervised;
+        assert_eq!(gate(&Action::ReadAxTree, s), Gate::Run(ToolClass::Safe));
+        assert_eq!(gate(&click(), s), Gate::Hold(ToolClass::Consequential));
         assert_eq!(
-            gate(&Action::Click {
-                x: 0.5,
-                y: 0.5,
-                count: 1
-            }),
-            Gate::Run(ToolClass::Sensitive)
-        );
-        assert_eq!(
-            gate(&Action::Shell {
-                command: "ls".into()
-            }),
+            gate(
+                &Action::Shell {
+                    command: "ls".into()
+                },
+                s
+            ),
             Gate::Hold(ToolClass::Consequential)
         );
         assert_eq!(
-            gate(&Action::Shell {
-                command: "sudo rm -rf /".into()
-            }),
+            gate(
+                &Action::Shell {
+                    command: "sudo rm -rf /".into()
+                },
+                s
+            ),
+            Gate::Refuse
+        );
+        // Full control runs what supervision holds, and still refuses the
+        // forbidden.
+        let f = Autonomy::Full;
+        assert_eq!(gate(&click(), f), Gate::Run(ToolClass::Sensitive));
+        assert_eq!(
+            gate(
+                &Action::Shell {
+                    command: "sudo rm -rf /".into()
+                },
+                f
+            ),
             Gate::Refuse
         );
     }
@@ -754,18 +970,19 @@ mod tests {
         // at the source, and say so in the text so the model is not told a
         // screenshot exists that it cannot look at.
         let mut history = vec![
-            Observation::ok_with_image("first", "AAA".into()),
+            Observation::ok_with_image("first", image("AAA")),
             Observation::ok("no image here"),
-            Observation::ok_with_image("second", "BBB".into()),
-            Observation::ok_with_image("third", "CCC".into()),
+            Observation::ok_with_image("second", image("BBB")),
+            Observation::ok_with_image("third", image("CCC")),
         ];
         retain_recent_images(&mut history);
-        assert_eq!(history[0].image_png_base64, None);
+        let data = |o: &Observation| o.image.as_ref().map(|i| i.base64.clone());
+        assert_eq!(data(&history[0]), None);
         assert!(history[0].summary.contains("no longer retained"));
-        assert_eq!(history[1].image_png_base64, None); // never had one
+        assert_eq!(data(&history[1]), None); // never had one
         assert!(!history[1].summary.contains("no longer retained"));
-        assert_eq!(history[2].image_png_base64.as_deref(), Some("BBB"));
-        assert_eq!(history[3].image_png_base64.as_deref(), Some("CCC"));
+        assert_eq!(data(&history[2]).as_deref(), Some("BBB"));
+        assert_eq!(data(&history[3]).as_deref(), Some("CCC"));
 
         // Idempotent: running again neither drops more nor re-annotates.
         let before = history.clone();
@@ -780,13 +997,13 @@ mod tests {
         // both. Forty large steps must leave a bounded number of bytes behind.
         let big = "z".repeat(RETAINED_HISTORY_IMAGE_BYTES / 2 + 1);
         let mut history: Vec<Observation> = (0..40)
-            .map(|i| Observation::ok_with_image(format!("step {i}"), big.clone()))
+            .map(|i| Observation::ok_with_image(format!("step {i}"), image(&big)))
             .collect();
         retain_recent_images(&mut history);
 
         let retained: usize = history
             .iter()
-            .filter_map(|o| o.image_png_base64.as_ref().map(|s| s.len()))
+            .filter_map(|o| o.image.as_ref().map(|i| i.base64.len()))
             .sum();
         assert!(
             retained <= RETAINED_HISTORY_IMAGE_BYTES,
@@ -794,14 +1011,8 @@ mod tests {
         );
         // Two of these do not fit, so only the newest survives — the cap wins
         // over the count, which is the whole point.
-        assert_eq!(
-            history
-                .iter()
-                .filter(|o| o.image_png_base64.is_some())
-                .count(),
-            1
-        );
-        assert!(history[39].image_png_base64.is_some(), "the newest is kept");
+        assert_eq!(history.iter().filter(|o| o.image.is_some()).count(), 1);
+        assert!(history[39].image.is_some(), "the newest is kept");
     }
 
     #[tokio::test]
@@ -940,15 +1151,7 @@ mod tests {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let (_dtx, mut drx) = mpsc::channel(DECISION_QUEUE_CAPACITY);
         // A long script the runner should never finish because we cancel first.
-        let script = (0..100)
-            .map(|_| {
-                act(Action::Click {
-                    x: 0.5,
-                    y: 0.5,
-                    count: 1,
-                })
-            })
-            .collect();
+        let script = (0..100).map(|_| act(click())).collect();
         let mut runner = AgentRunner::new(
             ScriptedBrain::new(script),
             RecordingExecutor::default(),
@@ -1076,6 +1279,7 @@ mod tests {
             RunnerConfig {
                 max_steps: 40,
                 max_run_ms: 2_000,
+                ..Default::default()
             },
         );
         let (_dtx, mut drx) = mpsc::channel(DECISION_QUEUE_CAPACITY);
@@ -1099,6 +1303,7 @@ mod tests {
             RunnerConfig {
                 max_steps: 40,
                 max_run_ms: 1,
+                ..Default::default()
             },
         );
         let cancel = Cancel::new();
@@ -1131,6 +1336,7 @@ mod tests {
             RunnerConfig {
                 max_steps: 40,
                 max_run_ms: 20,
+                ..Default::default()
             },
         );
         let (_dtx, mut drx) = mpsc::channel(DECISION_QUEUE_CAPACITY);
@@ -1176,6 +1382,125 @@ mod tests {
                     "a partial approval must never be offered"
                 );
             }
+        }
+    }
+
+    // ── ADR-0018 in the loop ──
+
+    #[tokio::test]
+    async fn full_control_runs_a_click_without_asking_and_supervision_holds_it() {
+        for (autonomy, held) in [(Autonomy::Full, false), (Autonomy::Supervised, true)] {
+            let (tx, mut rx) = mpsc::unbounded_channel();
+            let (dtx, mut drx) = mpsc::channel(DECISION_QUEUE_CAPACITY);
+            let exec = RecordingExecutor::default();
+            let executed = exec.executed.clone();
+            let mut runner = AgentRunner::with_config(
+                ScriptedBrain::new(vec![act(click())]),
+                exec,
+                tx,
+                || 0,
+                RunnerConfig {
+                    autonomy,
+                    ..Default::default()
+                },
+            );
+            if held {
+                tokio::spawn(async move {
+                    tokio::task::yield_now().await;
+                    let _ = dtx.try_send(AgentInbound::AgentDecision {
+                        run_id: "r".into(),
+                        step_id: "r-1".into(),
+                        approve: true,
+                        ts: 0,
+                    });
+                });
+            }
+            let out = runner.run("r", "click", &mut drx, &Cancel::new()).await;
+            assert_eq!(out, RunOutcome::Completed);
+            assert_eq!(executed.lock().unwrap().len(), 1);
+            assert_eq!(
+                states(&drain(&mut rx)).contains(&StepState::Held),
+                held,
+                "{autonomy:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_floor_refusal_tells_the_model_why_and_never_runs() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (_dtx, mut drx) = mpsc::channel(DECISION_QUEUE_CAPACITY);
+        let exec = RecordingExecutor::default();
+        let executed = exec.executed.clone();
+        let mut runner = AgentRunner::with_config(
+            ScriptedBrain::new(vec![act(Action::OpenApp {
+                name: "Lilypad".into(),
+            })]),
+            exec,
+            tx,
+            || 0,
+            RunnerConfig {
+                autonomy: Autonomy::Full,
+                ..Default::default()
+            },
+        );
+        runner
+            .run("r", "quit lilypad", &mut drx, &Cancel::new())
+            .await;
+        assert!(executed.lock().unwrap().is_empty());
+        let refused = drain(&mut rx).into_iter().any(|m| {
+            matches!(m,
+            AgentOutbound::AgentStep { summary, class: Some(ToolClass::Forbidden), .. }
+                if summary.contains("never operates Lilypad"))
+        });
+        assert!(refused);
+        assert!(runner.brain.seen_history_lens.len() >= 2);
+    }
+
+    /// The same click, the same unchanged screen, over and over: noted on the
+    /// third, ended on the sixth.
+    #[tokio::test]
+    async fn a_run_that_repeats_itself_without_effect_is_stopped() {
+        struct SameScreen;
+        impl Executor for SameScreen {
+            async fn execute(&mut self, _: &Action) -> Result<Observation> {
+                let mut o = Observation::ok("clicked");
+                o.screen = Some(42);
+                Ok(o)
+            }
+        }
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (_dtx, mut drx) = mpsc::channel(DECISION_QUEUE_CAPACITY);
+        let mut runner = AgentRunner::with_config(
+            ScriptedBrain::new((0..20).map(|_| act(click())).collect()),
+            SameScreen,
+            tx,
+            || 0,
+            RunnerConfig {
+                autonomy: Autonomy::Full,
+                ..Default::default()
+            },
+        );
+        let out = runner.run("r", "click", &mut drx, &Cancel::new()).await;
+        assert_eq!(out, RunOutcome::Failed);
+        // Six decisions before the end: the guard, not the script, stopped it.
+        assert_eq!(runner.brain.seen_history_lens.len(), LOOP_END_AT);
+        assert!(drain(&mut rx).iter().any(|m| matches!(m,
+            AgentOutbound::AgentStep { summary, .. } if summary.contains("without changing anything"))));
+    }
+
+    #[test]
+    fn the_loop_guard_resets_on_change_and_ignores_waiting() {
+        let mut g = LoopGuard::default();
+        let mut o = Observation::ok("x");
+        o.screen = Some(1);
+        assert_eq!(g.record(&click(), &o), 1);
+        assert_eq!(g.record(&click(), &o), 2);
+        o.screen = Some(2);
+        assert_eq!(g.record(&click(), &o), 1, "a changed screen starts over");
+        let wait = Action::Wait { ms: 1000 };
+        for _ in 0..10 {
+            assert_eq!(g.record(&wait, &o), 0);
         }
     }
 }

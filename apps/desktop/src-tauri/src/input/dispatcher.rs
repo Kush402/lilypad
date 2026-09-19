@@ -17,9 +17,11 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Instant;
 
+use super::agent_ops::{AgentOp, AgentReport, Driver, Pace};
 use super::{
     InputBackend, InputBatch, InputEvent, InputMetrics, KeyAction, Modifier, MouseAction,
-    PermissionStatus, PointerButton, ScrollAction, ShortcutAction,
+    PermissionStatus, PointerButton, ScrollAction, ShortcutAction, AGENT_EVENT_TAG,
+    PHONE_EVENT_TAG,
 };
 
 /// Permission scope granted for a session — mirrors `@lilypad/protocol`'s
@@ -429,6 +431,50 @@ impl InputDispatcher {
             ShortcutAction::ArrowLeft => chord(&mut *self.backend, "ArrowLeft", vec![]),
             ShortcutAction::ArrowRight => chord(&mut *self.backend, "ArrowRight", vec![]),
         }
+    }
+
+    /// Perform one Ask gesture, behind exactly the gates the phone's own input
+    /// passes: a live, control-scoped session and the OS permission. Ask acts
+    /// with the phone's authority, so it can never have more of it.
+    pub(super) fn run_agent(
+        &mut self,
+        op: &AgentOp,
+        stop: &dyn Fn() -> bool,
+        pace: Pace,
+    ) -> anyhow::Result<AgentReport> {
+        if !self.enabled {
+            anyhow::bail!("the phone is not connected with control of this Mac right now");
+        }
+        if !self.granted_scopes.contains(&Scope::Control) {
+            anyhow::bail!("this session is view-only, so nothing may be clicked or typed");
+        }
+        if matches!(
+            self.backend.permission_status(),
+            PermissionStatus::NotGranted
+        ) {
+            anyhow::bail!(
+                "Lilypad does not have Accessibility permission on this Mac (System Settings \
+                 ▸ Privacy & Security ▸ Accessibility)"
+            );
+        }
+        self.backend.set_event_tag(AGENT_EVENT_TAG);
+        // Mark the window during which Ask's own events arrive, so a listener
+        // for a person at the Mac never mistakes them for one.
+        super::takeover::mark_agent_active();
+        let stop_and_mark = || {
+            super::takeover::mark_agent_active();
+            stop()
+        };
+        let result = Driver::new(
+            &mut *self.backend,
+            &mut self.held_buttons,
+            &stop_and_mark,
+            pace,
+        )
+        .run(op);
+        super::takeover::mark_agent_active();
+        self.backend.set_event_tag(PHONE_EVENT_TAG);
+        result
     }
 
     /// Release every held key/button. Called when the gate closes (disconnect,

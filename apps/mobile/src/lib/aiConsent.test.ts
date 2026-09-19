@@ -192,3 +192,48 @@ describe('failure directions', () => {
     expect(await hasAiConsent(MAC_A)).toBe(false);
   });
 });
+
+describe('instant actions are a second destination (ADR-0019)', () => {
+  const destination = {
+    profileId: 'openai',
+    providerName: 'OpenAI',
+    origin: 'https://api.openai.com',
+    model: 'gpt-4o-mini',
+    local: false,
+    consentPolicy: 1,
+    consentRevision: 'rev-model',
+    source: 'settings',
+  };
+  const instant = {
+    providerName: 'TypeSafe Jev',
+    origin: 'https://api.typesafe.ai',
+    model: 'jev-1.13.0',
+    consentRevision: 'rev-both',
+  };
+
+  it('a grant for the model alone does not cover instant actions', async () => {
+    const modelOnly = targetFor('mac-a', destination);
+    const both = targetFor('mac-a', { ...destination, instant });
+    expect(modelOnly?.revision).toBe('rev-model');
+    expect(both?.revision).toBe('rev-both');
+    expect(both?.instantOrigin).toBe('https://api.typesafe.ai');
+
+    await grantAiConsent(modelOnly!);
+    expect(await hasAiConsent(both)).toBe(false);
+    await grantAiConsent(both!);
+    resetAiConsentCache();
+    expect(await hasAiConsent(both)).toBe(true);
+    // Withdrawing the pair leaves the model-only agreement where it was.
+    await revokeAiConsent(both);
+    expect(await hasAiConsent(both)).toBe(false);
+    expect(await hasAiConsent(modelOnly)).toBe(true);
+  });
+
+  it('a grant made before instant actions existed means what it meant', async () => {
+    // Stored exactly as older builds stored it: no instantOrigin at all.
+    await grantAiConsent(MAC_A);
+    resetAiConsentCache();
+    expect(await hasAiConsent(MAC_A)).toBe(true);
+    expect(await hasAiConsent({ ...MAC_A, instantOrigin: 'https://api.typesafe.ai' })).toBe(false);
+  });
+});

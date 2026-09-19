@@ -52,6 +52,24 @@ extern "C" {
     ) -> AXError;
     fn AXUIElementCopyActionNames(element: AXUIElementRef, names: *mut CFTypeRef) -> AXError;
     fn AXUIElementPerformAction(element: AXUIElementRef, action: CFStringRef) -> AXError;
+    fn AXUIElementCopyElementAtPosition(
+        application: AXUIElementRef,
+        x: f32,
+        y: f32,
+        element: *mut AXUIElementRef,
+    ) -> AXError;
+    fn AXUIElementGetPid(element: AXUIElementRef, pid: *mut i32) -> AXError;
+    fn AXUIElementCreateApplication(pid: i32) -> AXUIElementRef;
+    fn AXUIElementSetAttributeValue(
+        element: AXUIElementRef,
+        attribute: CFStringRef,
+        value: CFTypeRef,
+    ) -> AXError;
+    fn AXUIElementIsAttributeSettable(
+        element: AXUIElementRef,
+        attribute: CFStringRef,
+        settable: *mut u8,
+    ) -> AXError;
     /// Unwrap an `AXValue` (a boxed CGPoint/CGSize) into a plain struct.
     fn AXValueGetValue(value: CFTypeRef, the_type: u32, out: *mut c_void) -> u8;
     /// How long one accessibility message may wait for the target process.
@@ -96,6 +114,13 @@ struct CGPointRaw {
 struct CGSizeRaw {
     width: f64,
     height: f64,
+}
+
+#[link(name = "Carbon", kind = "framework")]
+extern "C" {
+    /// True while some app has secure keyboard input on — a password field
+    /// has focus, or a terminal's Secure Keyboard Entry is enabled.
+    fn IsSecureEventInputEnabled() -> u8;
 }
 
 #[link(name = "CoreFoundation", kind = "framework")]
@@ -144,6 +169,17 @@ unsafe impl Send for AxHandle {}
 pub struct AxSnapshot {
     pub nodes: Vec<AxNode>,
     handles: Vec<AxHandle>,
+    /// The focused app, as a person names it.
+    pub app: String,
+    /// The focused app's process, and its executable path — which app it is
+    /// for the safety floor (Lilypad itself, a password prompt).
+    pub pid: i32,
+    pub path: String,
+    /// The title of the first window read, when it has one.
+    pub window: Option<String>,
+    /// The shared display's global rectangle `[x, y, w, h]` in points, which
+    /// every node frame is relative to.
+    pub bounds: [f64; 4],
 }
 
 impl AxSnapshot {
@@ -198,6 +234,11 @@ impl AxSnapshot {
         AxSnapshot {
             nodes,
             handles: Vec::new(),
+            app: String::new(),
+            pid: 0,
+            path: String::new(),
+            window: None,
+            bounds: [0.0, 0.0, 1.0, 1.0],
         }
     }
 }
@@ -301,14 +342,20 @@ fn describe(element: AXUIElementRef, id: usize, depth: usize) -> AxNode {
             .filter(|s| !s.is_empty())
             .map(clip)
     };
-    AxNode {
+    let mut node = AxNode {
         id,
         depth,
         role,
         label,
         value,
         pressable: is_pressable(element),
+        ..Default::default()
+    };
+    // Two more messages, spent only on elements a model might point at.
+    if tree::is_actionable(&node) {
+        node.frame = frame_of(element).map(|(x, y, w, h)| [x, y, w, h]);
     }
+    node
 }
 
 /// Children of an element as retained handles, at most `budget` of them.
@@ -364,8 +411,8 @@ fn windows_of(app: AXUIElementRef) -> Vec<AxHandle> {
     }
 }
 
-/// A window's global rectangle, if it exposes one.
-fn window_frame(window: AXUIElementRef) -> Option<(f64, f64, f64, f64)> {
+/// An element's global rectangle, if it exposes one.
+fn frame_of(window: AXUIElementRef) -> Option<(f64, f64, f64, f64)> {
     let position = copy_attribute(window, "AXPosition")?;
     let size = copy_attribute(window, "AXSize")?;
     let mut point = CGPointRaw { x: 0.0, y: 0.0 };
@@ -435,6 +482,11 @@ pub fn read_focused_tree(display: Option<u32>) -> Result<AxSnapshot> {
     unsafe { AXUIElementSetMessagingTimeout(app_handle.raw, AX_MESSAGE_TIMEOUT_SECS) };
 
     let bounds = shared_display_bounds(display);
+    let mut pid = 0i32;
+    unsafe { AXUIElementGetPid(app_handle.raw, &mut pid) };
+    let (app_name, path) = app_of(pid);
+    // Asked once, then matched by identity per node — no extra messages.
+    let focused = copy_attribute(system.0, "AXFocusedUIElement");
     let roots = scoped_roots(&app_handle, bounds);
     if roots.is_empty() {
         bail!(
@@ -458,7 +510,11 @@ pub fn read_focused_tree(display: Option<u32>) -> Result<AxSnapshot> {
         }
         let id = nodes.len();
         let raw = handle.raw;
-        nodes.push(describe(raw, id, depth));
+        let mut node = describe(raw, id, depth);
+        node.focused = focused
+            .as_ref()
+            .is_some_and(|f| unsafe { CFEqual(f.0, raw) != 0 });
+        nodes.push(node);
         handles.push(handle); // handles[id] == the element for nodes[id]
         if depth < MAX_DEPTH {
             let room = MAX_NODES.saturating_sub(nodes.len() + stack.len());
@@ -468,13 +524,25 @@ pub fn read_focused_tree(display: Option<u32>) -> Result<AxSnapshot> {
             }
         }
     }
-    Ok(AxSnapshot { nodes, handles })
+    let window = nodes
+        .first()
+        .filter(|n| n.depth == 0)
+        .and_then(|n| n.label.clone());
+    Ok(AxSnapshot {
+        nodes,
+        handles,
+        app: app_name,
+        pid,
+        path,
+        window,
+        bounds: [bounds.0, bounds.1, bounds.2, bounds.3],
+    })
 }
 
 /// The global rectangle of the display the session shares, or the main
 /// display's when none was chosen or the chosen one has gone away — the same
 /// rule the input backend uses to place a click.
-fn shared_display_bounds(display: Option<u32>) -> (f64, f64, f64, f64) {
+pub fn shared_display_bounds(display: Option<u32>) -> (f64, f64, f64, f64) {
     use core_graphics::display::CGDisplay;
     let rect = display
         .map(CGDisplay::new)
@@ -503,14 +571,14 @@ fn overlaps(a: (f64, f64, f64, f64), b: (f64, f64, f64, f64)) -> bool {
 fn scoped_roots(app: &AxHandle, bounds: (f64, f64, f64, f64)) -> Vec<AxHandle> {
     let mut scoped: Vec<AxHandle> = windows_of(app.raw)
         .into_iter()
-        .filter(|w| window_frame(w.raw).is_some_and(|frame| overlaps(frame, bounds)))
+        .filter(|w| frame_of(w.raw).is_some_and(|frame| overlaps(frame, bounds)))
         .collect();
     if scoped.is_empty() {
         if let Some(focused) = copy_attribute(app.raw, "AXFocusedWindow") {
             let handle = AxHandle {
                 raw: unsafe { CFRetain(focused.0) },
             };
-            if window_frame(handle.raw).is_some_and(|frame| overlaps(frame, bounds)) {
+            if frame_of(handle.raw).is_some_and(|frame| overlaps(frame, bounds)) {
                 scoped.push(handle);
             }
         }
@@ -534,13 +602,196 @@ pub fn describe_live(handle: &AxHandle) -> Option<(String, String)> {
 
 /// Perform `AXPress` on a handle.
 pub fn press(handle: &AxHandle) -> Result<()> {
-    let action = CFString::new("AXPress");
-    let err = unsafe { AXUIElementPerformAction(handle.raw, action.as_concrete_TypeRef()) };
+    perform(handle, "AXPress")
+}
+
+/// Perform a named accessibility action (`AXPress`, `AXShowMenu`, …).
+pub fn perform(handle: &AxHandle, action: &str) -> Result<()> {
+    let name = CFString::new(action);
+    let err = unsafe { AXUIElementPerformAction(handle.raw, name.as_concrete_TypeRef()) };
+    match err {
+        AX_SUCCESS => Ok(()),
+        // kAXErrorActionUnsupported
+        -25206 => bail!("this element does not support {action}"),
+        _ => bail!("{action} failed (AXError {err})"),
+    }
+}
+
+/// Replace an element's value.
+pub fn set_value(handle: &AxHandle, text: &str) -> Result<()> {
+    let attr = CFString::new("AXValue");
+    let mut settable: u8 = 0;
+    let err = unsafe {
+        AXUIElementIsAttributeSettable(handle.raw, attr.as_concrete_TypeRef(), &mut settable)
+    };
+    if err != AX_SUCCESS || settable == 0 {
+        bail!("this element's value cannot be set directly; click it and type instead");
+    }
+    let value = CFString::new(text);
+    let err = unsafe {
+        AXUIElementSetAttributeValue(
+            handle.raw,
+            attr.as_concrete_TypeRef(),
+            value.as_concrete_TypeRef() as CFTypeRef,
+        )
+    };
     if err == AX_SUCCESS {
         Ok(())
     } else {
-        bail!("AXPress failed (AXError {err})")
+        bail!("setting the value failed (AXError {err})")
     }
+}
+
+/// Is secure keyboard input on anywhere — a password field focused, or a
+/// terminal's Secure Keyboard Entry?
+pub fn secure_input_enabled() -> bool {
+    unsafe { IsSecureEventInputEnabled() != 0 }
+}
+
+/// What one accessibility element is and who owns it.
+#[derive(Debug, Clone, Default)]
+pub struct HitInfo {
+    pub role: String,
+    pub label: String,
+    pub pid: i32,
+    /// The owning app's name.
+    pub app: String,
+    /// The owning process's executable path.
+    pub path: String,
+    /// A password field.
+    pub secure: bool,
+}
+
+/// Roles that are only parts of a control; a hit on one is described by the
+/// control around it.
+const PART_ROLES: &[&str] = &[
+    "AXStaticText",
+    "AXImage",
+    "AXGroup",
+    "AXUnknown",
+    "AXLayoutItem",
+];
+
+fn info_for(element: AXUIElementRef) -> HitInfo {
+    let role = copy_string_attribute(element, "AXRole").unwrap_or_else(|| "AXUnknown".into());
+    let label = copy_string_attribute(element, "AXTitle")
+        .or_else(|| copy_string_attribute(element, "AXDescription"))
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            // A text element's words are its label.
+            (role == "AXStaticText")
+                .then(|| copy_string_attribute(element, "AXValue"))
+                .flatten()
+        })
+        .map(clip)
+        .unwrap_or_default();
+    let secure = is_secure(element, &role);
+    let mut pid = 0i32;
+    unsafe { AXUIElementGetPid(element, &mut pid) };
+    let (app, path) = app_of(pid);
+    HitInfo {
+        role,
+        label,
+        pid,
+        app,
+        path,
+        secure,
+    }
+}
+
+/// The app name and executable path of a process.
+fn app_of(pid: i32) -> (String, String) {
+    if pid <= 0 {
+        return (String::new(), String::new());
+    }
+    let mut buf = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+    let len = unsafe { libc::proc_pidpath(pid, buf.as_mut_ptr() as *mut c_void, buf.len() as u32) };
+    let path = if len > 0 {
+        String::from_utf8_lossy(&buf[..len as usize]).into_owned()
+    } else {
+        String::new()
+    };
+    let app_element = unsafe { AXUIElementCreateApplication(pid) };
+    let name = if app_element.is_null() {
+        None
+    } else {
+        let owned = OwnedCF(app_element);
+        unsafe { AXUIElementSetMessagingTimeout(owned.0, AX_MESSAGE_TIMEOUT_SECS) };
+        copy_string_attribute(owned.0, "AXTitle")
+    };
+    let name = name.filter(|n| !n.is_empty()).unwrap_or_else(|| {
+        // "…/Mail.app/Contents/MacOS/Mail" → "Mail"
+        path.split('/')
+            .find_map(|part| part.strip_suffix(".app"))
+            .or_else(|| path.rsplit('/').next())
+            .unwrap_or_default()
+            .to_string()
+    });
+    (name, path)
+}
+
+/// What is under a global point (in points): the element, or the nearest
+/// labelled control around it, and the app that owns it.
+pub fn hit_test(x: f64, y: f64) -> Option<HitInfo> {
+    if !x.is_finite() || !y.is_finite() {
+        return None;
+    }
+    let system = unsafe { AXUIElementCreateSystemWide() };
+    if system.is_null() {
+        return None;
+    }
+    let system = OwnedCF(system);
+    unsafe { AXUIElementSetMessagingTimeout(system.0, AX_MESSAGE_TIMEOUT_SECS) };
+    let mut raw: AXUIElementRef = std::ptr::null();
+    let err = unsafe { AXUIElementCopyElementAtPosition(system.0, x as f32, y as f32, &mut raw) };
+    if err != AX_SUCCESS || raw.is_null() {
+        return None;
+    }
+    let hit = OwnedCF(raw);
+    let mut info = info_for(hit.0);
+    // Climb a few levels from a label or icon to the control it belongs to,
+    // so "Click the text 'Send'" reads as "Click the button 'Send'".
+    let mut current = OwnedCF(unsafe { CFRetain(hit.0) });
+    for _ in 0..4 {
+        if !PART_ROLES.contains(&info.role.as_str()) {
+            break;
+        }
+        let Some(parent) = copy_attribute(current.0, "AXParent") else {
+            break;
+        };
+        let parent_info = info_for(parent.0);
+        if parent_info.role == "AXWindow" || parent_info.role == "AXApplication" {
+            break;
+        }
+        let keep_label = parent_info.label.is_empty() && !info.label.is_empty();
+        let label = if keep_label {
+            info.label.clone()
+        } else {
+            parent_info.label.clone()
+        };
+        info = HitInfo {
+            label,
+            ..parent_info
+        };
+        current = parent;
+    }
+    Some(info)
+}
+
+/// What has keyboard focus: the focused element, or failing that the
+/// frontmost app.
+pub fn focus() -> Option<HitInfo> {
+    let system = unsafe { AXUIElementCreateSystemWide() };
+    if system.is_null() {
+        return None;
+    }
+    let system = OwnedCF(system);
+    unsafe { AXUIElementSetMessagingTimeout(system.0, AX_MESSAGE_TIMEOUT_SECS) };
+    if let Some(element) = copy_attribute(system.0, "AXFocusedUIElement") {
+        return Some(info_for(element.0));
+    }
+    let app = copy_attribute(system.0, "AXFocusedApplication")?;
+    Some(info_for(app.0))
 }
 
 #[cfg(test)]

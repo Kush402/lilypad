@@ -26,6 +26,9 @@ import {
   type AgentRunEnd,
   type AgentDestination,
   type AgentHandshakeState,
+  type AgentAutonomy,
+  AGENT_FEATURE_FULL_CONTROL,
+  AGENT_FEATURE_RESUME,
 } from '@lilypad/protocol';
 import { MobileSignaling, type SignalingLifecycleEvent } from './signaling';
 import { isLanPinTarget } from './lanTls';
@@ -93,6 +96,9 @@ export interface ViewerCallbacks {
   onAgentReady?: (
     state: AgentHandshakeState | 'incompatible',
     destination?: AgentDestination,
+    /** What that Mac's Ask supports (`full_control`, `resume`, …); empty from
+     * a Mac that predates them. */
+    features?: string[],
   ) => void;
   onAgentStep?: (step: AgentStep) => void;
   /** The AI agent run ended (completed/stopped/denied/failed). */
@@ -268,6 +274,8 @@ export class ViewerConnection {
   private askProbe: string | null = null;
   /** The destination the Mac disclosed on the last `agent_ready`. */
   private askDestination: AgentDestination | undefined;
+  /** What that Mac's Ask supports, from the same frame. */
+  private askFeatures: string[] = [];
   private agentRunCounter = 0;
   private dataChannel: DataChannelLike | null = null;
   /** The unreliable move channel — separate from `dataChannel` above since
@@ -546,7 +554,8 @@ export class ViewerConnection {
       ) {
         this.askReady = false;
         this.askDestination = undefined;
-        this.cb.onAgentReady?.('incompatible', undefined);
+        this.askFeatures = [];
+        this.cb.onAgentReady?.('incompatible', undefined, []);
       }
       return;
     }
@@ -562,7 +571,8 @@ export class ViewerConnection {
         // `undefined` — an unstated destination must not inherit the last
         // one this phone saw (L-265).
         this.askDestination = parsed.data.destination;
-        this.cb.onAgentReady?.(parsed.data.state, parsed.data.destination);
+        this.askFeatures = parsed.data.features ?? [];
+        this.cb.onAgentReady?.(parsed.data.state, parsed.data.destination, this.askFeatures);
       }
       return;
     }
@@ -596,8 +606,22 @@ export class ViewerConnection {
     return this.sendAgent({ kind: 'agent_hello', runId: this.askProbe, ts: Date.now() });
   }
 
-  sendAgentCommand(text: string): { runId: string; sent: boolean } {
+  sendAgentCommand(
+    text: string,
+    options: { autonomy?: AgentAutonomy; continues?: string } = {},
+  ): { runId: string; sent: boolean } {
     const runId = `run-${Date.now()}-${(this.agentRunCounter += 1)}`;
+    // Only what this Mac said it honours is sent. A Mac that predates full
+    // control would run the task supervised while the phone showed "Full
+    // control" — so the field is left off and the mode shown is the truth.
+    const autonomy =
+      options.autonomy && this.askFeatures.includes(AGENT_FEATURE_FULL_CONTROL)
+        ? options.autonomy
+        : undefined;
+    const continues =
+      options.continues && this.askFeatures.includes(AGENT_FEATURE_RESUME)
+        ? options.continues
+        : undefined;
     const sent =
       this.askReady &&
       this.sendAgent({
@@ -609,7 +633,12 @@ export class ViewerConnection {
         // refuse a command aimed at one that has since changed (L-265). Taken
         // from the last `agent_ready` rather than from anything the caller
         // passes, so it always describes what the person was actually shown.
-        consentRevision: this.askDestination?.consentRevision,
+        // When the Mac also disclosed instant actions, the card named both,
+        // and the revision covering both is the one agreed to (ADR-0019).
+        consentRevision:
+          this.askDestination?.instant?.consentRevision ?? this.askDestination?.consentRevision,
+        ...(autonomy ? { autonomy } : {}),
+        ...(continues ? { continues } : {}),
         ts: Date.now(),
       });
     return { runId, sent };

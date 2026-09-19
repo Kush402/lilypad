@@ -50,3 +50,5 @@ the old one `Superseded by ADR-NNNN`.
 | [0015](0015-ownership-follows-sign-in.md)                     | Ownership follows sign-in; pairing is a separate relation  | Accepted                                                |
 | [0016](0016-storekit-and-the-price.md)                        | What Pro costs, and who takes the money                    | Accepted                                                |
 | [0017](0017-ask-reads-each-provider-in-its-own-vocabulary.md) | Ask reads each provider in its own vocabulary              | Accepted                                                |
+| [0018](0018-ask-operates-the-mac-under-full-control.md)       | Ask operates the Mac under the owner's full control        | Accepted                                                |
+| [0019](0019-ask-does-short-commands-instantly.md)             | Ask does short commands instantly                          | Accepted                                                |

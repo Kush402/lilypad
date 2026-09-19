@@ -1561,7 +1561,13 @@ pub struct SetAgentConfigArgs {
 }
 
 #[tauri::command]
-pub fn set_agent_config(args: SetAgentConfigArgs) -> Result<AgentConfigDto, String> {
+pub async fn set_agent_config(args: SetAgentConfigArgs) -> Result<AgentConfigDto, String> {
+    tauri::async_runtime::spawn_blocking(move || set_agent_config_blocking(args))
+        .await
+        .map_err(|e| format!("saving the AI settings failed: {e}"))?
+}
+
+fn set_agent_config_blocking(args: SetAgentConfigArgs) -> Result<AgentConfigDto, String> {
     use crate::agent::llm::store;
     if !matches!(args.provider_kind.as_str(), "anthropic" | "openai_compat") {
         return Err(format!("unknown provider kind `{}`", args.provider_kind));
@@ -1619,6 +1625,12 @@ pub fn set_agent_config(args: SetAgentConfigArgs) -> Result<AgentConfigDto, Stri
             None
         } else {
             previous.tools
+        },
+        // Where a model points is a measurement of that model, like vision.
+        grid: if destination_changed {
+            None
+        } else {
+            previous.grid
         },
         verified_at: if destination_changed {
             None
@@ -1756,6 +1768,11 @@ pub async fn test_agent_connection(
     // model does not support a feature that was never asked about.
     let report_tools = report.tools;
     let report_vision = report.vision;
+    // Only a hit tells which space the model points in; a miss says nothing.
+    let report_grid = report
+        .pointing
+        .and_then(|p| p.grid)
+        .map(probe::PointingGrid::as_str);
     // What happened, kept apart from what was proven.
     let check = store::LastCheck {
         at: now_rfc3339(),
@@ -1836,11 +1853,12 @@ pub async fn test_agent_connection(
             // measured, and nothing is written.
             probe::Capability::Untested => None,
         };
-        match store::record_verification(
+        match store::record_verification_with_grid(
             committed,
             &tested,
             measured(report_tools),
             measured(report_vision),
+            report_grid,
             check,
         ) {
             Ok(store::Verification::Recorded) => Ok(true),
@@ -2071,7 +2089,13 @@ pub async fn list_agent_models(
 /// failure is reported rather than swallowed: a disconnect that says it
 /// worked while the key is still in the keychain is the worse outcome.
 #[tauri::command]
-pub fn disconnect_agent_provider() -> Result<AgentConfigDto, String> {
+pub async fn disconnect_agent_provider() -> Result<AgentConfigDto, String> {
+    tauri::async_runtime::spawn_blocking(disconnect_agent_provider_blocking)
+        .await
+        .map_err(|e| format!("disconnecting the AI provider failed: {e}"))?
+}
+
+fn disconnect_agent_provider_blocking() -> Result<AgentConfigDto, String> {
     use crate::agent::llm::store;
     let settings = store::load_settings();
     let Some(kind) = settings.provider_kind.clone() else {
@@ -2081,6 +2105,93 @@ pub fn disconnect_agent_provider() -> Result<AgentConfigDto, String> {
     store::save_settings(&store::AgentSettings::default()).map_err(|e| e.to_string())?;
     log::info!(target: "lilypad::audit", "agent_provider_disconnected");
     Ok(agent_config_snapshot())
+}
+
+/// Instant actions (ADR-0019): whether a key is set, and where it came from.
+/// The key itself never crosses to the webview.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstantConfigDto {
+    pub has_key: bool,
+    /// "env" when a developer override supplies the key, "settings" when the
+    /// keychain does, "none" when instant actions are off.
+    pub source: &'static str,
+    /// Where commands go when it is on.
+    pub origin: String,
+    /// The keychain could not answer, or TypeSafe refused the key during a
+    /// run; named rather than read as "off" or left looking fine.
+    pub problem: Option<String>,
+}
+
+/// Said when TypeSafe stopped accepting a key after it was saved.
+const INSTANT_KEY_REFUSED: &str = "TypeSafe no longer accepts this key, so short commands go to \
+the AI model instead. Check and save a new key, or turn instant actions off.";
+
+#[tauri::command]
+pub async fn get_instant_config() -> Result<InstantConfigDto, String> {
+    tauri::async_runtime::spawn_blocking(instant_config_snapshot)
+        .await
+        .map_err(|e| format!("reading the instant-actions setting failed: {e}"))
+}
+
+fn instant_config_snapshot() -> InstantConfigDto {
+    use crate::agent::llm::{jev, store};
+    let origin = jev::InstantConfig::new("").origin();
+    let refused = |key: &str| jev::was_refused(key).then(|| INSTANT_KEY_REFUSED.to_string());
+    if let Some(config) = jev::InstantConfig::from_env() {
+        return InstantConfigDto {
+            has_key: true,
+            source: "env",
+            origin,
+            problem: refused(&config.api_key),
+        };
+    }
+    let (has_key, problem) = match store::credential_for(jev::KEY_KIND, None) {
+        Ok(key) => (key.is_some(), key.as_deref().and_then(refused)),
+        Err(unavailable) => (false, Some(unavailable.0)),
+    };
+    InstantConfigDto {
+        has_key,
+        source: if has_key { "settings" } else { "none" },
+        origin,
+        problem,
+    }
+}
+
+/// Check a TypeSafe key with TypeSafe, then keep it in the keychain. A key
+/// that does not work is never stored: the check lists models, and sends
+/// nothing from the screen.
+#[tauri::command]
+pub async fn set_instant_key(api_key: String) -> Result<InstantConfigDto, String> {
+    use crate::agent::llm::{jev, store};
+    let key = api_key.trim().to_string();
+    if key.is_empty() {
+        return Err("Paste your TypeSafe key first.".into());
+    }
+    jev::check_key(&key).await?;
+    // TypeSafe just accepted it, whatever it said during an earlier run.
+    jev::forget_refusal();
+    tauri::async_runtime::spawn_blocking(move || {
+        store::store_credential(jev::KEY_KIND, None, &key).map_err(|e| e.to_string())?;
+        log::info!(target: "lilypad::audit", "instant_actions_key_saved");
+        Ok(instant_config_snapshot())
+    })
+    .await
+    .map_err(|e| format!("saving the key failed: {e}"))?
+}
+
+/// Remove the TypeSafe key: instant actions off, the phone told so on its
+/// next check.
+#[tauri::command]
+pub async fn forget_instant_key() -> Result<InstantConfigDto, String> {
+    use crate::agent::llm::{jev, store};
+    tauri::async_runtime::spawn_blocking(|| {
+        store::forget_credential(jev::KEY_KIND, None).map_err(|e| e.to_string())?;
+        log::info!(target: "lilypad::audit", "instant_actions_key_removed");
+        Ok(instant_config_snapshot())
+    })
+    .await
+    .map_err(|e| format!("removing the key failed: {e}"))?
 }
 
 fn now_rfc3339() -> String {

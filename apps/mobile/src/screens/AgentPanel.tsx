@@ -11,7 +11,7 @@ import {
   revokeAiConsent,
   targetFor,
 } from '../lib/aiConsent';
-import type { AgentDestination, AgentHandshakeState } from '@lilypad/protocol';
+import type { AgentAutonomy, AgentDestination, AgentHandshakeState } from '@lilypad/protocol';
 
 /**
  * The "Ask" panel — command entry + the AI agent's live step feed, with an
@@ -45,7 +45,20 @@ export interface AgentPanelProps {
    * say, which is a state of its own: not a reason to reuse an older
    * agreement (L-265). */
   destination?: AgentDestination;
+  /** The Mac honours full control (ADR-0018). A Mac that does not is never
+   * offered it: the phone would say "full control" while every click waited. */
+  fullControlAvailable?: boolean;
+  /** What the person chose for this Mac; `null` is not chosen yet. */
+  autonomy?: AgentAutonomy | null;
+  onChooseAutonomy?: (autonomy: AgentAutonomy) => void;
+  /** The last task ended asking something; the next message answers it. */
+  awaitingAnswer?: boolean;
 }
+
+/** What full control means, in one place so the choice card and the switch
+ * say the same thing. */
+export const FULL_CONTROL_TERMS =
+  'Ask clicks, types and opens what the task needs without asking you first. It still never types into password fields, operates Lilypad itself, answers security or permission prompts, or locks your Mac. Touch this phone\u2019s screen, or use the Mac\u2019s mouse or keyboard, to take over at any moment.';
 
 /**
  * The sentence that tells the customer where their screen goes.
@@ -59,10 +72,14 @@ export function destinationSentence(destination: AgentDestination | undefined): 
     return 'This Mac has not said which AI provider it would send your screen to. Set one up on the Mac, then check again.';
   }
   const model = destination.model ? ` (${destination.model})` : '';
+  // A second destination, named in the same breath (ADR-0019).
+  const instant = destination.instant
+    ? ` Short commands also go to ${destination.instant.providerName} at ${destination.instant.origin}, to be done instantly: your command, the app in front and the names of the controls on screen \u2014 never a screenshot.`
+    : '';
   if (destination.local) {
-    return `This Mac runs its model locally at ${destination.origin}${model}. Your screen is read on the Mac and does not leave it.`;
+    return `This Mac runs its model locally at ${destination.origin}${model}. Your screen is read on the Mac and does not leave it.${instant}`;
   }
-  return `This Mac sends to ${destination.providerName} at ${destination.origin}${model}. Your screen leaves your Mac and your phone for that provider. Lilypad never sees it.`;
+  return `This Mac sends to ${destination.providerName} at ${destination.origin}${model}. Your screen leaves your Mac and your phone for that provider. Lilypad never sees it.${instant}`;
 }
 
 /** What the Mac last said about the Ask handshake, plus the two conclusions
@@ -203,6 +220,10 @@ export function AgentPanel({
   onCheckCompatibility,
   desktopDeviceId,
   destination,
+  fullControlAvailable = false,
+  autonomy = null,
+  onChooseAutonomy,
+  awaitingAnswer = false,
 }: AgentPanelProps): React.JSX.Element | null {
   const [text, setText] = useState('');
   const held = heldStep(feed);
@@ -406,17 +427,87 @@ export function AgentPanel({
     );
   }
 
+  /* How much Ask may do on its own, asked once per Mac, after — never
+   * instead of — the question of where the screen goes (ADR-0018). */
+  if (fullControlAvailable && autonomy === null && onChooseAutonomy && !inFlight) {
+    return (
+      <View style={styles.panel} testID="agent-autonomy">
+        <Text style={styles.consentTitle}>How much should Ask do on its own?</Text>
+        <Text style={styles.consentBody}>
+          <Text style={styles.grantValue}>Full control: </Text>
+          {FULL_CONTROL_TERMS}
+        </Text>
+        <Text style={styles.consentBody}>
+          <Text style={styles.grantValue}>Ask before each action: </Text>
+          every click, change and web address waits for you to approve it here.
+        </Text>
+        <Text style={styles.consentBody}>You can switch at any time from the Ask panel.</Text>
+        <View style={styles.holdBtns}>
+          <Pressable
+            testID="agent-autonomy-supervised"
+            style={[styles.btn, styles.declineBtn]}
+            onPress={() => onChooseAutonomy('supervised')}
+            accessibilityRole="button"
+            accessibilityLabel="Ask before each action"
+          >
+            <Text style={styles.declineText}>Ask each time</Text>
+          </Pressable>
+          <Pressable
+            testID="agent-autonomy-full"
+            style={[styles.btn, styles.approveBtn]}
+            onPress={() => onChooseAutonomy('full')}
+            accessibilityRole="button"
+            accessibilityLabel="Give Ask full control of this Mac"
+            accessibilityHint={FULL_CONTROL_TERMS}
+          >
+            <Text style={styles.btnText}>Full control</Text>
+          </Pressable>
+        </View>
+      </View>
+    );
+  }
+
+  const full = fullControlAvailable && autonomy === 'full';
+
   return (
     <View style={[styles.panel, !held && styles.panelCapped]} testID="agent-panel">
+      {fullControlAvailable && onChooseAutonomy ? (
+        <Pressable
+          testID="agent-autonomy-toggle"
+          style={styles.modeRow}
+          onPress={() => onChooseAutonomy(full ? 'supervised' : 'full')}
+          disabled={inFlight}
+          accessibilityRole="switch"
+          accessibilityLabel="Full control"
+          accessibilityState={{ checked: full, disabled: inFlight }}
+          accessibilityHint={full ? 'Ask will ask before each action' : FULL_CONTROL_TERMS}
+        >
+          <Text style={[styles.modeText, full && styles.modeFull]}>
+            {full ? 'Full control' : 'Asks before each action'}
+          </Text>
+          <Text style={styles.modeHint}>
+            {inFlight
+              ? full
+                ? 'Touch the screen to take over'
+                : 'Approve each step below'
+              : full
+                ? 'Switch to asking first'
+                : 'Switch to full control'}
+          </Text>
+        </Pressable>
+      ) : null}
       <View style={styles.inputRow}>
         <TextInput
           testID="agent-command-input"
           style={styles.input}
-          accessibilityLabel="Ask your Mac to do something"
-
+          accessibilityLabel={
+            awaitingAnswer ? 'Answer your Mac\u2019s question' : 'Ask your Mac to do something'
+          }
           value={text}
           onChangeText={setText}
-          placeholder="Ask your Mac to do something…"
+          placeholder={
+            awaitingAnswer ? 'Answer the question above…' : 'Ask your Mac to do something…'
+          }
           placeholderTextColor={theme.muted}
           editable={!inFlight}
           onSubmitEditing={submit}
@@ -624,7 +715,9 @@ export function AgentPanel({
                 : feed.outcome === 'denied'
                   ? 'Not allowed.'
                   : feed.outcome === 'needs_input'
-                    ? 'Needs your input.'
+                    ? awaitingAnswer
+                      ? 'Your Mac asked a question. Answer it above to carry on.'
+                      : 'Needs your input.'
                     : 'Failed.'}
           </Text>
         ) : null}
@@ -753,5 +846,15 @@ const styles = StyleSheet.create({
   glyph: { width: 16, alignItems: 'center', justifyContent: 'center' },
   stepText: { color: theme.ink, fontSize: 13, flex: 1 },
   outcome: { color: theme.accent, fontWeight: '700', fontSize: 13, marginTop: 4 },
+  modeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+    minHeight: 32,
+  },
+  modeText: { color: theme.muted, fontWeight: '700', fontSize: 13 },
+  modeFull: { color: theme.accent },
+  modeHint: { color: theme.muted, fontSize: 12, textDecorationLine: 'underline' },
   outcomeBad: { color: theme.danger },
 });

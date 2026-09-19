@@ -22,7 +22,7 @@ use crate::agent::Action;
 pub struct AxExecutor {
     /// The most recent read's snapshot — the id→handle table a press resolves
     /// against. `None` until the first `read_ax_tree`.
-    last: Option<AxSnapshot>,
+    pub(super) last: Option<AxSnapshot>,
     /// The display the session is sharing. Perception is scoped to it, for the
     /// same reason the screenshot path already is: an observation of a window
     /// on an unshared monitor still goes to the model provider (L-267).
@@ -30,7 +30,7 @@ pub struct AxExecutor {
     /// The display the last snapshot was read on. A session that switches
     /// monitors invalidates the snapshot rather than pressing an element that
     /// was chosen from a screen the phone is no longer watching.
-    read_on: Option<u32>,
+    pub(super) read_on: Option<u32>,
 }
 
 impl AxExecutor {
@@ -39,6 +39,22 @@ impl AxExecutor {
             last: None,
             display,
             read_on: None,
+        }
+    }
+
+    /// Read the focused app's elements on the shared display and keep them
+    /// as the reading every element id refers to. Off the async worker: a
+    /// walk of a web page can take seconds (L-322).
+    pub(super) async fn read(&mut self) -> std::result::Result<(), String> {
+        let display = self.display.get();
+        match tokio::task::spawn_blocking(move || ax::read_focused_tree(display)).await {
+            Ok(Ok(snapshot)) => {
+                self.last = Some(snapshot);
+                self.read_on = display;
+                Ok(())
+            }
+            Ok(Err(e)) => Err(e.to_string()),
+            Err(e) => Err(format!("the reading stopped: {e}")),
         }
     }
 }
@@ -147,6 +163,17 @@ impl AxExecutor {
                 ))
             }
         };
+        // The floor, for the one press that carries no hit: `ax_press` is no
+        // longer offered, but a model can still name it, and a tree read
+        // while Lilypad or a permission prompt was in front is theirs.
+        if snapshot.pid == std::process::id() as i32 {
+            return Some(Observation::fail("Ask never operates Lilypad itself."));
+        }
+        if let (Some(surface), _) = ax::surface_of(&snapshot.path) {
+            return Some(Observation::fail(format!(
+                "Ask never operates {surface}. Those are for the person at the Mac."
+            )));
+        }
         // The session can move to another monitor between the read and the
         // press. The ids in the old snapshot describe windows on the old
         // screen, so they are no longer a description of what the person is
@@ -267,7 +294,26 @@ mod tests {
             label: label.map(Into::into),
             value: None,
             pressable: true,
+            ..Default::default()
         }
+    }
+
+    #[test]
+    fn a_press_on_lilypad_or_a_password_prompt_is_refused() {
+        let mut own = snapshot(vec![node(0, "AXButton", Some("Allow"))]);
+        own.last.as_mut().unwrap().pid = std::process::id() as i32;
+        let obs = own.cannot_press(0).expect("refused");
+        assert!(obs.summary.contains("Lilypad itself"), "{}", obs.summary);
+
+        let mut prompt = snapshot(vec![node(0, "AXButton", Some("OK"))]);
+        prompt.last.as_mut().unwrap().path =
+            "/System/Library/Frameworks/Security.framework/Versions/A/MachServices/SecurityAgent.bundle/Contents/MacOS/SecurityAgent".into();
+        let obs = prompt.cannot_press(0).expect("refused");
+        assert!(obs.summary.contains("password prompt"), "{}", obs.summary);
+
+        assert!(snapshot(vec![node(0, "AXButton", Some("OK"))])
+            .cannot_press(0)
+            .is_none());
     }
 
     /// L-267. A tree read while one screen was shared does not describe the

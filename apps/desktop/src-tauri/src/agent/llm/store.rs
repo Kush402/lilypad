@@ -76,6 +76,11 @@ pub struct AgentSettings {
     /// three-state meaning as `vision`.
     #[serde(default)]
     pub tools: Option<bool>,
+    /// The coordinate space the model was observed to point in on a
+    /// screenshot — `"pixels"` or `"thousand"` — when the probe could tell.
+    /// `None` means use the model family's known convention.
+    #[serde(default)]
+    pub grid: Option<String>,
     /// When the capabilities above were last verified, RFC 3339. `None` while
     /// they are untested. Written only by a check that actually measured them.
     #[serde(default)]
@@ -259,16 +264,42 @@ pub fn record_verification(
     vision: Option<bool>,
     check: LastCheck,
 ) -> Result<Verification> {
-    let path = settings_path()?;
-    record_verification_at(&path, committed, tested, tools, vision, check)
+    record_verification_with_grid(committed, tested, tools, vision, None, check)
 }
 
+/// [`record_verification`], plus the coordinate space the model was seen to
+/// point in, when the check measured it.
+pub fn record_verification_with_grid(
+    committed: u64,
+    tested: &super::effective::EffectiveConfig,
+    tools: Option<bool>,
+    vision: Option<bool>,
+    grid: Option<&str>,
+    check: LastCheck,
+) -> Result<Verification> {
+    let path = settings_path()?;
+    record_at(&path, committed, tested, tools, vision, grid, check)
+}
+
+#[cfg(test)]
 fn record_verification_at(
     path: &Path,
     committed: u64,
     tested: &super::effective::EffectiveConfig,
     tools: Option<bool>,
     vision: Option<bool>,
+    check: LastCheck,
+) -> Result<Verification> {
+    record_at(path, committed, tested, tools, vision, None, check)
+}
+
+fn record_at(
+    path: &Path,
+    committed: u64,
+    tested: &super::effective::EffectiveConfig,
+    tools: Option<bool>,
+    vision: Option<bool>,
+    grid: Option<&str>,
     check: LastCheck,
 ) -> Result<Verification> {
     let _guard = settings_guard();
@@ -286,6 +317,9 @@ fn record_verification_at(
     // probe may not answer on their behalf (L-286).
     if let Some(vision) = vision {
         saved.vision = Some(vision);
+    }
+    if let Some(grid) = grid {
+        saved.grid = Some(grid.to_string());
     }
     // `verified_at` answers "when was this last proven", so only a check that
     // proved something moves it. A failure records itself below instead of
@@ -327,6 +361,7 @@ pub fn default_base_url(kind: &str) -> Option<&'static str> {
     match kind {
         "anthropic" => Some(super::anthropic::DEFAULT_BASE_URL),
         "openai_compat" => Some(super::openai_compat::DEFAULT_BASE_URL),
+        super::jev::KEY_KIND => Some(super::jev::BASE_URL),
         _ => None,
     }
 }
@@ -703,6 +738,7 @@ mod tests {
             allow_screenshots: Some(true),
             vision: Some(true),
             tools: Some(true),
+            grid: Some("thousand".into()),
             verified_at: Some("2026-09-09T00:00:00Z".into()),
             last_check: Some(LastCheck {
                 at: "2026-09-09T00:00:00Z".into(),

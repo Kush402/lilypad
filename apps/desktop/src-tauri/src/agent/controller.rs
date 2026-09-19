@@ -19,15 +19,43 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc::{channel, unbounded_channel, Sender};
 use tokio::task::JoinHandle;
 
+use crate::agent::executor::{ComputerConfig, Grid};
 use crate::agent::llm::resolver::{ProviderResolver, Readiness};
-use crate::agent::llm::{AnyProvider, NOT_CONFIGURED_MESSAGE};
+use crate::agent::llm::{AnyProvider, LlmProvider, NOT_CONFIGURED_MESSAGE};
 use crate::agent::protocol::{
     AgentHandshakeState, AgentInbound, AgentOutbound, RunOutcome, StepKind, StepState,
-    ASK_PROTOCOL_VERSION,
+    AGENT_FEATURES, ASK_PROTOCOL_VERSION,
 };
-use crate::agent::runner::{AgentRunner, Cancel, DECISION_QUEUE_CAPACITY};
+use crate::agent::runner::{AgentRunner, Cancel, RunnerConfig, DECISION_QUEUE_CAPACITY};
+use crate::agent::security::Autonomy;
 use crate::agent::{LlmBrain, SharedDisplay, TieredExecutor};
+use crate::input::takeover::Takeover;
+use crate::input::AgentInput;
 use crate::rtc::WebRtcPeer;
+
+/// How long a run that ended on a question keeps its conversation, waiting
+/// for the answer. Past this the answer starts a fresh task: the screen, and
+/// what the person meant, have both moved on.
+const PARKED_FOR: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+
+/// A conversation paused on a question, waiting for the person's answer.
+struct Parked {
+    run_id: String,
+    brain: LlmBrain<AnyProvider>,
+    /// The destination it was talking to. An answer sent after the Mac's AI
+    /// setup changed must not resume a thread with the old provider.
+    consent_revision: String,
+    at: std::time::Instant,
+}
+
+/// Map the wire's autonomy to the policy's: only an explicit "full" grants
+/// full control (ADR-0018).
+pub fn autonomy_from_wire(value: Option<&str>) -> Autonomy {
+    match value {
+        Some("full") => Autonomy::Full,
+        _ => Autonomy::Supervised,
+    }
+}
 
 /// Real epoch millis for wire timestamps.
 fn now_ms() -> u64 {
@@ -108,6 +136,11 @@ pub struct AgentController {
     /// Publishes the resolved provider from a background task, so the keychain
     /// is never read on this event path (L-271).
     provider: ProviderResolver,
+    /// The session's input thread, through which Ask points and types — with
+    /// exactly the session's authority. `None` until the session provides it.
+    input: Option<AgentInput>,
+    /// A conversation waiting on the person's answer, if any.
+    parked: Arc<Mutex<Option<Parked>>>,
 }
 
 // One Mac is the effectful resource. A reconnect can create a new controller
@@ -125,6 +158,8 @@ impl Default for AgentController {
             display: SharedDisplay::default(),
             runs: HashMap::new(),
             provider: ProviderResolver::new(),
+            input: None,
+            parked: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -147,6 +182,12 @@ impl AgentController {
             self.cancel_active();
         }
         self.display.set(display_id);
+    }
+
+    /// Give Ask the session's input thread. Called once, when the session
+    /// builds its input gate.
+    pub fn set_input(&mut self, input: AgentInput) {
+        self.input = Some(input);
     }
 
     /// True while a run is in flight.
@@ -199,6 +240,8 @@ impl AgentController {
                 text,
                 protocol_version,
                 consent_revision,
+                autonomy,
+                continues,
                 ..
             } => {
                 if protocol_version != Some(ASK_PROTOCOL_VERSION) {
@@ -211,7 +254,16 @@ impl AgentController {
                     }
                     return;
                 }
-                self.start_command(run_id, text, consent_revision, control_scoped, peer);
+                let autonomy = autonomy_from_wire(autonomy.as_deref());
+                self.start_command(
+                    run_id,
+                    text,
+                    consent_revision,
+                    autonomy,
+                    continues,
+                    control_scoped,
+                    peer,
+                );
             }
             AgentInbound::AgentStop { run_id, .. } => {
                 if self.active.as_ref().is_some_and(|a| a.run_id == run_id) {
@@ -288,11 +340,14 @@ impl AgentController {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn start_command(
         &mut self,
         run_id: String,
         text: String,
         consent_revision: Option<String>,
+        autonomy: Autonomy,
+        continues: Option<String>,
         control_scoped: bool,
         peer: Option<Arc<WebRtcPeer>>,
     ) {
@@ -346,16 +401,27 @@ impl AgentController {
         // (L-265). A settings change between the disclosure and the command
         // would otherwise send the screen somewhere they never agreed to, and
         // nothing on either device would have said so.
+        //
+        // Instant actions are a second destination (ADR-0019). A phone that
+        // showed it echoes the revision covering both; one that showed only
+        // the model's gets a run without them.
+        let mut instant = None;
         if let Some(resolved) = &resolved {
-            let expected = &resolved.config.consent_revision;
-            if consent_revision.as_deref() != Some(expected.as_str()) {
-                Self::send_refusal(
-                    &peer,
-                    &run_id,
-                    "This Mac's AI setup changed since your phone last checked. Open Ask again \
-                     to see where requests would go, then send the task once more.",
-                );
-                return;
+            match resolved.agreed(consent_revision.as_deref()) {
+                Some(with_instant) => {
+                    if with_instant {
+                        instant = resolved.instant.clone();
+                    }
+                }
+                None => {
+                    Self::send_refusal(
+                        &peer,
+                        &run_id,
+                        "This Mac's AI setup changed since your phone last checked. Open Ask \
+                         again to see where requests would go, then send the task once more.",
+                    );
+                    return;
+                }
             }
         }
 
@@ -402,6 +468,30 @@ impl AgentController {
         // The new run waits below for the old one to actually stop.
         let prior = self.supersede_active();
         let execution_lease = Arc::clone(&self.execution_lease);
+        let revision = resolved
+            .as_ref()
+            .map(|r| r.config.consent_revision.clone())
+            .unwrap_or_default();
+        // An answer to the question the last run ended on carries on in the
+        // same conversation — if it is the run it says, recent, and still
+        // talking to the destination the person agreed to.
+        let resumed = continues.and_then(|previous| {
+            let mut parked = self.parked.lock().unwrap();
+            match parked.take() {
+                Some(p)
+                    if p.run_id == previous
+                        && p.consent_revision == revision
+                        && p.at.elapsed() < PARKED_FOR =>
+                {
+                    Some(p.brain)
+                }
+                // Anything else is dropped: a stale thread is not kept
+                // waiting for an answer that will never resume it.
+                _ => None,
+            }
+        });
+        let parked_slot = Arc::clone(&self.parked);
+        let input = self.input.clone();
 
         // Feed forwarder: runner step events → phone, over the reliable input
         // channel.
@@ -505,8 +595,31 @@ impl AgentController {
                 }
             }
 
-            let brain = LlmBrain::new(AnyProvider::new(choice));
-            let executor = match TieredExecutor::from_env(display) {
+            let instant_on = resumed.is_none() && instant.is_some();
+            let (brain, task_text) = match resumed {
+                Some(mut brain) => {
+                    brain.resume(&text);
+                    (brain, text)
+                }
+                None => (
+                    LlmBrain::new(AnyProvider::new(choice)).with_instant(instant),
+                    text,
+                ),
+            };
+            let caps = brain.caps();
+            let config = ComputerConfig {
+                vision: caps.vision,
+                grid: match caps.grid {
+                    crate::agent::llm::Grid::Thousand => Grid::Thousand,
+                    crate::agent::llm::Grid::Pixels => Grid::Pixels,
+                },
+                // Marks help a model with no trained computer tool find
+                // targets; one trained on plain screenshots works better
+                // without them.
+                marks: caps.vision && !caps.computer_use,
+            };
+            let has_input = input.is_some();
+            let executor = match TieredExecutor::new(display, input, run_cancel.flag(), config) {
                 Ok(e) => e,
                 Err(e) => {
                     // Can only fail if HOME is unset — the sandbox tier needs a
@@ -522,12 +635,63 @@ impl AgentController {
                     return;
                 }
             };
-            let mut runner = AgentRunner::new(brain, executor, steps_tx, now_ms);
+            // A person at the Mac takes over the moment they touch it, the
+            // way a touch on the phone does. Held for exactly the run.
+            // Created off the async worker: it waits for its thread to report
+            // whether macOS allowed the listener.
+            let _takeover = if has_input {
+                let cancel = run_cancel.clone();
+                let id = run_id_task.clone();
+                tokio::task::spawn_blocking(move || {
+                    Takeover::watch(move || {
+                        log::info!(
+                            target: "lilypad::agent",
+                            "someone used the Mac during run {id} — handing control back"
+                        );
+                        cancel.cancel();
+                    })
+                })
+                .await
+                .ok()
+                .flatten()
+            } else {
+                None
+            };
+            log::info!(
+                target: "lilypad::agent",
+                "run {run_id_task}: {autonomy:?}, vision {}, grid {:?}, native computer tool {}, \
+                 instant actions {instant_on}",
+                caps.vision,
+                caps.grid,
+                caps.computer_use
+            );
+            let mut runner = AgentRunner::with_config(
+                brain,
+                executor,
+                steps_tx,
+                now_ms,
+                RunnerConfig {
+                    autonomy,
+                    ..RunnerConfig::default()
+                },
+            );
             let outcome = runner
-                .run(&run_id_task, &text, &mut decisions_rx, &run_cancel)
+                .run(&run_id_task, &task_text, &mut decisions_rx, &run_cancel)
                 .await;
             *outcome_record.lock().unwrap() = Some(outcome);
             log::info!(target: "lilypad::agent", "agent run {run_id_task} ended: {outcome:?}");
+            // Paused on a question: keep the conversation for the answer.
+            if outcome == RunOutcome::NeedsInput {
+                let brain = runner.into_brain();
+                if brain.is_waiting_for_answer() {
+                    *parked_slot.lock().unwrap() = Some(Parked {
+                        run_id: run_id_task,
+                        brain,
+                        consent_revision: revision,
+                        at: std::time::Instant::now(),
+                    });
+                }
+            }
         });
 
         self.active = Some(ActiveRun {
@@ -544,10 +708,9 @@ impl AgentController {
     /// One `agent_ready` describing exactly what the resolver knows (L-285).
     fn ready_frame(run_id: &str, readiness: &Readiness) -> AgentOutbound {
         let (state, destination) = match readiness {
-            Readiness::Ready(resolved) => (
-                AgentHandshakeState::Ready,
-                Some(resolved.config.destination()),
-            ),
+            Readiness::Ready(resolved) => {
+                (AgentHandshakeState::Ready, Some(resolved.destination()))
+            }
             Readiness::Unknown => (AgentHandshakeState::Checking, None),
             Readiness::NotConfigured => (AgentHandshakeState::Unconfigured, None),
             Readiness::Unavailable(_) => (AgentHandshakeState::Unavailable, None),
@@ -557,6 +720,7 @@ impl AgentController {
             protocol_version: ASK_PROTOCOL_VERSION,
             state,
             destination,
+            features: AGENT_FEATURES,
             ts: now_ms(),
         }
     }
@@ -645,6 +809,34 @@ mod tests {
     }
 
     #[test]
+    fn only_an_explicit_full_grants_full_control() {
+        assert_eq!(autonomy_from_wire(Some("full")), Autonomy::Full);
+        for other in [
+            None,
+            Some("supervised"),
+            Some("FULL"),
+            Some("turbo"),
+            Some(""),
+        ] {
+            assert_eq!(autonomy_from_wire(other), Autonomy::Supervised, "{other:?}");
+        }
+    }
+
+    #[test]
+    fn the_handshake_announces_what_this_mac_can_do() {
+        let frame = AgentController::ready_frame("run-1", &Readiness::NotConfigured);
+        let json: serde_json::Value = serde_json::from_str(&frame.encode()).unwrap();
+        let features: Vec<&str> = json["features"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|f| f.as_str())
+            .collect();
+        assert!(features.contains(&"full_control"));
+        assert!(features.contains(&"computer_use"));
+    }
+
+    #[test]
     fn authorize_requires_control_then_provider() {
         assert_eq!(authorize_command(false, false), CommandGate::DenyNoControl);
         assert_eq!(authorize_command(false, true), CommandGate::DenyNoControl);
@@ -730,7 +922,15 @@ mod tests {
             task: tokio::spawn(async {}),
             _forwarder: tokio::spawn(async {}),
         });
-        controller.start_command("new".into(), "do a thing".into(), None, false, None);
+        controller.start_command(
+            "new".into(),
+            "do a thing".into(),
+            None,
+            Autonomy::Full,
+            None,
+            false,
+            None,
+        );
         assert!(
             !cancel.is_cancelled(),
             "a command that was never admitted cancelled the live run"
@@ -787,7 +987,15 @@ mod tests {
             "old".into(),
             Arc::new(Mutex::new(Some(RunOutcome::Completed))),
         );
-        controller.start_command("old".into(), "execute again".into(), None, true, None);
+        controller.start_command(
+            "old".into(),
+            "execute again".into(),
+            None,
+            Autonomy::Supervised,
+            None,
+            true,
+            None,
+        );
         assert!(
             !cancel.is_cancelled(),
             "a replay must not supersede the live task"
