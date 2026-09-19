@@ -805,8 +805,9 @@ requested` and new-version startup lines. Repeat once with another Lilypad
 
 ## Ask computer-use gate
 
-For the build that ships [ADR-0018](adr/0018-ask-operates-the-mac-under-full-control.md).
-Run on a signed build with a paired phone, once with an Anthropic key and once
+For the build that ships [ADR-0018](adr/0018-ask-operates-the-mac-under-full-control.md):
+**v0.1.44** (desktop) with **mobile-v0.1.43** (TestFlight build 45), published
+2026-09-19 before this gate ran — so it is a post-publication check. Run on a signed build with a paired phone, once with an Anthropic key and once
 with an OpenRouter or OpenAI key (a GPT model), with screenshots allowed. Record
 the model, the mode and every step's summary from the phone.
 

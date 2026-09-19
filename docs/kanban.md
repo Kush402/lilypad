@@ -32,6 +32,26 @@ and the hardware gate still need a device; L-247, L-251 and L-259 are fixed at
 source and still await it. A cut needs the owner's authorization and those
 gates, not an empty "open" column.
 
+**v0.1.44 published (2026-09-19), carrying v0.1.43:** Release commit
+`7e87ba7d820f03d6e02c0a98288845c9514aaf4a`, tagged `v0.1.44`, CI green on that
+exact commit before the tag. It ships computer use under full control
+(ADR-0018), instant actions (ADR-0019) and L-341 through L-355. The first cut,
+`v0.1.43` at `fc5a1e8`, published on GitHub, but the site refused its 26.3 MB
+updater archive (L-355), so no customer was ever offered it; the site,
+installer and updaters stayed on v0.1.42 until v0.1.44. Verified anonymously:
+the site reads v0.1.44, `Lilypad.dmg` returns 200 at 22,804,519 bytes and
+`Lilypad.app.tar.gz` at 23,395,811, both equal to the release assets,
+`latest.json` reports 0.1.44 for all four darwin targets, and the privacy page
+names TypeSafe with "Last updated 18 September 2026". The backend deploy
+reports revision `7e87ba7`. The phone half is `mobile-v0.1.43` at `fc5a1e8`:
+TestFlight build **45** and Android run 25. The phone is unchanged in v0.1.44.
+**The owner authorised this release after an audit; the device, provider and
+first-use gates have not run.** The Ask computer-use gate in
+[manual-device-test.md](manual-device-test.md), steps 1–11, is now a
+post-publication check, and so is everything the audit could only read in
+code: event tags at the takeover listener, and clicks under full control that
+are asked because a hit test failed (L-352).
+
 **v0.1.34 published (2026-09-11):** Release commit
 `4889f575e7ff5a08109296a2961f7d0fd3f83be9`, tagged `v0.1.34` and
 `mobile-v0.1.34`, CI green on that exact commit before either tag was pushed.
