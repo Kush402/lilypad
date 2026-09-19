@@ -6,6 +6,11 @@ All notable changes to Lilypad are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.43] — 2026-09-18
+
+Ask can now use the Mac itself — clicking, typing and scrolling — under full
+control if you choose, and short commands can happen instantly.
+
 ### Added
 
 - **Ask can now use the Mac like a person does.** It clicks, double-clicks,
