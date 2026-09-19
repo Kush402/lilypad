@@ -16,7 +16,7 @@ This file exists because the list used to live only in a conversation. Six rows
 (L-20, L-38 through L-42) were reconstructed from later summaries after the
 earlier record was compacted away, which is the argument for the file.
 
-**Status counts:** 305 fixed · 38 shipped · 7 partially fixed · 0 open ·
+**Status counts:** 305 fixed · 35 shipped · 7 partially fixed · 0 open ·
 1 blocked on something outside the code · 4 deliberately unchanged · 4 not a bug ·
 1 unrecoverable (L-20). 357 rows.
 

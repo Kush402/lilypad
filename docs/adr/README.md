@@ -52,3 +52,4 @@ the old one `Superseded by ADR-NNNN`.
 | [0017](0017-ask-reads-each-provider-in-its-own-vocabulary.md) | Ask reads each provider in its own vocabulary              | Accepted                                                |
 | [0018](0018-ask-operates-the-mac-under-full-control.md)       | Ask operates the Mac under the owner's full control        | Accepted                                                |
 | [0019](0019-ask-does-short-commands-instantly.md)             | Ask does short commands instantly                          | Accepted                                                |
+| [0020](0020-lilypad-runs-computer-use-on-its-own-account.md)  | Lilypad runs computer use on its own account, for Pro      | Accepted                                                |
