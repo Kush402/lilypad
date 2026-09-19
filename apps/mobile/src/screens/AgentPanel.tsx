@@ -74,10 +74,13 @@ export function destinationSentence(destination: AgentDestination | undefined): 
   const model = destination.model ? ` (${destination.model})` : '';
   // A second destination, named in the same breath (ADR-0019).
   const instant = destination.instant
-    ? ` Short commands also go to ${destination.instant.providerName} at ${destination.instant.origin}, to be done instantly: your command, the app in front and the names of the controls on screen \u2014 never a screenshot.`
+    ? ` Short commands also go to ${destination.instant.providerName} at ${destination.instant.origin}, to be done instantly: your command, the app in front, the names of actionable controls on screen (including buttons, links, fields, rows and menu items), and matching installed-app names when you name an app \u2014 never a screenshot or field contents.`
     : '';
   if (destination.local) {
-    return `This Mac runs its model locally at ${destination.origin}${model}. Your screen is read on the Mac and does not leave it.${instant}`;
+    const privacy = destination.instant
+      ? ' The AI model reads your screen only on the Mac; the instant-action data described next is sent separately.'
+      : ' Your screen is read on the Mac and does not leave it.';
+    return `This Mac runs its model locally at ${destination.origin}${model}.${privacy}${instant}`;
   }
   return `This Mac sends to ${destination.providerName} at ${destination.origin}${model}. Your screen leaves your Mac and your phone for that provider. Lilypad never sees it.${instant}`;
 }

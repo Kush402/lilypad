@@ -73,8 +73,10 @@ export function InstantActionsCard() {
         Short commands like &ldquo;scroll down&rdquo;, &ldquo;click Compose&rdquo; or &ldquo;open
         Safari&rdquo; happen in about a second, without waiting for the AI model. TypeSafe&apos;s
         Jev model works out which action you mean. It receives your command, the name of the app in
-        front, and the names of the buttons and links on screen &mdash; never a screenshot and never
-        what is typed in a field. Anything longer goes to the provider above, as usual.
+        front, the names of actionable controls on screen (including buttons, links, fields, rows,
+        and menu items), and matching installed-app names when you name an app &mdash; never a
+        screenshot and never what is typed in a field. Anything longer goes to the provider above,
+        as usual.
       </p>
       {on ? (
         <p className="muted" data-testid="instant-origin">

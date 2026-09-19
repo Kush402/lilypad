@@ -372,8 +372,8 @@ pub struct AgentDestination {
 }
 
 /// The instant-actions destination (ADR-0019). What it receives is narrower
-/// than the model's: the command, the app in front, and the names of the
-/// controls on screen — never a screenshot.
+/// than the model's: the command, the app in front, actionable-control labels,
+/// and matching installed-app names — never a screenshot or field contents.
 #[derive(Debug, Clone, Serialize)]
 pub struct InstantDestination {
     #[serde(rename = "providerName")]
@@ -391,7 +391,7 @@ pub struct InstantDestination {
 /// Revision of the consent wording. Must match `AI_CONSENT_POLICY` in
 /// `@lilypad/protocol`; a stored grant against an older revision is not a
 /// grant for this one.
-pub const AI_CONSENT_POLICY: u32 = 1;
+pub const AI_CONSENT_POLICY: u32 = 2;
 
 /// Messages the desktop agent sends to the phone (desktop → phone). Built on
 /// this side, so summaries are truncated at construction rather than rejected.

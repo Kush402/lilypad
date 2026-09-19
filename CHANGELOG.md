@@ -40,8 +40,9 @@ GitHub, but never served by the site (see 0.1.44).
 - **Instant actions.** With a TypeSafe key added in the Mac's Ask settings,
   short commands such as "click Compose", "scroll down", "go back" or "open
   Safari" are done without waiting for the AI model. Only the command, the
-  app in front and the names of on-screen controls go to TypeSafe, never a
-  screenshot, and your phone asks before the first time. A control is only
+  app in front, the names of on-screen actionable controls, and matching
+  installed-app names go to TypeSafe, never a screenshot or field contents,
+  and your phone asks before the first time. A control is only
   pressed when your command names it, and anything with a "don't" or an "if"
   goes to the AI model. If TypeSafe stops accepting your key, Settings says
   so.

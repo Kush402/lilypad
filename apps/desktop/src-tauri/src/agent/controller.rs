@@ -34,8 +34,8 @@ use crate::input::AgentInput;
 use crate::rtc::WebRtcPeer;
 
 /// How long a run that ended on a question keeps its conversation, waiting
-/// for the answer. Past this the answer starts a fresh task: the screen, and
-/// what the person meant, have both moved on.
+/// for the answer. Past this the answer is refused: the screen, and what the
+/// person meant, have both moved on, so it must not become a fresh command.
 const PARKED_FOR: std::time::Duration = std::time::Duration::from_secs(15 * 60);
 
 /// A conversation paused on a question, waiting for the person's answer.
@@ -46,6 +46,12 @@ struct Parked {
     /// setup changed must not resume a thread with the old provider.
     consent_revision: String,
     at: std::time::Instant,
+}
+
+enum Continuation {
+    Fresh,
+    Resume(Box<LlmBrain<AnyProvider>>),
+    Expired,
 }
 
 /// Map the wire's autonomy to the policy's: only an explicit "full" grants
@@ -171,6 +177,28 @@ impl AgentController {
         // arrives the answer is usually already published.
         controller.provider.warm();
         controller
+    }
+
+    /// Resolve the conversation an inbound frame claims to answer. The
+    /// presence of `continues` is authoritative: if its thread is gone, this is
+    /// an expired answer, never a new command with coincidentally short text.
+    fn take_continuation(&self, continues: Option<&str>, revision: &str) -> Continuation {
+        let Some(previous) = continues else {
+            return Continuation::Fresh;
+        };
+        let mut parked = self.parked.lock().unwrap();
+        match parked.take() {
+            Some(p)
+                if p.run_id == previous
+                    && p.consent_revision == revision
+                    && p.at.elapsed() < PARKED_FOR =>
+            {
+                Continuation::Resume(Box::new(p.brain))
+            }
+            // Anything else is dropped: a stale thread is not kept waiting for
+            // an answer that can no longer be interpreted in context.
+            _ => Continuation::Expired,
+        }
     }
 
     /// Point Ask's perception at the display the session now shares. Called
@@ -466,8 +494,6 @@ impl AgentController {
         // command is admitted. Cancelling before the gate would let a refused
         // command (view-only session, no provider) kill a legitimate run.
         // The new run waits below for the old one to actually stop.
-        let prior = self.supersede_active();
-        let execution_lease = Arc::clone(&self.execution_lease);
         let revision = resolved
             .as_ref()
             .map(|r| r.config.consent_revision.clone())
@@ -475,21 +501,25 @@ impl AgentController {
         // An answer to the question the last run ended on carries on in the
         // same conversation — if it is the run it says, recent, and still
         // talking to the destination the person agreed to.
-        let resumed = continues.and_then(|previous| {
-            let mut parked = self.parked.lock().unwrap();
-            match parked.take() {
-                Some(p)
-                    if p.run_id == previous
-                        && p.consent_revision == revision
-                        && p.at.elapsed() < PARKED_FOR =>
-                {
-                    Some(p.brain)
-                }
-                // Anything else is dropped: a stale thread is not kept
-                // waiting for an answer that will never resume it.
-                _ => None,
+        let resumed = match self.take_continuation(continues.as_deref(), &revision) {
+            Continuation::Fresh => None,
+            Continuation::Resume(brain) => Some(*brain),
+            Continuation::Expired => {
+                Self::send_refusal(
+                    &peer,
+                    &run_id,
+                    "That earlier Ask question has expired, so this answer was not run as a new \
+                     task. Ask again to continue with fresh context.",
+                );
+                return;
             }
-        });
+        };
+
+        // Only an admitted fresh command or a valid continuation supersedes
+        // the current run. A late answer with no conversation must not cancel
+        // unrelated work, and must never become a context-free instant action.
+        let prior = self.supersede_active();
+        let execution_lease = Arc::clone(&self.execution_lease);
         let parked_slot = Arc::clone(&self.parked);
         let input = self.input.clone();
 
@@ -842,6 +872,19 @@ mod tests {
         assert_eq!(authorize_command(false, true), CommandGate::DenyNoControl);
         assert_eq!(authorize_command(true, false), CommandGate::DenyNoProvider);
         assert_eq!(authorize_command(true, true), CommandGate::Run);
+    }
+
+    #[test]
+    fn an_answer_without_its_parked_question_expires_instead_of_becoming_a_command() {
+        let controller = AgentController::default();
+        assert!(matches!(
+            controller.take_continuation(None, "rev"),
+            Continuation::Fresh
+        ));
+        assert!(matches!(
+            controller.take_continuation(Some("run-that-is-gone"), "rev"),
+            Continuation::Expired
+        ));
     }
 
     #[tokio::test]

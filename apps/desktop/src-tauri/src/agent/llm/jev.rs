@@ -372,16 +372,57 @@ fn words(text: &str) -> impl Iterator<Item = String> + '_ {
         .map(str::to_lowercase)
 }
 
-/// Does the command name this control? One of the command's words is one of
-/// the label's, or the start of one ("download" names "Downloads"). The
-/// model chooses among the controls; this keeps its choice to one the person
-/// named, so a control that only seems related is never pressed on the
-/// model's word alone.
-fn names_control(task: &str, label: &str) -> bool {
+/// Does the command name this control? Every meaningful command word must be
+/// in the label, or the start of one ("download" names "Downloads"). Requiring
+/// the whole name matters for neighbouring controls such as "Reply" and
+/// "Reply All": Jev's choice alone must not be allowed to drop a word the
+/// person said.
+fn control_match(task: &str, label: &str) -> Option<usize> {
     let label: Vec<String> = words(label).collect();
-    words(task)
+    let wanted: Vec<String> = words(task)
         .filter(|w| !ACTING_WORDS.contains(&w.as_str()))
-        .any(|w| label.iter().any(|l| same_word(&w, l)))
+        .collect();
+    (!wanted.is_empty() && wanted.iter().all(|w| label.iter().any(|l| same_word(w, l))))
+        .then(|| label.len().saturating_sub(wanted.len()))
+}
+
+/// Filler for a keyboard command. Direction words deliberately stay: they
+/// distinguish zoom in/out, page up/down and next/previous tab.
+const KEY_FILLER_WORDS: &[&str] = &[
+    "a", "an", "the", "it", "at", "to", "of", "my", "this", "that", "press", "hit", "please",
+    "now", "go", "open",
+];
+
+/// A shortcut may run only when its description is the unique one named by
+/// the command. The choice question offers every shortcut at once, so merely
+/// returning an offered option is not enough: a wrong high-confidence answer
+/// must not turn "new tab" into Close Tab.
+fn names_key(task: &str, chosen: &str) -> bool {
+    let wanted: Vec<String> = words(task)
+        .filter(|w| !KEY_FILLER_WORDS.contains(&w.as_str()))
+        .collect();
+    if wanted.is_empty() {
+        return false;
+    }
+
+    // "Tab" is present in several descriptions, but this exact command names
+    // the key itself rather than any of the tab-management shortcuts.
+    let tab_key = wanted == ["tab"];
+    if tab_key {
+        return chosen == "tab_key";
+    }
+
+    let matching: Vec<&str> = KEYS
+        .iter()
+        .filter(|(_, description, _, _)| {
+            let description: Vec<String> = words(description).collect();
+            wanted
+                .iter()
+                .all(|w| description.iter().any(|d| same_word(w, d)))
+        })
+        .map(|(key, ..)| *key)
+        .collect();
+    matching.as_slice() == [chosen]
 }
 
 fn same_word(a: &str, b: &str) -> bool {
@@ -504,7 +545,20 @@ pub fn decide(
             // Only an element this request offered; the model's word is not
             // enough to name one that was never on the list.
             let element = reading.elements.iter().find(|e| e.id == id)?;
-            if !names_control(task, &element.label) {
+            let score = control_match(task, &element.label)?;
+            let matching: Vec<usize> = reading
+                .elements
+                .iter()
+                .filter_map(|candidate| control_match(task, &candidate.label))
+                .collect();
+            let best = matching.iter().min()?;
+            if score != *best
+                || matching
+                    .iter()
+                    .filter(|candidate| *candidate == best)
+                    .count()
+                    != 1
+            {
                 return None;
             }
             Some(InstantAction {
@@ -589,6 +643,9 @@ pub fn decide(
         "key" => {
             let (chosen, p) = pick(answers, "key")?;
             if p < ARGUMENT_MIN {
+                return None;
+            }
+            if !names_key(task, chosen) {
                 return None;
             }
             let (_, _, chord, done) = KEYS.iter().find(|(k, ..)| *k == chosen)?;
@@ -1233,6 +1290,53 @@ mod tests {
             press("zoom in", &screen("safari"), "e14"),
             None,
             "“in” is not a name"
+        );
+        assert_eq!(
+            press("reply all", &mail, "e4"),
+            None,
+            "dropping one of the person's words must not click Reply"
+        );
+        assert_eq!(
+            press("reply all", &mail, "e5").as_deref(),
+            Some("Clicked button “Reply All”.")
+        );
+
+        let mut duplicate = mail.clone();
+        duplicate.elements.push(el(30, "link", "Compose"));
+        assert_eq!(
+            press("click compose", &duplicate, "e3"),
+            None,
+            "an ambiguous name belongs with the language model, not an instant click"
+        );
+    }
+
+    #[test]
+    fn a_shortcut_runs_only_when_the_command_uniquely_names_it() {
+        let safari = screen("safari");
+        let key = |task: &str, chosen: &str| {
+            decide(
+                task,
+                &safari,
+                &[],
+                &answers(("key", 0.99), json!({ "key": chose(chosen, 0.99) })),
+            )
+            .map(|a| a.action)
+        };
+
+        assert!(key("new tab", "new_tab").is_some());
+        assert_eq!(
+            key("new tab", "close_tab"),
+            None,
+            "an offered but unnamed shortcut must not run"
+        );
+        assert!(key("zoom in", "zoom_in").is_some());
+        assert_eq!(key("zoom in", "zoom_out"), None);
+        assert!(key("press tab", "tab_key").is_some());
+        assert_eq!(key("press tab", "new_tab"), None);
+        assert_eq!(
+            key("find flights to Tokyo", "find"),
+            None,
+            "a search task is not the Find shortcut"
         );
     }
 

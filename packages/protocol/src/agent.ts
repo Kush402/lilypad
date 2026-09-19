@@ -169,8 +169,8 @@ export const AgentDestinationSchema = z.object({
   /**
    * Where short commands go to be done as one instant action, when the Mac
    * has that on (ADR-0019). A second destination, disclosed beside the first:
-   * it receives the command, the app in front and the names of the controls
-   * on screen, never a screenshot.
+   * it receives the command, the app in front, actionable-control labels and
+   * matching installed-app names, never a screenshot or field contents.
    *
    * A phone that shows it echoes `instant.consentRevision`; one that does not
    * (every phone before this field) echoes the destination's own revision,
@@ -192,7 +192,7 @@ export type AgentDestination = z.infer<typeof AgentDestinationSchema>;
  * agreeing to changes materially; a stored grant against an older revision is
  * not a grant for the new one.
  */
-export const AI_CONSENT_POLICY = 1 as const;
+export const AI_CONSENT_POLICY = 2 as const;
 
 const agentHello = WithTs.extend({ kind: z.literal('agent_hello'), runId: RunId });
 

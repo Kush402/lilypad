@@ -18,6 +18,10 @@ describe('InstantActionsCard', () => {
     render(<InstantActionsCard />);
     await waitFor(() => expect(screen.getByTestId('instant-state').textContent).toBe('Off'));
     expect(screen.getByTestId('instant-card').textContent).toMatch(/never a screenshot/);
+    expect(screen.getByTestId('instant-card').textContent).toMatch(
+      /buttons, links, fields, rows, and menu items/,
+    );
+    expect(screen.getByTestId('instant-card').textContent).toMatch(/matching installed-app names/);
     expect(screen.queryByTestId('instant-remove')).toBeNull();
   });
 

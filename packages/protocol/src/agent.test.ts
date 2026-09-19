@@ -37,7 +37,7 @@ describe('Ask compatibility boundary', () => {
         origin: 'https://api.openai.com',
         model: 'gpt-4o-mini',
         local: false,
-        consentPolicy: 1,
+        consentPolicy: 2,
         consentRevision: 'rev-abc',
         source: 'settings',
       },
@@ -181,7 +181,7 @@ describe('instant actions are a second, disclosed destination (ADR-0019)', () =>
       origin: 'https://openrouter.ai',
       model: 'openai/gpt-4o-mini',
       local: false,
-      consentPolicy: 1,
+      consentPolicy: 2,
       consentRevision: 'rev-model',
       source: 'settings',
       instant: {

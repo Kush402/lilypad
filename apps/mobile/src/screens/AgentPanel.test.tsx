@@ -62,7 +62,7 @@ const DESTINATION = {
   origin: 'https://api.openai.com',
   model: 'gpt-4o-mini',
   local: false,
-  consentPolicy: 1,
+  consentPolicy: 2,
   consentRevision: 'rev-1',
   source: 'settings',
 };
@@ -717,7 +717,7 @@ describe('the destination sentence names instant actions too (ADR-0019)', () => 
     origin: 'http://localhost:11434',
     model: 'qwen3-vl',
     local: true,
-    consentPolicy: 1,
+    consentPolicy: 2,
     consentRevision: 'rev-model',
     source: 'settings',
   };
@@ -734,8 +734,10 @@ describe('the destination sentence names instant actions too (ADR-0019)', () => 
     });
     expect(both).toMatch(/runs its model locally/);
     expect(both).toMatch(/TypeSafe Jev at https:\/\/api\.typesafe\.ai/);
-    expect(both).toMatch(/names of the controls on screen/);
+    expect(both).toMatch(/buttons, links, fields, rows and menu items/);
+    expect(both).toMatch(/matching installed-app names/);
     expect(both).toMatch(/never a screenshot/);
+    expect(both).not.toMatch(/screen is read on the Mac and does not leave it/);
     expect(destinationSentence(destination)).not.toMatch(/TypeSafe/);
   });
 });

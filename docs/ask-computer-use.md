@@ -1,7 +1,7 @@
 ---
 status: Implemented
 owner: @kushsharma024
-last-verified: 2026-09-18
+last-verified: 2026-09-19
 summary: How Ask sees, points, clicks and types on the Mac with any provider — instant actions, the toolset, the flow of one step, the safety floor, takeover, and where each part lives.
 ---
 
@@ -55,8 +55,9 @@ and the first model request
   resolve, gate and phone feed as any other, without a settle-and-look, and
   its success ends the run.
 - Code adds its own limits on top of the model's choice. A control is pressed
-  only when the command names it: one of the command's words is one of the
-  label's words, or the start of one. A website is opened only when no
+  only when every meaningful command word is in its label and it is the unique
+  most-specific matching control; a shortcut runs only when its description is
+  the unique one the command names. A website is opened only when no
   listed control has that name (in Finder, "open notes.txt" means the file).
   A command with a negation or a condition ("don't", "if", "then", "until")
   and a command longer than 160 characters go straight to the model. Nothing
@@ -66,8 +67,9 @@ and the first model request
   means capturing the fixtures again and changing the pin in the same change.
 - Anything else goes to the model on the same first look. A declined,
   refused or failed instant action also goes to the model, with a note
-  saying what happened. A resumed task (an answer to a question) never tries
-  it.
+  saying what happened. A valid resumed task (an answer to a question) never
+  tries it; an answer whose parked conversation is missing, expired or for a
+  changed destination is refused rather than becoming a fresh command.
 - Sent: the command, the app in front, each listed control's role and label,
   and installed app names sharing a word with the command. Never a
   screenshot, a field's value or a window title.
