@@ -6,10 +6,22 @@ All notable changes to Lilypad are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.44] — 2026-09-18
+
+Everything in 0.1.43, in a download small enough for the site to serve.
+
+### Fixed
+
+- **The Mac app's download is smaller.** 0.1.43's update file was just over
+  the size the download site accepts, so the site never offered it and
+  installed copies stayed on 0.1.42. The app no longer ships its internal
+  symbol tables, which were most of the difference.
+
 ## [0.1.43] — 2026-09-18
 
 Ask can now use the Mac itself — clicking, typing and scrolling — under full
-control if you choose, and short commands can happen instantly.
+control if you choose, and short commands can happen instantly. Published on
+GitHub, but never served by the site (see 0.1.44).
 
 ### Added
 
