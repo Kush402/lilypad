@@ -1390,6 +1390,9 @@ pub struct AgentConfigDto {
     /// Which source currently wins: "env" (dev override active — settings
     /// below are stored but ignored), "settings", or "none" (agent inert).
     pub source: &'static str,
+    /// Who runs a task: "model" (the provider above) or "lilypad" (Lilypad's
+    /// own System One loop, ADR-0020).
+    pub engine: &'static str,
 }
 
 /// Off the main thread. A synchronous command runs ON the main thread, and this
@@ -1407,6 +1410,7 @@ pub async fn get_agent_config() -> Result<AgentConfigDto, String> {
 fn agent_config_snapshot() -> AgentConfigDto {
     use crate::agent::llm::{store, ProviderChoice};
     let settings = store::load_settings();
+    let engine = store::engine_of(&settings);
     let kind = settings.provider_kind.clone();
     let base = settings.base_url.clone();
 
@@ -1530,7 +1534,41 @@ fn agent_config_snapshot() -> AgentConfigDto {
         problem,
         last_failure: last_failure.map(|(kind, _)| kind),
         source,
+        engine,
     }
+}
+
+/// Choose who runs a task: the configured AI provider, or Lilypad's own
+/// System One loop (ADR-0020). The loop needs a TypeSafe key, which is the
+/// same setting instant actions use, so this refuses rather than saving a
+/// choice that cannot run.
+#[tauri::command]
+pub async fn set_ask_engine(engine: String) -> Result<AgentConfigDto, String> {
+    use crate::agent::llm::{jev, store};
+    let engine = match engine.as_str() {
+        store::ENGINE_MODEL => store::ENGINE_MODEL,
+        store::ENGINE_LILYPAD => store::ENGINE_LILYPAD,
+        other => return Err(format!("unknown engine `{other}`")),
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        if engine == store::ENGINE_LILYPAD
+            && jev::InstantConfig::from_env().is_none()
+            && !matches!(store::credential_for(jev::KEY_KIND, None), Ok(Some(_)))
+        {
+            return Err(
+                "Add a TypeSafe key under Instant actions first: it is what runs the \
+                        task."
+                    .to_string(),
+            );
+        }
+        let mut settings = store::load_settings();
+        settings.engine = Some(engine.to_string());
+        store::save_settings(&settings).map_err(|e| e.to_string())?;
+        log::info!(target: "lilypad::audit", "ask_engine_set — {engine}");
+        Ok(agent_config_snapshot())
+    })
+    .await
+    .map_err(|e| format!("saving the engine failed: {e}"))?
 }
 
 /// The selectable providers, from the one table that defines them.
@@ -1608,6 +1646,9 @@ fn set_agent_config_blocking(args: SetAgentConfigArgs) -> Result<AgentConfigDto,
 
     let settings = store::AgentSettings {
         provider_kind: Some(args.provider_kind),
+        // Which engine runs a task is its own setting, changed by its own
+        // command; saving a provider never silently moves it.
+        engine: previous.engine.clone(),
         profile_id: args.profile_id.filter(|s| !s.trim().is_empty()),
         model: args.model.filter(|s| !s.trim().is_empty()),
         base_url,
@@ -2121,6 +2162,10 @@ pub struct InstantConfigDto {
     /// The keychain could not answer, or TypeSafe refused the key during a
     /// run; named rather than read as "off" or left looking fine.
     pub problem: Option<String>,
+    /// Who runs a whole task: "model" or "lilypad" (ADR-0020). Here as well
+    /// as on the provider card, because this is where the key that makes it
+    /// possible is added.
+    pub engine: &'static str,
 }
 
 /// Said when TypeSafe stopped accepting a key after it was saved.
@@ -2137,6 +2182,7 @@ pub async fn get_instant_config() -> Result<InstantConfigDto, String> {
 fn instant_config_snapshot() -> InstantConfigDto {
     use crate::agent::llm::{jev, store};
     let origin = jev::InstantConfig::new("").origin();
+    let engine = store::engine_of(&store::load_settings());
     let refused = |key: &str| jev::was_refused(key).then(|| INSTANT_KEY_REFUSED.to_string());
     if let Some(config) = jev::InstantConfig::from_env() {
         return InstantConfigDto {
@@ -2144,6 +2190,7 @@ fn instant_config_snapshot() -> InstantConfigDto {
             source: "env",
             origin,
             problem: refused(&config.api_key),
+            engine,
         };
     }
     let (has_key, problem) = match store::credential_for(jev::KEY_KIND, None) {
@@ -2155,6 +2202,7 @@ fn instant_config_snapshot() -> InstantConfigDto {
         source: if has_key { "settings" } else { "none" },
         origin,
         problem,
+        engine,
     }
 }
 

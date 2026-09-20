@@ -790,6 +790,17 @@ fn screen_reading(snapshot: &ax::AxSnapshot, listed: &[(usize, [f64; 4])]) -> Sc
         .collect();
     ScreenReading {
         app: snapshot.app.clone(),
+        // What has the keyboard, named the way a listed control is.
+        focused: snapshot.nodes.iter().find(|n| n.focused).map(|n| {
+            match n.label.as_deref().map(str::trim).filter(|l| !l.is_empty()) {
+                Some(label) => format!(
+                    "{} \u{201c}{}\u{201d}",
+                    role_in_words(&n.role),
+                    tree::clip(label)
+                ),
+                None => role_in_words(&n.role),
+            }
+        }),
         // The first root is the front window on the shared screen.
         window: snapshot
             .nodes

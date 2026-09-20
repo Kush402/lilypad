@@ -321,8 +321,36 @@ impl EffectiveConfig {
             consent_policy: AI_CONSENT_POLICY,
             consent_revision: self.consent_revision.clone(),
             source: self.source.as_str().to_string(),
+            mode: if self.dialect == "jev" {
+                "system_one"
+            } else {
+                "model"
+            },
             instant: None,
         }
+    }
+
+    /// The destination when Lilypad's own loop runs the task (ADR-0020):
+    /// one System One model, no language model behind it, and a consent
+    /// revision of its own because it is a different thing to agree to.
+    pub fn for_jev(
+        committed: u64,
+        source: ConfigSource,
+        base_url: String,
+        key: &str,
+        provider_name: &str,
+    ) -> Option<EffectiveConfig> {
+        let (mut config, _) = Self::assemble(
+            source,
+            committed,
+            "jev",
+            None,
+            base_url,
+            Some(super::jev::MODEL.to_string()),
+            Some(key.to_string()),
+        )?;
+        config.provider_name = provider_name.to_string();
+        Some(config)
     }
 
     /// The revision for this destination together with instant actions sent

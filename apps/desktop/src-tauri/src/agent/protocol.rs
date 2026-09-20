@@ -362,6 +362,10 @@ pub struct AgentDestination {
     /// pointing somewhere else is a different destination, and the person is
     /// entitled to see that it is in force.
     pub source: String,
+    /// What runs the task here: "model" (a language model) or "system_one"
+    /// (Lilypad's own loop, ADR-0020). The words the phone shows differ, so
+    /// this is disclosed rather than inferred from the provider's name.
+    pub mode: &'static str,
     /// Where short commands go to be done as one instant action, when this
     /// Mac has that on (ADR-0019). A second destination, disclosed beside the
     /// first rather than folded into it.
@@ -391,7 +395,7 @@ pub struct InstantDestination {
 /// Revision of the consent wording. Must match `AI_CONSENT_POLICY` in
 /// `@lilypad/protocol`; a stored grant against an older revision is not a
 /// grant for this one.
-pub const AI_CONSENT_POLICY: u32 = 2;
+pub const AI_CONSENT_POLICY: u32 = 3;
 
 /// Messages the desktop agent sends to the phone (desktop → phone). Built on
 /// this side, so summaries are truncated at construction rather than rejected.

@@ -167,6 +167,14 @@ export const AgentDestinationSchema = z.object({
    */
   source: z.string().max(32),
   /**
+   * What runs the task at this destination (ADR-0020). `model` is a language
+   * model, which reads the screen and can write. `system_one` is Lilypad's
+   * own loop: it decides one step at a time from the names of the controls on
+   * screen, never sees a screenshot, and types only words from your command.
+   * Absent from a Mac that predates the choice, which always meant `model`.
+   */
+  mode: z.enum(['model', 'system_one']).optional(),
+  /**
    * Where short commands go to be done as one instant action, when the Mac
    * has that on (ADR-0019). A second destination, disclosed beside the first:
    * it receives the command, the app in front, actionable-control labels and
@@ -192,7 +200,7 @@ export type AgentDestination = z.infer<typeof AgentDestinationSchema>;
  * agreeing to changes materially; a stored grant against an older revision is
  * not a grant for the new one.
  */
-export const AI_CONSENT_POLICY = 2 as const;
+export const AI_CONSENT_POLICY = 3 as const;
 
 const agentHello = WithTs.extend({ kind: z.literal('agent_hello'), runId: RunId });
 

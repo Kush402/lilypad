@@ -198,7 +198,7 @@ const INTENTS: &[(&str, &str)] = &[
     ),
 ];
 
-const DIRECTIONS: &[(&str, &str)] = &[
+pub(super) const DIRECTIONS: &[(&str, &str)] = &[
     ("down", "Down, further, next part"),
     ("up", "Up, back towards the start"),
     ("top", "All the way to the top or beginning"),
@@ -210,7 +210,7 @@ const DIRECTIONS: &[(&str, &str)] = &[
 /// The keyboard commands offered: the option, what it means, the chord, and
 /// how the result names it. Quitting and deleting are deliberately absent —
 /// a misheard word should never be the reason an app closed.
-const KEYS: &[(&str, &str, &str, &str)] = &[
+pub(super) const KEYS: &[(&str, &str, &str, &str)] = &[
     (
         "back",
         "Go back to the previous page or folder",
@@ -377,7 +377,7 @@ fn words(text: &str) -> impl Iterator<Item = String> + '_ {
 /// the whole name matters for neighbouring controls such as "Reply" and
 /// "Reply All": Jev's choice alone must not be allowed to drop a word the
 /// person said.
-fn control_match(task: &str, label: &str) -> Option<usize> {
+pub(super) fn control_match(task: &str, label: &str) -> Option<usize> {
     let label: Vec<String> = words(label).collect();
     let wanted: Vec<String> = words(task)
         .filter(|w| !ACTING_WORDS.contains(&w.as_str()))
@@ -430,7 +430,10 @@ fn same_word(a: &str, b: &str) -> bool {
     short == long || (short.chars().count() >= 4 && long.starts_with(short))
 }
 
-fn choice(instructions: &str, options: impl IntoIterator<Item = (String, Value)>) -> Value {
+pub(super) fn choice(
+    instructions: &str,
+    options: impl IntoIterator<Item = (String, Value)>,
+) -> Value {
     json!({
         "type": "choice",
         "instructions": instructions,
@@ -438,7 +441,9 @@ fn choice(instructions: &str, options: impl IntoIterator<Item = (String, Value)>
     })
 }
 
-fn described<'a>(pairs: impl IntoIterator<Item = (&'a str, &'a str)>) -> Vec<(String, Value)> {
+pub(super) fn described<'a>(
+    pairs: impl IntoIterator<Item = (&'a str, &'a str)>,
+) -> Vec<(String, Value)> {
     pairs
         .into_iter()
         .map(|(k, v)| (k.to_string(), Value::String(v.to_string())))
@@ -515,7 +520,7 @@ pub fn request(model: &str, task: &str, reading: &ScreenReading, apps: &[String]
 
 /// The chosen option of one answer and its probability. `None` for anything
 /// not in the documented shape — which is read as "no instant action".
-fn pick<'a>(answers: &'a Value, question: &str) -> Option<(&'a str, f64)> {
+pub(super) fn pick<'a>(answers: &'a Value, question: &str) -> Option<(&'a str, f64)> {
     let answer = answers.get(question)?;
     let chosen = answer.get("choice")?.as_str()?;
     let p = answer.get("probabilities")?.get(chosen)?.as_f64()?;
@@ -814,6 +819,25 @@ impl Jev {
         decided
     }
 
+    /// Which model this client asks — the loop puts it in its own requests.
+    pub(super) fn model(&self) -> &str {
+        &self.config.model
+    }
+
+    /// One step of a task (ADR-0020). Unlike [`Jev::instant`], a failure here
+    /// is the caller's to report: the run has already started.
+    pub(super) async fn ask_step(&self, body: &Value) -> Result<Value> {
+        let answers = self.ask(body).await;
+        if let Err(e) = &answers {
+            if e.downcast_ref::<ProviderFailure>()
+                .is_some_and(|f| f.kind == FailureKind::Auth)
+            {
+                set_refused(&self.config.api_key);
+            }
+        }
+        answers
+    }
+
     async fn ask(&self, body: &Value) -> Result<Value> {
         #[cfg(test)]
         if let Some(canned) = &self.canned {
@@ -1019,6 +1043,7 @@ mod tests {
         };
         ScreenReading {
             app: app.into(),
+            focused: None,
             window: Some(0),
             elements,
         }
@@ -1392,6 +1417,7 @@ mod tests {
     fn the_request_carries_the_command_and_names_only() {
         let reading = ScreenReading {
             app: "Mail".into(),
+            focused: None,
             window: Some(0),
             elements: vec![el(3, "button", "Compose")],
         };

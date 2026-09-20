@@ -7,6 +7,8 @@ export interface InstantConfigDto {
   source: 'env' | 'settings' | 'none';
   origin: string;
   problem: string | null;
+  /** "model" or "lilypad" — who runs a whole task (ADR-0020). */
+  engine: string;
 }
 
 /**
@@ -19,6 +21,7 @@ export interface InstantConfigDto {
  */
 export function InstantActionsCard() {
   const [config, setConfig] = useState<InstantConfigDto | null>(null);
+
   const [key, setKey] = useState('');
   const [busy, setBusy] = useState<'' | 'saving' | 'removing'>('');
   const [error, setError] = useState<string | null>(null);
@@ -29,6 +32,17 @@ export function InstantActionsCard() {
       .then(setConfig)
       .catch((err: unknown) => setError(String(err)));
   }, []);
+
+  const engine = config?.engine ?? 'model';
+  const chooseEngine = async (next: string) => {
+    setError(null);
+    try {
+      await invoke('set_ask_engine', { engine: next });
+      setConfig(await invoke<InstantConfigDto>('get_instant_config'));
+    } catch (err) {
+      setError(String(err));
+    }
+  };
 
   const save = async () => {
     setBusy('saving');
@@ -92,6 +106,29 @@ export function InstantActionsCard() {
         <p className="error" data-testid="instant-problem">
           {config.problem}
         </p>
+      ) : null}
+      {on ? (
+        <div className="row" data-testid="instant-engine">
+          <label>
+            <input
+              type="radio"
+              name="ask-engine"
+              checked={engine === 'model'}
+              onChange={() => void chooseEngine('model')}
+            />{' '}
+            Your AI provider runs tasks; TypeSafe only does short commands
+          </label>
+          <label>
+            <input
+              type="radio"
+              name="ask-engine"
+              checked={engine === 'lilypad'}
+              onChange={() => void chooseEngine('lilypad')}
+            />{' '}
+            TypeSafe runs whole tasks, one step at a time (no screenshots; it cannot write text or
+            read pages back)
+          </label>
+        </div>
       ) : null}
       <div className="row">
         <input

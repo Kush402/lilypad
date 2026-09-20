@@ -206,7 +206,7 @@ function readyFrame(runId: string, over: Record<string, unknown> = {}) {
       origin: 'https://api.openai.com',
       model: 'gpt-4o-mini',
       local: false,
-      consentPolicy: 2,
+      consentPolicy: 3,
       consentRevision: 'rev-abc',
       source: 'settings',
     },

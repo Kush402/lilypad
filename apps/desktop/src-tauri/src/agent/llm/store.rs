@@ -51,6 +51,11 @@ pub struct AgentSettings {
     /// "anthropic" | "openai_compat" — matches `ProviderChoice` arms. This is
     /// the API dialect: how to talk, not who to. See `profile_id`.
     pub provider_kind: Option<String>,
+    /// Who runs a task: [`ENGINE_MODEL`] (the provider above) or
+    /// [`ENGINE_LILYPAD`] (Lilypad's own System One loop, ADR-0020). `None`
+    /// is the model, which is what every Mac did before this existed.
+    #[serde(default)]
+    pub engine: Option<String>,
     /// Stable id of the preset the person chose ("openai", "gemini",
     /// "ollama", "custom"…). Display name and default endpoint come from the
     /// preset table; this is what the UI and both devices name.
@@ -111,6 +116,20 @@ pub struct LastCheck {
     /// The provider's own words, already classified for the person.
     #[serde(default)]
     pub message: Option<String>,
+}
+
+/// The task runs on the AI provider the person configured.
+pub const ENGINE_MODEL: &str = "model";
+/// The task runs on Lilypad's own loop (ADR-0020).
+pub const ENGINE_LILYPAD: &str = "lilypad";
+
+/// Which engine these settings ask for. Anything unrecognised is the model,
+/// because a setting nobody wrote is not a grant of anything.
+pub fn engine_of(settings: &AgentSettings) -> &'static str {
+    match settings.engine.as_deref() {
+        Some(ENGINE_LILYPAD) => ENGINE_LILYPAD,
+        _ => ENGINE_MODEL,
+    }
 }
 
 fn settings_path() -> Result<PathBuf> {
@@ -732,6 +751,7 @@ mod tests {
     fn settings_round_trip_serde() {
         let s = AgentSettings {
             provider_kind: Some("openai_compat".into()),
+            engine: Some(ENGINE_LILYPAD.into()),
             profile_id: Some("ollama".into()),
             model: Some("some-model".into()),
             base_url: Some("http://localhost:11434/v1".into()),

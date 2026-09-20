@@ -17,6 +17,7 @@ pub mod anthropic;
 pub mod effective;
 pub mod http;
 pub mod jev;
+pub mod jev_agent;
 pub mod models;
 pub mod openai_compat;
 pub mod presets;
@@ -407,6 +408,76 @@ pub(crate) fn provider_error_message(body: &serde_json::Value) -> String {
 pub const NOT_CONFIGURED_MESSAGE: &str = "No AI provider is configured on the desktop. \
 Open Lilypad Settings on the Mac to add one (or set LILYPAD_ANTHROPIC_API_KEY / \
 LILYPAD_OPENAI_API_KEY for a dev override).";
+
+/// Who runs one task (ADR-0020): the configured language model, or the
+/// System One loop. The runner, the gate and the phone feed do not care
+/// which — only construction and resuming do, and both happen here, so the
+/// engine never names a vendor.
+pub enum AskBrain {
+    Model(Box<LlmBrain<AnyProvider>>),
+    Instant(Box<jev_agent::JevBrain>),
+}
+
+impl AskBrain {
+    /// The brain for a fresh run of `resolved`, with instant actions in front
+    /// of the model when the person agreed to them.
+    pub fn for_run(
+        resolved: &resolver::Resolved,
+        instant: Option<jev::InstantConfig>,
+    ) -> Option<Self> {
+        match resolved.engine {
+            resolver::Engine::Lilypad => Some(AskBrain::Instant(Box::new(
+                jev_agent::JevBrain::new(jev::Jev::new(resolved.jev.clone()?)),
+            ))),
+            resolver::Engine::Model => Some(AskBrain::Model(Box::new(
+                LlmBrain::new(AnyProvider::new(resolved.choice.clone()?)).with_instant(instant),
+            ))),
+        }
+    }
+
+    /// A conversation being carried on after a question (L-358).
+    pub fn resumed(mut brain: LlmBrain<AnyProvider>, answer: &str) -> Self {
+        brain.resume(answer);
+        AskBrain::Model(Box::new(brain))
+    }
+
+    pub fn caps(&self) -> ProviderCaps {
+        match self {
+            AskBrain::Model(brain) => brain.caps(),
+            // The loop reads the screen through the accessibility tree and
+            // never asks for a screenshot, so nothing here is on.
+            AskBrain::Instant(_) => ProviderCaps::default(),
+        }
+    }
+
+    /// The language model's conversation, when there is one to park.
+    pub fn into_model(self) -> Option<LlmBrain<AnyProvider>> {
+        match self {
+            AskBrain::Model(brain) => Some(*brain),
+            AskBrain::Instant(_) => None,
+        }
+    }
+}
+
+impl crate::agent::runner::Brain for AskBrain {
+    async fn next(
+        &mut self,
+        task: &str,
+        history: &[crate::agent::runner::Observation],
+    ) -> anyhow::Result<crate::agent::runner::Decision> {
+        match self {
+            AskBrain::Model(brain) => brain.next(task, history).await,
+            AskBrain::Instant(brain) => brain.next(task, history).await,
+        }
+    }
+
+    fn wants_observation(&self) -> bool {
+        match self {
+            AskBrain::Model(brain) => brain.wants_observation(),
+            AskBrain::Instant(brain) => brain.wants_observation(),
+        }
+    }
+}
 
 /// Dispatch wrapper so the engine can hold "whichever provider is configured"
 /// without generics leaking into the controller.
@@ -2558,6 +2629,7 @@ mod tests {
         let mut look = look();
         look.reading = Some(crate::agent::runner::ScreenReading {
             app: "Mail".into(),
+            focused: None,
             window: Some(0),
             elements: vec![crate::agent::runner::ReadElement {
                 id: 3,

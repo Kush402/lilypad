@@ -103,6 +103,10 @@ pub struct Observation {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ScreenReading {
     pub app: String,
+    /// What has keyboard focus, as a person would name it ("text area
+    /// \u{201c}Message body\u{201d}") — the difference between "type here"
+    /// and "click that field first" (ADR-0020).
+    pub focused: Option<String>,
     /// The front window's own element id, when it has a position — the place
     /// a scroll aimed at "the window" lands.
     pub window: Option<usize>,

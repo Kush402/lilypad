@@ -76,6 +76,12 @@ export function destinationSentence(destination: AgentDestination | undefined): 
   const instant = destination.instant
     ? ` Short commands also go to ${destination.instant.providerName} at ${destination.instant.origin}, to be done instantly: your command, the app in front, the names of actionable controls on screen (including buttons, links, fields, rows and menu items), and matching installed-app names when you name an app \u2014 never a screenshot or field contents.`
     : '';
+  // Lilypad's own loop (ADR-0020): no language model, no screenshot, and it
+  // types only words from the command. Saying "your screen leaves your Mac"
+  // here would be both wrong and alarming.
+  if (destination.mode === 'system_one') {
+    return `This Mac runs the task itself, one step at a time, with ${destination.providerName} at ${destination.origin}${model}. What goes there each step: your command, the app in front, what has keyboard focus, the names of actionable controls on screen (including buttons, links, fields, rows and menu items), matching installed-app names, and what Ask has done so far \u2014 never a screenshot and never field contents. It types only words you said, and it stops and says so when a task needs writing or reading instead.`;
+  }
   if (destination.local) {
     const privacy = destination.instant
       ? ' The AI model reads your screen only on the Mac; the instant-action data described next is sent separately.'

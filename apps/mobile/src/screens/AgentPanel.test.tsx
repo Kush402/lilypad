@@ -62,7 +62,7 @@ const DESTINATION = {
   origin: 'https://api.openai.com',
   model: 'gpt-4o-mini',
   local: false,
-  consentPolicy: 2,
+  consentPolicy: 3,
   consentRevision: 'rev-1',
   source: 'settings',
 };
@@ -717,10 +717,28 @@ describe('the destination sentence names instant actions too (ADR-0019)', () => 
     origin: 'http://localhost:11434',
     model: 'qwen3-vl',
     local: true,
-    consentPolicy: 2,
+    consentPolicy: 3,
     consentRevision: 'rev-model',
     source: 'settings',
   };
+
+  it("says what Lilypad's own loop sends, and never that the screen leaves", () => {
+    const sentence = destinationSentence({
+      profileId: null,
+      providerName: 'TypeSafe Jev',
+      origin: 'https://api.typesafe.ai',
+      model: 'jev-1.13.0',
+      local: false,
+      mode: 'system_one',
+      consentPolicy: 3,
+      consentRevision: 'rev',
+      source: 'settings',
+    });
+    expect(sentence).toMatch(/one step at a time/);
+    expect(sentence).toMatch(/never a screenshot/);
+    expect(sentence).toMatch(/types only words you said/);
+    expect(sentence).not.toMatch(/screen leaves/);
+  });
 
   it('says what goes to the second destination, and what never does', () => {
     const both = destinationSentence({

@@ -553,6 +553,7 @@ pub fn run() {
             commands::get_instant_config,
             commands::set_instant_key,
             commands::forget_instant_key,
+            commands::set_ask_engine,
             commands::list_agent_models,
             commands::list_trusted_devices,
             commands::set_pair_auto_approve,

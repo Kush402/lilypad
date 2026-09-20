@@ -69,13 +69,30 @@ pub enum Readiness {
     Unavailable(String),
 }
 
-/// A usable provider plus the exact configuration it came from.
+/// Who runs a task on this Mac (ADR-0020).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Engine {
+    /// The AI provider the person configured, with instant actions in front
+    /// of it when a TypeSafe key is set.
+    Model,
+    /// Lilypad's own loop: one System One model carries the whole task, and
+    /// no language model is asked anything.
+    Lilypad,
+}
+
+/// A usable way to run a task, plus the exact configuration it came from.
 #[derive(Debug, Clone)]
 pub struct Resolved {
-    pub choice: ProviderChoice,
+    /// The language model, when one runs the task. `None` under
+    /// [`Engine::Lilypad`], where there is no language model at all.
+    pub choice: Option<ProviderChoice>,
     pub config: EffectiveConfig,
-    /// Instant actions, when a key for them is set (ADR-0019).
+    /// Instant actions in front of the model (ADR-0019). Always `None` under
+    /// [`Engine::Lilypad`], where every step is already the System One model.
     pub instant: Option<jev::InstantConfig>,
+    pub engine: Engine,
+    /// The System One client's configuration, under [`Engine::Lilypad`].
+    pub jev: Option<jev::InstantConfig>,
 }
 
 impl Resolved {
@@ -83,6 +100,11 @@ impl Resolved {
     /// step's beside it when that is on.
     pub fn destination(&self) -> AgentDestination {
         let mut destination = self.config.destination();
+        if self.engine == Engine::Lilypad {
+            // The System One model is the destination, not a step in front of
+            // one: `config` already describes it.
+            return destination;
+        }
         destination.instant = self.instant.as_ref().map(|i| {
             let origin = i.origin();
             Box::new(InstantDestination {
@@ -95,6 +117,15 @@ impl Resolved {
         destination
     }
 
+    /// What runs a task here, in words for the log — the engine's own file
+    /// never names a vendor.
+    pub fn how(&self) -> String {
+        match self.engine {
+            Engine::Model => self.config.provider_name.clone(),
+            Engine::Lilypad => format!("{} (one step at a time)", self.config.provider_name),
+        }
+    }
+
     /// Which disclosure a command's echoed revision agreed to:
     /// `Some(false)` the model's destination alone, `Some(true)` that and
     /// instant actions, `None` neither — a command for a configuration that
@@ -103,6 +134,11 @@ impl Resolved {
         let revision = revision?;
         if revision == self.config.consent_revision {
             return Some(false);
+        }
+        if self.engine == Engine::Lilypad {
+            // One destination, one revision: there is nothing else to agree
+            // to, so a different revision is a configuration that moved.
+            return None;
         }
         let with_instant = self.destination().instant?.consent_revision;
         (revision == with_instant).then_some(true)
@@ -298,14 +334,44 @@ fn resolve_once() -> (Readiness, u64) {
     let (settings, committed) = super::store::load_committed();
     // The deadline lives inside the keychain calls themselves, where it can
     // kill the process it is a deadline for — see `store::wait_bounded`.
+    // Lilypad's own loop needs no language model, so it resolves on its own
+    // terms (ADR-0020): a System One key, and the destination that names it.
+    if super::store::engine_of(&settings) == super::store::ENGINE_LILYPAD {
+        let readiness = match resolve_instant() {
+            Some(jev) => match EffectiveConfig::for_jev(
+                committed,
+                if jev::InstantConfig::from_env().is_some() {
+                    super::effective::ConfigSource::Environment
+                } else {
+                    super::effective::ConfigSource::Settings
+                },
+                jev.base_url.clone(),
+                &jev.api_key,
+                jev::PROVIDER_NAME,
+            ) {
+                Some(config) => Readiness::Ready(Box::new(Resolved {
+                    choice: None,
+                    config,
+                    instant: None,
+                    engine: Engine::Lilypad,
+                    jev: Some(jev),
+                })),
+                None => Readiness::NotConfigured,
+            },
+            None => Readiness::NotConfigured,
+        };
+        return (readiness, committed);
+    }
     let readiness = match EffectiveConfig::resolve_from(&settings, committed) {
         Err(unavailable) => Readiness::Unavailable(unavailable.0),
         Ok(None) => Readiness::NotConfigured,
         Ok(Some((config, key))) => match build_choice(&settings, &config, key) {
             Some(choice) => Readiness::Ready(Box::new(Resolved {
-                choice,
+                choice: Some(choice),
                 config,
                 instant: resolve_instant(),
+                engine: Engine::Model,
+                jev: None,
             })),
             None => Readiness::NotConfigured,
         },
@@ -470,9 +536,11 @@ mod tests {
         let choice = ProviderChoice::OpenAiCompat(openai_compat::OpenAiCompatConfig::new("k", "m"));
         let base = config.consent_revision.clone();
         let without = Resolved {
-            choice,
+            choice: Some(choice),
             config,
             instant: None,
+            engine: Engine::Model,
+            jev: None,
         };
         assert!(without.destination().instant.is_none());
         assert_eq!(without.agreed(Some(&base)), Some(false));

@@ -21,6 +21,7 @@ use tokio::task::JoinHandle;
 
 use crate::agent::executor::{ComputerConfig, Grid};
 use crate::agent::llm::resolver::{ProviderResolver, Readiness};
+use crate::agent::llm::AskBrain;
 use crate::agent::llm::{AnyProvider, LlmProvider, NOT_CONFIGURED_MESSAGE};
 use crate::agent::protocol::{
     AgentHandshakeState, AgentInbound, AgentOutbound, RunOutcome, StepKind, StepState,
@@ -453,8 +454,10 @@ impl AgentController {
             }
         }
 
-        let choice = resolved.as_ref().map(|r| r.choice.clone());
-        match authorize_command(control_scoped, choice.is_some()) {
+        // Either a language model or Lilypad's own loop counts as something
+        // that can run the task (ADR-0020).
+        let runnable = resolved.is_some();
+        match authorize_command(control_scoped, runnable) {
             CommandGate::DenyNoControl => {
                 Self::send_refusal(
                     &peer,
@@ -479,25 +482,24 @@ impl AgentController {
             }
             CommandGate::Run => {}
         }
-        let choice = choice.expect("authorize_command guaranteed a provider");
+        let resolved = resolved.expect("authorize_command guaranteed a way to run");
+        let choice = resolved.choice.clone();
 
         // A configuration this Mac can already say will not work is refused
         // here rather than at the provider (L-316). The person gets the same
         // sentence the setup screen would have shown, before anything on their
         // screen moves.
-        if let Some(reason) = choice.refusal() {
+        if let Some(reason) = choice.as_ref().and_then(|c| c.refusal()) {
             Self::send_refusal(&peer, &run_id, &reason);
             return;
         }
+        let how = resolved.how();
 
         // A new command supersedes any in-flight run — but only once this
         // command is admitted. Cancelling before the gate would let a refused
         // command (view-only session, no provider) kill a legitimate run.
         // The new run waits below for the old one to actually stop.
-        let revision = resolved
-            .as_ref()
-            .map(|r| r.config.consent_revision.clone())
-            .unwrap_or_default();
+        let revision = resolved.config.consent_revision.clone();
         // An answer to the question the last run ended on carries on in the
         // same conversation — if it is the run it says, recent, and still
         // talking to the destination the person agreed to.
@@ -626,16 +628,22 @@ impl AgentController {
             }
 
             let instant_on = resumed.is_none() && instant.is_some();
-            let (brain, task_text) = match resumed {
-                Some(mut brain) => {
-                    brain.resume(&text);
-                    (brain, text)
-                }
-                None => (
-                    LlmBrain::new(AnyProvider::new(choice)).with_instant(instant),
-                    text,
-                ),
+            // An answer to an earlier question carries on in the same
+            // conversation, which only a language model keeps.
+            let brain = match resumed {
+                Some(brain) => AskBrain::resumed(brain, &text),
+                None => match AskBrain::for_run(&resolved, instant) {
+                    Some(brain) => brain,
+                    None => {
+                        log::error!(
+                            target: "lilypad::agent",
+                            "run {run_id_task}: nothing to run the task with"
+                        );
+                        return;
+                    }
+                },
             };
+            let task_text = text;
             let caps = brain.caps();
             let config = ComputerConfig {
                 vision: caps.vision,
@@ -690,7 +698,7 @@ impl AgentController {
             log::info!(
                 target: "lilypad::agent",
                 "run {run_id_task}: {autonomy:?}, vision {}, grid {:?}, native computer tool {}, \
-                 instant actions {instant_on}",
+                 instant actions {instant_on}, run by {how}",
                 caps.vision,
                 caps.grid,
                 caps.computer_use
@@ -712,7 +720,10 @@ impl AgentController {
             log::info!(target: "lilypad::agent", "agent run {run_id_task} ended: {outcome:?}");
             // Paused on a question: keep the conversation for the answer.
             if outcome == RunOutcome::NeedsInput {
-                let brain = runner.into_brain();
+                // Only a language model's conversation can be carried on.
+                let Some(brain) = runner.into_brain().into_model() else {
+                    return;
+                };
                 if brain.is_waiting_for_answer() {
                     *parked_slot.lock().unwrap() = Some(Parked {
                         run_id: run_id_task,

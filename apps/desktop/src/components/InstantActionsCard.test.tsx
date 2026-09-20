@@ -5,7 +5,13 @@ import { InstantActionsCard } from './InstantActionsCard';
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 
-const OFF = { hasKey: false, source: 'none', origin: 'https://api.typesafe.ai', problem: null };
+const OFF = {
+  hasKey: false,
+  source: 'none',
+  origin: 'https://api.typesafe.ai',
+  problem: null,
+  engine: 'model',
+};
 const ON = { ...OFF, hasKey: true, source: 'settings' };
 
 const mocked = vi.mocked(invoke);
@@ -66,6 +72,24 @@ describe('InstantActionsCard', () => {
     );
     expect(screen.getByTestId('instant-problem').textContent).toMatch(/no longer accepts/);
     expect(screen.getByTestId('instant-remove')).toBeTruthy();
+  });
+
+  it('chooses who runs a whole task, once a key is saved', async () => {
+    mocked
+      .mockResolvedValueOnce(ON)
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce({ ...ON, engine: 'lilypad' });
+    render(<InstantActionsCard />);
+    await waitFor(() => expect(screen.getByTestId('instant-engine')).toBeTruthy());
+    fireEvent.click(screen.getByLabelText(/TypeSafe runs whole tasks/));
+    await waitFor(() =>
+      expect(mocked).toHaveBeenCalledWith('set_ask_engine', { engine: 'lilypad' }),
+    );
+    await waitFor(() =>
+      expect((screen.getByLabelText(/TypeSafe runs whole tasks/) as HTMLInputElement).checked).toBe(
+        true,
+      ),
+    );
   });
 
   it('turns instant actions off', async () => {
