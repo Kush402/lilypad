@@ -193,6 +193,19 @@ describe('InstantActionsCard', () => {
     expect((screen.getByLabelText(/Lilypad runs whole tasks/) as HTMLInputElement).disabled).toBe(
       true,
     );
+
+    // A transient check must not strand a paying customer until the whole app
+    // is relaunched. The disabled radio cannot itself initiate a refresh, so
+    // the adjacent retry is the reachable recovery path.
+    mocked.mockResolvedValueOnce('entitled');
+    fireEvent.click(screen.getByTestId('instant-plan-retry'));
+    await waitFor(() =>
+      expect((screen.getByLabelText(/Lilypad runs whole tasks/) as HTMLInputElement).disabled).toBe(
+        false,
+      ),
+    );
+    expect(screen.getByTestId('instant-plan').textContent).toMatch(/subscription covers this/i);
+    expect(screen.queryByTestId('instant-plan-retry')).toBeNull();
   });
 
   it('does not call an unconfigured hosted service On', async () => {

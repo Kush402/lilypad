@@ -36,8 +36,10 @@ export function InstantActionsCard() {
   const [saved, setSaved] = useState(false);
   /** What the backend says this account may run; never inferred locally. */
   const [plan, setPlan] = useState<HostedPlan>('unknown');
+  const [planBusy, setPlanBusy] = useState(false);
 
   const readPlan = async (): Promise<HostedPlan> => {
+    setPlanBusy(true);
     try {
       const next = await invoke<HostedPlan>('get_ask_plan');
       setPlan(next);
@@ -45,6 +47,8 @@ export function InstantActionsCard() {
     } catch {
       setPlan('unknown');
       return 'unknown';
+    } finally {
+      setPlanBusy(false);
     }
   };
 
@@ -59,8 +63,12 @@ export function InstantActionsCard() {
         // persisted the paid mode for a Free account and let the first task be
         // the thing that explained the refusal.
         if (next.hostedAvailable) {
+          if (current) setPlanBusy(true);
           const nextPlan = await invoke<HostedPlan>('get_ask_plan').catch(() => 'unknown' as const);
-          if (current) setPlan(nextPlan);
+          if (current) {
+            setPlan(nextPlan);
+            setPlanBusy(false);
+          }
         }
       } catch (err) {
         if (current) setError(String(err));
@@ -199,7 +207,7 @@ export function InstantActionsCard() {
               type="radio"
               name="ask-engine"
               checked={engine === 'lilypad'}
-              disabled={plan !== 'entitled'}
+              disabled={plan !== 'entitled' || planBusy}
               onChange={() => void chooseEngine('lilypad')}
             />{' '}
             <strong>Lilypad runs whole tasks</strong> <span className="chip">Pro</span> &mdash; no
@@ -219,11 +227,21 @@ export function InstantActionsCard() {
             {plan === 'entitled'
               ? 'Your subscription covers this. Nothing to add here.'
               : plan === 'not_entitled'
-                ? 'Lilypad runs whole tasks is locked until this account has Pro. Buy or restore it in the Lilypad app on your iPhone, under Account; this Mac picks it up on its own.'
+                ? 'Lilypad runs whole tasks is locked until this account has Pro. Buy or restore it in the Lilypad app on your iPhone, under Account, then check again here.'
                 : plan === 'unavailable'
-                  ? 'Lilypad’s hosted model is unavailable on this server just now. Your own key still works on every plan.'
-                  : 'Lilypad could not check this account’s subscription just now, so the hosted choice stays locked. It is bought in the Lilypad app on your iPhone, never here.'}
+                  ? 'Lilypad’s hosted model is unavailable on this server just now. Your own key still works on every plan; check again after it returns.'
+                  : 'Lilypad could not check this account’s subscription just now, so the hosted choice stays locked. Check your connection, then check again here.'}
           </p>
+        ) : null}
+        {config?.hostedAvailable && plan !== 'entitled' ? (
+          <button
+            className="btn"
+            data-testid="instant-plan-retry"
+            disabled={planBusy}
+            onClick={() => void readPlan()}
+          >
+            {planBusy ? 'Checking…' : 'Check again'}
+          </button>
         ) : null}
         {on ? (
           <label data-testid="instant-engine-typesafe">

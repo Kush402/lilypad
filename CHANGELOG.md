@@ -6,6 +6,12 @@ All notable changes to Lilypad are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **A temporary subscription-check failure no longer leaves hosted Ask locked
+  until the Mac app restarts.** The locked choice now has a Check again action,
+  which also picks up a Pro purchase or restore made on the iPhone.
+
 ## [0.1.47] — 2026-09-20
 
 ### Fixed
