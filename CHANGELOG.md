@@ -6,6 +6,8 @@ All notable changes to Lilypad are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.48] — 2026-09-20
+
 ### Fixed
 
 - **A temporary subscription-check failure no longer leaves hosted Ask locked
