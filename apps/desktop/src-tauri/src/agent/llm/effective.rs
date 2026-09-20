@@ -335,6 +335,12 @@ impl EffectiveConfig {
             } else {
                 "model"
             },
+            // On the hosted path Lilypad hands the same text to another
+            // company, and the phone has to say whose. `for_hosted_jev` is the
+            // only thing that names this provider, so it is also the only
+            // destination that carries the hop.
+            hosted_via: (self.provider_name == super::jev::HOSTED_PROVIDER_NAME)
+                .then_some(super::jev::PROVIDER_NAME),
             instant: None,
         }
     }
@@ -493,6 +499,36 @@ mod tests {
         let local = config("http://localhost:11434/v1", None, None);
         assert!(local.local);
         assert!(!config("https://api.openai.com/v1", None, Some("k")).local);
+    }
+
+    /// ADR-0020: the hosted way puts Lilypad in the data path and hands the
+    /// same reading to another company. The phone can only say so if the Mac
+    /// discloses the hop, and a personal key — same loop, same model — must
+    /// not claim one that does not exist.
+    #[test]
+    fn only_the_hosted_way_discloses_the_company_behind_lilypad() {
+        let hosted = EffectiveConfig::for_hosted_jev(0, "https://api.takedia.com".to_string())
+            .expect("hosted config")
+            .destination();
+        assert_eq!(
+            hosted.provider_name,
+            super::super::jev::HOSTED_PROVIDER_NAME
+        );
+        assert_eq!(hosted.mode, "system_one");
+        assert_eq!(hosted.hosted_via, Some(super::super::jev::PROVIDER_NAME));
+
+        let own_key = EffectiveConfig::for_jev(
+            0,
+            ConfigSource::Settings,
+            "https://api.typesafe.ai".to_string(),
+            "k",
+            super::super::jev::PROVIDER_NAME,
+        )
+        .expect("personal config")
+        .destination();
+        assert_eq!(own_key.mode, "system_one");
+        assert_eq!(own_key.hosted_via, None);
+        assert_ne!(own_key.consent_revision, hosted.consent_revision);
     }
 
     #[test]

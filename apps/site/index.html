@@ -162,22 +162,35 @@
           </p>
           <!-- "Runs on the Mac" was true of the actions and easy to read as a
                claim about the data. It is not one: to work out what to do, Ask
-               reads the shared screen and sends what it read to the model
-               provider you chose. Saying only the first half is the kind of
-               sentence a customer discovers the meaning of later. -->
+               reads the shared screen and sends what it read somewhere. Until
+               ADR-0020 that was always the provider you chose, so "Lilypad
+               never sees it" was a fact about the whole product. It is now a
+               fact about one of the two ways to run, and the page has to say
+               which — a customer must not discover the difference later. -->
           <ul class="ticks">
             <li>
-              <strong>Where your screen goes.</strong> Ask reads the screen you are sharing and
-              sends what it reads to the AI provider you set up on your Mac, so it can work out what
-              to do. Choose a local model and nothing leaves the Mac at all. Either way Lilypad
-              never sees it, and your phone asks you before the first time.
+              <strong>Your own key: we never see your screen.</strong> Ask reads the screen you are
+              sharing and sends what it reads to the AI provider you set up on your Mac, so it can
+              work out what to do. It goes straight from your Mac to that provider &mdash; Lilypad
+              is not in the path and never sees it. Choose a local model and nothing leaves the Mac
+              at all. Your phone asks you before the first time.
+            </li>
+            <li>
+              <strong>Or Lilypad runs the task, with no key at all</strong> &mdash; part of Pro,
+              when Pro arrives. This one does pass through us, and only as text: the command, the
+              app in front, what has keyboard focus, the roles and labels of the controls on the
+              screen, matching installed-app names, and one-line summaries of the steps so far, sent
+              on to the AI on our account.
+              <strong>Never a screenshot, and never what you typed in a field.</strong> We keep a
+              counter for the 25 tasks a day it allows, not the text. It cannot write new words for
+              you or read a page back, and it says so at the time instead of guessing.
             </li>
             <li>It asks your phone before it does anything consequential.</li>
             <li>You can take over at any moment.</li>
             <li>
-              Bring your own API key: Anthropic, OpenAI, Google Gemini, OpenRouter, a local model
-              through Ollama, or another OpenAI-compatible endpoint. Your key stays in your Mac's
-              keychain, and it is tied to the endpoint you saved it for.
+              Bring your own API key: Anthropic, OpenAI, Google Gemini, OpenRouter, TypeSafe, a
+              local model through Ollama, or another OpenAI-compatible endpoint. Your key stays in
+              your Mac's keychain, and it is tied to the endpoint you saved it for.
             </li>
             <li>
               Set up on both: a Mac with Lilypad and an API key, and this app on your phone. A phone
@@ -265,6 +278,9 @@
                 <li>Everything in Free</li>
                 <li>Reach your Mac from anywhere: cellular, a cafe, another country</li>
                 <li>Direct when the networks allow it, relayed when they do not</li>
+                <li>
+                  Ask with no API key: Lilypad runs whole tasks on our own AI account, 25 a day
+                </li>
                 <li>One month included before anything is charged</li>
                 <li>Priority support</li>
               </ul>

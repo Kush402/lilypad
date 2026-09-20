@@ -14,6 +14,11 @@ All notable changes to Lilypad are documented here. The format follows
   of 25 daily tasks, and forwards each step using a server-only credential.
   Bring-your-own provider and TypeSafe keys remain available on every plan and
   continue to go directly from the Mac to that provider.
+- **Your phone names everyone who receives what Ask reads.** When Lilypad runs
+  the task, the card on your phone says the step goes to Lilypad, names the
+  company Lilypad passes the same text on to, and says Lilypad counts your
+  tasks for the day and keeps no copy of the text. Never a screenshot, never
+  what is typed in a field, on either way of running.
 
 ## [0.1.44] — 2026-09-18
 

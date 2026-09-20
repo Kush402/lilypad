@@ -14,8 +14,13 @@ import { describe, it, expect } from 'vitest';
  * - Platforms: `docs/PROJECT-INDEX.md` records Windows input as compile-complete
  *   but never executed, and Android as never hardware-verified. `docs/milestones.md`
  *   P4 therefore says macOS + iOS only.
- * - Prices: no price point, quota or allowance exists anywhere in the repo, and
- *   P4 renders `$XXXX` rather than inventing them.
+ * - Prices: no price point exists anywhere in the repo, and P4 renders `$XXXX`
+ *   rather than inventing them. One allowance does exist since ADR-0020 —
+ *   `HOSTED_ASK_DAILY_TASKS` — and the page may only quote the number the
+ *   backend actually enforces.
+ * - Ask's two ways to run: ADR-0020 kept "Lilypad never sees it" true for your
+ *   own key and made it false for the hosted way, so the page must separate
+ *   them.
  * - Ask's internal tier names stay off a public page, whatever the in-app
  *   surface does.
  */
@@ -135,6 +140,48 @@ describe('pricing claims', () => {
   // "LAN is never paywalled."
   it('keeps the promise that local use is free', () => {
     expect(html).toMatch(/on your own network is always free/i);
+  });
+});
+
+/**
+ * Ask's data path, which changed under the page on 2026-09-20.
+ *
+ * Until [ADR-0020](../../../docs/adr/0020-lilypad-runs-computer-use-on-its-own-account.md)
+ * every way of running Ask sent screen-derived text straight from the Mac to
+ * the provider the customer chose, so "Lilypad never sees it" was a fact about
+ * the product. Hosted Jev makes it a fact about one of two ways to run, and a
+ * page that keeps saying it unqualified is telling a customer the opposite of
+ * what the backend does. The privacy page was corrected in the same commit as
+ * the feature; this front page was not, which is the failure these pin.
+ */
+describe('Ask claims match the two ways it can run', () => {
+  it('promises "Lilypad never sees it" only about the key you bring', () => {
+    // The unqualified sentence must not come back.
+    expect(flat).not.toMatch(/Either way Lilypad never sees it/i);
+    expect(flat).toMatch(/straight from your Mac to that provider/i);
+    expect(flat).toMatch(/Lilypad is not in the path and never sees it/i);
+  });
+
+  it('says the hosted way passes through Lilypad, and what it never sends', () => {
+    expect(flat).toMatch(/does pass through us, and only as text/i);
+    expect(flat).toMatch(/Never a screenshot, and never what you typed in a field/i);
+  });
+
+  // A figure on a public page is a promise; this one is enforced by
+  // `HOSTED_ASK_DAILY_TASKS`, so the two move together or the page is wrong.
+  it('quotes the daily allowance the backend actually enforces', () => {
+    const enforced = /HOSTED_ASK_DAILY_TASKS:[^\n]*\.default\((\d+)\)/.exec(
+      repoFile('packages/shared/src/env.ts'),
+    );
+    expect(enforced, 'the hosted allowance should have a default').not.toBeNull();
+    expect(flat).toMatch(new RegExp(`${enforced![1]} tasks a day`));
+    expect(flat).toMatch(new RegExp(`${enforced![1]} a day`));
+  });
+
+  // The hosted way needs a subscription nobody can buy yet, so the page must
+  // not read as if it were available today.
+  it('does not offer the hosted way ahead of Pro itself', () => {
+    expect(flat).toMatch(/part of Pro, when Pro arrives/i);
   });
 });
 

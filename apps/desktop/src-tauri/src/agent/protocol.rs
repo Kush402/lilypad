@@ -366,6 +366,13 @@ pub struct AgentDestination {
     /// (Lilypad's own loop, ADR-0020). The words the phone shows differ, so
     /// this is disclosed rather than inferred from the provider's name.
     pub mode: &'static str,
+    /// Who receives the same text after Lilypad, when `origin` is Lilypad's
+    /// own backend and it forwards each step on Lilypad's account (ADR-0020).
+    /// `None` on every other destination, including a personal System One key
+    /// that goes straight from this Mac. Sent rather than left to the phone,
+    /// so the disclosure names the company without the phone hard-coding one.
+    #[serde(rename = "hostedVia", skip_serializing_if = "Option::is_none")]
+    pub hosted_via: Option<&'static str>,
     /// Where short commands go to be done as one instant action, when this
     /// Mac has that on (ADR-0019). A second destination, disclosed beside the
     /// first rather than folded into it.

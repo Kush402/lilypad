@@ -175,6 +175,19 @@ export const AgentDestinationSchema = z.object({
    */
   mode: z.enum(['model', 'system_one']).optional(),
   /**
+   * Who receives the same text after Lilypad does, when `origin` is Lilypad's
+   * own backend and it forwards each step on its own account (ADR-0020).
+   * Absent on every other destination, which is also how the phone tells the
+   * hosted way from a personal System One key.
+   *
+   * It exists because naming only Lilypad would understate the hosted path:
+   * a second company reads exactly what Lilypad reads. That is the L-357 rule
+   * — consent names who receives the screen — applied to a hop the person
+   * cannot otherwise see. The Mac sends the name so the phone never has to
+   * hard-code a vendor it does not choose.
+   */
+  hostedVia: z.string().max(64).optional(),
+  /**
    * Where short commands go to be done as one instant action, when the Mac
    * has that on (ADR-0019). A second destination, disclosed beside the first:
    * it receives the command, the app in front, actionable-control labels and

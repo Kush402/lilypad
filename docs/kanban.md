@@ -1,7 +1,7 @@
 ---
 status: Reference
 owner: @kushsharma024
-last-verified: 2026-09-19
+last-verified: 2026-09-20
 summary: Every defect found during the pre-launch product review, and what happened to it.
 ---
 
@@ -16,9 +16,9 @@ This file exists because the list used to live only in a conversation. Six rows
 (L-20, L-38 through L-42) were reconstructed from later summaries after the
 earlier record was compacted away, which is the argument for the file.
 
-**Status counts:** 305 fixed · 35 shipped · 7 partially fixed · 0 open ·
+**Status counts:** 307 fixed · 35 shipped · 7 partially fixed · 0 open ·
 1 blocked on something outside the code · 4 deliberately unchanged · 4 not a bug ·
-1 unrecoverable (L-20). 357 rows.
+1 unrecoverable (L-20). 359 rows.
 
 "Fixed" here means _fixed at source_. Fixed, released and device-verified are
 three different states and this file keeps them apart. L-227 through L-259 are
@@ -31,6 +31,15 @@ remain incomplete. L-19
 and the hardware gate still need a device; L-247, L-251 and L-259 are fixed at
 source and still await it. A cut needs the owner's authorization and those
 gates, not an empty "open" column.
+
+**ADR-0020 is built on `main` and not released (2026-09-20):** `40ba5fb` added
+Lilypad's own way of running a task on a System One model, `a58b681` put it
+behind Pro on a server-only credential with a 25-task daily allowance, and
+L-359 and L-360 corrected the two customer-facing surfaces those commits left
+describing the old product. None of it has shipped: v0.1.45 is still the public
+build, `TYPESAFE_SERVICE_API_KEY` is not yet in the production environment, and
+the Mac and phone halves must be released together because `AI_CONSENT_POLICY`
+is 3.
 
 **v0.1.45 published on both halves (2026-09-19):** Fix commit
 `617a4724d2aecec48a6fbfd78db9a687b8bebbd7` carries L-356 through L-358;
@@ -1800,6 +1809,8 @@ acceptance matrix are in [v0.1.34-customer-review.md](v0.1.34-customer-review.md
 | L-356 | **P1 — Jev could run an offered action the command did not name.** The probability thresholds established only that Jev was confident in its own answer. The code-side check for a control accepted any one shared word, so a high-confidence `Reply` answer was accepted for “reply all”; keyboard answers had no lexical check at all, so a high-confidence `close_tab` answer for “new tab” ran ⌘W under full control. A page label is untrusted input to the same request, so “the option was offered” is not a binding between the person's words and the effect. | Fixed 2026-09-19; shipped in v0.1.45, not device-verified. A control must contain every meaningful command word and be the unique most-specific match, which preserves “reply” → Reply and “reply all” → Reply All while duplicate labels fall back to the language model. A shortcut must be the unique description named by the command; the exact “press Tab” case is handled explicitly. `a_press_lands_only_on_a_control_the_command_names` and `a_shortcut_runs_only_when_the_command_uniquely_names_it` reproduce the unsafe choices and hold the fix. |
 | L-357 | **P2 — The consent and public privacy text understated what Jev receives.** The site and Mac setting said “the names of the buttons and links,” but the payload is built from every on-screen actionable AX element with a label and up to 20 installed-app names sharing a command word. Actionable labels include fields, rows, cells and menu items and can contain a filename or a mail row's sender and subject even though field values, screenshots and window titles are correctly excluded. The phone did not mention installed-app names either, and its local-model sentence said the screen “does not leave” immediately before describing screen-derived labels sent to TypeSafe. The shipped real-answer fixture itself contains mail-row and Finder-cell labels, so this is source evidence. | Fixed 2026-09-19; privacy text deployed and app wording shipped in v0.1.45 / mobile-v0.1.45, not device-verified. The privacy page, Mac setting and phone disclosure now enumerate actionable control types and matching installed-app names; local-model wording distinguishes the local model from TypeSafe's separate data. `AI_CONSENT_POLICY` is 2 on both sides, so the materially corrected disclosure is agreed again. Tests pin the enumerated data and local wording. |
 | L-358 | **P1 — An expired answer to Ask's question could become a context-free instant command.** The phone keeps sending `continues` for the run that asked, but the Mac parks that conversation for 15 minutes and a reconstructed controller has no parked thread. When lookup failed, `start_command` treated the answer text as a fresh task and enabled Jev. “Archive” in answer to “Which email should I archive?” could therefore click whichever fresh-screen control Jev chose under full control, without the question's context. The same late answer also superseded an unrelated active run before the failed lookup was noticed. Found independently in Claude Code's v0.1.44 pass. | Fixed 2026-09-19; shipped in v0.1.45, not device-verified. Any frame carrying `continues` must resume the named, recent, same-destination parked brain. If it cannot, the Mac refuses it as expired and asks the person to start again; it neither starts Jev/the model nor supersedes the active run. Valid resumes still call `LlmBrain::resume`, which disables the instant step by construction. |
+| L-359 | **P2 — The front page still promised that Lilypad never sees what Ask reads.** ADR-0020 put Lilypad in the data path for the hosted way, and `a58b681` corrected the privacy page, the Mac's setting, `docs/api.md` and the threat model. `apps/site/index.html` was not touched: it still said Ask "sends what it reads to the AI provider you set up on your Mac… Either way Lilypad never sees it", and the Pro card listed only remote access. The page a stranger reads first was the last surface describing the product as it was before the decision. | Fixed — at source 2026-09-20, before release. The Ask section names both ways: your own key goes straight from the Mac, with Lilypad not in the path; the hosted way passes through Lilypad as text, never a screenshot and never field contents, with the allowance quoted and the limits said in the same breath. Pro lists it, and still says the tier cannot be bought. Four assertions in `claims.test.ts` hold the split, and one reads `HOSTED_ASK_DAILY_TASKS` so the figure on the page cannot drift from the one the backend enforces. |
+| L-360 | **P2 — The phone's consent card named Lilypad but not the company that receives the same text.** On the hosted way the destination is `providerName: "Lilypad"` at Lilypad's own origin, and `destinationSentence` rendered it as "This Mac runs the task itself… with Lilypad" — wrong about where the step is decided, and silent about TypeSafe receiving the identical reading. `mode: 'system_one'` alone cannot tell a personal TypeSafe key from the hosted route, so the phone had nothing to branch on. Same class as L-357: consent that does not name who receives the screen is not informed. | Fixed — at source 2026-09-20, before release. `AgentDestination.hostedVia` carries the name of the company behind Lilypad, set only by `for_hosted_jev`, absent on every other destination including a personal key, and never hard-coded on the phone. The hosted sentence says each step goes to Lilypad at its origin, that Lilypad sends the same text on to that company, and that Lilypad counts the day's tasks and keeps no copy of the text; the no-screenshot and own-words limits are unchanged. `only_the_hosted_way_discloses_the_company_behind_lilypad`, the protocol round trip, and `names who receives the reading after Lilypad, on the hosted way`. |
 
 Evidence limits: provider UI fixture = **8 existing tests pass, 1 new expected
 failure**. Billing harness executes the current TypeScript service functions

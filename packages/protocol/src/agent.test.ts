@@ -174,6 +174,46 @@ describe('full control and resuming (ADR-0018)', () => {
   });
 });
 
+describe('the hosted way names who receives the reading after Lilypad (ADR-0020)', () => {
+  const hosted = {
+    kind: 'agent_ready',
+    runId: 'probe',
+    protocolVersion: 3,
+    state: 'ready',
+    destination: {
+      profileId: null,
+      providerName: 'Lilypad',
+      origin: 'https://api.takedia.com',
+      model: 'jev-1.13.0',
+      local: false,
+      mode: 'system_one',
+      hostedVia: 'TypeSafe Jev',
+      consentPolicy: 3,
+      consentRevision: 'rev-hosted',
+      source: 'settings',
+    },
+    ts: 1,
+  };
+
+  it('carries the hop, and parses without it', () => {
+    expect(AgentOutboundSchema.parse(hosted)).toEqual(hosted);
+    // A personal System One key is the same mode with nobody in between, and
+    // every Mac older than ADR-0020's hosted way omits the field entirely.
+    const { hostedVia: _v, ...direct } = hosted.destination;
+    expect(AgentOutboundSchema.safeParse({ ...hosted, destination: direct }).success).toBe(true);
+  });
+
+  it('is a name, not a place a credential could be put', () => {
+    expect(Object.keys(hosted.destination)).not.toContain('apiKey');
+    expect(
+      AgentOutboundSchema.safeParse({
+        ...hosted,
+        destination: { ...hosted.destination, hostedVia: 'x'.repeat(65) },
+      }).success,
+    ).toBe(false);
+  });
+});
+
 describe('instant actions are a second, disclosed destination (ADR-0019)', () => {
   it('carries the instant destination beside the model one, and parses without it', () => {
     const destination = {

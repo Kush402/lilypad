@@ -738,6 +738,34 @@ describe('the destination sentence names instant actions too (ADR-0019)', () => 
     expect(sentence).toMatch(/never a screenshot/);
     expect(sentence).toMatch(/types only words you said/);
     expect(sentence).not.toMatch(/screen leaves/);
+    // A personal key goes straight to the provider: nobody is in between, and
+    // the sentence must not invent one.
+    expect(sentence).toMatch(/This Mac runs the task itself/);
+    expect(sentence).not.toMatch(/sends the same text on to/);
+  });
+
+  // The hosted way (ADR-0020) has a hop the person cannot see from the
+  // provider's name: Lilypad receives the reading and hands the same text to
+  // another company. A card that named only Lilypad would understate it.
+  it('names who receives the reading after Lilypad, on the hosted way', () => {
+    const sentence = destinationSentence({
+      profileId: null,
+      providerName: 'Lilypad',
+      origin: 'https://api.takedia.com',
+      model: 'jev-1.13.0',
+      local: false,
+      mode: 'system_one',
+      hostedVia: 'TypeSafe Jev',
+      consentPolicy: 3,
+      consentRevision: 'rev-hosted',
+      source: 'settings',
+    });
+    expect(sentence).toMatch(/each step goes to Lilypad at https:\/\/api\.takedia\.com/);
+    expect(sentence).toMatch(/sends the same text on to TypeSafe Jev \(jev-1\.13\.0\)/);
+    expect(sentence).toMatch(/buttons, links, fields, rows and menu items/);
+    expect(sentence).toMatch(/never a screenshot and never field contents/);
+    expect(sentence).toMatch(/counts your tasks for the day and keeps no copy/);
+    expect(sentence).not.toMatch(/This Mac runs the task itself/);
   });
 
   it('says what goes to the second destination, and what never does', () => {
