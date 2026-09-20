@@ -32,6 +32,29 @@ and the hardware gate still need a device; L-247, L-251 and L-259 are fixed at
 source and still await it. A cut needs the owner's authorization and those
 gates, not an empty "open" column.
 
+**v0.1.47 published on both halves (2026-09-20):** `11cfd4e` carries the
+owner's v0.1.46 customer-walk fixes L-361 through L-364; the independent
+release audit in `b6d31a8` closed L-365 through L-367 instead of shipping the
+first entitlement and account-removal patches unchanged. Release commit
+`e73777f` is tagged `v0.1.47` and `mobile-v0.1.47`; CI `35539532038` was green
+on that exact SHA before either tag.
+
+Deploy `35539710774` succeeded, and the public health endpoint independently
+reported PostgreSQL, Redis and mail healthy at revision `e73777f`. The
+signed/notarized Mac release (`35539710651`) and TestFlight upload
+(`35539711078`, build **48**) succeeded. Android (`35539710980`) is green with
+publication skipped because Play signing secrets are still absent. The
+post-release site deploy (`35540583420`) succeeded.
+
+Verified anonymously: the site names v0.1.47, `Lilypad.dmg` returns 200 at
+22,999,329 bytes and exactly matches the release asset's
+`774f072b93e656a416c6e428277da25ba5daacf96f1632139838a55f1f3ddb2f`
+SHA-256, and `latest.json` names 0.1.47 for all four darwin targets with signed
+site URLs. The downloaded DMG is `accepted · source=Notarized Developer ID`
+under `spctl`, and `stapler validate` passes. L-359 through L-367 are now
+released, not device-verified; the real Free/Pro/BYOK, revocation and allowance
+walk is still owed.
+
 **v0.1.46 published on both halves (2026-09-20):** ADR-0020 ships. `40ba5fb`
 added Lilypad's own way of running a task, `a58b681` put it behind Pro on a
 server-only credential with a 25-task daily allowance, `883cf98` corrected the
