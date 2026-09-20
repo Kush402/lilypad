@@ -32,6 +32,39 @@ and the hardware gate still need a device; L-247, L-251 and L-259 are fixed at
 source and still await it. A cut needs the owner's authorization and those
 gates, not an empty "open" column.
 
+**v0.1.48 published on both halves (2026-09-20):** `144972f` closes L-368 —
+a subscription check that failed once left the Pro choice locked until the app
+restarted, so the locked choice now carries a Check again action, which is also
+what picks up a purchase or restore made on the iPhone a moment earlier.
+Release commit `29450a5` is tagged `v0.1.48` and `mobile-v0.1.48`; CI
+`35541389910` was green on that exact SHA — including the real PostgreSQL and
+Redis tests, the device-identity end-to-end suite, CodeQL, `cargo audit` and
+Rust clippy — before either tag.
+
+Deploy `35541593676` succeeded and `/health` reports revision `29450a5`. The
+signed/notarized Mac release `35541593530` published at 22:40:33Z, TestFlight
+upload `35541593541` succeeded, Android `35541593419` is green with publication
+skipped for want of Play signing secrets, and the post-release site deploy
+`35542436094` succeeded.
+
+Verified anonymously: the site names v0.1.48, `Lilypad.dmg` returns 200 at
+22,999,389 bytes and hashes to
+`3c03724718ecac596ccfa6e7fa863fd2c722f47e6b03775f2f5274c87081882b`, byte for
+byte the release asset (downloaded separately and hashed); the updater archive
+is 23,604,980 bytes, inside the site's 26,214,400 limit; `latest.json` names
+0.1.48 for all four darwin targets with site URLs. The downloaded DMG is
+`accepted · source=Notarized Developer ID` under `spctl` and `stapler validate`
+passes.
+
+**First production evidence that the paid path works end to end:** the owner's
+own account holds an `active` Apple subscription for
+`com.takedia.lilypad.pro.monthly` in the **Sandbox** environment, and with
+`users.is_billing_tester` set, `effectiveTier` resolves it to `pro` — which is
+exactly L-298's rule doing its job rather than being bypassed. Before the flag
+was set, the same purchase was correctly refused and the phone said so. What is
+still owed is the walk itself: the 25-task boundary, multi-step count-once,
+revocation mid-run, and BYOK on a Free account.
+
 **v0.1.47 published on both halves (2026-09-20):** `11cfd4e` carries the
 owner's v0.1.46 customer-walk fixes L-361 through L-364; the independent
 release audit in `b6d31a8` closed L-365 through L-367 instead of shipping the
