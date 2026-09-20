@@ -192,6 +192,14 @@ git tag v0.2.0
 git push origin v0.2.0
 ```
 
+The release that first ships hosted Ask ([ADR-0020](adr/0020-lilypad-runs-computer-use-on-its-own-account.md))
+has one ordering rule of its own: `TYPESAFE_SERVICE_API_KEY` belongs in the
+production backend environment, deployed and health-checked, **before** the Mac
+build offering “Lilypad runs whole tasks” is published. The Mac refuses that
+option cleanly when the backend has no service credential, but a subscriber
+should never meet that refusal. Mac and phone go out together in that release,
+because `AI_CONSENT_POLICY` is 3 and every phone re-asks once.
+
 Pushing a `v*` tag triggers `.github/workflows/release.yml`:
 
 1. requires signing/updater credentials and builds the app on `macos-latest`,
