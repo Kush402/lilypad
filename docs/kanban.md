@@ -32,14 +32,34 @@ and the hardware gate still need a device; L-247, L-251 and L-259 are fixed at
 source and still await it. A cut needs the owner's authorization and those
 gates, not an empty "open" column.
 
-**ADR-0020 is built on `main` and not released (2026-09-20):** `40ba5fb` added
-Lilypad's own way of running a task on a System One model, `a58b681` put it
-behind Pro on a server-only credential with a 25-task daily allowance, and
-L-359 and L-360 corrected the two customer-facing surfaces those commits left
-describing the old product. None of it has shipped: v0.1.45 is still the public
-build, `TYPESAFE_SERVICE_API_KEY` is not yet in the production environment, and
-the Mac and phone halves must be released together because `AI_CONSENT_POLICY`
-is 3.
+**v0.1.46 published on both halves (2026-09-20):** ADR-0020 ships. `40ba5fb`
+added Lilypad's own way of running a task, `a58b681` put it behind Pro on a
+server-only credential with a 25-task daily allowance, `883cf98` corrected the
+front page and the phone's consent card (L-359, L-360), and `ca08293` wrote
+down the deploy-before-publish order. Release commit
+`94afe53` is tagged `v0.1.46` and `mobile-v0.1.46`; CI `35533392805` was green
+on that exact SHA before either tag.
+
+The backend went first, as that order requires: `TYPESAFE_SERVICE_API_KEY` was
+placed in `/opt/lilypad/.env.production` only, deploy `35533196798` succeeded,
+and `POST /ask/v1/systemone` answers `401 unauthorized` to an anonymous or
+bogus-bearer request. The tag's own deploy (`35533601867`) moved `/health` to
+`94afe53`. The signed/notarized Mac release (`35533601669`), TestFlight upload
+(`35533603480`, iOS) and post-release site deploy (`35534702531`) all
+succeeded; Android (`35533603430`) is green with publication skipped because
+Play signing secrets are still absent.
+
+Verified anonymously: the site reads v0.1.46, `Lilypad.dmg` returns 200 at
+22,954,689 bytes (the updater archive is 23,564,173 — both under the site's
+26,214,400 limit), `latest.json` names 0.1.46 for all four darwin targets and
+points at the site rather than GitHub, the privacy page carries the hosted-Ask
+paragraph and the 25-task allowance, and the front page carries the corrected
+Ask section. The downloaded DMG is `accepted · source=Notarized Developer ID`
+under `spctl` and `stapler validate` passes.
+
+What is published is not yet device-verified: manual gate step 12 (the Pro
+boundary, the allowance, revocation, and consent policy 3 on a phone) is owed,
+and the hosted path has never run end to end against a real Pro account.
 
 **v0.1.45 published on both halves (2026-09-19):** Fix commit
 `617a4724d2aecec48a6fbfd78db9a687b8bebbd7` carries L-356 through L-358;
