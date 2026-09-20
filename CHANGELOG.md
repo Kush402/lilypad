@@ -6,6 +6,11 @@ All notable changes to Lilypad are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.46] — 2026-09-20
+
+Ask can now run on Lilypad's own AI account, with no API key on the Mac, for
+accounts with a subscription. Bringing your own key is unchanged and free.
+
 ### Added
 
 - **Pro can run Ask on Lilypad's Jev account with no API key.** The Mac sends
@@ -19,6 +24,25 @@ All notable changes to Lilypad are documented here. The format follows
   company Lilypad passes the same text on to, and says Lilypad counts your
   tasks for the day and keeps no copy of the text. Never a screenshot, never
   what is typed in a field, on either way of running.
+
+## [0.1.45] — 2026-09-19
+
+Safety fixes for instant actions, published without release notes at the time.
+
+### Fixed
+
+- **An instant action only does what your command names.** A control is
+  pressed only when your words name it and nothing else matches as well, so
+  "reply all" can no longer press Reply, and a shortcut runs only when your
+  command names that exact shortcut.
+- **The wording about what instant actions send was too narrow.** The setting,
+  your phone and the privacy page now list every kind of control label that
+  can be sent, and the installed-app names that go with a command naming an
+  app.
+- **A late answer to Ask's question can no longer become a new command.** If
+  the conversation it belongs to has expired, Ask says so and asks you to
+  start again, instead of acting on the answer's words on whatever is on
+  screen.
 
 ## [0.1.44] — 2026-09-18
 
