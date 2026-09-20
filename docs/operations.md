@@ -43,6 +43,7 @@ The Always Free API VM shape and reclaim risk are in
 | Session rooms     | `DEFAULT_MAX_ROOMS = 10_000`                                    | `signaling/roomRegistry.ts` — DoS backstop. RAM on the 952 MiB box binds first |
 | Postgres pool     | **10**                                                          | `db/client.ts`                                                                 |
 | WebSocket per IP  | **20**                                                          | `MAX_CONNECTIONS_PER_IP` in `routes/signaling.ts`                              |
+| Hosted Ask tasks  | **25/account/UTC day**                                          | `HOSTED_ASK_DAILY_TASKS`; atomic Redis counters in `services/askAllowance.ts`  |
 | REST              | **120 / min / IP** global; `/connect/request` **30 / min / IP** | `server.ts`, `signaling.ts`. Ten users behind one NAT share one budget         |
 | TURN relay ports  | UDP **49160–49260** ≈ **50 concurrent relays**                  | `infra/coturn-prod/turnserver.conf` (`user-quota=12`, `total-quota=1200`)      |
 

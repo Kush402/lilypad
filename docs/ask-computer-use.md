@@ -86,6 +86,27 @@ app restarts or a key is saved, and Settings shows "Key refused".
 The thresholds rest on real answers in `jev_fixtures.json`; recapture them
 with `capture_real_jev_answers` when the questions change.
 
+## Lilypad's Jev account (Pro)
+
+Ask has two Jev paths. **Your own TypeSafe key** is available on every plan,
+stays on the Mac, and goes directly to TypeSafe. **Lilypad** needs an active
+Pro or Team entitlement and no customer key: the Mac authenticates
+`POST /ask/v1/systemone` with its device token, and only the backend holds
+`TYPESAFE_SERVICE_API_KEY`.
+
+The backend validates the text-only System One shape, rejects screenshots and
+unknown fields, checks the account's effective entitlement, and atomically
+counts at most 25 task IDs per account per UTC day in Redis. Every step of one
+run has the same opaque task ID, so a five-step task costs one task. The
+backend stores only expiring counters; it does not store or log commands,
+control labels, questions, or answers. Missing entitlement, credential, Redis,
+or upstream service fails closed and never falls back to a customer's key.
+
+Both paths use the same local Jev loop, safety floor, autonomy gate, and phone
+feed. The hosted path sends the command, front app, keyboard focus, control
+roles/labels, matching installed-app names, and one-line step summaries to
+Lilypad and then TypeSafe. It never sends a screenshot or field value.
+
 ## The toolset
 
 Every provider gets the same tools
@@ -184,7 +205,9 @@ changed AI setup, a different run id or an expired thread starts a new task.
 - No vendor-native tool for OpenAI's Responses API or Gemini's own computer
   use; both use the common toolset.
 - Instant actions cover one action per command and need the person's own
-  TypeSafe key; typing text is always the model's job.
+  TypeSafe key. Whole-task Jev can use either that key on every plan or
+  Lilypad's hosted Pro path; Jev only types words already present in the
+  command.
 
 ## Checking it
 

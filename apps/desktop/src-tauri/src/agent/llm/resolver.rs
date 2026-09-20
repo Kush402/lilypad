@@ -145,6 +145,31 @@ impl Resolved {
     }
 }
 
+/// How this Mac reaches Lilypad's own account (ADR-0020): the control plane's
+/// base URL, and a way to get a device token for it.
+///
+/// Registered once at startup by `lib.rs`, which is where `DesktopAuth` is
+/// built. A `OnceLock` rather than a parameter because the resolver runs on
+/// its own worker thread with no Tauri state and no app handle — and because
+/// `agent/llm` has no business knowing what a `DesktopAuth` is. What it needs
+/// is a function that returns a bearer.
+static HOSTED: std::sync::OnceLock<(String, jev::BearerSource)> = std::sync::OnceLock::new();
+
+/// Tell the resolver how to reach Lilypad's own account. Idempotent; a second
+/// call is ignored, because two answers to "where is the control plane" is a
+/// wiring bug and the first one is the one already in use.
+pub fn register_hosted(base_url: String, bearer: jev::BearerSource) {
+    let _ = HOSTED.set((base_url, bearer));
+}
+
+/// The hosted System One configuration, when this build has been wired for
+/// one. `None` means the tier cannot run here — which the engine choice says
+/// out loud rather than failing at the first step of a task.
+pub fn hosted_jev() -> Option<jev::InstantConfig> {
+    let (base_url, bearer) = HOSTED.get()?;
+    Some(jev::InstantConfig::hosted(base_url.clone(), bearer.clone()))
+}
+
 /// The instant-actions key: the developer override, else the keychain. A
 /// keychain that will not answer means no instant actions, never no Ask.
 fn resolve_instant() -> Option<jev::InstantConfig> {
@@ -336,28 +361,42 @@ fn resolve_once() -> (Readiness, u64) {
     // kill the process it is a deadline for — see `store::wait_bounded`.
     // Lilypad's own loop needs no language model, so it resolves on its own
     // terms (ADR-0020): a System One key, and the destination that names it.
-    if super::store::engine_of(&settings) == super::store::ENGINE_LILYPAD {
-        let readiness = match resolve_instant() {
-            Some(jev) => match EffectiveConfig::for_jev(
-                committed,
-                if jev::InstantConfig::from_env().is_some() {
-                    super::effective::ConfigSource::Environment
-                } else {
-                    super::effective::ConfigSource::Settings
-                },
-                jev.base_url.clone(),
-                &jev.api_key,
-                jev::PROVIDER_NAME,
-            ) {
-                Some(config) => Readiness::Ready(Box::new(Resolved {
-                    choice: None,
-                    config,
-                    instant: None,
-                    engine: Engine::Lilypad,
-                    jev: Some(jev),
-                })),
-                None => Readiness::NotConfigured,
-            },
+    let engine = super::store::engine_of(&settings);
+    if super::store::engine_is_system_one(engine) {
+        // Two ways to run the same loop, and the difference is the whole of
+        // ADR-0020: `lilypad` is Lilypad's own account, reached through the
+        // control plane on this device's token, with no System One key on
+        // this Mac at all; `typesafe` is the person's own key, posted
+        // straight to TypeSafe, free, with no backend in the path.
+        let config = if engine == super::store::ENGINE_LILYPAD {
+            hosted_jev().and_then(|jev| {
+                EffectiveConfig::for_hosted_jev(committed, jev.base_url.clone())
+                    .map(|config| (config, jev))
+            })
+        } else {
+            resolve_instant().and_then(|jev| {
+                EffectiveConfig::for_jev(
+                    committed,
+                    if jev::InstantConfig::from_env().is_some() {
+                        super::effective::ConfigSource::Environment
+                    } else {
+                        super::effective::ConfigSource::Settings
+                    },
+                    jev.base_url.clone(),
+                    jev.own_key().unwrap_or_default(),
+                    jev::PROVIDER_NAME,
+                )
+                .map(|config| (config, jev))
+            })
+        };
+        let readiness = match config {
+            Some((config, jev)) => Readiness::Ready(Box::new(Resolved {
+                choice: None,
+                config,
+                instant: None,
+                engine: Engine::Lilypad,
+                jev: Some(jev),
+            })),
             None => Readiness::NotConfigured,
         };
         return (readiness, committed);

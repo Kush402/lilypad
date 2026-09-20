@@ -91,6 +91,15 @@ pub struct EffectiveConfig {
     pub consent_revision: String,
 }
 
+/// What stands in for a credential digest on the hosted path (ADR-0020).
+///
+/// Not a secret, not a key, and deliberately constant: there IS no System One
+/// credential on a Mac running that way. Using the device token instead would
+/// change `credential_revision` on every token renewal, which is L-265's
+/// failure with the sign flipped — a phone's agreed revision would go stale
+/// for a reason the person never caused and cannot see.
+const HOSTED_CREDENTIAL: &str = "lilypad-account";
+
 static GENERATION: AtomicU64 = AtomicU64::new(1);
 
 fn next_generation() -> u64 {
@@ -350,6 +359,29 @@ impl EffectiveConfig {
             Some(key.to_string()),
         )?;
         config.provider_name = provider_name.to_string();
+        Some(config)
+    }
+
+    /// The same, for Lilypad's own account (ADR-0020).
+    ///
+    /// Separate because there is **no credential on this Mac** to digest. The
+    /// bearer is a device token minted per request, which changes on every
+    /// renewal and is not a configuration the person chose — digesting it
+    /// would invalidate every phone's agreed revision each time a token was
+    /// refreshed, which is L-265's failure with the sign flipped. What
+    /// identifies this destination is its origin and its model, and those are
+    /// in the digest already.
+    pub fn for_hosted_jev(committed: u64, base_url: String) -> Option<EffectiveConfig> {
+        let (mut config, _) = Self::assemble(
+            ConfigSource::Settings,
+            committed,
+            "jev",
+            None,
+            base_url,
+            Some(super::jev::MODEL.to_string()),
+            Some(HOSTED_CREDENTIAL.to_string()),
+        )?;
+        config.provider_name = super::jev::HOSTED_PROVIDER_NAME.to_string();
         Some(config)
     }
 

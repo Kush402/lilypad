@@ -343,3 +343,26 @@ const REMOTE_TIERS = new Set<Tier>(['pro', 'team']);
 export function entitlesRemoteAccess(inputs: EntitlementInputs): boolean {
   return REMOTE_TIERS.has(effectiveTier(inputs));
 }
+
+/** Tiers that include Ask running on Lilypad's own System One account
+ *  (ADR-0020). The same two tiers as remote access today. */
+const HOSTED_ASK_TIERS = new Set<Tier>(['pro', 'team']);
+
+/**
+ * Whether this account may run Ask on Lilypad's account (ADR-0020).
+ *
+ * A separate name from `entitlesRemoteAccess` even though the set is
+ * identical, because they are answers to different questions about different
+ * products. Aliasing them would mean that the day remote access becomes free
+ * — which ADR-0013 already half-promises for LAN — the paid data plane
+ * silently becomes free with it, in a diff that touched neither this file's
+ * intent nor anything named "Ask".
+ *
+ * Everything else is shared: one `effectiveTier`, so an expired period, a
+ * revoked purchase, a Sandbox receipt outside its environment and a manual
+ * Team grant all mean here exactly what they mean on the billing screen
+ * (L-294, L-298, L-299).
+ */
+export function entitlesHostedAsk(inputs: EntitlementInputs): boolean {
+  return HOSTED_ASK_TIERS.has(effectiveTier(inputs));
+}

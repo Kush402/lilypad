@@ -32,6 +32,22 @@ export const redisKeys = {
    * by whoever's WebSocket frame simply arrives first. See
    * `docs/audit/m3/backend-security.md` Finding 1. */
   roomAuth: (roomId: string) => `lilypad:room-auth:${roomId}`,
+  /** Hosted-Ask tasks an account has spent on one UTC day (ADR-0020), as a
+   * counter and nothing else. `day` is `YYYY-MM-DD` in UTC, which is what
+   * makes the reset instant the same one for every account and every replica.
+   *
+   * Redis rather than Postgres for the same reason as every key above: this
+   * is operational metadata with a natural expiry, not a record anyone is
+   * entitled to a copy of. Losing it to a restart costs an account at most one
+   * extra day's allowance, and storing it durably would mean keeping a
+   * per-account usage history that ADR-0020 has no use for. */
+  hostedAskDay: (userId: string, day: string) => `lilypad:ask-day:${userId}:${day}`,
+  /** Steps seen for one task on one day. Its existence is what makes the
+   * allowance count TASKS: the first step creates it and spends one of the
+   * day's tasks, every later step only increments it. Keyed by day as well as
+   * task so a single id cannot be replayed tomorrow to skip the charge. */
+  hostedAskTask: (userId: string, day: string, taskId: string) =>
+    `lilypad:ask-task:${userId}:${day}:${taskId}`,
 } as const;
 
 /** Health probe result shape returned by GET /health. */

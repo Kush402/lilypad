@@ -11,8 +11,14 @@ const OFF = {
   origin: 'https://api.typesafe.ai',
   problem: null,
   engine: 'model',
+  hostedAvailable: false,
+  hostedOrigin: null,
 };
 const ON = { ...OFF, hasKey: true, source: 'settings' };
+/** A Mac signed in to an account, so Lilypad's own way of running is
+ *  reachable. Whether it is PAID for is the backend's answer, not this
+ *  flag's. */
+const HOSTED = { ...OFF, hostedAvailable: true, hostedOrigin: 'https://api.lilypad.example' };
 
 const mocked = vi.mocked(invoke);
 
@@ -74,22 +80,68 @@ describe('InstantActionsCard', () => {
     expect(screen.getByTestId('instant-remove')).toBeTruthy();
   });
 
-  it('chooses who runs a whole task, once a key is saved', async () => {
+  it('runs whole tasks on your own key, once one is saved', async () => {
     mocked
       .mockResolvedValueOnce(ON)
       .mockResolvedValueOnce(undefined)
-      .mockResolvedValueOnce({ ...ON, engine: 'lilypad' });
+      .mockResolvedValueOnce({ ...ON, engine: 'typesafe' });
     render(<InstantActionsCard />);
-    await waitFor(() => expect(screen.getByTestId('instant-engine')).toBeTruthy());
-    fireEvent.click(screen.getByLabelText(/TypeSafe runs whole tasks/));
+    await waitFor(() => expect(screen.getByTestId('instant-engine-typesafe')).toBeTruthy());
+    fireEvent.click(screen.getByLabelText(/Your own TypeSafe key runs whole tasks/));
+    await waitFor(() =>
+      expect(mocked).toHaveBeenCalledWith('set_ask_engine', { engine: 'typesafe' }),
+    );
+    await waitFor(() =>
+      expect(
+        (screen.getByLabelText(/Your own TypeSafe key runs whole tasks/) as HTMLInputElement)
+          .checked,
+      ).toBe(true),
+    );
+  });
+
+  it('offers Lilypad’s own account with no key at all, labelled Pro', async () => {
+    // ADR-0020: the hosted way needs no TypeSafe key on this Mac. Hiding it
+    // behind the key field is what the first draft did, and it made the one
+    // option a subscriber is meant to use invisible to them.
+    mocked
+      .mockResolvedValueOnce(HOSTED)
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce({ ...HOSTED, engine: 'lilypad' });
+    render(<InstantActionsCard />);
+    await waitFor(() => expect(screen.getByTestId('instant-engine-lilypad')).toBeTruthy());
+    expect(screen.getByTestId('instant-state').textContent).toBe('Off');
+    const label = screen.getByTestId('instant-engine-lilypad').textContent ?? '';
+    expect(label).toMatch(/Pro/);
+    expect(label).toMatch(/no key needed/i);
+    expect(label).toMatch(/25 tasks a day/);
+    // The destination named is Lilypad's server, because that is what
+    // receives the reading — saying TypeSafe here would be untrue.
+    expect(label).toContain('https://api.lilypad.example');
+    expect(label).not.toMatch(/straight to TypeSafe/);
+
+    fireEvent.click(screen.getByLabelText(/Lilypad runs whole tasks/));
     await waitFor(() =>
       expect(mocked).toHaveBeenCalledWith('set_ask_engine', { engine: 'lilypad' }),
     );
-    await waitFor(() =>
-      expect((screen.getByLabelText(/TypeSafe runs whole tasks/) as HTMLInputElement).checked).toBe(
-        true,
-      ),
-    );
+  });
+
+  it('does not offer what this Mac cannot reach', async () => {
+    // No false claim that a route exists: a build with no control plane
+    // wired shows no Lilypad option at all, rather than one that fails.
+    mocked.mockResolvedValueOnce(OFF);
+    render(<InstantActionsCard />);
+    await waitFor(() => expect(screen.getByTestId('instant-engine')).toBeTruthy());
+    expect(screen.queryByTestId('instant-engine-lilypad')).toBeNull();
+  });
+
+  it('keeps your own key working with no subscription', async () => {
+    // BYOK is every tier's, and nothing on this card may suggest otherwise.
+    mocked.mockResolvedValueOnce(ON);
+    render(<InstantActionsCard />);
+    await waitFor(() => expect(screen.getByTestId('instant-engine-typesafe')).toBeTruthy());
+    const byok = screen.getByTestId('instant-engine-typesafe').textContent ?? '';
+    expect(byok).not.toMatch(/Pro/);
+    expect(byok).toMatch(/straight to TypeSafe/);
   });
 
   it('turns instant actions off', async () => {

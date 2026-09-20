@@ -458,6 +458,30 @@ pub fn run() {
                 })),
             )));
 
+            // Ask on Lilypad's own account (ADR-0020). The resolver runs on
+            // its own worker with no app handle, so the one thing it needs —
+            // "give me a device token for the control plane" — is handed to
+            // it here as a closure. The System One credential itself is not
+            // in this process and never will be: what travels from this Mac
+            // is a device token, and the backend holds the key.
+            {
+                let auth = app
+                    .state::<std::sync::Arc<auth::DesktopAuth>>()
+                    .inner()
+                    .clone();
+                agent::llm::resolver::register_hosted(
+                    backend.clone(),
+                    std::sync::Arc::new(move || {
+                        let auth = auth.clone();
+                        Box::pin(async move {
+                            auth.bearer_result()
+                                .await
+                                .map_err(|e| anyhow::anyhow!("{e}"))
+                        })
+                    }),
+                );
+            }
+
             app.manage(Mutex::new(AppState::new(device_id.clone(), backend)));
 
             build_tray(app)?;

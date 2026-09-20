@@ -107,6 +107,39 @@ a working API out of rotation. But with no mailer, `/auth/password/reset/request
 and `/auth/magic-link/request` answer **503**, and nothing else said so out loud
 — an operator would have found out from a support ticket.
 
+## `POST /ask/v1/systemone` ✅ 🔒 device token, Pro/Team
+
+Runs one text-only Jev step on Lilypad's server-held TypeSafe credential
+([ADR-0020](adr/0020-lilypad-runs-computer-use-on-its-own-account.md)). The
+backend requires a live device token, evaluates the account's effective tier,
+and atomically counts the opaque `taskId` once against 25 tasks per UTC day;
+later steps with the same ID do not spend another task.
+
+```jsonc
+// request — bounded to 128 KiB; strict schema, no screenshots or credentials
+{
+  "taskId": "06f65e09-…",
+  "model": "jev-1.13.0",
+  "state": { "command": "archive the email", "app": "Mail" },
+  "questions": {
+    "done": { "type": "noul", "instructions": "Is the task complete?" }
+  }
+}
+// 200 OK
+{
+  "model": "jev-1.13.0",
+  "answers": { "done": { "type": "noul", "noul": 0.02 } },
+  "allowance": { "used": 3, "limit": 25, "resetsAt": "2026-09-21T00:00:00.000Z" }
+}
+```
+
+`401` means invalid/revoked device; `403 device_token_required` means an
+account token was used; `402 not_entitled` means no active Pro/Team plan;
+`429 daily_limit` or `task_step_limit` is a meter refusal; `503` means the
+server credential or atomic allowance check is unavailable; `502 upstream`
+means TypeSafe failed. Request/answer bodies are forwarded and discarded,
+never persisted or logged; only expiring counters remain in Redis.
+
 ## `POST /pairing/create` ✅
 
 Called by the **desktop** to mint a single-use QR token (60s TTL in Redis).

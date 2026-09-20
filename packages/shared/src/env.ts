@@ -109,6 +109,39 @@ const EnvSchema = z.object({
     .default('false')
     .transform((v) => v === 'true'),
 
+  // ── Hosted Ask, on Lilypad's own System One account (ADR-0020) ────────────
+  //
+  // The credential Lilypad's backend uses to call TypeSafe on a subscriber's
+  // behalf. It lives HERE and nowhere else: it is never in a desktop build,
+  // never in a settings file, never in a response body, and never in a log
+  // line. A Mac reaching the hosted route authenticates as a device and
+  // receives answers, not a key.
+  //
+  // Deliberately NOT named `TYPESAFE_API_KEY`. That variable already means
+  // something on a developer's machine — the personal key the desktop reads
+  // for its own BYOK path (`agent/llm/jev.rs`) — and the repo-root `.env`
+  // carries one. Sharing the name would silently promote whichever personal
+  // key happened to be in the environment into the service credential for
+  // every account on the deployment.
+  //
+  // Optional, and its absence is a refusal rather than a fallback: with no
+  // key the route answers 503 `unconfigured` and no request is forwarded
+  // anywhere. There is no "try the caller's key instead" path, because the
+  // caller has none — that is the entire point of the tier.
+  TYPESAFE_SERVICE_API_KEY: z.string().optional(),
+  // Where those calls go. Overridable only so a test can point at a stub; a
+  // deployment has no reason to change it.
+  TYPESAFE_BASE_URL: z.string().default('https://api.typesafe.ai'),
+  // Tasks one account may run on Lilypad's account per UTC day (ADR-0020).
+  // Tasks, not steps: every step of one run carries the same `taskId` and the
+  // first of them spends the allowance. The bound exists for abuse, not cost.
+  HOSTED_ASK_DAILY_TASKS: z.coerce.number().int().min(0).default(25),
+  // Steps one task may take before the route stops answering for it. The Mac
+  // gives up at 12 (`jev_agent::MAX_STEPS`); this is the server's own bound on
+  // a client that does not, so that "count tasks" cannot be read as "one task
+  // id buys an unlimited day".
+  HOSTED_ASK_MAX_STEPS: z.coerce.number().int().min(1).default(40),
+
   // ── App Store billing (ADR-0016) ───────────────────────────────────────────
   // Verifying StoreKit JWS and App Store Server Notifications. Absent → the
   // billing routes answer 503 rather than pretending to accept a purchase
@@ -318,6 +351,27 @@ function productionSafetyProblems(env: Env): string[] {
       `REDIS_URL has no password — Redis must require auth in production ` +
         `(e.g. redis://:secret@host:6379)`,
     );
+  }
+
+  // Hosted Ask (ADR-0020). Being unconfigured is FINE and is not listed here:
+  // with no service key the route answers 503 and forwards nothing, which is
+  // a deployment that does not sell the tier rather than an unsafe one. What
+  // is checked is the configuration that would leak the key if it were wrong.
+  if (env.TYPESAFE_SERVICE_API_KEY !== undefined) {
+    if (env.TYPESAFE_SERVICE_API_KEY.trim().length < 16) {
+      problems.push(
+        'TYPESAFE_SERVICE_API_KEY is set but implausibly short — this is Lilypad’s own billable ' +
+          'System One credential, not a placeholder; unset it to disable hosted Ask instead',
+      );
+    }
+    // The key travels as a bearer on every forwarded step. Over plaintext it
+    // is handed to anyone on the path, once per Ask step of every subscriber.
+    if (!env.TYPESAFE_BASE_URL.startsWith('https://')) {
+      problems.push(
+        `TYPESAFE_BASE_URL (${env.TYPESAFE_BASE_URL}) is not HTTPS — the service credential must ` +
+          `not be sent in the clear`,
+      );
+    }
   }
 
   return problems;

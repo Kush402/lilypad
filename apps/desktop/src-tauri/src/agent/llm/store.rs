@@ -120,16 +120,27 @@ pub struct LastCheck {
 
 /// The task runs on the AI provider the person configured.
 pub const ENGINE_MODEL: &str = "model";
-/// The task runs on Lilypad's own loop (ADR-0020).
+/// The task runs on Lilypad's own loop, on **Lilypad's** System One account,
+/// through the control plane (ADR-0020). No key on this Mac; needs Pro.
 pub const ENGINE_LILYPAD: &str = "lilypad";
+/// The same loop on the person's **own** TypeSafe key, posted straight to
+/// TypeSafe with no backend in the path (ADR-0020, decision 7). Free, every
+/// tier, and the only one of the three that needs a key here.
+pub const ENGINE_TYPESAFE: &str = "typesafe";
 
 /// Which engine these settings ask for. Anything unrecognised is the model,
 /// because a setting nobody wrote is not a grant of anything.
 pub fn engine_of(settings: &AgentSettings) -> &'static str {
     match settings.engine.as_deref() {
         Some(ENGINE_LILYPAD) => ENGINE_LILYPAD,
+        Some(ENGINE_TYPESAFE) => ENGINE_TYPESAFE,
         _ => ENGINE_MODEL,
     }
+}
+
+/// Does this engine run the System One loop rather than a language model?
+pub fn engine_is_system_one(engine: &str) -> bool {
+    engine == ENGINE_LILYPAD || engine == ENGINE_TYPESAFE
 }
 
 fn settings_path() -> Result<PathBuf> {

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { remoteAccessFor } from './entitlement.js';
+import { hostedAskAccessFor, remoteAccessFor } from './entitlement.js';
+import { entitlesHostedAsk } from './subscription.js';
 import { users } from '../db/schema.js';
 
 /**
@@ -87,5 +88,138 @@ describe('who may reach a laptop from another network', () => {
     // A tier added to the enum and not to REMOTE_TIERS should fail closed. The
     // opposite default hands out the paid feature on a typo.
     expect(await remoteAccessFor('u', fakeDb([{ tier: 'enterprise-trial' }]))).toBe('not_entitled');
+  });
+});
+
+/**
+ * Ask on Lilypad's own System One account (ADR-0020).
+ *
+ * The same evaluator as above, asked a different question — so every rule
+ * about periods, refunds and environments has to hold here too. These are
+ * separate tests rather than a loop over both functions on purpose: if the
+ * two ever stop agreeing, that must be a deliberate change with its own
+ * failing assertion, not a silent one.
+ */
+describe('who may run a task on Lilypad’s own account', () => {
+  const day = 24 * 60 * 60 * 1000;
+  const now = Date.parse('2026-09-19T12:00:00Z');
+  const subscription = (
+    expiresAt: number,
+    status = 'active',
+    environment: 'Sandbox' | 'Production' = 'Sandbox',
+  ) => [
+    {
+      environment,
+      originalTransactionId: 'orig-1',
+      ownerUserId: 'u',
+      productId: 'com.takedia.lilypad.pro.monthly',
+      status,
+      expiresAt: new Date(expiresAt),
+      graceExpiresAt: null,
+      lastTransactionId: 'tx-1',
+      lastPurchaseDate: new Date(now - day),
+      revokedAt: null,
+    },
+  ];
+
+  it('refuses the free tier', async () => {
+    expect(await hostedAskAccessFor('u', fakeDb([{ tier: 'free' }]), now)).toBe('not_entitled');
+  });
+
+  it('admits Pro and Team', async () => {
+    expect(await hostedAskAccessFor('u', fakeDb([{ tier: 'pro' }]), now)).toBe('entitled');
+    expect(await hostedAskAccessFor('u', fakeDb([{ tier: 'team' }]), now)).toBe('entitled');
+  });
+
+  it('admits a current Apple subscription on an otherwise free account', async () => {
+    expect(
+      await hostedAskAccessFor('u', fakeDb([{ tier: 'free' }], subscription(now + day)), now),
+    ).toBe('entitled');
+  });
+
+  it('refuses a subscription whose period has passed, notification or not', async () => {
+    // L-294: entitlement is a question about the clock, never a stored word.
+    // A missed EXPIRED notification must not buy a free data plane.
+    expect(
+      await hostedAskAccessFor('u', fakeDb([{ tier: 'free' }], subscription(now - day)), now),
+    ).toBe('not_entitled');
+  });
+
+  it('refuses a revoked or refunded subscription still inside its period', async () => {
+    expect(
+      await hostedAskAccessFor(
+        'u',
+        fakeDb([{ tier: 'free' }], subscription(now + day, 'revoked')),
+        now,
+      ),
+    ).toBe('not_entitled');
+  });
+
+  it('refuses an expired status even with a future period end', async () => {
+    expect(
+      await hostedAskAccessFor(
+        'u',
+        fakeDb([{ tier: 'free' }], subscription(now + day, 'expired')),
+        now,
+      ),
+    ).toBe('not_entitled');
+  });
+
+  it('fails closed on an account that no longer exists', async () => {
+    expect(await hostedAskAccessFor('gone', fakeDb([]), now)).toBe('no_such_account');
+  });
+
+  it('refuses a tier nobody added to the paid set', async () => {
+    expect(await hostedAskAccessFor('u', fakeDb([{ tier: 'enterprise-trial' }]), now)).toBe(
+      'not_entitled',
+    );
+  });
+});
+
+/**
+ * The environment rule (L-298), asked of the pure evaluator.
+ *
+ * `hostedAskAccessFor` reads `APPLE_IAP_ENVIRONMENT` from the process config,
+ * which is Sandbox under test — so the one case that matters commercially, a
+ * TestFlight purchase against a Production deployment, can only be stated
+ * here. It is stated, because "someone bought it in the sandbox" is the
+ * cheapest way to get a free data plane if nobody checks.
+ */
+describe('a test purchase does not buy Lilypad’s account', () => {
+  const now = Date.parse('2026-09-19T12:00:00Z');
+  const sandboxSubscription = {
+    environment: 'Sandbox' as const,
+    originalTransactionId: 'orig-1',
+    ownerUserId: 'u',
+    productId: 'com.takedia.lilypad.pro.monthly',
+    status: 'active' as const,
+    expiresAt: now + 24 * 60 * 60 * 1000,
+    graceExpiresAt: null,
+    lastTransactionId: 'tx-1',
+    lastPurchaseDate: now - 24 * 60 * 60 * 1000,
+    revokedAt: null,
+  };
+
+  it('refuses a Sandbox subscription on a Production deployment', () => {
+    expect(
+      entitlesHostedAsk({
+        manualTier: 'free',
+        subscription: sandboxSubscription,
+        commercialEnvironment: 'Production',
+        now,
+      }),
+    ).toBe(false);
+  });
+
+  it('admits it for an approved tester, and only for them', () => {
+    expect(
+      entitlesHostedAsk({
+        manualTier: 'free',
+        subscription: sandboxSubscription,
+        commercialEnvironment: 'Production',
+        isApprovedTester: true,
+        now,
+      }),
+    ).toBe(true);
   });
 });

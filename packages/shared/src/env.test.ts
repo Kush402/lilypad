@@ -166,4 +166,58 @@ describe('loadEnv', () => {
       }
     });
   });
+
+  describe('hosted Ask on Lilypad’s own account (ADR-0020)', () => {
+    it('boots in production with no service key — the tier is simply not sold', () => {
+      // Absence is a refusal at the route (503 `unconfigured`), not an unsafe
+      // configuration. Demanding the key here would stop every deployment
+      // that does not want the tier from starting at all.
+      const env = loadEnv(secureProdEnv());
+      expect(env.TYPESAFE_SERVICE_API_KEY).toBeUndefined();
+      expect(env.HOSTED_ASK_DAILY_TASKS).toBe(25);
+    });
+
+    it('refuses a service key short enough to be a placeholder', () => {
+      expect(() => loadEnv(secureProdEnv({ TYPESAFE_SERVICE_API_KEY: 'changeme' }))).toThrow(
+        /TYPESAFE_SERVICE_API_KEY/,
+      );
+    });
+
+    it('refuses to send the service credential over plaintext', () => {
+      // The key is a bearer on every forwarded step. Over http it is handed
+      // to anyone on the path, once per Ask step of every subscriber.
+      expect(() =>
+        loadEnv(
+          secureProdEnv({
+            TYPESAFE_SERVICE_API_KEY: 'a-plausible-service-credential-value',
+            TYPESAFE_BASE_URL: 'http://api.typesafe.ai',
+          }),
+        ),
+      ).toThrow(/TYPESAFE_BASE_URL/);
+    });
+
+    it('does not read the desktop’s personal BYOK variable', () => {
+      // `TYPESAFE_API_KEY` is the developer override the DESKTOP reads for
+      // its own key (`agent/llm/jev.rs`), and the repo-root .env carries one.
+      // If the backend ever fell back to it, one person's personal key would
+      // quietly become the service credential for every account on the
+      // deployment — and the bill.
+      const env = loadEnv(
+        secureProdEnv({ TYPESAFE_API_KEY: 'a-personal-key-that-must-not-be-used' }),
+      );
+      expect(env.TYPESAFE_SERVICE_API_KEY).toBeUndefined();
+      expect(Object.values(env)).not.toContain('a-personal-key-that-must-not-be-used');
+    });
+
+    it('accepts a properly configured hosted tier', () => {
+      const env = loadEnv(
+        secureProdEnv({
+          TYPESAFE_SERVICE_API_KEY: 'a-plausible-service-credential-value',
+          HOSTED_ASK_DAILY_TASKS: '25',
+        }),
+      );
+      expect(env.HOSTED_ASK_DAILY_TASKS).toBe(25);
+      expect(env.TYPESAFE_BASE_URL).toBe('https://api.typesafe.ai');
+    });
+  });
 });

@@ -7,8 +7,14 @@ export interface InstantConfigDto {
   source: 'env' | 'settings' | 'none';
   origin: string;
   problem: string | null;
-  /** "model" or "lilypad" — who runs a whole task (ADR-0020). */
+  /** "model", "lilypad" (Lilypad's own account) or "typesafe" (your own
+   *  key) — who runs a whole task (ADR-0020). */
   engine: string;
+  /** Whether this Mac can reach Lilypad's own account at all. Not a
+   *  statement about the subscription: the backend decides that. */
+  hostedAvailable: boolean;
+  /** Where hosted requests go — Lilypad's server, not TypeSafe. */
+  hostedOrigin: string | null;
 }
 
 /**
@@ -107,29 +113,49 @@ export function InstantActionsCard() {
           {config.problem}
         </p>
       ) : null}
-      {on ? (
-        <div className="row" data-testid="instant-engine">
-          <label>
-            <input
-              type="radio"
-              name="ask-engine"
-              checked={engine === 'model'}
-              onChange={() => void chooseEngine('model')}
-            />{' '}
-            Your AI provider runs tasks; TypeSafe only does short commands
-          </label>
-          <label>
+      <div className="row" data-testid="instant-engine">
+        <label>
+          <input
+            type="radio"
+            name="ask-engine"
+            checked={engine === 'model'}
+            onChange={() => void chooseEngine('model')}
+          />{' '}
+          Your AI provider runs tasks; TypeSafe only does short commands
+        </label>
+        {config?.hostedAvailable ? (
+          <label data-testid="instant-engine-lilypad">
             <input
               type="radio"
               name="ask-engine"
               checked={engine === 'lilypad'}
               onChange={() => void chooseEngine('lilypad')}
             />{' '}
-            TypeSafe runs whole tasks, one step at a time (no screenshots; it cannot write text or
-            read pages back)
+            <strong>Lilypad runs whole tasks</strong> <span className="chip">Pro</span> &mdash; no
+            key needed. What Ask reads from your screen goes to Lilypad
+            {config.hostedOrigin ? (
+              <>
+                {' '}
+                (<code>{config.hostedOrigin}</code>)
+              </>
+            ) : null}
+            , which asks the model on our account. Still no screenshots, and it cannot write new
+            text or read a page back. 25 tasks a day.
           </label>
-        </div>
-      ) : null}
+        ) : null}
+        {on ? (
+          <label data-testid="instant-engine-typesafe">
+            <input
+              type="radio"
+              name="ask-engine"
+              checked={engine === 'typesafe'}
+              onChange={() => void chooseEngine('typesafe')}
+            />{' '}
+            Your own TypeSafe key runs whole tasks, one step at a time, straight to TypeSafe (no
+            screenshots; it cannot write text or read pages back)
+          </label>
+        ) : null}
+      </div>
       <div className="row">
         <input
           type="password"

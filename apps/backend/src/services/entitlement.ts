@@ -14,7 +14,12 @@ import { db as defaultDb } from '../db/client.js';
 import { users } from '../db/schema.js';
 import { subscriptionForOwner } from './subscriptionStore.js';
 import { config } from '../config.js';
-import { entitlesRemoteAccess, type AppleEnvironment } from './subscription.js';
+import {
+  entitlesHostedAsk,
+  entitlesRemoteAccess,
+  type AppleEnvironment,
+  type EntitlementInputs,
+} from './subscription.js';
 
 export type RemoteAccess =
   /** Reach it from anywhere. */
@@ -39,27 +44,59 @@ export async function remoteAccessFor(
   database = defaultDb,
   now = Date.now(),
 ): Promise<RemoteAccess> {
+  const inputs = await entitlementInputsFor(userId, database, now);
+  if (inputs === null) return 'no_such_account';
+  return entitlesRemoteAccess(inputs) ? 'entitled' : 'not_entitled';
+}
+
+/**
+ * Whether this account may run Ask on Lilypad's own System One account
+ * (ADR-0020).
+ *
+ * Same shape, same failure mode, different product: fails CLOSED on an
+ * unknown account, and — unlike remote access — the caller acts on the answer
+ * today. There is no `ENFORCE_HOSTED_ASK` flag, because the architectural
+ * reason remote entitlement cannot be enforced (every LAN session crosses
+ * `/connect/request`) has no analogue here: nothing reaches this route unless
+ * a person deliberately chose Lilypad's own account to run their task.
+ */
+export async function hostedAskAccessFor(
+  userId: string,
+  database = defaultDb,
+  now = Date.now(),
+): Promise<RemoteAccess> {
+  const inputs = await entitlementInputsFor(userId, database, now);
+  if (inputs === null) return 'no_such_account';
+  return entitlesHostedAsk(inputs) ? 'entitled' : 'not_entitled';
+}
+
+/**
+ * Everything the pure evaluator needs about one account, or null when there
+ * is no such account.
+ *
+ * One reader, shared with the billing screen — including how it picks among
+ * an account's subscriptions. A second hand-written copy of that mapping is
+ * how the two answers start disagreeing (L-294, L-298, L-299).
+ */
+async function entitlementInputsFor(
+  userId: string,
+  database: typeof defaultDb,
+  now: number,
+): Promise<EntitlementInputs | null> {
   const rows = await database
     .select({ tier: users.tier, isBillingTester: users.isBillingTester })
     .from(users)
     .where(eq(users.id, userId))
     .limit(1);
   const account = rows[0];
-  if (account === undefined) return 'no_such_account';
-  // The same evaluator the billing screen uses, so the two cannot disagree
-  // about whether an account is entitled — and so that an expired
-  // subscription stops entitling here too, notification or not (L-294).
-  // One reader, shared with the billing screen -- including how it picks among
-  // an account's subscriptions. A second hand-written copy of that mapping is
-  // how the two answers start disagreeing.
+  if (account === undefined) return null;
   const commercialEnvironment: AppleEnvironment =
     config.env.APPLE_IAP_ENVIRONMENT === 'Production' ? 'Production' : 'Sandbox';
-  const entitled = entitlesRemoteAccess({
+  return {
     manualTier: account.tier,
     subscription: await subscriptionForOwner(database, userId, commercialEnvironment),
     commercialEnvironment,
     isApprovedTester: account.isBillingTester,
     now,
-  });
-  return entitled ? 'entitled' : 'not_entitled';
+  };
 }

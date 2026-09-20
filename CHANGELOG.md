@@ -6,6 +6,15 @@ All notable changes to Lilypad are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Pro can run Ask on Lilypad's Jev account with no API key.** The Mac sends
+  only the command and accessibility-derived control text to Lilypad's
+  authenticated backend; the backend checks Pro/Team entitlement, counts one
+  of 25 daily tasks, and forwards each step using a server-only credential.
+  Bring-your-own provider and TypeSafe keys remain available on every plan and
+  continue to go directly from the Mac to that provider.
+
 ## [0.1.44] — 2026-09-18
 
 Everything in 0.1.43, in a download small enough for the site to serve.

@@ -1538,20 +1538,31 @@ fn agent_config_snapshot() -> AgentConfigDto {
     }
 }
 
-/// Choose who runs a task: the configured AI provider, or Lilypad's own
-/// System One loop (ADR-0020). The loop needs a TypeSafe key, which is the
-/// same setting instant actions use, so this refuses rather than saving a
-/// choice that cannot run.
+/// Choose who runs a task (ADR-0020): the configured AI provider, Lilypad's
+/// own account, or the person's own TypeSafe key.
+///
+/// Each choice is refused here if it cannot run, rather than saved and
+/// discovered at the first step of a task. What is NOT checked here is
+/// entitlement: whether an account has Pro is the backend's answer, given on
+/// the first request, because a setting on a Mac is not a security boundary
+/// and pretending otherwise would put the decision on the wrong machine.
 #[tauri::command]
 pub async fn set_ask_engine(engine: String) -> Result<AgentConfigDto, String> {
-    use crate::agent::llm::{jev, store};
+    use crate::agent::llm::{jev, resolver, store};
     let engine = match engine.as_str() {
         store::ENGINE_MODEL => store::ENGINE_MODEL,
         store::ENGINE_LILYPAD => store::ENGINE_LILYPAD,
+        store::ENGINE_TYPESAFE => store::ENGINE_TYPESAFE,
         other => return Err(format!("unknown engine `{other}`")),
     };
+    if engine == store::ENGINE_LILYPAD && resolver::hosted_jev().is_none() {
+        return Err(
+            "This build cannot reach Lilypad’s own account. Sign this Mac in to Lilypad first."
+                .to_string(),
+        );
+    }
     tauri::async_runtime::spawn_blocking(move || {
-        if engine == store::ENGINE_LILYPAD
+        if engine == store::ENGINE_TYPESAFE
             && jev::InstantConfig::from_env().is_none()
             && !matches!(store::credential_for(jev::KEY_KIND, None), Ok(Some(_)))
         {
@@ -2162,10 +2173,23 @@ pub struct InstantConfigDto {
     /// The keychain could not answer, or TypeSafe refused the key during a
     /// run; named rather than read as "off" or left looking fine.
     pub problem: Option<String>,
-    /// Who runs a whole task: "model" or "lilypad" (ADR-0020). Here as well
-    /// as on the provider card, because this is where the key that makes it
+    /// Who runs a whole task: "model", "lilypad" (Lilypad's own account) or
+    /// "typesafe" (this Mac's own key) — ADR-0020. Here as well as on the
+    /// provider card, because this is where the key that makes one of them
     /// possible is added.
     pub engine: &'static str,
+    /// Whether this Mac can reach Lilypad's own account at all. False on a
+    /// build that was never wired for it; the card then does not offer a
+    /// choice that cannot be made.
+    ///
+    /// NOT a statement about entitlement. Whether the account has Pro is the
+    /// backend's answer, given on the first request — a boolean the webview
+    /// could flip is not a subscription check.
+    pub hosted_available: bool,
+    /// Where hosted requests go: Lilypad's control plane, not TypeSafe. Shown
+    /// so the destination on the card is the one that actually receives the
+    /// reading.
+    pub hosted_origin: Option<String>,
 }
 
 /// Said when TypeSafe stopped accepting a key after it was saved.
@@ -2180,17 +2204,22 @@ pub async fn get_instant_config() -> Result<InstantConfigDto, String> {
 }
 
 fn instant_config_snapshot() -> InstantConfigDto {
-    use crate::agent::llm::{jev, store};
+    use crate::agent::llm::{jev, resolver, store};
     let origin = jev::InstantConfig::new("").origin();
     let engine = store::engine_of(&store::load_settings());
+    let hosted = resolver::hosted_jev();
+    let hosted_origin = hosted.as_ref().map(|c| c.origin());
+    let hosted_available = hosted.is_some();
     let refused = |key: &str| jev::was_refused(key).then(|| INSTANT_KEY_REFUSED.to_string());
     if let Some(config) = jev::InstantConfig::from_env() {
         return InstantConfigDto {
             has_key: true,
             source: "env",
             origin,
-            problem: refused(&config.api_key),
+            problem: config.own_key().and_then(refused),
             engine,
+            hosted_available,
+            hosted_origin,
         };
     }
     let (has_key, problem) = match store::credential_for(jev::KEY_KIND, None) {
@@ -2203,6 +2232,8 @@ fn instant_config_snapshot() -> InstantConfigDto {
         origin,
         problem,
         engine,
+        hosted_available,
+        hosted_origin,
     }
 }
 

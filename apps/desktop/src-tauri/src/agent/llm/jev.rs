@@ -51,7 +51,23 @@ pub const PROVIDER_NAME: &str = "TypeSafe Jev";
 /// The keychain kind the key is filed under, as `kind@origin` (L-262).
 pub const KEY_KIND: &str = "typesafe";
 /// Developer override: the variable TypeSafe's own SDKs read.
+///
+/// This is the PERSONAL key — the person's own account, used for the BYOK
+/// path, held on this Mac and sent straight to TypeSafe. It is not, and must
+/// never become, Lilypad's own service credential: that one lives only in the
+/// backend's environment as `TYPESAFE_SERVICE_API_KEY` and is never shipped
+/// (ADR-0020).
 pub const KEY_ENV: &str = "TYPESAFE_API_KEY";
+
+/// The path on TypeSafe's own API.
+const DIRECT_PATH: &str = "/v1/systemone";
+/// The path on Lilypad's control plane, for the hosted way of running
+/// (ADR-0020). A different path on a different host with a different bearer:
+/// nothing about the two requests is shared except the questions.
+pub const HOSTED_PATH: &str = "/ask/v1/systemone";
+/// How the hosted destination is named to the person. Never "TypeSafe": what
+/// they agreed to is sending the reading to Lilypad, which forwards it.
+pub const HOSTED_PROVIDER_NAME: &str = "Lilypad";
 
 /// Longest command worth asking about. Past this it is a task for the
 /// language model, and sending it would only cost time and disclose more.
@@ -114,10 +130,35 @@ pub fn forget_refusal() {
     refused_keys().clear();
 }
 
+/// A device token, fetched when a request is about to be sent.
+///
+/// A closure rather than the auth handle itself: the resolver runs on its own
+/// worker thread with no Tauri state, and `agent/llm` has no business knowing
+/// what a `DesktopAuth` is. What it needs is "give me a bearer, or tell me
+/// why not", which is one function.
+pub type BearerFuture = std::pin::Pin<Box<dyn std::future::Future<Output = Result<String>> + Send>>;
+pub type BearerSource = std::sync::Arc<dyn Fn() -> BearerFuture + Send + Sync>;
+
+/// Where the request goes and what authorises it.
+///
+/// The two ways of running Ask on a System One model (ADR-0020) differ here
+/// and nowhere else — same loop, same questions, same thresholds.
+#[derive(Clone)]
+pub enum Credential {
+    /// **Your own key.** The person's TypeSafe key, held on this Mac, posted
+    /// straight to TypeSafe. Free, every tier, nothing of Lilypad's involved.
+    Own(String),
+    /// **Lilypad.** This Mac holds no System One key at all. It authenticates
+    /// as a device and the control plane forwards the step on Lilypad's own
+    /// credential, which never leaves the server. Needs a Pro or Team plan,
+    /// and the backend is what enforces that.
+    Hosted(BearerSource),
+}
+
 /// Where the key is and which model answers.
 #[derive(Clone)]
 pub struct InstantConfig {
-    pub api_key: String,
+    pub credential: Credential,
     pub base_url: String,
     pub model: String,
 }
@@ -127,6 +168,7 @@ impl std::fmt::Debug for InstantConfig {
         f.debug_struct("InstantConfig")
             .field("base_url", &self.base_url)
             .field("model", &self.model)
+            .field("hosted", &self.is_hosted())
             .finish_non_exhaustive()
     }
 }
@@ -134,8 +176,18 @@ impl std::fmt::Debug for InstantConfig {
 impl InstantConfig {
     pub fn new(api_key: impl Into<String>) -> Self {
         InstantConfig {
-            api_key: api_key.into(),
+            credential: Credential::Own(api_key.into()),
             base_url: BASE_URL.to_string(),
+            model: MODEL.to_string(),
+        }
+    }
+
+    /// Lilypad's own account, reached through the control plane at
+    /// `base_url` on this device's token (ADR-0020).
+    pub fn hosted(base_url: impl Into<String>, bearer: BearerSource) -> Self {
+        InstantConfig {
+            credential: Credential::Hosted(bearer),
+            base_url: base_url.into(),
             model: MODEL.to_string(),
         }
     }
@@ -146,6 +198,39 @@ impl InstantConfig {
             .map(|k| k.trim().to_string())
             .filter(|k| !k.is_empty())
             .map(Self::new)
+    }
+
+    pub fn is_hosted(&self) -> bool {
+        matches!(self.credential, Credential::Hosted(_))
+    }
+
+    /// The person's own key, when there is one. `None` under the hosted way
+    /// of running — which is the point: there is no key on this Mac to
+    /// return, leak, or file in the keychain.
+    pub fn own_key(&self) -> Option<&str> {
+        match &self.credential {
+            Credential::Own(key) => Some(key),
+            Credential::Hosted(_) => None,
+        }
+    }
+
+    fn path(&self) -> &'static str {
+        if self.is_hosted() {
+            HOSTED_PATH
+        } else {
+            DIRECT_PATH
+        }
+    }
+
+    /// What a refusal is remembered against. A key is remembered by its own
+    /// fingerprint; the hosted route is remembered by its origin, because
+    /// there is no key and every hosted config on this Mac is the same
+    /// destination.
+    fn refusal_key(&self) -> String {
+        match &self.credential {
+            Credential::Own(key) => key.clone(),
+            Credential::Hosted(_) => format!("hosted:{}", self.base_url),
+        }
     }
 
     /// Scheme, host and port — what the person is told requests go to.
@@ -762,6 +847,15 @@ pub fn installed_apps() -> Vec<String> {
 pub struct Jev {
     config: InstantConfig,
     client: reqwest::Client,
+    /// What the hosted route's daily allowance is counted against (ADR-0020):
+    /// 25 **tasks** a day, so every step of one run carries the same id and
+    /// the run costs one. One `Jev` is built per run by `AskBrain::for_run`,
+    /// which is what makes "one client, one task" true rather than hopeful.
+    ///
+    /// Minted even for the direct path, where nothing reads it: a field that
+    /// exists only on one branch is a field that is missing the day the
+    /// branches are swapped.
+    task_id: String,
     /// Answers to return instead of asking — the seam brain tests drive.
     #[cfg(test)]
     pub(crate) canned: Option<Value>,
@@ -772,8 +866,30 @@ impl Jev {
         Jev {
             config,
             client: super::client_with(CONNECT_TIMEOUT, DEADLINE),
+            task_id: uuid::Uuid::new_v4().to_string(),
             #[cfg(test)]
             canned: None,
+        }
+    }
+
+    /// The id this run's steps are counted under. Opaque, per-run, and never
+    /// derived from the command — the backend keys a counter on it and must
+    /// not be able to learn anything else from it.
+    pub(crate) fn task_id(&self) -> &str {
+        &self.task_id
+    }
+
+    /// Stop sending this credential for the rest of the run.
+    ///
+    /// Only for a key the person supplied: a rejected key stays rejected
+    /// until they paste another one, and retrying it costs a round trip
+    /// before every task. A hosted 401 is a different fact — the device token
+    /// expired, or renewal lost a race — and `DeviceAuth` fixes that by
+    /// itself on the next call, so remembering it would turn a two-second
+    /// hiccup into "Ask is off until you relaunch".
+    fn remember_refusal(&self) {
+        if let Credential::Own(key) = &self.config.credential {
+            set_refused(key);
         }
     }
 
@@ -785,7 +901,7 @@ impl Jev {
         // nothing to ask about it.
         if !worth_asking(task)
             || reading.app.eq_ignore_ascii_case("lilypad")
-            || was_refused(&self.config.api_key)
+            || was_refused(&self.config.refusal_key())
         {
             return None;
         }
@@ -803,7 +919,7 @@ impl Jev {
                 if e.downcast_ref::<ProviderFailure>()
                     .is_some_and(|f| f.kind == FailureKind::Auth)
                 {
-                    set_refused(&self.config.api_key);
+                    self.remember_refusal();
                 }
                 log::warn!(target: "lilypad::agent", "instant step skipped: {e}");
                 return None;
@@ -832,7 +948,7 @@ impl Jev {
             if e.downcast_ref::<ProviderFailure>()
                 .is_some_and(|f| f.kind == FailureKind::Auth)
             {
-                set_refused(&self.config.api_key);
+                self.remember_refusal();
             }
         }
         answers
@@ -843,8 +959,27 @@ impl Jev {
         if let Some(canned) = &self.canned {
             return Ok(canned.clone());
         }
-        let reply = send(&self.client, &self.config, "/v1/systemone", Some(body)).await?;
+        let body = self.envelope(body);
+        let reply = send(&self.client, &self.config, self.config.path(), Some(&body)).await?;
         answers_of(&reply, &self.config.model).cloned()
+    }
+
+    /// The body as it goes on the wire.
+    ///
+    /// Identical to what the direct path sends, plus `taskId` on the hosted
+    /// one — Lilypad's own accounting, which the backend strips before
+    /// forwarding so it never reaches TypeSafe. Nothing is added to the
+    /// direct request, because the person's own account has no allowance of
+    /// ours to count.
+    pub(crate) fn envelope(&self, body: &Value) -> Value {
+        if !self.config.is_hosted() {
+            return body.clone();
+        }
+        let mut with_id = body.clone();
+        if let Some(map) = with_id.as_object_mut() {
+            map.insert("taskId".into(), Value::String(self.task_id.clone()));
+        }
+        with_id
     }
 }
 
@@ -879,8 +1014,20 @@ async fn send(
         Some(body) => client.post(&url).json(body),
         None => client.get(&url),
     };
+    // The bearer, decided by which way of running this is. Under `Hosted` it
+    // is a device token fetched now, not a key stored anywhere: this branch is
+    // the reason a Pro subscriber's Mac has no System One credential on it to
+    // steal.
+    let bearer = match &config.credential {
+        Credential::Own(key) => key.clone(),
+        Credential::Hosted(source) => source().await.map_err(|e| ProviderFailure {
+            kind: FailureKind::Auth,
+            status: None,
+            message: format!("Lilypad could not prove this Mac's identity: {e}"),
+        })?,
+    };
     let resp = request
-        .header("authorization", format!("Bearer {}", config.api_key))
+        .header("authorization", format!("Bearer {bearer}"))
         .send()
         .await
         .map_err(|e| http::classify_transport(&e))?;
@@ -927,7 +1074,7 @@ pub async fn check_key(api_key: &str) -> std::result::Result<(), String> {
 }
 
 async fn check_key_at(config: InstantConfig) -> std::result::Result<(), String> {
-    if let Some(problem) = api_key_problem(&config.api_key) {
+    if let Some(problem) = config.own_key().and_then(api_key_problem) {
         return Err(problem);
     }
     let client = super::client_with(Duration::from_secs(5), Duration::from_secs(10));
@@ -1665,6 +1812,130 @@ mod tests {
         assert!(check("200 OK", other).await.is_err());
     }
 
+    /// A bearer source that answers with a fixed token, and counts how often
+    /// it was asked — a token is fetched per request, not held.
+    fn bearer_of(
+        token: &'static str,
+    ) -> (BearerSource, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = calls.clone();
+        let source: BearerSource = std::sync::Arc::new(move || {
+            let counter = counter.clone();
+            Box::pin(async move {
+                counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(token.to_string())
+            })
+        });
+        (source, calls)
+    }
+
+    /// The hosted way of running (ADR-0020), asserted on the bytes that leave
+    /// the Mac rather than on the types that produced them.
+    #[tokio::test]
+    async fn a_hosted_step_carries_the_device_token_and_never_a_service_key() {
+        let (bearer, calls) = bearer_of("device-token-abc");
+        let (base, server) = serve_once("200 OK", &real_check_reply());
+        let config = InstantConfig::hosted(base, bearer);
+        let jev = Jev::new(config);
+        let _ = jev
+            .ask_step(&json!({ "model": MODEL, "state": {}, "questions": {} }))
+            .await;
+        let seen = server.join().unwrap();
+
+        // The control plane's path, not TypeSafe's.
+        assert!(seen.starts_with("POST /ask/v1/systemone "), "{seen}");
+        // The device token, and a fresh one per request.
+        assert!(
+            seen.to_ascii_lowercase()
+                .contains("authorization: bearer device-token-abc"),
+            "{seen}"
+        );
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        // Nothing that looks like a System One key. There is none on this
+        // Mac to send, and this is the assertion that keeps it that way.
+        assert!(!seen.contains("ts_"), "{seen}");
+        assert!(!seen.to_ascii_lowercase().contains("apikey"), "{seen}");
+        assert!(!seen.to_ascii_lowercase().contains("api_key"), "{seen}");
+    }
+
+    #[test]
+    fn a_hosted_config_has_no_key_to_hand_out() {
+        let (bearer, _) = bearer_of("t");
+        let hosted = InstantConfig::hosted("https://api.lilypad.example", bearer);
+        assert!(hosted.is_hosted());
+        assert_eq!(hosted.own_key(), None);
+        // Debug is written into logs; it must not grow a credential field.
+        assert!(!format!("{hosted:?}").contains("token"));
+
+        let byok = InstantConfig::new("ts_personal_key");
+        assert!(!byok.is_hosted());
+        assert_eq!(byok.own_key(), Some("ts_personal_key"));
+        assert!(!format!("{byok:?}").contains("ts_personal_key"));
+    }
+
+    #[test]
+    fn every_step_of_one_task_carries_the_same_id_and_a_new_run_does_not() {
+        // This is the desktop half of "25 tasks a day, not 25 steps": the
+        // backend counts an id, and one `Jev` is one run.
+        let (bearer, _) = bearer_of("t");
+        let jev = Jev::new(InstantConfig::hosted(
+            "https://api.lilypad.example",
+            bearer.clone(),
+        ));
+        let body = json!({ "model": MODEL, "state": {}, "questions": {} });
+        let first = jev.envelope(&body);
+        let second = jev.envelope(&body);
+        assert_eq!(first["taskId"], second["taskId"]);
+        assert_eq!(first["taskId"].as_str(), Some(jev.task_id()));
+
+        let next_run = Jev::new(InstantConfig::hosted("https://api.lilypad.example", bearer));
+        assert_ne!(next_run.envelope(&body)["taskId"], first["taskId"]);
+    }
+
+    #[test]
+    fn the_direct_path_is_unchanged_and_carries_no_task_id() {
+        // BYOK is the free path and nothing about it may move: no accounting
+        // id, and TypeSafe's own endpoint.
+        let jev = Jev::new(InstantConfig::new("ts_personal_key"));
+        let body = json!({ "model": MODEL, "state": {}, "questions": {} });
+        assert_eq!(jev.envelope(&body), body);
+        assert!(jev.envelope(&body).get("taskId").is_none());
+    }
+
+    #[tokio::test]
+    async fn a_hosted_refusal_is_not_remembered_the_way_a_bad_key_is() {
+        // A 401 here means the device token lapsed, which `DeviceAuth` fixes
+        // by itself on the next call. Remembering it would turn a two-second
+        // hiccup into "Ask is off until you relaunch".
+        forget_refusal();
+        let (bearer, _) = bearer_of("device-token-abc");
+        let (base, server) = serve_once("401 Unauthorized", REAL_401);
+        let config = InstantConfig::hosted(base.clone(), bearer);
+        let jev = Jev::new(config);
+        let _ = jev
+            .ask_step(&json!({ "model": MODEL, "state": {}, "questions": {} }))
+            .await;
+        server.join().unwrap();
+        assert!(!was_refused(&format!("hosted:{base}")));
+    }
+
+    #[tokio::test]
+    async fn the_backend_s_own_refusal_reaches_the_person_in_words() {
+        // The route answers 402 with a sentence about subscribing. It has to
+        // survive the provider-failure machinery, or a Pro prompt arrives as
+        // "provider API error (402)".
+        let (bearer, _) = bearer_of("device-token-abc");
+        let body = r#"{"error":"not_entitled","message":"Running tasks on Lilypad’s own account needs an active Pro or Team plan."}"#;
+        let (base, server) = serve_once("402 Payment Required", body);
+        let jev = Jev::new(InstantConfig::hosted(base, bearer));
+        let failed = jev
+            .ask_step(&json!({ "model": MODEL, "state": {}, "questions": {} }))
+            .await
+            .unwrap_err();
+        server.join().unwrap();
+        assert!(failed.to_string().contains("Pro or Team"), "{failed}");
+    }
+
     #[tokio::test]
     async fn a_mangled_key_is_refused_before_anything_is_sent() {
         for key in ["", "ts key with spaces", "ts_key\n", "ts_kéy"] {
@@ -1688,7 +1959,9 @@ mod tests {
     #[ignore = "calls the real TypeSafe API"]
     async fn live_instant_round_trip() {
         let config = InstantConfig::from_env().expect("TYPESAFE_API_KEY");
-        check_key(&config.api_key).await.expect("the key check");
+        check_key(config.own_key().expect("a personal key"))
+            .await
+            .expect("the key check");
         let jev = Jev::new(config);
         for (command, on, want) in [
             ("click compose", "mail", Some("Clicked button “Compose”.")),

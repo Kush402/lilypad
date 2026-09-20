@@ -850,6 +850,13 @@ the model, the mode and every step's summary from the phone.
     Supervised, "click compose" must still wait for Approve; deny it and
     expect the model to take over. Turn instant actions off on the Mac and
     expect the phone to ask again without TypeSafe on the card.
+12. **Hosted Jev, Pro boundary** ([ADR-0020](adr/0020-lilypad-runs-computer-use-on-its-own-account.md)).
+    With a free account, choose “Lilypad runs whole tasks” and start a task:
+    expect a clear Pro/Team refusal and no TypeSafe request. Upgrade or use a
+    Pro tester account, retry, and expect the task to run without any TypeSafe
+    key on the Mac. Confirm several steps consume one daily task, task 26 is
+    refused until the next UTC day, and “Your own TypeSafe key” still works on
+    the free account. Revoke the Mac and confirm the next hosted step stops.
 
 ## Results
 

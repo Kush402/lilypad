@@ -110,7 +110,7 @@ are cleanly separated.
 | ------------ | ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
 | `signaling/` | hub (612), room, roomRegistry, messageRouter, guards, lifecyclePolicy, registerAuth, peer, hubBundle | ✅ 16 files, heavily unit-tested                                   |
 | `services/`  | pairing, roomAuth, trust (338), auditLog, advertisedUrls                                             | ✅                                                                 |
-| `routes/`    | pairing, signaling (+`/connect/request`, `/metrics`), devices, health                                | ✅ all documented in `api.md` as of this pass                      |
+| `routes/`    | auth, pairing, signaling, devices, billing, hosted Ask (`POST /ask/v1/systemone`), health            | ✅ hosted Ask is documented in `ask-computer-use.md`               |
 | `session/`   | manager, roomStore, stateMachine                                                                     | ✅                                                                 |
 | `db/`        | schema, client, migrate + 3 Drizzle migrations                                                       | ✅ 5 tables: users, devices, trusted_devices, sessions, audit_logs |
 | `turn/`      | credentials                                                                                          | ✅ per-session HMAC creds                                          |
@@ -166,24 +166,24 @@ what-to-update-when table.
 
 ### Source of truth by area
 
-| Area                  | Owning document                                                                                                         |
-| --------------------- | ----------------------------------------------------------------------------------------------------------------------- |
-| Architecture          | [architecture.md](architecture.md)                                                                                      |
-| Design rationale      | [technical-design.md](technical-design.md)                                                                              |
-| Significant decisions | [adr/](adr/)                                                                                                            |
-| REST + WS API         | [api.md](api.md), [signaling-protocol.md](signaling-protocol.md)                                                        |
-| Input protocol        | [input-protocol.md](input-protocol.md)                                                                                  |
-| Database              | [db-schema.md](db-schema.md)                                                                                            |
-| Security              | [threat-model.md](threat-model.md), [../SECURITY.md](../SECURITY.md)                                                    |
-| Connectivity          | [NETWORKING.md](NETWORKING.md)                                                                                          |
-| Infrastructure cost   | [INFRASTRUCTURE-COST-MODEL.md](INFRASTRUCTURE-COST-MODEL.md)                                                            |
-| Reuse / build-vs-buy  | [REUSE-INVENTORY.md](REUSE-INVENTORY.md)                                                                                |
-| Infrastructure / ops  | [operations.md](operations.md), [RUNBOOK.md](RUNBOOK.md)                                                                |
-| Consumer product      | [user-guide.md](user-guide.md)                                                                                          |
-| Mac app's screens     | [desktop-screens.md](desktop-screens.md)                                                                                |
-| Ask computer use      | [ask-computer-use.md](ask-computer-use.md) (instant actions: [ADR-0019](adr/0019-ask-does-short-commands-instantly.md)) |
-| Roadmap               | [milestones.md](milestones.md)                                                                                          |
-| Status / index        | this file                                                                                                               |
+| Area                  | Owning document                                                                                                                                                                                               |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Architecture          | [architecture.md](architecture.md)                                                                                                                                                                            |
+| Design rationale      | [technical-design.md](technical-design.md)                                                                                                                                                                    |
+| Significant decisions | [adr/](adr/)                                                                                                                                                                                                  |
+| REST + WS API         | [api.md](api.md), [signaling-protocol.md](signaling-protocol.md)                                                                                                                                              |
+| Input protocol        | [input-protocol.md](input-protocol.md)                                                                                                                                                                        |
+| Database              | [db-schema.md](db-schema.md)                                                                                                                                                                                  |
+| Security              | [threat-model.md](threat-model.md), [../SECURITY.md](../SECURITY.md)                                                                                                                                          |
+| Connectivity          | [NETWORKING.md](NETWORKING.md)                                                                                                                                                                                |
+| Infrastructure cost   | [INFRASTRUCTURE-COST-MODEL.md](INFRASTRUCTURE-COST-MODEL.md)                                                                                                                                                  |
+| Reuse / build-vs-buy  | [REUSE-INVENTORY.md](REUSE-INVENTORY.md)                                                                                                                                                                      |
+| Infrastructure / ops  | [operations.md](operations.md), [RUNBOOK.md](RUNBOOK.md)                                                                                                                                                      |
+| Consumer product      | [user-guide.md](user-guide.md)                                                                                                                                                                                |
+| Mac app's screens     | [desktop-screens.md](desktop-screens.md)                                                                                                                                                                      |
+| Ask computer use      | [ask-computer-use.md](ask-computer-use.md) (instant actions: [ADR-0019](adr/0019-ask-does-short-commands-instantly.md); hosted Pro Jev: [ADR-0020](adr/0020-lilypad-runs-computer-use-on-its-own-account.md)) |
+| Roadmap               | [milestones.md](milestones.md)                                                                                                                                                                                |
+| Status / index        | this file                                                                                                                                                                                                     |
 
 Historical audit records live in [audit/m3/](audit/m3/) and are cited from code
 comments as rationale — they carry `status: Reference` and must not be deleted.

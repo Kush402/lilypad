@@ -901,6 +901,26 @@ pub enum NoToken {
     Unavailable,
 }
 
+/// What to say when something that needed a device token could not get one.
+///
+/// One sentence per reason, because these are four different situations and
+/// only one of them is the user's to fix. Ask's hosted way of running
+/// (ADR-0020) is the first caller that has to put this in front of a person
+/// mid-task rather than in a status banner.
+impl std::fmt::Display for NoToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NoToken::NoIdentity => write!(
+                f,
+                "this Mac has no saved key — macOS may have denied Lilypad access to the keychain"
+            ),
+            NoToken::NotLinked => write!(f, "this Mac is not signed in to a Lilypad account"),
+            NoToken::Revoked => write!(f, "this Mac was removed from its Lilypad account"),
+            NoToken::Unavailable => write!(f, "Lilypad’s server could not be reached"),
+        }
+    }
+}
+
 /// Where this computer stands with respect to an account.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LinkState {
