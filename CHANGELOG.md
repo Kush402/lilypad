@@ -6,6 +6,8 @@ All notable changes to Lilypad are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.47] — 2026-09-20
+
 ### Fixed
 
 - **The Pro way of running Ask no longer asks for an API key.** Choosing
