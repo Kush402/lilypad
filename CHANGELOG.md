@@ -6,6 +6,23 @@ All notable changes to Lilypad are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **The Pro way of running Ask no longer asks for an API key.** Choosing
+  “Lilypad runs whole tasks” hid nothing: the Mac still showed a TypeSafe key
+  box under it and said instant actions were Off while they were on. The key
+  box now belongs only to the ways that use a key.
+- **The Mac says whether your subscription covers it, before you pick it.** It
+  asks Lilypad, and if there is no subscription it says where to buy one — in
+  the Lilypad app on your iPhone — instead of letting your first task be
+  refused. If it cannot reach us it says that, rather than claiming you have
+  not paid.
+- **Removing a Mac from your account signs it out.** It used to keep naming an
+  account it no longer belonged to until somebody signed out by hand. Its keys
+  stay, so signing in again re-adds it.
+- **Your phone names everything Pro unlocks** — reaching your Mac from another
+  network, and Ask running whole tasks on the Mac with no AI key of your own.
+
 ## [0.1.46] — 2026-09-20
 
 Ask can now run on Lilypad's own AI account, with no API key on the Mac, for

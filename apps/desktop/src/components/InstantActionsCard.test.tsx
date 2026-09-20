@@ -125,6 +125,53 @@ describe('InstantActionsCard', () => {
     );
   });
 
+  /**
+   * What the owner found on a real build: choosing the way that says "no key
+   * needed" still showed a TypeSafe key field and a Check and save button
+   * under it, and the badge above said "Off" while the Pro way was selected.
+   * The screen contradicted itself twice in one card.
+   */
+  it('asks for no key, and says it is on, when Lilypad runs the task', async () => {
+    mocked
+      .mockResolvedValueOnce({ ...HOSTED, engine: 'lilypad' })
+      .mockResolvedValueOnce('entitled');
+    render(<InstantActionsCard />);
+    await waitFor(() => expect(screen.getByTestId('instant-state').textContent).toBe('On'));
+    expect(mocked).toHaveBeenCalledWith('get_ask_plan');
+    expect(screen.queryByLabelText('TypeSafe API key')).toBeNull();
+    expect(screen.queryByText('Check and save')).toBeNull();
+    expect(screen.queryByTestId('instant-remove')).toBeNull();
+    expect(screen.getByTestId('instant-plan').textContent).toMatch(/subscription covers this/i);
+    // The destination is Lilypad's server, not TypeSafe's.
+    expect(screen.getByTestId('instant-origin').textContent).toContain(
+      'https://api.lilypad.example',
+    );
+  });
+
+  it('sends a customer with no subscription to the iPhone app, not to a key', async () => {
+    // Payment happens in one place (ADR-0016's tier, bought on the phone), so
+    // the Mac's job is to say where — never to sell, and never to imply a key
+    // would help.
+    mocked
+      .mockResolvedValueOnce({ ...HOSTED, engine: 'lilypad' })
+      .mockResolvedValueOnce('not_entitled');
+    render(<InstantActionsCard />);
+    await waitFor(() => expect(screen.getByTestId('instant-state').textContent).toBe('Needs Pro'));
+    const plan = screen.getByTestId('instant-plan').textContent ?? '';
+    expect(plan).toMatch(/no subscription yet/i);
+    expect(plan).toMatch(/Lilypad app on your iPhone/i);
+    expect(screen.queryByLabelText('TypeSafe API key')).toBeNull();
+  });
+
+  it('does not call an unreachable backend a refusal', async () => {
+    // "Could not check" must not render as "you have not paid".
+    mocked.mockResolvedValueOnce({ ...HOSTED, engine: 'lilypad' }).mockRejectedValueOnce('offline');
+    render(<InstantActionsCard />);
+    await waitFor(() => expect(screen.getByTestId('instant-plan')).toBeTruthy());
+    expect(screen.getByTestId('instant-plan').textContent).toMatch(/could not check/i);
+    expect(screen.getByTestId('instant-state').textContent).toBe('On');
+  });
+
   it('does not offer what this Mac cannot reach', async () => {
     // No false claim that a route exists: a build with no control plane
     // wired shows no Lilypad option at all, rather than one that fails.

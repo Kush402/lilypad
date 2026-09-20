@@ -32,10 +32,15 @@ export function InstantActionsCard() {
   const [busy, setBusy] = useState<'' | 'saving' | 'removing'>('');
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
+  /** "entitled" | "not_entitled" | "unknown" — what the account may run. */
+  const [plan, setPlan] = useState('unknown');
 
   useEffect(() => {
     invoke<InstantConfigDto>('get_instant_config')
-      .then(setConfig)
+      .then((next) => {
+        setConfig(next);
+        if (next.engine === 'lilypad') void readPlan();
+      })
       .catch((err: unknown) => setError(String(err)));
   }, []);
 
@@ -45,8 +50,20 @@ export function InstantActionsCard() {
     try {
       await invoke('set_ask_engine', { engine: next });
       setConfig(await invoke<InstantConfigDto>('get_instant_config'));
+      if (next === 'lilypad') void readPlan();
     } catch (err) {
       setError(String(err));
+    }
+  };
+
+  // What the account is entitled to, from the backend. Never guessed here:
+  // a subscription is bought on the iPhone and lives on the account, so this
+  // Mac can only ask.
+  const readPlan = async () => {
+    try {
+      setPlan(await invoke<string>('get_ask_plan'));
+    } catch {
+      setPlan('unknown');
     }
   };
 
@@ -80,13 +97,27 @@ export function InstantActionsCard() {
   };
 
   const on = config?.hasKey === true;
+  /** Lilypad's own account runs the task, so no key on this Mac is involved. */
+  const hosted = engine === 'lilypad';
+
+  /**
+   * The badge used to read `hasKey` alone, so choosing "Lilypad runs whole
+   * tasks" — the way that deliberately needs no key — left the card saying
+   * **Off** above a way of running that was on.
+   */
+  const state = () => {
+    if (config === null) return 'Checking…';
+    if (hosted) return plan === 'not_entitled' ? 'Needs Pro' : 'On';
+    if (!on) return 'Off';
+    return config.problem ? 'Key refused' : 'On';
+  };
 
   return (
     <section className="control__approve" data-testid="instant-card">
       <p className="control__approve-title">
         <strong>Instant actions</strong>
         <span className="chip" data-testid="instant-state">
-          {config === null ? 'Checking…' : on ? (config.problem ? 'Key refused' : 'On') : 'Off'}
+          {state()}
         </span>
       </p>
       <p className="muted">
@@ -98,7 +129,12 @@ export function InstantActionsCard() {
         screenshot and never what is typed in a field. Anything longer goes to the provider above,
         as usual.
       </p>
-      {on ? (
+      {hosted ? (
+        <p className="muted" data-testid="instant-origin">
+          Commands go to <code>{config?.hostedOrigin ?? 'Lilypad'}</code>, which asks the model on
+          Lilypad&apos;s account.
+        </p>
+      ) : on ? (
         <p className="muted" data-testid="instant-origin">
           Commands go to <code>{config.origin}</code>.
         </p>
@@ -143,6 +179,15 @@ export function InstantActionsCard() {
             text or read a page back. 25 tasks a day.
           </label>
         ) : null}
+        {hosted ? (
+          <p className="muted" data-testid="instant-plan">
+            {plan === 'entitled'
+              ? 'Your subscription covers this. Nothing to add here.'
+              : plan === 'not_entitled'
+                ? 'This account has no subscription yet, so tasks will be refused. Lilypad Pro is bought in the Lilypad app on your iPhone, under Account. This Mac picks it up on its own.'
+                : 'Lilypad could not check this account’s subscription just now. It is bought in the Lilypad app on your iPhone, never here.'}
+          </p>
+        ) : null}
         {on ? (
           <label data-testid="instant-engine-typesafe">
             <input
@@ -156,20 +201,26 @@ export function InstantActionsCard() {
           </label>
         ) : null}
       </div>
-      <div className="row">
-        <input
-          type="password"
-          aria-label="TypeSafe API key"
-          placeholder={
-            config?.source === 'settings'
-              ? 'A key is saved. Enter a new one to replace it'
-              : 'TypeSafe API key'
-          }
-          value={key}
-          onChange={(e) => setKey(e.target.value)}
-          autoComplete="off"
-        />
-      </div>
+      {/* The key belongs to the ways of running that USE a key. It used to
+       * render under "Lilypad runs whole tasks — no key needed" as well, which
+       * asks for the one thing that way exists to avoid, on the screen that
+       * has just said it is not needed. */}
+      {hosted ? null : (
+        <div className="row">
+          <input
+            type="password"
+            aria-label="TypeSafe API key"
+            placeholder={
+              config?.source === 'settings'
+                ? 'A key is saved. Enter a new one to replace it'
+                : 'TypeSafe API key'
+            }
+            value={key}
+            onChange={(e) => setKey(e.target.value)}
+            autoComplete="off"
+          />
+        </div>
+      )}
       {error ? (
         <p className="error" role="alert" data-testid="instant-error">
           {error}
@@ -181,28 +232,33 @@ export function InstantActionsCard() {
           there.
         </p>
       ) : null}
-      <div className="row">
-        <button
-          className="btn btn--primary"
-          disabled={busy !== '' || key.trim() === ''}
-          onClick={() => void save()}
-        >
-          {busy === 'saving' ? 'Checking…' : 'Check and save'}
-        </button>
-        {config?.source === 'settings' ? (
+      {hosted ? null : (
+        <div className="row">
           <button
-            className="btn"
-            disabled={busy !== ''}
-            onClick={() => void remove()}
-            data-testid="instant-remove"
+            className="btn btn--primary"
+            disabled={busy !== '' || key.trim() === ''}
+            onClick={() => void save()}
           >
-            {busy === 'removing' ? 'Removing…' : 'Turn off'}
+            {busy === 'saving' ? 'Checking…' : 'Check and save'}
           </button>
-        ) : null}
-      </div>
-      <p className="muted">
-        Keys come from console.typesafe.ai. Yours is stored in the macOS keychain, never in a file.
-      </p>
+          {config?.source === 'settings' ? (
+            <button
+              className="btn"
+              disabled={busy !== ''}
+              onClick={() => void remove()}
+              data-testid="instant-remove"
+            >
+              {busy === 'removing' ? 'Removing…' : 'Turn off'}
+            </button>
+          ) : null}
+        </div>
+      )}
+      {hosted ? null : (
+        <p className="muted">
+          Keys come from console.typesafe.ai. Yours is stored in the macOS keychain, never in a
+          file.
+        </p>
+      )}
     </section>
   );
 }

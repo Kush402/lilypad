@@ -2337,6 +2337,49 @@ pub async fn list_trusted_devices(
     resp.json().await.map_err(|e| format!("bad response: {e}"))
 }
 
+/// Whether this account may run Ask on Lilypad's own model (ADR-0020).
+///
+/// Read from the backend, because this Mac cannot know it: a subscription is
+/// bought on the iPhone and lives on the account. Offering "Lilypad runs whole
+/// tasks" without asking is how a person chooses a way of running whose first
+/// task is then refused.
+///
+/// `"unknown"` is its own answer, never a guess in either direction: an
+/// unreachable backend or a Mac that is not signed in must not read as "not
+/// subscribed" (which would nag someone who pays) or as "subscribed" (which
+/// would promise a run that cannot happen).
+#[tauri::command]
+pub async fn get_ask_plan(
+    state: State<'_, SharedState>,
+    auth: State<'_, Arc<DesktopAuth>>,
+) -> Result<String, String> {
+    let base_url = lock_state(&state).backend_base_url.clone();
+    let url = format!("{}/devices", base_url.trim_end_matches('/'));
+    let Some(bearer) = auth.bearer().await else {
+        return Ok("unknown".to_string());
+    };
+    let resp = reqwest::Client::new()
+        .get(&url)
+        .bearer_auth(bearer)
+        .send()
+        .await
+        .map_err(|_| "could not reach Lilypad".to_string())?;
+    if !resp.status().is_success() {
+        return Ok("unknown".to_string());
+    }
+    let body: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("bad response: {e}"))?;
+    Ok(match body.get("hostedAsk").and_then(|v| v.as_str()) {
+        Some("entitled") => "entitled".to_string(),
+        Some("not_entitled") => "not_entitled".to_string(),
+        // Any other answer, including a backend too old to send the field, is
+        // not evidence of either state.
+        _ => "unknown".to_string(),
+    })
+}
+
 /// Flip a pair's "connect without approval" (Always allow) setting.
 #[tauri::command]
 pub async fn set_pair_auto_approve(
@@ -2526,10 +2569,49 @@ pub async fn revoke_pair(
 // `trusted_devices` pair with a per-pair secret, which is what the QR ceremony
 // creates and the only thing `/connect/request` consults.
 
-/// The account this laptop is signed in to, read from the keychain only.
+/// Whether a stored sign-in describes an account this Mac still belongs to.
+///
+/// Only `Revoked` is evidence that it does not. `Unknown` is a network
+/// failure and `Unlinked`/`NoIdentity` describe pairing, not ownership —
+/// forgetting an account for either would sign a customer out of a working
+/// installation because their wifi dropped.
+fn account_is_gone(link: &LinkState) -> bool {
+    matches!(link, LinkState::Revoked)
+}
+
+/// The account this laptop is signed in to.
+///
+/// The keychain is the local record, and it used to be the WHOLE answer — so
+/// removing this Mac from the account, or deleting the account outright, left
+/// the dashboard saying "signed in as …" indefinitely. Nothing on this machine
+/// ever asked. The one thing that knows is the backend, and it already tells
+/// us: a revoked device cannot mint a token, which `link_state` reports as
+/// `Revoked`.
+///
+/// So a stored account is confirmed before it is claimed, and a revoked one is
+/// forgotten here rather than waiting for someone to sign out by hand. Only
+/// `Revoked` clears it: `Unknown` is a network failure, and signing a customer
+/// out because their wifi dropped would be the same lie in the other
+/// direction. The device key stays either way — signing in again re-enrols it.
 #[tauri::command]
-pub fn get_account_state() -> account::AccountState {
-    account::Account::state()
+pub async fn get_account_state(
+    auth: State<'_, Arc<DesktopAuth>>,
+) -> Result<account::AccountState, String> {
+    let state = account::Account::state();
+    if !state.signed_in {
+        return Ok(state);
+    }
+    if account_is_gone(&auth.link_state().await) {
+        log::info!(
+            target: "lilypad::audit",
+            "account_forgotten — this Mac was removed from its account",
+        );
+        if let Err(e) = account::Account::sign_out() {
+            log::warn!(target: "lilypad::account", "could not clear a revoked sign-in: {e}");
+        }
+        return Ok(account::AccountState::default());
+    }
+    Ok(state)
 }
 
 fn account_client(state: &State<'_, SharedState>) -> account::Account {
@@ -2771,6 +2853,25 @@ pub async fn account_sign_out(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Removing this Mac from the account, or deleting the account, used to
+    /// leave the dashboard saying "signed in as …" forever: the state came
+    /// from the keychain and nothing ever asked the backend. It now asks, and
+    /// this is the rule it asks with.
+    #[test]
+    fn only_a_revoked_device_forgets_the_account() {
+        assert!(account_is_gone(&LinkState::Revoked));
+        // A dropped network is not evidence of anything.
+        assert!(!account_is_gone(&LinkState::Unknown("offline".into())));
+        // Pairing is a different question from ownership: an unpaired Mac is
+        // still signed in, and says so.
+        assert!(!account_is_gone(&LinkState::Unlinked));
+        assert!(!account_is_gone(&LinkState::NoIdentity));
+        assert!(!account_is_gone(&LinkState::Linked {
+            user_id: "u".into(),
+            device_id: "d".into(),
+        }));
+    }
 
     /// Which session states make minting a pairing code destructive.
     ///

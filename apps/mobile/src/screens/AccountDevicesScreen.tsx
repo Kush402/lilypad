@@ -263,7 +263,8 @@ export function AccountDevicesScreen({ route, navigation }: Props): React.JSX.El
       <View style={styles.billingCard} testID="billing-pro">
         <Text style={styles.billingTitle}>Lilypad Pro</Text>
         <Text style={styles.billingBody}>
-          Reach your Mac from another network. On the same Wi-Fi, Lilypad stays free forever.
+          Reach your Mac from another network, and let Lilypad run whole Ask tasks on your Mac with
+          no AI key of your own (25 a day). On the same Wi-Fi, Lilypad stays free forever.
         </Text>
         {billing?.tier === 'pro' || billing?.tier === 'team' ? (
           <Text testID="billing-active" style={styles.billingActive}>

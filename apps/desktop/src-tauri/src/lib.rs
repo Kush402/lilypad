@@ -579,6 +579,7 @@ pub fn run() {
             commands::forget_instant_key,
             commands::set_ask_engine,
             commands::list_agent_models,
+            commands::get_ask_plan,
             commands::list_trusted_devices,
             commands::set_pair_auto_approve,
             commands::revoke_pair,

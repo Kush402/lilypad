@@ -408,4 +408,18 @@ describe('a purchase Apple made in its test environment', () => {
     await screen.findByTestId('billing-subscribe');
     expect(screen.queryByTestId('billing-test-purchase')).toBeNull();
   });
+
+  /**
+   * Pro is bought here and nowhere else, and since ADR-0020 it buys something
+   * that happens on the Mac. A card that lists only remote access is selling
+   * half of what the money unlocks — and the Mac, which cannot take payment,
+   * has no way to explain the other half at the moment it matters.
+   */
+  it('names what the subscription unlocks on the Mac, before buying', async () => {
+    renderScreen();
+    await screen.findByTestId('billing-subscribe');
+    expect(screen.getByText(/Reach your Mac from another network/)).toBeTruthy();
+    expect(screen.getByText(/run whole Ask tasks on your Mac/)).toBeTruthy();
+    expect(screen.getByText(/no AI key of your own/)).toBeTruthy();
+  });
 });
