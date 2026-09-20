@@ -17,6 +17,8 @@ export interface InstantConfigDto {
   hostedOrigin: string | null;
 }
 
+type HostedPlan = 'entitled' | 'not_entitled' | 'unavailable' | 'unknown';
+
 /**
  * Instant actions (ADR-0019): a TypeSafe key that lets short commands happen
  * in about a second, without waiting for the AI model.
@@ -32,38 +34,65 @@ export function InstantActionsCard() {
   const [busy, setBusy] = useState<'' | 'saving' | 'removing'>('');
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
-  /** "entitled" | "not_entitled" | "unknown" — what the account may run. */
-  const [plan, setPlan] = useState('unknown');
+  /** What the backend says this account may run; never inferred locally. */
+  const [plan, setPlan] = useState<HostedPlan>('unknown');
+
+  const readPlan = async (): Promise<HostedPlan> => {
+    try {
+      const next = await invoke<HostedPlan>('get_ask_plan');
+      setPlan(next);
+      return next;
+    } catch {
+      setPlan('unknown');
+      return 'unknown';
+    }
+  };
 
   useEffect(() => {
-    invoke<InstantConfigDto>('get_instant_config')
-      .then((next) => {
+    let current = true;
+    void (async () => {
+      try {
+        const next = await invoke<InstantConfigDto>('get_instant_config');
+        if (!current) return;
         setConfig(next);
-        if (next.engine === 'lilypad') void readPlan();
-      })
-      .catch((err: unknown) => setError(String(err)));
+        // Ask before the Pro radio can be selected, not after. The old order
+        // persisted the paid mode for a Free account and let the first task be
+        // the thing that explained the refusal.
+        if (next.hostedAvailable) {
+          const nextPlan = await invoke<HostedPlan>('get_ask_plan').catch(() => 'unknown' as const);
+          if (current) setPlan(nextPlan);
+        }
+      } catch (err) {
+        if (current) setError(String(err));
+      }
+    })();
+    return () => {
+      current = false;
+    };
   }, []);
 
   const engine = config?.engine ?? 'model';
   const chooseEngine = async (next: string) => {
     setError(null);
     try {
+      if (next === 'lilypad') {
+        // Re-check at the click as well as at render time. The backend still
+        // enforces every task; this prevents a stale UI answer from saving a
+        // mode that is already unavailable.
+        const currentPlan = await readPlan();
+        if (currentPlan !== 'entitled') {
+          setError(
+            currentPlan === 'not_entitled'
+              ? 'Lilypad Pro is needed for this choice. Buy or restore it in the Lilypad app on your iPhone.'
+              : 'Lilypad could not confirm this choice just now. Check your connection and try again.',
+          );
+          return;
+        }
+      }
       await invoke('set_ask_engine', { engine: next });
       setConfig(await invoke<InstantConfigDto>('get_instant_config'));
-      if (next === 'lilypad') void readPlan();
     } catch (err) {
       setError(String(err));
-    }
-  };
-
-  // What the account is entitled to, from the backend. Never guessed here:
-  // a subscription is bought on the iPhone and lives on the account, so this
-  // Mac can only ask.
-  const readPlan = async () => {
-    try {
-      setPlan(await invoke<string>('get_ask_plan'));
-    } catch {
-      setPlan('unknown');
     }
   };
 
@@ -107,7 +136,12 @@ export function InstantActionsCard() {
    */
   const state = () => {
     if (config === null) return 'Checking…';
-    if (hosted) return plan === 'not_entitled' ? 'Needs Pro' : 'On';
+    if (hosted) {
+      if (plan === 'entitled') return 'On';
+      if (plan === 'not_entitled') return 'Needs Pro';
+      if (plan === 'unavailable') return 'Unavailable';
+      return 'Checking…';
+    }
     if (!on) return 'Off';
     return config.problem ? 'Key refused' : 'On';
   };
@@ -165,6 +199,7 @@ export function InstantActionsCard() {
               type="radio"
               name="ask-engine"
               checked={engine === 'lilypad'}
+              disabled={plan !== 'entitled'}
               onChange={() => void chooseEngine('lilypad')}
             />{' '}
             <strong>Lilypad runs whole tasks</strong> <span className="chip">Pro</span> &mdash; no
@@ -179,13 +214,15 @@ export function InstantActionsCard() {
             text or read a page back. 25 tasks a day.
           </label>
         ) : null}
-        {hosted ? (
+        {config?.hostedAvailable ? (
           <p className="muted" data-testid="instant-plan">
             {plan === 'entitled'
               ? 'Your subscription covers this. Nothing to add here.'
               : plan === 'not_entitled'
-                ? 'This account has no subscription yet, so tasks will be refused. Lilypad Pro is bought in the Lilypad app on your iPhone, under Account. This Mac picks it up on its own.'
-                : 'Lilypad could not check this account’s subscription just now. It is bought in the Lilypad app on your iPhone, never here.'}
+                ? 'Lilypad runs whole tasks is locked until this account has Pro. Buy or restore it in the Lilypad app on your iPhone, under Account; this Mac picks it up on its own.'
+                : plan === 'unavailable'
+                  ? 'Lilypad’s hosted model is unavailable on this server just now. Your own key still works on every plan.'
+                  : 'Lilypad could not check this account’s subscription just now, so the hosted choice stays locked. It is bought in the Lilypad app on your iPhone, never here.'}
           </p>
         ) : null}
         {on ? (

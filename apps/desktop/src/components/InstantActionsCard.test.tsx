@@ -105,10 +105,17 @@ describe('InstantActionsCard', () => {
     // option a subscriber is meant to use invisible to them.
     mocked
       .mockResolvedValueOnce(HOSTED)
+      .mockResolvedValueOnce('entitled')
+      .mockResolvedValueOnce('entitled')
       .mockResolvedValueOnce(undefined)
       .mockResolvedValueOnce({ ...HOSTED, engine: 'lilypad' });
     render(<InstantActionsCard />);
     await waitFor(() => expect(screen.getByTestId('instant-engine-lilypad')).toBeTruthy());
+    await waitFor(() =>
+      expect((screen.getByLabelText(/Lilypad runs whole tasks/) as HTMLInputElement).disabled).toBe(
+        false,
+      ),
+    );
     expect(screen.getByTestId('instant-state').textContent).toBe('Off');
     const label = screen.getByTestId('instant-engine-lilypad').textContent ?? '';
     expect(label).toMatch(/Pro/);
@@ -123,6 +130,16 @@ describe('InstantActionsCard', () => {
     await waitFor(() =>
       expect(mocked).toHaveBeenCalledWith('set_ask_engine', { engine: 'lilypad' }),
     );
+  });
+
+  it('keeps the hosted choice locked for a Free account before anything is saved', async () => {
+    mocked.mockResolvedValueOnce(HOSTED).mockResolvedValueOnce('not_entitled');
+    render(<InstantActionsCard />);
+    const radio = await screen.findByLabelText(/Lilypad runs whole tasks/);
+    await waitFor(() => expect((radio as HTMLInputElement).disabled).toBe(true));
+    expect(screen.getByTestId('instant-plan').textContent).toMatch(/locked until.*Pro/i);
+    fireEvent.click(radio);
+    expect(mocked).not.toHaveBeenCalledWith('set_ask_engine', { engine: 'lilypad' });
   });
 
   /**
@@ -158,9 +175,12 @@ describe('InstantActionsCard', () => {
     render(<InstantActionsCard />);
     await waitFor(() => expect(screen.getByTestId('instant-state').textContent).toBe('Needs Pro'));
     const plan = screen.getByTestId('instant-plan').textContent ?? '';
-    expect(plan).toMatch(/no subscription yet/i);
+    expect(plan).toMatch(/locked until.*Pro/i);
     expect(plan).toMatch(/Lilypad app on your iPhone/i);
     expect(screen.queryByLabelText('TypeSafe API key')).toBeNull();
+    expect((screen.getByLabelText(/Lilypad runs whole tasks/) as HTMLInputElement).disabled).toBe(
+      true,
+    );
   });
 
   it('does not call an unreachable backend a refusal', async () => {
@@ -169,7 +189,21 @@ describe('InstantActionsCard', () => {
     render(<InstantActionsCard />);
     await waitFor(() => expect(screen.getByTestId('instant-plan')).toBeTruthy());
     expect(screen.getByTestId('instant-plan').textContent).toMatch(/could not check/i);
-    expect(screen.getByTestId('instant-state').textContent).toBe('On');
+    expect(screen.getByTestId('instant-state').textContent).toBe('Checking…');
+    expect((screen.getByLabelText(/Lilypad runs whole tasks/) as HTMLInputElement).disabled).toBe(
+      true,
+    );
+  });
+
+  it('does not call an unconfigured hosted service On', async () => {
+    mocked
+      .mockResolvedValueOnce({ ...HOSTED, engine: 'lilypad' })
+      .mockResolvedValueOnce('unavailable');
+    render(<InstantActionsCard />);
+    await waitFor(() =>
+      expect(screen.getByTestId('instant-state').textContent).toBe('Unavailable'),
+    );
+    expect(screen.getByTestId('instant-plan').textContent).toMatch(/unavailable on this server/i);
   });
 
   it('does not offer what this Mac cannot reach', async () => {

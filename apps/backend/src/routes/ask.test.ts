@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Fastify, { type FastifyInstance } from 'fastify';
-import { ASK_MAX_REQUEST_BYTES } from '@lilypad/protocol';
+import { ASK_MAX_REQUEST_BYTES, HostedAskStatusSchema } from '@lilypad/protocol';
 import type * as AuthTokens from '../auth/tokens.js';
 
 /**
@@ -86,7 +86,7 @@ function step(taskId = 'task-aaaaaaaa') {
   };
 }
 
-describe('POST /ask/v1/systemone', () => {
+describe('/ask/v1 routes', () => {
   let app: FastifyInstance;
 
   beforeEach(async () => {
@@ -109,6 +109,42 @@ describe('POST /ask/v1/systemone', () => {
       headers: token === null ? {} : { authorization: `Bearer ${token}` },
       payload: body as object,
     });
+
+  const status = (token: string | null) =>
+    app.inject({
+      method: 'GET',
+      url: '/ask/v1/status',
+      headers: token === null ? {} : { authorization: `Bearer ${token}` },
+    });
+
+  it('preflights the same entitlement the hosted route enforces', async () => {
+    const res = await status('device-token');
+    expect(res.statusCode).toBe(200);
+    expect(HostedAskStatusSchema.parse(res.json())).toEqual({
+      configured: true,
+      access: 'entitled',
+    });
+    expect(hostedAskAccessFor).toHaveBeenCalledWith('user-alice');
+
+    hostedAskAccessFor.mockResolvedValue('not_entitled');
+    expect(HostedAskStatusSchema.parse((await status('device-token')).json())).toEqual({
+      configured: true,
+      access: 'not_entitled',
+    });
+  });
+
+  it('reports a missing service credential without blaming the subscription', async () => {
+    hostedAskConfigured.mockReturnValue(false);
+    const res = await status('device-token');
+    expect(res.statusCode).toBe(200);
+    expect(HostedAskStatusSchema.parse(res.json())).toEqual({ configured: false });
+    expect(hostedAskAccessFor).not.toHaveBeenCalled();
+  });
+
+  it('preflights only for a live device, not a phone session', async () => {
+    expect((await status(null)).statusCode).toBe(401);
+    expect((await status('account-token')).statusCode).toBe(403);
+  });
 
   it('answers a device on an entitled account', async () => {
     const res = await post('device-token');

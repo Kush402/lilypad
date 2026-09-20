@@ -1542,10 +1542,10 @@ fn agent_config_snapshot() -> AgentConfigDto {
 /// own account, or the person's own TypeSafe key.
 ///
 /// Each choice is refused here if it cannot run, rather than saved and
-/// discovered at the first step of a task. What is NOT checked here is
-/// entitlement: whether an account has Pro is the backend's answer, given on
-/// the first request, because a setting on a Mac is not a security boundary
-/// and pretending otherwise would put the decision on the wrong machine.
+/// discovered at the first step of a task. The card preflights hosted
+/// entitlement before it invokes this command, while the backend repeats the
+/// authoritative check on every request. A setting on a Mac is never the
+/// security boundary.
 #[tauri::command]
 pub async fn set_ask_engine(engine: String) -> Result<AgentConfigDto, String> {
     use crate::agent::llm::{jev, resolver, store};
@@ -2348,13 +2348,19 @@ pub async fn list_trusted_devices(
 /// unreachable backend or a Mac that is not signed in must not read as "not
 /// subscribed" (which would nag someone who pays) or as "subscribed" (which
 /// would promise a run that cannot happen).
+#[derive(Debug, Deserialize)]
+struct HostedAskStatus {
+    configured: bool,
+    access: Option<String>,
+}
+
 #[tauri::command]
 pub async fn get_ask_plan(
     state: State<'_, SharedState>,
     auth: State<'_, Arc<DesktopAuth>>,
 ) -> Result<String, String> {
     let base_url = lock_state(&state).backend_base_url.clone();
-    let url = format!("{}/devices", base_url.trim_end_matches('/'));
+    let url = format!("{}/ask/v1/status", base_url.trim_end_matches('/'));
     let Some(bearer) = auth.bearer().await else {
         return Ok("unknown".to_string());
     };
@@ -2367,11 +2373,14 @@ pub async fn get_ask_plan(
     if !resp.status().is_success() {
         return Ok("unknown".to_string());
     }
-    let body: serde_json::Value = resp
+    let body: HostedAskStatus = resp
         .json()
         .await
         .map_err(|e| format!("bad response: {e}"))?;
-    Ok(match body.get("hostedAsk").and_then(|v| v.as_str()) {
+    if !body.configured {
+        return Ok("unavailable".to_string());
+    }
+    Ok(match body.access.as_deref() {
         Some("entitled") => "entitled".to_string(),
         Some("not_entitled") => "not_entitled".to_string(),
         // Any other answer, including a backend too old to send the field, is
@@ -2571,12 +2580,13 @@ pub async fn revoke_pair(
 
 /// Whether a stored sign-in describes an account this Mac still belongs to.
 ///
-/// Only `Revoked` is evidence that it does not. `Unknown` is a network
-/// failure and `Unlinked`/`NoIdentity` describe pairing, not ownership —
-/// forgetting an account for either would sign a customer out of a working
-/// installation because their wifi dropped.
+/// A fresh proof that this device is revoked OR unowned is evidence that it
+/// does not. Account deletion removes the device row, so it answers
+/// `Unlinked`; treating only `Revoked` as final leaves a deleted account on the
+/// screen forever. `Unknown` is a network failure and `NoIdentity` is a local
+/// keychain failure, so neither is evidence that the account is gone.
 fn account_is_gone(link: &LinkState) -> bool {
-    matches!(link, LinkState::Revoked)
+    matches!(link, LinkState::Revoked | LinkState::Unlinked)
 }
 
 /// The account this laptop is signed in to.
@@ -2585,14 +2595,14 @@ fn account_is_gone(link: &LinkState) -> bool {
 /// removing this Mac from the account, or deleting the account outright, left
 /// the dashboard saying "signed in as …" indefinitely. Nothing on this machine
 /// ever asked. The one thing that knows is the backend, and it already tells
-/// us: a revoked device cannot mint a token, which `link_state` reports as
-/// `Revoked`.
+/// us: a removed device cannot mint a token (`Revoked`), and a deleted account
+/// has no device row at all (`Unlinked`).
 ///
-/// So a stored account is confirmed before it is claimed, and a revoked one is
-/// forgotten here rather than waiting for someone to sign out by hand. Only
-/// `Revoked` clears it: `Unknown` is a network failure, and signing a customer
-/// out because their wifi dropped would be the same lie in the other
-/// direction. The device key stays either way — signing in again re-enrols it.
+/// So a stored account is confirmed before it is claimed, and a revoked or
+/// freshly unowned one is forgotten here rather than waiting for someone to
+/// sign out by hand. `Unknown` is a network failure, and signing a customer out
+/// because their wifi dropped would be the same lie in the other direction.
+/// The device key stays either way — signing in again re-enrols it.
 #[tauri::command]
 pub async fn get_account_state(
     auth: State<'_, Arc<DesktopAuth>>,
@@ -2601,6 +2611,14 @@ pub async fn get_account_state(
     if !state.signed_in {
         return Ok(state);
     }
+    // `link_state` normally trusts a bearer until its eight-minute renewal
+    // point. That is right for hot-path calls and wrong for this explicit
+    // account confirmation: a Mac removed on the phone must not keep claiming
+    // it is signed in just because it still holds an earlier answer in RAM.
+    // Dropping the cache does not end a live session; it only makes this read
+    // prove ownership with the backend now. An outage still returns Unknown
+    // and preserves the local sign-in, as it should.
+    auth.invalidate();
     if account_is_gone(&auth.link_state().await) {
         log::info!(
             target: "lilypad::audit",
@@ -2859,13 +2877,14 @@ mod tests {
     /// from the keychain and nothing ever asked the backend. It now asks, and
     /// this is the rule it asks with.
     #[test]
-    fn only_a_revoked_device_forgets_the_account() {
+    fn a_fresh_unowned_or_revoked_device_forgets_the_account() {
         assert!(account_is_gone(&LinkState::Revoked));
+        // Account deletion cascades the device row, so token exchange answers
+        // NotEnrolled -> Unlinked rather than Revoked.
+        assert!(account_is_gone(&LinkState::Unlinked));
         // A dropped network is not evidence of anything.
         assert!(!account_is_gone(&LinkState::Unknown("offline".into())));
-        // Pairing is a different question from ownership: an unpaired Mac is
-        // still signed in, and says so.
-        assert!(!account_is_gone(&LinkState::Unlinked));
+        // A keychain failure is not account state.
         assert!(!account_is_gone(&LinkState::NoIdentity));
         assert!(!account_is_gone(&LinkState::Linked {
             user_id: "u".into(),

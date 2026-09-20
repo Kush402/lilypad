@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   ASK_MAX_CRITERIA,
   ASK_MAX_QUESTIONS,
+  HostedAskStatusSchema,
   AskSystemOneReplySchema,
   AskSystemOneRequestSchema,
 } from './ask.js';
@@ -117,5 +118,24 @@ describe('a hosted Ask reply', () => {
         allowance: { used: 3, limit: 25, resetsAt: 'tomorrow' },
       }).success,
     ).toBe(false);
+  });
+});
+
+describe('the hosted Ask preflight', () => {
+  it('keeps deployment readiness separate from account entitlement', () => {
+    expect(HostedAskStatusSchema.parse({ configured: false })).toEqual({ configured: false });
+    expect(HostedAskStatusSchema.parse({ configured: true, access: 'entitled' })).toEqual({
+      configured: true,
+      access: 'entitled',
+    });
+  });
+
+  it('refuses invented access states and fields', () => {
+    expect(HostedAskStatusSchema.safeParse({ configured: true, access: 'probably' }).success).toBe(
+      false,
+    );
+    expect(HostedAskStatusSchema.safeParse({ configured: false, access: 'entitled' }).success).toBe(
+      false,
+    );
   });
 });

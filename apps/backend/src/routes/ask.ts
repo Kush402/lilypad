@@ -3,6 +3,7 @@ import {
   ASK_MAX_REQUEST_BYTES,
   AskSystemOneRequestSchema,
   type AskSystemOneReply,
+  type HostedAskStatus,
 } from '@lilypad/protocol';
 import { requireDevice, deviceActorOf } from '../auth/requireAuth.js';
 import { rejectRevokedActor } from '../auth/liveDevice.js';
@@ -52,6 +53,31 @@ import { log } from '../logging.js';
  * screen reading and the credential.
  */
 export async function askRoutes(app: FastifyInstance): Promise<void> {
+  /**
+   * The product-side preflight for the Mac's Pro-only choice.
+   *
+   * This is its own typed route instead of an extra property on `/devices`:
+   * billing trouble must not make account-device management fail, and Ask's
+   * wire contract belongs with Ask. The POST below remains the security
+   * boundary and repeats the entitlement check on every step.
+   */
+  app.get(
+    '/ask/v1/status',
+    { preHandler: [requireDevice, rejectRevokedActor] },
+    async (req, reply) => {
+      if (!hostedAskConfigured()) {
+        const status: HostedAskStatus = { configured: false };
+        return reply.code(200).send(status);
+      }
+      const actor = deviceActorOf(req);
+      const status: HostedAskStatus = {
+        configured: true,
+        access: await hostedAskAccessFor(actor.userId),
+      };
+      return reply.code(200).send(status);
+    },
+  );
+
   app.post(
     '/ask/v1/systemone',
     {

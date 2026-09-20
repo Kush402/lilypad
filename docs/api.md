@@ -107,6 +107,27 @@ a working API out of rotation. But with no mailer, `/auth/password/reset/request
 and `/auth/magic-link/request` answer **503**, and nothing else said so out loud
 — an operator would have found out from a support ticket.
 
+## `GET /ask/v1/status` ✅ 🔒 device token
+
+Preflights the Pro-only hosted choice before the Mac enables it. This is a
+separate endpoint from account-device management so a billing lookup cannot
+take the device list down, and it uses the same entitlement reader the task
+route enforces.
+
+```jsonc
+// 200 OK — service ready
+{ "configured": true, "access": "entitled" }
+// access may instead be "not_entitled" or "no_such_account"
+
+// 200 OK — this deployment cannot serve hosted Ask
+{ "configured": false }
+```
+
+The two facts stay separate: a missing server credential is not evidence that
+a customer has not paid. `401` means the device token is missing, invalid or
+revoked; `403 device_token_required` means an account session was presented.
+The response is `HostedAskStatusSchema` in `@lilypad/protocol`.
+
 ## `POST /ask/v1/systemone` ✅ 🔒 device token, Pro/Team
 
 Runs one text-only Jev step on Lilypad's server-held TypeSafe credential

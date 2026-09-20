@@ -145,6 +145,29 @@ export const AskSystemOneReplySchema = z.object({
 export type AskSystemOneReply = z.infer<typeof AskSystemOneReplySchema>;
 
 /**
+ * Backend → desktop, before the hosted choice can be selected.
+ *
+ * Configuration and entitlement are deliberately separate facts. A paying
+ * account on a deployment whose service credential is missing must not be
+ * told to buy Pro again, and an unconfigured deployment must not query (or
+ * accidentally disclose) the account's billing state just to explain its own
+ * outage.
+ */
+export const HostedAskAccessSchema = z.enum(['entitled', 'not_entitled', 'no_such_account']);
+export type HostedAskAccess = z.infer<typeof HostedAskAccessSchema>;
+
+export const HostedAskStatusSchema = z.discriminatedUnion('configured', [
+  z.object({ configured: z.literal(false) }).strict(),
+  z
+    .object({
+      configured: z.literal(true),
+      access: HostedAskAccessSchema,
+    })
+    .strict(),
+]);
+export type HostedAskStatus = z.infer<typeof HostedAskStatusSchema>;
+
+/**
  * Why a hosted step was refused, as the Mac reads it.
  *
  * Named rather than inferred from the status, for the same reason

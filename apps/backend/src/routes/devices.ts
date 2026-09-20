@@ -28,7 +28,6 @@ import {
   createDrizzleAccountDeviceStore,
 } from '../services/accountDevices.js';
 import { RefreshTokenService, createDrizzleRefreshTokenStore } from '../auth/refreshTokens.js';
-import { hostedAskAccessFor } from '../services/entitlement.js';
 import type { SignalingHub } from '../signaling/hub.js';
 import { log } from '../logging.js';
 
@@ -81,25 +80,12 @@ export async function deviceRoutes(
   // the resource IS an account's device list. Without an account there is
   // nothing to list.
 
-  /**
-   * Every device on the caller's account, and whether that account may run
-   * Ask on Lilypad's own model (ADR-0020).
-   *
-   * The entitlement rides along here because the desktop has no account
-   * session — only a device token — and it needs the answer BEFORE a run, or
-   * it offers "Lilypad runs whole tasks" to someone whose first task will be
-   * refused. It is the same `hostedAskAccessFor` the Ask route enforces with,
-   * so the screen and the gate cannot drift apart (the L-294/L-298 rule).
-   * Saying it is not granting it: the route still decides, every request.
-   */
   app.get('/devices', { preHandler: [requireDevice, rejectRevokedActor] }, async (req, reply) => {
     const actor = deviceActorOf(req);
     const list = await accountDevices.list(actor.userId, actor.deviceId, (kind, fingerprint) =>
       hub.hasLiveSession(kind, fingerprint),
     );
-    return reply
-      .code(200)
-      .send({ devices: list, hostedAsk: await hostedAskAccessFor(actor.userId) });
+    return reply.code(200).send({ devices: list });
   });
 
   /** Rename a device. A label for a human; nothing authorizes on it. */
