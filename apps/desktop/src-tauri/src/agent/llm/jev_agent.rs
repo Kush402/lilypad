@@ -42,6 +42,10 @@ pub const MAX_STEPS: usize = 12;
 /// screen where the next step is genuinely ambiguous scores 0.50–0.56, which
 /// is the case that must hand back rather than guess.
 const DONE_MIN: f64 = 0.85;
+/// With no action history, a high "done" answer alone is not evidence that
+/// the current screen satisfies the command. A strong screen-evidence answer
+/// may still finish a task that was already complete when it began.
+const INITIAL_EVIDENCE_MIN: f64 = 0.75;
 const KIND_MIN: f64 = 0.75;
 const CONTROL_MIN: f64 = 0.7;
 /// How far ahead of the second-best control the chosen one must be. Two
@@ -283,7 +287,8 @@ pub fn spans_to_type(task: &str) -> Vec<String> {
 /// Words that say how to act rather than what on.
 const FILLER: &[&str] = &[
     "the", "and", "for", "from", "with", "this", "that", "into", "onto", "open", "click", "press",
-    "tap", "choose", "select", "then", "first", "one", "please", "email", "message", "again",
+    "tap", "choose", "select", "then", "first", "one", "please", "email", "message", "folder",
+    "file", "page", "tab", "button", "link", "row", "result", "item", "again",
 ];
 
 fn key_words(text: &str) -> std::collections::HashSet<String> {
@@ -292,6 +297,54 @@ fn key_words(text: &str) -> std::collections::HashSet<String> {
         .map(str::to_lowercase)
         .filter(|w| !FILLER.contains(&w.as_str()))
         .collect()
+}
+
+/// Whether a control is a code-authorized target for this task. Jev's
+/// probability is evidence about the next step, not permission to turn an
+/// arbitrary page label into an action. Short commands must name every
+/// meaningful word (so "reply all" cannot become "Reply"); longer tasks may
+/// name an entity and an operation in separate steps ("reply to Rae" first
+/// selects Rae, then presses Reply).
+fn control_is_relevant(task: &str, history: &[String], label: &str) -> bool {
+    let wanted = key_words(task);
+    let label_words = key_words(label);
+    let matches = |word: &str| {
+        label_words.iter().any(|candidate| {
+            word == candidate
+                || (word.chars().count() >= 4 && candidate.starts_with(word))
+                || (candidate.chars().count() >= 4 && word.starts_with(candidate))
+        })
+    };
+    let overlap = wanted.iter().filter(|word| matches(word)).count();
+    if overlap == 0 {
+        // Sending is the implied final step of a dictated reply/compose task;
+        // it is authorized only after the person's words were actually typed.
+        let dictated = history.iter().any(|line| line.starts_with("Type "));
+        let implied_submit = dictated
+            && wanted
+                .iter()
+                .any(|word| matches!(word.as_str(), "reply" | "compose" | "write" | "send"))
+            && label_words
+                .iter()
+                .any(|word| matches!(word.as_str(), "send" | "submit" | "post"));
+        return implied_submit;
+    }
+    // A relation or a dictation phrase describes a multi-step task, where one
+    // step names the row and another names its action. Otherwise require the
+    // complete short command to match the chosen control.
+    let lower = task.to_lowercase();
+    let multi_step_context = lower.contains(" to ")
+        || lower.contains(" from ")
+        || lower.contains("search for")
+        || lower.contains(" saying ")
+        || lower.contains(" type ");
+    // A relation can make the operation and the target arrive in separate
+    // steps, but it must not erase a qualifier the person said. In
+    // particular, "reply to Rae" is not permission to press "Reply All".
+    if multi_step_context && label_words.contains("all") && !wanted.contains("all") {
+        return false;
+    }
+    multi_step_context || wanted.len() > 2 || overlap == wanted.len()
 }
 
 /// The description that may cross the hosted boundary. Accessibility labels
@@ -458,8 +511,11 @@ pub fn request(
             "app in front": reading.app,
             "what has the keyboard": reading.focused.clone().unwrap_or_else(|| "nothing".into()),
             "what is selected": selection_of(reading),
-            "controls on the screen": reading
-                .elements
+            // The hosted protocol bounds list-valued state. The model only
+            // gets the same bounded, ordered candidates that its per-control
+            // questions describe; sending the whole AX tree made busy apps
+            // fail validation before Jev could answer.
+            "controls on the screen": candidates
                 .iter()
                 .map(|e| match &e.at {
                     Some(at) => format!("e{}: {} \u{201c}{}\u{201d} ({at})", e.id, e.role, e.label),
@@ -609,7 +665,8 @@ pub fn decide_tie(
     }
 }
 
-/// Turn one step's answers into what happens next. Pure: the whole policy.
+/// Turn one step's answers into what happens next when there is no prior
+/// history available. Kept as the small pure seam used by unit tests.
 pub fn decide(
     task: &str,
     reading: &ScreenReading,
@@ -618,13 +675,33 @@ pub fn decide(
     candidates: &[&crate::agent::runner::ReadElement],
     answers: &Value,
 ) -> Step {
+    decide_with_history(task, reading, spans, apps, candidates, &[], answers)
+}
+
+/// Turn one step's answers into what happens next. History is part of the
+/// authorization boundary for an implied submit after dictated text.
+pub fn decide_with_history(
+    task: &str,
+    reading: &ScreenReading,
+    spans: &[String],
+    apps: &[String],
+    candidates: &[&crate::agent::runner::ReadElement],
+    history: &[String],
+    answers: &Value,
+) -> Step {
     let noul = |key: &str| {
         answers
             .get(key)
             .and_then(|a| a.get("noul"))
             .and_then(Value::as_f64)
     };
-    if noul("done").is_some_and(|p| p >= DONE_MIN) {
+    if noul("done").is_some_and(|p| p >= DONE_MIN)
+        && !history
+            .last()
+            .is_some_and(|line| line.ends_with(": did not work"))
+        && (!history.is_empty()
+            || noul("evidence").is_some_and(|evidence| evidence >= INITIAL_EVIDENCE_MIN))
+    {
         // Two questions, because they can disagree: one asks whether the
         // command has been carried out, the other asks only what is on the
         // screen. A missing answer is not a contradiction.
@@ -648,6 +725,7 @@ pub fn decide(
             // second are "this screen is ambiguous", which is a hand-back.
             let mut yes: Vec<(&crate::agent::runner::ReadElement, f64)> = candidates
                 .iter()
+                .filter(|e| control_is_relevant(task, history, &e.label))
                 .filter_map(|e| {
                     let p = answers
                         .get(format!("is_e{}", e.id))?
@@ -724,6 +802,9 @@ pub fn decide(
             let Some((chosen, p)) = jev::pick(answers, "key") else {
                 return Step::Stop("Ask could not tell which shortcut to press.".into());
             };
+            if !jev::names_key(task, chosen) {
+                return Step::Stop("Ask could not tie that shortcut to the command.".into());
+            }
             let Some((_, _, chord, done)) = jev::KEYS.iter().find(|(k, ..)| *k == chosen) else {
                 return Step::Stop("Ask could not tell which shortcut to press.".into());
             };
@@ -753,6 +834,11 @@ pub fn decide(
             let Some((way, p)) = jev::pick(answers, "direction") else {
                 return Step::Stop("Ask could not tell which way to scroll.".into());
             };
+            if !jev::direction_named(task, way) {
+                return Step::Stop(
+                    "Ask could not tie that scroll direction to the command.".into(),
+                );
+            }
             if p < DIRECTION_MIN {
                 return Step::Stop("Ask is not sure which way this step scrolls.".into());
             }
@@ -968,7 +1054,15 @@ impl Brain for JevBrain {
                 );
             }
         };
-        let mut step = decide(task, reading, &self.spans, &apps, &candidates, &answers);
+        let mut step = decide_with_history(
+            task,
+            reading,
+            &self.spans,
+            &apps,
+            &candidates,
+            &self.history,
+            &answers,
+        );
         // Two controls that both look like the next step: ask which comes
         // first, about those alone. One more request, only when it is needed.
         if let Step::Ambiguous(ids) = &step {
@@ -1187,6 +1281,136 @@ mod tests {
         assert!(matches!(decide_with(0.55, 0.10), Step::Stop(_)));
     }
 
+    #[test]
+    fn a_high_probability_page_label_is_not_permission_to_click_it() {
+        let reading = mail();
+        let archive_candidates = candidates("archive the email from GitHub", &reading);
+        let unrelated = json!({
+            "done": noul(0.02),
+            "step": chose("press", 0.99),
+            "is_e3": noul(0.99),
+            "is_e7": noul(0.01),
+            "is_e21": noul(0.01),
+        });
+        assert!(matches!(
+            decide(
+                "archive the email from GitHub",
+                &reading,
+                &[],
+                &[],
+                &archive_candidates,
+                &unrelated,
+            ),
+            Step::Stop(_)
+        ));
+
+        // A short command must include all its meaningful words: Reply must
+        // not be accepted for "reply all".
+        let reply = json!({
+            "done": noul(0.02),
+            "step": chose("press", 0.99),
+            "is_e4": noul(0.99),
+            "is_e5": noul(0.01),
+        });
+        let reply_candidates = super::candidates("reply all", &reading);
+        assert!(matches!(
+            decide("reply all", &reading, &[], &[], &reply_candidates, &reply),
+            Step::Stop(_)
+        ));
+
+        // A multi-step relation still preserves a qualifier: "reply to Rae"
+        // cannot silently become "Reply All".
+        let reply_to = super::candidates("reply to Rae", &reading);
+        let reply_to_answers = json!({
+            "done": noul(0.02),
+            "step": chose("press", 0.99),
+            "is_e4": noul(0.99),
+            "is_e5": noul(0.01),
+        });
+        assert!(matches!(
+            decide(
+                "reply to Rae",
+                &reading,
+                &[],
+                &[],
+                &reply_to,
+                &reply_to_answers,
+            ),
+            Step::Act(_)
+        ));
+
+        // The implied Send is authorized only after a successful dictated
+        // text step, never merely because the task says "reply".
+        let send_screen = reply_screen();
+        let send_candidates = super::candidates("reply to Rae saying I'll be there", &send_screen);
+        let send = json!({
+            "done": noul(0.02),
+            "step": chose("press", 0.99),
+            "is_e30": noul(0.99),
+        });
+        assert!(matches!(
+            decide(
+                "reply to Rae saying I'll be there",
+                &send_screen,
+                &[],
+                &[],
+                &send_candidates,
+                &send,
+            ),
+            Step::Stop(_)
+        ));
+        assert!(matches!(
+            decide_with_history(
+                "reply to Rae saying I'll be there",
+                &send_screen,
+                &["I'll be there".into()],
+                &[],
+                &send_candidates,
+                &["Type \u{201c}I'll be there\u{201d}: done".into()],
+                &send,
+            ),
+            Step::Act(_)
+        ));
+    }
+
+    #[test]
+    fn shortcut_and_scroll_answers_must_be_named_by_the_command() {
+        let reading = mail();
+        let key = |chosen: &str| {
+            decide(
+                "new tab",
+                &reading,
+                &[],
+                &[],
+                &[],
+                &json!({
+                    "done": noul(0.01),
+                    "step": chose("key", 0.99),
+                    "key": chose(chosen, 0.99),
+                }),
+            )
+        };
+        assert!(matches!(key("close_tab"), Step::Stop(_)));
+        assert!(matches!(key("new_tab"), Step::Act(_)));
+
+        let scroll = |chosen: &str| {
+            decide(
+                "scroll down",
+                &reading,
+                &[],
+                &[],
+                &[],
+                &json!({
+                    "done": noul(0.01),
+                    "step": chose("scroll", 0.99),
+                    "direction": chose(chosen, 0.99),
+                }),
+            )
+        };
+        assert!(matches!(scroll("up"), Step::Stop(_)));
+        assert!(matches!(scroll("down"), Step::Act(_)));
+    }
+
     /// The words go wherever the keyboard already is, so a screen whose
     /// keyboard is on a mail list is not a screen to type into: the same
     /// keystrokes there are shortcuts.
@@ -1400,18 +1624,10 @@ mod tests {
         );
         // Not sure it is done is not done.
         assert!(matches!(ended(0.6, 0.1), Step::Stop(_)));
-        // "Cannot tell" is the ordinary answer on a screen made of control
-        // names, and it is not a warning.
-        assert_eq!(
-            ended(0.95, 0.4),
-            Step::Done {
-                contradicted: false
-            }
-        );
-        // The screen saying the opposite is.
-        assert_eq!(ended(0.95, 0.04), Step::Done { contradicted: true });
-        // A missing answer is not a contradiction either.
-        assert_eq!(
+        // "Cannot tell" is not enough when no action has succeeded yet.
+        assert!(matches!(ended(0.95, 0.4), Step::Stop(_)));
+        assert!(matches!(ended(0.95, 0.04), Step::Stop(_)));
+        assert!(matches!(
             decide(
                 "archive it",
                 &reading,
@@ -1420,10 +1636,41 @@ mod tests {
                 &[],
                 &json!({ "done": noul(0.95), "step": chose("press", 0.99) })
             ),
+            Step::Stop(_)
+        ));
+        // After a successful action, a completion answer may rely on the
+        // action history even when the text-only screen cannot prove it.
+        assert_eq!(
+            decide_with_history(
+                "archive it",
+                &reading,
+                &[],
+                &[],
+                &[],
+                &["Click button \u{201c}Archive\u{201d}: done".into()],
+                &json!({
+                    "done": noul(0.95),
+                    "evidence": noul(0.4),
+                    "step": chose("press", 0.99),
+                }),
+            ),
             Step::Done {
                 contradicted: false
             }
         );
+        // A failed action cannot be turned into success by a confident noun.
+        assert!(matches!(
+            decide_with_history(
+                "archive it",
+                &reading,
+                &[],
+                &[],
+                &[],
+                &["Click button \u{201c}Archive\u{201d}: did not work".into()],
+                &json!({ "done": noul(0.95), "evidence": noul(0.9) }),
+            ),
+            Step::Stop(_)
+        ));
     }
 
     /// A screen that is still loading is a step of its own. Without it the
@@ -1504,11 +1751,38 @@ mod tests {
         assert!(
             body["state"]["controls on the screen"]
                 .as_array()
-                .and_then(|c| c.iter().find_map(Value::as_str))
-                .is_some_and(|s| s.ends_with("(top left)")),
+                .is_some_and(|c| {
+                    c.iter()
+                        .filter_map(Value::as_str)
+                        .any(|s| s.ends_with("(top left)"))
+                }),
             "{}",
             body["state"]["controls on the screen"]
         );
+    }
+
+    #[test]
+    fn the_hosted_state_uses_only_the_bounded_candidate_list() {
+        let reading = ScreenReading {
+            app: "Busy app".into(),
+            elements: (0..400).map(|id| el(id, "button", "Control")).collect(),
+            ..ScreenReading::default()
+        };
+        let candidates = candidates("do something", &reading);
+        let body = request(
+            jev::MODEL,
+            "do something",
+            &reading,
+            &[],
+            &[],
+            &[],
+            &candidates,
+        );
+        let controls = body["state"]["controls on the screen"]
+            .as_array()
+            .expect("state controls");
+        assert_eq!(controls.len(), candidates.len());
+        assert!(controls.len() <= MAX_CANDIDATES);
     }
 
     // ── a scripted Mac, and the real answers it drew ──
@@ -1587,7 +1861,7 @@ mod tests {
         let candidates = candidates(task, screen);
         let body = request(jev.model(), task, screen, history, spans, &[], &candidates);
         let answers = jev.ask_step(&body).await.expect("a reply");
-        let step = decide(task, screen, spans, &[], &candidates, &answers);
+        let step = decide_with_history(task, screen, spans, &[], &candidates, history, &answers);
         if let Step::Ambiguous(ids) = &step {
             let tied: Vec<_> = candidates
                 .iter()
@@ -1617,7 +1891,8 @@ mod tests {
                     break;
                 }
                 let candidates = candidates(task, &screen);
-                let mut step = decide(task, &screen, &spans, &[], &candidates, answers);
+                let mut step =
+                    decide_with_history(task, &screen, &spans, &[], &candidates, &history, answers);
                 if let Step::Ambiguous(ids) = &step {
                     let tied: Vec<_> = candidates
                         .iter()

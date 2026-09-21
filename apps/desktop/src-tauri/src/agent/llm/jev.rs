@@ -482,7 +482,7 @@ const KEY_FILLER_WORDS: &[&str] = &[
 /// the command. The choice question offers every shortcut at once, so merely
 /// returning an offered option is not enough: a wrong high-confidence answer
 /// must not turn "new tab" into Close Tab.
-fn names_key(task: &str, chosen: &str) -> bool {
+pub(super) fn names_key(task: &str, chosen: &str) -> bool {
     let wanted: Vec<String> = words(task)
         .filter(|w| !KEY_FILLER_WORDS.contains(&w.as_str()))
         .collect();
@@ -508,6 +508,27 @@ fn names_key(task: &str, chosen: &str) -> bool {
         .map(|(key, ..)| *key)
         .collect();
     matching.as_slice() == [chosen]
+}
+
+/// A scroll direction is an action argument, not permission to follow Jev's
+/// most likely option. Require the command to name exactly one direction so a
+/// wrong high-confidence answer cannot scroll the opposite way.
+pub(super) fn direction_named(task: &str, chosen: &str) -> bool {
+    let words: Vec<String> = words(task).collect();
+    let groups: &[(&[&str], &str)] = &[
+        (&["down", "further", "next"], "down"),
+        (&["up"], "up"),
+        (&["top", "beginning", "start"], "top"),
+        (&["bottom", "end"], "bottom"),
+        (&["left"], "left"),
+        (&["right"], "right"),
+    ];
+    let named: Vec<&str> = groups
+        .iter()
+        .filter(|(aliases, _)| words.iter().any(|word| aliases.contains(&word.as_str())))
+        .map(|(_, name)| *name)
+        .collect();
+    named.len() == 1 && named[0] == chosen
 }
 
 fn same_word(a: &str, b: &str) -> bool {
@@ -548,8 +569,12 @@ pub fn request(model: &str, task: &str, reading: &ScreenReading, apps: &[String]
         ),
     );
     if !reading.elements.is_empty() {
-        let mut controls: Vec<(String, Value)> = reading
-            .elements
+        // Keep the direct and hosted paths on the same bounded offer. The AX
+        // reader may contain hundreds of actionable nodes, but TypeSafe's
+        // criteria and the hosted state are intentionally small; named
+        // controls are ordered first by `jev_agent::candidates`.
+        let offered = super::jev_agent::candidates(task, reading);
+        let mut controls: Vec<(String, Value)> = offered
             .iter()
             .map(|e| {
                 (
@@ -634,7 +659,8 @@ pub fn decide(
             let id: usize = chosen.strip_prefix('e')?.parse().ok()?;
             // Only an element this request offered; the model's word is not
             // enough to name one that was never on the list.
-            let element = reading.elements.iter().find(|e| e.id == id)?;
+            let offered = super::jev_agent::candidates(task, reading);
+            let element = offered.iter().find(|e| e.id == id)?;
             let score = control_match(task, &element.label)?;
             let matching: Vec<usize> = reading
                 .elements
@@ -1589,6 +1615,34 @@ mod tests {
             .is_none());
         let with_apps = request(MODEL, "open notes", &empty, &["Notes".into()]);
         assert!(with_apps["questions"]["app"]["criteria"]["Notes"].is_null());
+    }
+
+    #[test]
+    fn a_dense_screen_is_bounded_and_an_unoffered_control_is_ignored() {
+        let mut reading = ScreenReading {
+            app: "Mail".into(),
+            ..ScreenReading::default()
+        };
+        reading.elements = (0..40)
+            .map(|id| el(id, "button", &format!("Control {id}")))
+            .collect();
+        // A named target is promoted even when it appears late in the AX tree.
+        reading.elements[39] = el(39, "button", "Compose");
+        let body = request(MODEL, "click compose", &reading, &[]);
+        let criteria = body["questions"]["control"]["criteria"]
+            .as_object()
+            .expect("control criteria");
+        assert!(criteria.len() <= 9, "bounded offer: {}", criteria.len());
+        assert!(
+            criteria.contains_key("e39"),
+            "named target was not promoted"
+        );
+
+        let answers = json!({
+            "intent": { "type": "choice", "choice": "press", "probabilities": { "press": 0.99 } },
+            "control": { "type": "choice", "choice": "e10", "probabilities": { "e10": 0.99 } },
+        });
+        assert!(decide("click compose", &reading, &[], &answers).is_none());
     }
 
     #[test]
