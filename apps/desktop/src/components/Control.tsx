@@ -661,7 +661,17 @@ function SystemPanel({ backendUrl }: { backendUrl: string | null }) {
 
   const agentSummary = () => {
     const a = agent.value;
-    if (!a || a.source === 'none') return 'Not configured';
+    if (!a) return 'Checking…';
+    // Hosted/BYOK Jev deliberately has no ordinary provider key or model
+    // settings. The Rust command still returns the selected engine, but the
+    // dashboard used to ignore it and call a valid hosted setup "Not
+    // configured". That made the Settings and dashboard contradict each other.
+    if (a.engine === 'lilypad') return 'Lilypad hosted Jev (Pro)';
+    if (a.engine === 'typesafe') {
+      const src = a.source === 'env' ? ' (env override)' : '';
+      return `TypeSafe Jev${src}`;
+    }
+    if (a.source === 'none') return 'Not configured';
     const model = a.model ?? 'default model';
     const src = a.source === 'env' ? ' (env override)' : '';
     return `${model}${a.vision ? ' · vision' : ''}${src}`;
@@ -705,7 +715,13 @@ function SystemPanel({ backendUrl }: { backendUrl: string | null }) {
           first panel they read, about a feature they had chosen not to use. */}
       <StatusRow
         label="Ask AI"
-        tone={(agent.value?.source ?? 'none') !== 'none' ? 'ok' : 'off'}
+        tone={
+          agent.value?.engine === 'lilypad' || agent.value?.engine === 'typesafe'
+            ? 'ok'
+            : (agent.value?.source ?? 'none') !== 'none'
+              ? 'ok'
+              : 'off'
+        }
         value={agentSummary()}
       />
 

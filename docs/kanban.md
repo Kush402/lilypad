@@ -16,9 +16,9 @@ This file exists because the list used to live only in a conversation. Six rows
 (L-20, L-38 through L-42) were reconstructed from later summaries after the
 earlier record was compacted away, which is the argument for the file.
 
-**Status counts:** 328 fixed · 35 shipped · 7 partially fixed · 0 open ·
+**Status counts:** 329 fixed · 35 shipped · 7 partially fixed · 0 open ·
 1 blocked on something outside the code · 4 deliberately unchanged · 4 not a bug ·
-1 unrecoverable (L-20). 380 rows.
+1 unrecoverable (L-20). 381 rows.
 
 "Fixed" here means _fixed at source_. Fixed, released and device-verified are
 three different states and this file keeps them apart. L-227 through L-259 are
@@ -1941,6 +1941,7 @@ acceptance matrix are in [v0.1.34-customer-review.md](v0.1.34-customer-review.md
 | L-379 | **P2 — The “at most three waits” loop allowed four.** The completed-wait counter stopped only when it was greater than three, so the fourth wait was scheduled and run before the guard fired. Its test asserted only that the constant was three, not the boundary. | Fixed — 2026-09-21. The guard ends after the third completed wait (`>= MAX_WAITS`), and the regression pins both sides of the boundary. `a_loading_screen_is_waited_for_a_few_times_and_no_more`. |
 | L-380 | **P1 — A screen that explicitly contradicted completion was still reported as a successful run.** L-371 added warning prose but always returned `FinishReason::Completed`; the phone therefore received a completed outcome for work the screen said was undone. | Fixed — 2026-09-21. Contradiction keeps the explanatory sentence but returns `FinishReason::Incomplete`; only an uncontradicted completion is success. `a_screen_that_disagrees_is_not_reported_as_success`. |
 | L-381 | **P1 — Jev could be given an oversized control list or authorize a control/action it never safely tied to the command.** Hosted whole-task state serialized the full AX reading, so a busy screen could exceed the protocol's state bound before Jev answered. The instant path offered the full list despite the criteria bound. Whole-task decisions also trusted a high-probability unrelated label, shortcut, scroll direction, or initial `done` answer. | Fixed and released — 2026-09-21 in v0.1.50. Both paths use the same bounded named candidates; selected controls must be offered and lexically relevant, shortcut/direction answers must be named by the command, implied Send requires a successful Type history line, and initial completion requires strong screen evidence (failed actions cannot become success). `a_dense_screen_is_bounded_and_an_unoffered_control_is_ignored`, `a_high_probability_page_label_is_not_permission_to_click_it`, `shortcut_and_scroll_answers_must_be_named_by_the_command`, `done_ends_the_task`. |
+| L-382 | **P2 — The v0.1.50 dashboard called hosted Jev “Ask AI — Not configured.”** Settings correctly persisted and displayed the Pro hosted engine, but `Control.tsx` treated `source: "none"` as the whole truth and ignored the Rust `engine: "lilypad"` field. A paying customer could therefore see contradictory status immediately after choosing the working hosted path. Reproduced on the signed v0.1.50 app. | Fixed at source — 2026-09-21. The shared desktop DTO models the selected engine, and the dashboard reports hosted Jev (Pro) or BYOK Jev as configured while preserving the existing optional-provider status. `shows hosted Jev as configured on the dashboard`. |
 
 Evidence limits: provider UI fixture = **8 existing tests pass, 1 new expected
 failure**. Billing harness executes the current TypeScript service functions

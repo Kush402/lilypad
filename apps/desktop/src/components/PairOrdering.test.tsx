@@ -25,6 +25,7 @@ vi.mock('../lib/tauri', () => ({
       baseUrl: null,
       vision: false,
       hasKey: false,
+      engine: 'model',
       source: 'none',
     }),
     getAccountState: vi.fn().mockResolvedValue({ signedIn: false, email: null, userId: null }),

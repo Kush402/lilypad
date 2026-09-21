@@ -144,6 +144,8 @@ export interface AgentConfigDto {
   baseUrl: string | null;
   vision: boolean;
   hasKey: boolean;
+  /** Who runs whole Ask tasks: the configured model, hosted Lilypad Jev, or BYOK Jev. */
+  engine: 'model' | 'lilypad' | 'typesafe';
   /** "env" | "settings" | "none" — which config source is active. */
   source: string;
 }

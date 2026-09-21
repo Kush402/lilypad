@@ -38,6 +38,7 @@ vi.mock('../lib/tauri', () => ({
       baseUrl: null,
       vision: false,
       hasKey: false,
+      engine: 'model',
       source: 'none',
     }),
     showSetup: vi.fn(),
@@ -99,6 +100,7 @@ describe('the system panel does not refetch in a loop', () => {
       baseUrl: null,
       vision: false,
       hasKey: false,
+      engine: 'model',
       source: 'none',
     }));
     vi.mocked(api.getPermissionStatus).mockImplementation(async () => ({
@@ -674,6 +676,7 @@ describe('what the system panel calls a problem', () => {
       baseUrl: null,
       vision: false,
       hasKey: false,
+      engine: 'model',
       source: 'none',
     });
     render(<Control />);
@@ -693,6 +696,22 @@ describe('what the system panel calls a problem', () => {
     await screen.findByText('Screen Recording');
     await waitFor(() => expect(dotFor('Screen Recording')).toHaveClass('status-dot--warn'));
     expect(dotFor('Accessibility')).toHaveClass('status-dot--ok');
+  });
+
+  it('shows hosted Jev as configured on the dashboard', async () => {
+    vi.mocked(api.getAgentConfig).mockResolvedValue({
+      providerKind: null,
+      model: null,
+      baseUrl: null,
+      vision: false,
+      hasKey: false,
+      engine: 'lilypad',
+      source: 'none',
+    });
+    render(<Control />);
+
+    await screen.findByText('Lilypad hosted Jev (Pro)');
+    expect(dotFor('Ask AI')).toHaveClass('status-dot--ok');
   });
 });
 
