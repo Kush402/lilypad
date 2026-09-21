@@ -229,6 +229,12 @@ function runTargetGate(fixture, status = 0, tag = targetTag) {
 }
 
 const siteWorkflow = parse(readFileSync('.github/workflows/site.yml', 'utf8'));
+test('site ignores a late Release completion for an older commit (L-386)', () => {
+  const condition = siteWorkflow.jobs['build-and-deploy'].if;
+  assert.match(condition, /workflow_run\.head_sha == github\.sha/);
+  assert.match(condition, /workflow_run\.head_branch == 'main'/);
+  assert.match(condition, /workflow_run\.conclusion == 'success'/);
+});
 const stage = siteWorkflow.jobs['build-and-deploy'].steps.find(
   (step) => step.name === 'Stage the installer the site hands out',
 );
