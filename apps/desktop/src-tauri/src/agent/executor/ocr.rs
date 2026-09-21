@@ -7,11 +7,11 @@
 //! there, because for a model that is never sent a picture the elements ARE
 //! the screen (L-369).
 //!
-//! So when accessibility offers nothing, the pixels are read here instead, by
-//! the Vision framework, on this Mac. The picture never leaves it. What leaves
-//! is what left before: short names of things that can be clicked
-//! (ADR-0020) — filtered, in [`labels`], to what reads like a label rather
-//! than a document, and never a word sitting inside a text field.
+//! So when accessibility succeeds but offers nothing actionable, the pixels
+//! are read here instead, by the Vision framework, on this Mac. The picture
+//! and raw recognized text never leave it. [`labels`] bounds the local target
+//! set; ADR-0022 separately requires the hosted request to use only a complete
+//! recognized label already present in the person's command.
 
 use anyhow::Result;
 
@@ -30,9 +30,8 @@ pub struct Word {
 /// sentence on screen is a document being read, not a button.
 const MAX_LABEL_CHARS: usize = 48;
 
-/// How many names one screen may offer. The model is asked one yes/no per
-/// candidate and the candidates are chosen from this, so this is a bound on
-/// the description, not on the request.
+/// How many local target names one screen may offer. The hosted boundary
+/// filters these against the person's command before building any request.
 const MAX_LABELS: usize = 40;
 
 /// The words worth offering as things to click, largest first — a control's
@@ -118,14 +117,7 @@ mod macos {
     /// Blocking: encode, recognize, and read the results back. The caller
     /// runs it off the async threads, as it does the capture.
     pub fn read(frame: &Frame) -> Result<Vec<Word>> {
-        let t = std::time::Instant::now();
         let png = encode(frame)?;
-        eprintln!(
-            "  encode {} ms, {} KB",
-            t.elapsed().as_millis(),
-            png.len() / 1024
-        );
-        let t = std::time::Instant::now();
         let data = NSData::with_bytes(&png);
         let request = VNRecognizeTextRequest::new();
         request.setRecognitionLevel(VNRequestTextRecognitionLevel::Accurate);
@@ -146,7 +138,6 @@ mod macos {
             .performRequests_error(&requests)
             .map_err(|e| anyhow!("the screen could not be read: {e}"))?;
 
-        eprintln!("  perform {} ms", t.elapsed().as_millis());
         let mut out = Vec::new();
         let Some(results) = request.results() else {
             return Ok(out);

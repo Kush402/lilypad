@@ -31,26 +31,27 @@ the old one `Superseded by ADR-NNNN`.
 
 ## Index
 
-| ADR                                                            | Title                                                      | Status                                                  |
-| -------------------------------------------------------------- | ---------------------------------------------------------- | ------------------------------------------------------- |
-| [0001](0001-account-authentication.md)                         | Account authentication: OAuth + magic link, no passwords   | Amended by [0012](0012-password-authentication.md)      |
-| [0002](0002-device-identity.md)                                | Device identity: Ed25519 keypair with challenge-response   | Accepted                                                |
-| [0003](0003-same-account-device-visibility.md)                 | Same-account device visibility replaces QR pairing         | Superseded by [0010](0010-explicit-device-linking.md)   |
-| [0004](0004-signaling-horizontal-scaling.md)                   | Signaling scale-out: in-memory rooms + Redis pub/sub relay | Accepted                                                |
-| [0005](0005-turn-topology.md)                                  | TURN topology: dedicated regional VMs, not Kubernetes      | Accepted                                                |
-| [0006](0006-lan-first-connectivity.md)                         | LAN-first: the laptop is its own control plane             | Accepted                                                |
-| [0007](0007-cloud-is-control-plane-only.md)                    | The cloud is a control plane, never a data plane           | Accepted                                                |
-| [0008](0008-desktop-enrollment-via-phone.md)                   | The desktop enrolls through an authenticated phone         | Accepted                                                |
-| [0009](0009-control-plane-deployment.md)                       | One VM, a tunnel, and TURN kept apart                      | Accepted                                                |
-| [0010](0010-explicit-device-linking.md)                        | Explicit device linking establishes ownership              | Superseded by [0015](0015-ownership-follows-sign-in.md) |
-| [0011](0011-design-tokens.md)                                  | One palette, three surfaces                                | Accepted                                                |
-| [0012](0012-password-authentication.md)                        | Email + password sign-in                                   | Accepted                                                |
-| [0013](0013-connectivity-is-the-paid-boundary.md)              | Connectivity is the paid boundary                          | Accepted                                                |
-| [0014](0014-device-identifiers-and-lifecycles.md)              | Two device identifiers, four lifecycles                    | Accepted                                                |
-| [0015](0015-ownership-follows-sign-in.md)                      | Ownership follows sign-in; pairing is a separate relation  | Accepted                                                |
-| [0016](0016-storekit-and-the-price.md)                         | What Pro costs, and who takes the money                    | Accepted                                                |
-| [0017](0017-ask-reads-each-provider-in-its-own-vocabulary.md)  | Ask reads each provider in its own vocabulary              | Accepted                                                |
-| [0018](0018-ask-operates-the-mac-under-full-control.md)        | Ask operates the Mac under the owner's full control        | Accepted                                                |
-| [0019](0019-ask-does-short-commands-instantly.md)              | Ask does short commands instantly                          | Accepted                                                |
-| [0020](0020-lilypad-runs-computer-use-on-its-own-account.md)   | Lilypad runs computer use on its own account, for Pro      | Accepted                                                |
-| [0021](0021-ask-reads-the-screen-when-accessibility-cannot.md) | Ask reads the screen when accessibility cannot             | Accepted                                                |
+| ADR                                                            | Title                                                      | Status                                                              |
+| -------------------------------------------------------------- | ---------------------------------------------------------- | ------------------------------------------------------------------- |
+| [0001](0001-account-authentication.md)                         | Account authentication: OAuth + magic link, no passwords   | Amended by [0012](0012-password-authentication.md)                  |
+| [0002](0002-device-identity.md)                                | Device identity: Ed25519 keypair with challenge-response   | Accepted                                                            |
+| [0003](0003-same-account-device-visibility.md)                 | Same-account device visibility replaces QR pairing         | Superseded by [0010](0010-explicit-device-linking.md)               |
+| [0004](0004-signaling-horizontal-scaling.md)                   | Signaling scale-out: in-memory rooms + Redis pub/sub relay | Accepted                                                            |
+| [0005](0005-turn-topology.md)                                  | TURN topology: dedicated regional VMs, not Kubernetes      | Accepted                                                            |
+| [0006](0006-lan-first-connectivity.md)                         | LAN-first: the laptop is its own control plane             | Accepted                                                            |
+| [0007](0007-cloud-is-control-plane-only.md)                    | The cloud is a control plane, never a data plane           | Accepted                                                            |
+| [0008](0008-desktop-enrollment-via-phone.md)                   | The desktop enrolls through an authenticated phone         | Accepted                                                            |
+| [0009](0009-control-plane-deployment.md)                       | One VM, a tunnel, and TURN kept apart                      | Accepted                                                            |
+| [0010](0010-explicit-device-linking.md)                        | Explicit device linking establishes ownership              | Superseded by [0015](0015-ownership-follows-sign-in.md)             |
+| [0011](0011-design-tokens.md)                                  | One palette, three surfaces                                | Accepted                                                            |
+| [0012](0012-password-authentication.md)                        | Email + password sign-in                                   | Accepted                                                            |
+| [0013](0013-connectivity-is-the-paid-boundary.md)              | Connectivity is the paid boundary                          | Accepted                                                            |
+| [0014](0014-device-identifiers-and-lifecycles.md)              | Two device identifiers, four lifecycles                    | Accepted                                                            |
+| [0015](0015-ownership-follows-sign-in.md)                      | Ownership follows sign-in; pairing is a separate relation  | Accepted                                                            |
+| [0016](0016-storekit-and-the-price.md)                         | What Pro costs, and who takes the money                    | Accepted                                                            |
+| [0017](0017-ask-reads-each-provider-in-its-own-vocabulary.md)  | Ask reads each provider in its own vocabulary              | Accepted                                                            |
+| [0018](0018-ask-operates-the-mac-under-full-control.md)        | Ask operates the Mac under the owner's full control        | Accepted                                                            |
+| [0019](0019-ask-does-short-commands-instantly.md)              | Ask does short commands instantly                          | Accepted                                                            |
+| [0020](0020-lilypad-runs-computer-use-on-its-own-account.md)   | Lilypad runs computer use on its own account, for Pro      | Accepted                                                            |
+| [0021](0021-ask-reads-the-screen-when-accessibility-cannot.md) | Ask reads the screen when accessibility cannot             | Superseded in part by [0022](0022-hosted-ocr-is-local-targeting.md) |
+| [0022](0022-hosted-ocr-is-local-targeting.md)                  | Hosted OCR is local targeting, not screen disclosure       | Accepted                                                            |

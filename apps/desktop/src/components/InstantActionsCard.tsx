@@ -219,8 +219,9 @@ export function InstantActionsCard() {
               </>
             ) : null}
             , which asks the model on our account. Still no screenshots, and it cannot write new
-            text or read a page back. Where an app exposes no controls at all, your Mac reads short
-            names off the screen itself and sends those in their place. 25 tasks a day.
+            text or read a page back. Where an app exposes no controls at all, your Mac reads its
+            words locally to find something you named; only a complete recognized label already in
+            your command is sent, never the other screen text. 25 tasks a day.
           </label>
         ) : null}
         {config?.hostedAvailable ? (

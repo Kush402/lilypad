@@ -155,11 +155,12 @@ describe('pricing claims', () => {
  * the feature; this front page was not, which is the failure these pin.
  */
 describe('Ask claims match the two ways it can run', () => {
-  // The screen an agent is blind to is read on the Mac (ADR-0021). The page
-  // has to say that: "the roles and labels of the controls" is not where
-  // those names came from on a screen that has no controls.
-  it('says where the names come from when an app exposes no controls', () => {
-    expect(flat).toMatch(/your Mac reads\s+short names off the screen itself/i);
+  // The screen an agent is blind to is read on the Mac, but raw OCR stays
+  // there (ADR-0022). The public page pins both halves of that boundary.
+  it('says how a command-named target is found without sending other OCR text', () => {
+    expect(flat).toMatch(/your Mac reads\s+its words locally/i);
+    expect(flat).toMatch(/only a complete recognized label\s+already in your command is sent/i);
+    expect(flat).toMatch(/never the other screen text/i);
     // And the promise that did not change must still be there, in the same
     // breath rather than a paragraph away.
     expect(flat).toMatch(/Never a screenshot, and never what you typed in a field/i);

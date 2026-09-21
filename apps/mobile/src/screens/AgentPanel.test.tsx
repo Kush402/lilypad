@@ -765,6 +765,8 @@ describe('the destination sentence names instant actions too (ADR-0019)', () => 
     expect(sentence).toMatch(/sends the same text on to TypeSafe Jev \(jev-1\.13\.0\)/);
     expect(sentence).toMatch(/buttons, links, fields, rows and menu items/);
     expect(sentence).toMatch(/never a screenshot and never field contents/);
+    expect(sentence).toMatch(/Only a complete recognized label already in your command is sent/);
+    expect(sentence).toMatch(/never the other screen text or a picture/);
     expect(sentence).toMatch(/counts your tasks for the day and keeps no copy/);
     expect(sentence).not.toMatch(/This Mac runs the task itself/);
   });

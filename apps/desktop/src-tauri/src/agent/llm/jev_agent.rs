@@ -68,6 +68,18 @@ const WAIT_MS: u64 = 1200;
 const MAX_WAITS: usize = 3;
 const WAIT_KEY: &str = "wait";
 
+fn waits_exhausted(completed: usize) -> bool {
+    completed >= MAX_WAITS
+}
+
+fn done_reason(contradicted: bool) -> FinishReason {
+    if contradicted {
+        FinishReason::Incomplete
+    } else {
+        FinishReason::Completed
+    }
+}
+
 /// Controls asked about in one request. Each costs one yes/no question; the
 /// command's own words choose them, so this is a bound, not a budget.
 const MAX_CANDIDATES: usize = 8;
@@ -280,6 +292,54 @@ fn key_words(text: &str) -> std::collections::HashSet<String> {
         .map(str::to_lowercase)
         .filter(|w| !FILLER.contains(&w.as_str()))
         .collect()
+}
+
+/// The description that may cross the hosted boundary. Accessibility labels
+/// are already covered by the consent wording. OCR is different: on a screen
+/// with no accessibility controls there is no reliable local way to tell a
+/// short button name from a short line of somebody's message. Keep only OCR
+/// labels the person already put in the command, and send the command's own
+/// spelling rather than the recognized screen text. Requiring the whole OCR
+/// run prevents a private line such as “Meet Bob at eight” from being
+/// relabelled as a clickable “Bob” merely because the command names Bob.
+fn reading_for_task(task: &str, reading: &ScreenReading) -> ScreenReading {
+    let task_words: Vec<(&str, String)> = task
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(|word| (word, word.to_lowercase()))
+        .collect();
+    let mut safe = reading.clone();
+    safe.elements = reading
+        .elements
+        .iter()
+        .filter_map(|element| {
+            if element.role != "screen text" {
+                return Some(element.clone());
+            }
+            let words: Vec<String> = element
+                .label
+                .split(|c: char| !c.is_alphanumeric())
+                .filter(|word| !word.is_empty())
+                .map(str::to_lowercase)
+                .collect();
+            let start = (!words.is_empty())
+                .then(|| {
+                    task_words
+                        .windows(words.len())
+                        .position(|window| window.iter().map(|(_, word)| word).eq(words.iter()))
+                })
+                .flatten()?;
+            Some(crate::agent::runner::ReadElement {
+                label: task_words[start..start + words.len()]
+                    .iter()
+                    .map(|(word, _)| *word)
+                    .collect::<Vec<_>>()
+                    .join(" "),
+                ..element.clone()
+            })
+        })
+        .collect();
+    safe
 }
 
 /// The controls worth asking about: the ones the command's own words touch,
@@ -760,42 +820,22 @@ pub fn decide(
 
 /// Why the words cannot be typed yet, if they cannot.
 ///
-/// Named as the roles that keystrokes do something OTHER than appear in,
-/// rather than as the roles that take text: a web page puts focus on all
-/// sorts of things, and refusing everything unfamiliar would refuse most of
-/// the web.
+/// An unfamiliar role fails closed. On macOS, editable web controls are
+/// exposed through these same AX roles; treating an unknown canvas or group
+/// as a field can turn intended text into application shortcuts.
 pub fn nowhere_to_type(reading: &ScreenReading) -> Option<String> {
-    const NOT_A_FIELD: &[&str] = &[
-        "button",
-        "check box",
-        "radio button",
-        "row",
-        "cell",
-        "table",
-        "outline",
-        "list",
-        "menu",
-        "link",
-        "image",
-        "toolbar",
-        "tab",
-        "pop up button",
-        "slider",
-        "static text",
-        "window",
-    ];
+    const FIELDS: &[&str] = &["text field", "text area", "search field", "combo box"];
     match reading.focused.as_deref() {
         None => Some(
             "Nothing on this screen has the keyboard, so the words have nowhere to go. Click the \
              field you want them in, then say it again."
                 .into(),
         ),
-        Some(focused) => NOT_A_FIELD.iter().any(|r| focused.starts_with(r)).then(|| {
-            format!(
-                "The keyboard is on {focused}, which is not somewhere words go — they would be \
-                 shortcuts instead. Click the field you want them in, then say it again."
-            )
-        }),
+        Some(focused) if FIELDS.iter().any(|role| focused.starts_with(role)) => None,
+        Some(focused) => Some(format!(
+            "The keyboard is on {focused}, which is not a verified editable field — the words \
+             could become shortcuts instead. Click the field you want them in, then say it again."
+        )),
     }
 }
 
@@ -840,7 +880,7 @@ impl Brain for JevBrain {
                 .unwrap_or_default();
             if repeat_key == WAIT_KEY {
                 self.waits += 1;
-                if self.waits > MAX_WAITS {
+                if waits_exhausted(self.waits) {
                     return Self::finish(
                         "The screen never became ready, so Ask stopped waiting for it.",
                         FinishReason::Incomplete,
@@ -892,6 +932,12 @@ impl Brain for JevBrain {
                 FinishReason::Incomplete,
             );
         }
+
+        // Raw OCR text never crosses the hosted boundary. Only OCR words the
+        // person already used in the command survive, and their labels are
+        // rebuilt from that command rather than from the screen.
+        let outbound_reading = reading_for_task(task, reading);
+        let reading = &outbound_reading;
 
         if self.installed.is_none() {
             self.installed = Some(
@@ -972,7 +1018,7 @@ impl Brain for JevBrain {
                                      undone. Check it yourself."
                         .into(),
                 },
-                FinishReason::Completed,
+                done_reason(contradicted),
             ),
             Step::Stop(why) => Self::finish(why, FinishReason::Incomplete),
             // The tie-break above is the only producer, and it never returns
@@ -1165,6 +1211,54 @@ mod tests {
         assert!(refused(&nothing).contains("nowhere to go"));
         // A text area is where words go, and is not refused.
         assert!(nowhere_to_type(&reply_screen()).is_none());
+        // Unknown roles fail closed too. A canvas or web area can turn text
+        // into shortcuts, and has not proved that it is editable.
+        let mut unknown = mail();
+        unknown.focused = Some("group \u{201c}Canvas\u{201d}".into());
+        assert!(refused(&unknown).contains("verified editable field"));
+        let mut password = mail();
+        password.focused = Some("secure text field \u{201c}Password\u{201d}".into());
+        assert!(refused(&password).contains("verified editable field"));
+    }
+
+    /// OCR can see a short line of private text that looks exactly like a
+    /// control name. Only a complete label already present in the person's
+    /// command may cross the hosted boundary, and it comes from the command
+    /// itself. One matching word cannot turn somebody's sentence into a
+    /// clickable target.
+    #[test]
+    fn screen_text_sent_to_jev_is_limited_to_the_command() {
+        let reading = ScreenReading {
+            app: "Canvas".into(),
+            focused: Some("group \u{201c}Canvas\u{201d}".into()),
+            window: Some(0),
+            elements: vec![
+                el(100_000, "screen text", "Meet Bob at eight"),
+                el(100_001, "screen text", "Send"),
+                el(100_002, "screen text", "Open"),
+                el(100_003, "screen text", "Cancel"),
+            ],
+        };
+        let safe = reading_for_task("message Bob, then click Send and Open", &reading);
+        assert_eq!(safe.elements.len(), 2);
+        assert_eq!(safe.elements[0].label, "Send");
+        // Action words are valid labels when the whole label was named; the
+        // candidate-ranking filler list must not erase this button.
+        assert_eq!(safe.elements[1].label, "Open");
+        let candidates = candidates("message Bob, then click Send and Open", &safe);
+        let body = request(
+            jev::MODEL,
+            "message Bob, then click Send and Open",
+            &safe,
+            &[],
+            &[],
+            &[],
+            &candidates,
+        );
+        let encoded = serde_json::to_string(&body).unwrap();
+        assert!(!encoded.contains("Meet Bob at eight"), "{encoded}");
+        assert!(!encoded.contains("Cancel"), "{encoded}");
+        assert!(encoded.contains("Send") && encoded.contains("Open"));
     }
 
     #[test]
@@ -1356,6 +1450,14 @@ mod tests {
         // The bound is the count, not the repeat guard: a wait is the one
         // step that is supposed to change nothing.
         assert!(MAX_WAITS >= 2 && WAIT_MS * MAX_WAITS as u64 <= 5_000);
+        assert!(!waits_exhausted(MAX_WAITS - 1));
+        assert!(waits_exhausted(MAX_WAITS));
+    }
+
+    #[test]
+    fn a_screen_that_disagrees_is_not_reported_as_success() {
+        assert_eq!(done_reason(false), FinishReason::Completed);
+        assert_eq!(done_reason(true), FinishReason::Incomplete);
     }
 
     #[test]

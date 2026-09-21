@@ -53,8 +53,16 @@ impl AxExecutor {
                 self.read_on = display;
                 Ok(())
             }
-            Ok(Err(e)) => Err(e.to_string()),
-            Err(e) => Err(format!("the reading stopped: {e}")),
+            Ok(Err(e)) => {
+                self.last = None;
+                self.read_on = None;
+                Err(e.to_string())
+            }
+            Err(e) => {
+                self.last = None;
+                self.read_on = None;
+                Err(format!("the reading stopped: {e}"))
+            }
         }
     }
 }

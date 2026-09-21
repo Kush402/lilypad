@@ -860,19 +860,21 @@ the model, the mode and every step's summary from the phone.
     The phone re-asks once (`AI_CONSENT_POLICY` 4), and its card for this way
     must name **both** Lilypad and the company Lilypad forwards to — a card
     naming only Lilypad is L-360 back. The card must also say that where an
-    app exposes no controls, the Mac reads short names off the screen itself
-    ([ADR-0021](adr/0021-ask-reads-the-screen-when-accessibility-cannot.md)).
+    app exposes no controls, the Mac reads words locally but sends only
+    matches already present in the command
+    ([ADR-0022](adr/0022-hosted-ocr-is-local-targeting.md)).
 13. **Hosted Jev on an app that exposes nothing**
-    ([ADR-0021](adr/0021-ask-reads-the-screen-when-accessibility-cannot.md)).
+    ([ADR-0022](adr/0022-hosted-ocr-is-local-targeting.md)).
     Bring an Electron app in front (VS Code, Slack, Discord, or any Chrome
     window with accessibility off) and give a hosted task naming something
-    visible on it. Expect the step feed to show a click chosen from a name
-    read off the screen, an approval card naming what is really under the
-    point, and `accessibility listed nothing; read N names off the screen` in
+    visible on it. Expect the step feed to show a click chosen from a word
+    also present in the command, an approval card naming what is really under
+    the point, and `accessibility listed nothing; read N names off the screen` in
     `~/Library/Logs/Lilypad`. Then check what it must NOT do: open a document
-    with a long line of your own text in it and confirm no line of that text
-    is offered as something to click, and type a few words into a field on a
-    screen that exposes no controls and confirm they never appear in a step.
+    with a short private line such as `Meet Bob at eight`, use a command
+    naming a different control, and confirm none of that line appears in a
+    step or hosted request. Then use a command containing `Bob` and confirm
+    only the command's own `Bob` may identify a target, never the whole line.
     Finally, deny Screen Recording and confirm the same task ends with the
     accessibility reason (L-369) rather than failing some other way.
 

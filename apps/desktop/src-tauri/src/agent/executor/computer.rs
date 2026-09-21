@@ -91,9 +91,11 @@ pub struct ComputerExecutor {
     taken_over: bool,
     /// Words read off the screen at the last look, and the display they were
     /// read on, for the runs where accessibility offered nothing to act on.
-    /// They are targets like any element, and they go stale the same way.
+    /// They are targets like any element. The fingerprint binds them to the
+    /// pixels that were read, not merely to the same display.
     words: Vec<(usize, [f64; 4])>,
     words_on: Option<u32>,
+    words_screen: Option<u64>,
 }
 
 impl ComputerExecutor {
@@ -116,6 +118,7 @@ impl ComputerExecutor {
             taken_over: false,
             words: Vec::new(),
             words_on: None,
+            words_screen: None,
         }
     }
 
@@ -403,22 +406,37 @@ impl ComputerExecutor {
                 modifiers,
                 hit,
             } => {
+                if matches!(target, Target::Element(id) if *id >= OCR_ID_BASE) {
+                    let expected = self.words_screen.ok_or_else(|| {
+                        anyhow!("the screen reading is no longer current — look again")
+                    })?;
+                    let display = self.display.get();
+                    let current = tokio::task::spawn_blocking(move || {
+                        vision::grab(display).map(|frame| frame.fingerprint())
+                    })
+                    .await??;
+                    if current != expected {
+                        bail!("the screen changed since those words were read — look again");
+                    }
+                }
                 let at = self.point_of(target)?;
                 // The approval named what was under the point. If something
                 // else is there now — a page that moved, a dialog that
                 // appeared — this is a different click (L-272's rule, for
                 // points).
                 if let Some(approved) = hit.as_ref().and_then(|h| h.element.as_ref()) {
-                    let now = self.hit_at(target).and_then(|h| h.element);
-                    if let Some(now) = now {
-                        if &now != approved {
-                            bail!(
-                                "what is under that point changed since this click was chosen \
-                                 (it was {:?}, now {:?}) — look again",
-                                approved.label,
-                                now.label
-                            );
-                        }
+                    match self.hit_at(target).and_then(|h| h.element) {
+                        Some(now) if &now == approved => {}
+                        Some(now) => bail!(
+                            "what is under that point changed since this click was chosen \
+                             (it was {:?}, now {:?}) — look again",
+                            approved.label,
+                            now.label
+                        ),
+                        None => bail!(
+                            "the control approved at that point can no longer be identified — \
+                             look again"
+                        ),
                     }
                 }
                 self.perform(AgentOp::Click {
@@ -635,14 +653,16 @@ impl ComputerExecutor {
         // this costs a capture and a second of recognition.
         self.words.clear();
         self.words_on = target;
-        if !self.config.vision && listed.is_empty() {
+        self.words_screen = None;
+        if !self.config.vision && reading.is_ok() && listed.is_empty() {
             let found = tokio::task::spawn_blocking(move || {
                 let frame = vision::grab(target)?;
-                ocr::read(&frame)
+                let fingerprint = frame.fingerprint();
+                ocr::read(&frame).map(|words| (words, fingerprint))
             })
             .await;
             match found {
-                Ok(Ok(words)) => {
+                Ok(Ok((words, fingerprint))) => {
                     let named = ocr::labels(words, &self.fields());
                     if !named.is_empty() {
                         log::info!(
@@ -655,7 +675,11 @@ impl ComputerExecutor {
                             .enumerate()
                             .map(|(i, w)| (OCR_ID_BASE + i, w.rect))
                             .collect();
-                        structured = Some(words_reading(self.focus_hit(), &named, &self.words));
+                        self.words_screen = Some(fingerprint);
+                        let base = structured
+                            .as_ref()
+                            .expect("a successful accessibility read has a screen reading");
+                        structured = Some(words_reading(base, &named, &self.words));
                     }
                 }
                 Ok(Err(e)) => {
@@ -915,39 +939,22 @@ fn screen_reading(snapshot: &ax::AxSnapshot, listed: &[(usize, [f64; 4])]) -> Sc
 /// the app in front exposes no controls at all. Every word is a target, by an
 /// id that continues past the element ids.
 fn words_reading(
-    focus: Option<Hit>,
+    base: &ScreenReading,
     named: &[ocr::Word],
     ids: &[(usize, [f64; 4])],
 ) -> ScreenReading {
-    let app = focus
-        .as_ref()
-        .map(|h| h.app.clone())
-        .filter(|a| !a.is_empty())
-        // Named as what it is. A reading that cannot say which app this is has
-        // not proved it is not Lilypad's own window, and the run's own guard
-        // on that reads this field.
-        .unwrap_or_else(|| "an app that exposes no controls".to_string());
     ScreenReading {
-        app,
-        focused: focus.and_then(|h| h.element).map(|e| {
-            if e.label.is_empty() {
-                role_in_words(&e.role)
-            } else {
-                format!(
-                    "{} \u{201c}{}\u{201d}",
-                    role_in_words(&e.role),
-                    tree::clip(&e.label)
-                )
-            }
-        }),
-        // No element is the window, so "scroll the window" aims at the pointer.
-        window: None,
+        app: base.app.clone(),
+        focused: base.focused.clone(),
+        window: base.window,
         elements: named
             .iter()
             .zip(ids)
             .map(|(w, (id, rect))| ReadElement {
                 id: *id,
-                role: "text".into(),
+                // This source marker is also the privacy boundary in the
+                // hosted brain: raw screen text is never placed in a request.
+                role: "screen text".into(),
                 label: tree::clip(w.text.trim()),
                 at: Some(coarse(*rect)),
             })
@@ -1092,26 +1099,27 @@ mod tests {
             .enumerate()
             .map(|(i, w)| (OCR_ID_BASE + i, w.rect))
             .collect();
-        let focus = Hit {
+        let base = ScreenReading {
             app: "Figma".into(),
-            element: Some(AxTarget::new("AXGroup", "Canvas")),
-            ..Default::default()
+            focused: Some("group \u{201c}Canvas\u{201d}".into()),
+            window: Some(4),
+            elements: Vec::new(),
         };
-        let reading = words_reading(Some(focus), &named, &ids);
+        let reading = words_reading(&base, &named, &ids);
         assert_eq!(reading.app, "Figma");
         assert_eq!(
             reading.focused.as_deref(),
             Some("group \u{201c}Canvas\u{201d}")
         );
-        // No element is the window: "scroll the window" has to aim at the
-        // pointer rather than at a word.
-        assert_eq!(reading.window, None);
+        assert_eq!(reading.window, Some(4));
         assert_eq!(reading.elements[0].id, OCR_ID_BASE);
+        assert_eq!(reading.elements[0].role, "screen text");
         assert_eq!(reading.elements[0].label, "Continue");
         assert_eq!(reading.elements[0].at.as_deref(), Some("bottom centre"));
 
-        // And the id resolves to the middle of what was read, under the same
-        // staleness rule an element has.
+        // And the id resolves to the middle of what was read. The synchronous
+        // part rejects display changes; `act` additionally binds a click to
+        // the captured pixels before input reaches the Mac.
         let mut ex = executor(Grid::Pixels);
         ex.words = ids;
         ex.words_on = ex.display.get();
@@ -1128,14 +1136,18 @@ mod tests {
         assert!(err.contains("changed"), "{err}");
     }
 
-    /// A reading that cannot even name the app must not be able to claim it is
-    /// not Lilypad's own window, because the run's guard on that reads this
-    /// one field.
+    /// OCR enriches a successful accessibility read; it must not replace the
+    /// app identity that keeps Ask out of Lilypad itself.
     #[test]
-    fn a_screen_with_no_name_is_not_given_one() {
-        let reading = words_reading(None, &[], &[]);
-        assert_eq!(reading.app, "an app that exposes no controls");
-        assert!(!reading.app.eq_ignore_ascii_case("lilypad"));
+    fn screen_words_preserve_the_accessibility_identity() {
+        let base = ScreenReading {
+            app: "Lilypad".into(),
+            focused: None,
+            window: Some(2),
+            elements: Vec::new(),
+        };
+        let reading = words_reading(&base, &[], &[]);
+        assert_eq!(reading, base);
     }
 
     /// What a person typed is theirs, so the rectangles words may not be read

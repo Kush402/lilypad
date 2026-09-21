@@ -19,17 +19,19 @@ All notable changes to Lilypad are documented here. The format follows
 - **Ask checks its own claim against the screen before it says a task is
   done.** Where the screen plainly still shows the task undone, it says so and
   tells you to look, rather than reporting success.
-- **Ask will not type into a list or a button.** Keystrokes there are
-  shortcuts, not words — in a mail list, some of them delete mail. It now says
-  which thing has the keyboard and asks you to click the field first.
+- **Ask types only into a verified text field.** Keystrokes on a list, button,
+  canvas, or unknown control can be shortcuts rather than words — in a mail
+  list, some of them delete mail. It now says which thing has the keyboard and
+  asks you to click the field first.
 - **Ask works on apps that expose no controls.** An Electron window, a canvas,
   a game or a screen shared from another machine used to end a hosted task at
   the first look, because the accessibility reading is all that way of running
   has. Your Mac now reads the words on the screen itself, with macOS's own
-  recognizer, and offers those as things to click. The picture never leaves
-  your Mac, and what does leave is short names — never a line of what you are
-  working on, and never anything inside a field. Your phone asks again once,
-  because what can be sent has widened.
+  recognizer, and offers command-named labels as things to click. The picture
+  and raw recognized text never leave your Mac: only a complete recognized
+  label already present in your command may be sent. Visual clicks are refused if the screen
+  changes after it was read. Your phone asks again once because local screen
+  reading is new.
 - **Ask can tell two controls of the same name apart.** The screen it works
   from now says roughly where each control sits, so a Send in a toolbar and a
   Send in the sheet in front of it are no longer the same button.

@@ -159,10 +159,12 @@
         API key on the Mac. The same text-only information &mdash; the command, front app, keyboard
         focus, control roles and labels, matching installed-app names, and short summaries of prior
         steps &mdash; goes first to Lilypad&rsquo;s server and then to TypeSafe on Lilypad&rsquo;s
-        key. No screenshot or field value is sent. Lilypad checks the subscription and keeps only
-        expiring counters for the 25-task daily allowance; it does not store or log the request or
-        answer. Bring-your-own-key Ask remains available on every plan and continues to go directly
-        to the provider chosen on the Mac.
+        key. If an app exposes no controls, the Mac may read its pixels locally to find something
+        named in the command; only a complete recognized label already in that command is sent,
+        never the other recognized screen text. No screenshot or field value is sent. Lilypad checks
+        the subscription and keeps only expiring counters for the 25-task daily allowance; it does
+        not store or log the request or answer. Bring-your-own-key Ask remains available on every
+        plan and continues to go directly to the provider chosen on the Mac.
       </p>
       <p>
         Ask does nothing until you turn it on. Your phone asks before the first task and explains

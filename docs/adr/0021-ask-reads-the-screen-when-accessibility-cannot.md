@@ -9,7 +9,10 @@ summary: When the app in front exposes no controls through accessibility, the Ma
 
 ## Status
 
-Accepted — 2026-09-21. Extends
+Superseded in part by
+[ADR-0022](0022-hosted-ocr-is-local-targeting.md) — 2026-09-21. The local
+Vision fallback remains accepted; its outbound-data and target-staleness rules
+are replaced. Extends
 [ADR-0020](0020-lilypad-runs-computer-use-on-its-own-account.md) by adding one
 source of elements, and does not change what that decision refuses. It moves
 `AI_CONSENT_POLICY` to 4.

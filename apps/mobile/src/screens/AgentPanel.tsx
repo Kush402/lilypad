@@ -83,10 +83,10 @@ export function destinationSentence(destination: AgentDestination | undefined): 
     // What the reading is, in both ways of running it. Written once because
     // the two sentences differing in this list is how a disclosure drifts.
     const sent = `your command, the app in front, what has keyboard focus, the names of actionable controls on screen (including buttons, links, fields, rows and menu items), matching installed-app names, and what Ask has done so far \u2014 never a screenshot and never field contents`;
-    // An app that exposes no controls at all used to end the task. Now the
-    // Mac reads the screen's own words instead (ADR-0021) — a new kind of
-    // thing to disclose, so the consent revision moved with it.
-    const blind = `Where an app exposes no controls at all, your Mac reads short names off the screen itself and sends those in their place, still never a picture and never what is inside a field.`;
+    // An app that exposes no controls at all used to end the task. The Mac
+    // may now read its pixels locally to find a command-named target, but raw
+    // OCR text stays on the Mac (ADR-0022).
+    const blind = `Where an app exposes no controls at all, your Mac reads its words locally to find something you named. Only a complete recognized label already in your command is sent, never the other screen text or a picture.`;
     const limits = `It types only words you said, and it stops and says so when a task needs writing or reading instead.`;
     // The hosted way: Lilypad is in the path, and a second company receives
     // exactly the same text. Naming only Lilypad here would understate it.

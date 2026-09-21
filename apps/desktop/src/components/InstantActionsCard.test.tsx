@@ -121,6 +121,8 @@ describe('InstantActionsCard', () => {
     expect(label).toMatch(/Pro/);
     expect(label).toMatch(/no key needed/i);
     expect(label).toMatch(/25 tasks a day/);
+    expect(label).toMatch(/only a complete recognized label already in your command is sent/i);
+    expect(label).toMatch(/never the other screen text/i);
     // The destination named is Lilypad's server, because that is what
     // receives the reading — saying TypeSafe here would be untrue.
     expect(label).toContain('https://api.lilypad.example');
