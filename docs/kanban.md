@@ -32,6 +32,27 @@ and the hardware gate still need a device; L-247, L-251 and L-259 are fixed at
 source and still await it. A cut needs the owner's authorization and those
 gates, not an empty "open" column.
 
+**v0.1.49 published (2026-09-21):** Codex's audit of Claude Code's hosted Ask
+loop is in `1fa7b85`; release commit `7dc2b2d` is tagged `v0.1.49` and
+`mobile-v0.1.49`. Exact-SHA CI `35563036191` is green, including Rust audit,
+clippy/tests, CodeQL, real PostgreSQL/Redis tests and device-identity E2E.
+
+Deploy `35563353149` succeeded and the canonical health endpoint reports
+PostgreSQL, Redis and mail healthy at revision
+`7dc2b2dc5491e0606ecb2dda93746759e8484aee`. The signed/notarized Mac release
+`35563352949` published, iOS TestFlight upload `35563355143` succeeded, and
+Android `35563355166` completed with Play publication skipped because the Play
+signing secrets are still absent. The post-release site deploy
+`35564256240` succeeded.
+
+Verified anonymously: the site names v0.1.49, the public DMG returns 200 at
+23,044,918 bytes and hashes to
+`1d6db91033a644cfaf6792dfda2051a82215f3cc613336cd8406c5f0322e8198`, byte for
+byte the GitHub release asset; the updater archive is 23,650,215 bytes, inside
+the site's 26,214,400-byte limit; and `latest.json` names 0.1.49 for all four
+Darwin targets with signed URLs. The release workflow's notarization and
+Gatekeeper checks passed before it published the release.
+
 **v0.1.48 published on both halves (2026-09-20):** `144972f` closes L-368 —
 a subscription check that failed once left the Pro choice locked until the app
 restarted, so the locked choice now carries a Check again action, which is also
