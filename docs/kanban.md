@@ -32,6 +32,18 @@ and the hardware gate still need a device; L-247, L-251 and L-259 are fixed at
 source and still await it. A cut needs the owner's authorization and those
 gates, not an empty "open" column.
 
+**v0.1.50 published (2026-09-21):** Jev hardening commit `c2f8ce0` and release
+commit `5b6ed4d` are tagged `v0.1.50` and `mobile-v0.1.50`. Exact-SHA CI
+`35657461309` passed Rust dependency audit, macOS fmt/clippy/tests, CodeQL,
+clean TypeScript tests, real PostgreSQL/Redis migration and device-identity
+E2E. Deploy/health `35657463947`, signed/notarized Mac release
+`35657463556`, iOS TestFlight `35657463229`, and Android `35657463219` all
+passed; Android's Play publication remains skipped because its signing secrets
+are absent. The first push-triggered site run failed before the release asset
+existed at its staging step; release-triggered site run `35659437864` then
+staged, deployed and anonymously verified the public v0.1.50 site and
+download. The public updater manifest reports version `0.1.50`.
+
 **v0.1.49 published (2026-09-21):** Codex's audit of Claude Code's hosted Ask
 loop is in `1fa7b85`; release commit `7dc2b2d` is tagged `v0.1.49` and
 `mobile-v0.1.49`. Exact-SHA CI `35563036191` is green, including Rust audit,
@@ -1928,7 +1940,7 @@ acceptance matrix are in [v0.1.34-customer-review.md](v0.1.34-customer-review.md
 | L-378 | **P1 — The first typing guard failed open for every unfamiliar focused role.** It denied a list of known non-fields, so an unknown group, canvas or web area was treated as editable and could receive the person's text as application shortcuts. That reversed the reference implementation's verified-editable requirement. | Fixed — 2026-09-21. Typing uses an allow-list of text field, text area, search field and combo box roles. Unknown and secure roles fail closed. `words_are_not_typed_at_a_list_or_a_button`. |
 | L-379 | **P2 — The “at most three waits” loop allowed four.** The completed-wait counter stopped only when it was greater than three, so the fourth wait was scheduled and run before the guard fired. Its test asserted only that the constant was three, not the boundary. | Fixed — 2026-09-21. The guard ends after the third completed wait (`>= MAX_WAITS`), and the regression pins both sides of the boundary. `a_loading_screen_is_waited_for_a_few_times_and_no_more`. |
 | L-380 | **P1 — A screen that explicitly contradicted completion was still reported as a successful run.** L-371 added warning prose but always returned `FinishReason::Completed`; the phone therefore received a completed outcome for work the screen said was undone. | Fixed — 2026-09-21. Contradiction keeps the explanatory sentence but returns `FinishReason::Incomplete`; only an uncontradicted completion is success. `a_screen_that_disagrees_is_not_reported_as_success`. |
-| L-381 | **P1 — Jev could be given an oversized control list or authorize a control/action it never safely tied to the command.** Hosted whole-task state serialized the full AX reading, so a busy screen could exceed the protocol's state bound before Jev answered. The instant path offered the full list despite the criteria bound. Whole-task decisions also trusted a high-probability unrelated label, shortcut, scroll direction, or initial `done` answer. | Fixed — 2026-09-21 on the v0.1.50 candidate. Both paths use the same bounded named candidates; selected controls must be offered and lexically relevant, shortcut/direction answers must be named by the command, implied Send requires a successful Type history line, and initial completion requires strong screen evidence (failed actions cannot become success). `a_dense_screen_is_bounded_and_an_unoffered_control_is_ignored`, `a_high_probability_page_label_is_not_permission_to_click_it`, `shortcut_and_scroll_answers_must_be_named_by_the_command`, `done_ends_the_task`. |
+| L-381 | **P1 — Jev could be given an oversized control list or authorize a control/action it never safely tied to the command.** Hosted whole-task state serialized the full AX reading, so a busy screen could exceed the protocol's state bound before Jev answered. The instant path offered the full list despite the criteria bound. Whole-task decisions also trusted a high-probability unrelated label, shortcut, scroll direction, or initial `done` answer. | Fixed and released — 2026-09-21 in v0.1.50. Both paths use the same bounded named candidates; selected controls must be offered and lexically relevant, shortcut/direction answers must be named by the command, implied Send requires a successful Type history line, and initial completion requires strong screen evidence (failed actions cannot become success). `a_dense_screen_is_bounded_and_an_unoffered_control_is_ignored`, `a_high_probability_page_label_is_not_permission_to_click_it`, `shortcut_and_scroll_answers_must_be_named_by_the_command`, `done_ends_the_task`. |
 
 Evidence limits: provider UI fixture = **8 existing tests pass, 1 new expected
 failure**. Billing harness executes the current TypeScript service functions
