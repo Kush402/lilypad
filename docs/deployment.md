@@ -101,8 +101,11 @@ the page, and does not meter egress:
 
 `site.yml` stages these after building the page. A successful `Release`
 `workflow_run` starts the site job only after the release is public, so a
-version-bump push cannot race an asset that does not exist yet. It fetches the
-release matching the **exact** version in `tauri.conf.json` — not `latest` —
+version-bump push cannot race an asset that does not exist yet. Since completion
+events can arrive late, the job also requires the completed Release's successful
+`head_branch` and `head_sha` to match the default-branch checkout; an older
+release cannot publish the newer version by accident. It fetches the release
+matching the **exact** version in `tauri.conf.json` — not `latest` —
 because a page that says v0.1.3 while serving v0.1.2's bytes is the same lie in
 a different place. It rewrites
 the manifest's asset URLs to this site; the signatures still verify, because
