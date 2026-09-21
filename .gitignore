@@ -1,5 +1,9 @@
 # Dependencies
+# Both spellings on purpose. `node_modules/` matches a directory and nothing
+# else, so a node_modules SYMLINK — which is what a git worktree sharing an
+# install has — is not ignored by it, and `git add -A` commits seven of them.
 node_modules/
+node_modules
 .pnpm-store/
 
 # Build output
