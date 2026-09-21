@@ -1,7 +1,7 @@
 ---
 status: Reference
 owner: @kushsharma024
-last-verified: 2026-09-20
+last-verified: 2026-09-21
 summary: Every defect found during the pre-launch product review, and what happened to it.
 ---
 
@@ -16,9 +16,9 @@ This file exists because the list used to live only in a conversation. Six rows
 (L-20, L-38 through L-42) were reconstructed from later summaries after the
 earlier record was compacted away, which is the argument for the file.
 
-**Status counts:** 335 fixed · 35 shipped · 7 partially fixed · 0 open ·
+**Status counts:** 335 fixed · 35 shipped · 7 partially fixed · 1 open ·
 1 blocked on something outside the code · 4 deliberately unchanged · 4 not a bug ·
-1 unrecoverable (L-20). 387 rows.
+1 unrecoverable (L-20). 388 rows.
 
 "Fixed" here means _fixed at source_. Fixed, released and device-verified are
 three different states and this file keeps them apart. L-227 through L-259 are
@@ -1948,6 +1948,7 @@ acceptance matrix are in [v0.1.34-customer-review.md](v0.1.34-customer-review.md
 | L-386 | **P2 — A late `Release` completion for the previous version could still run the site against the new version.** v0.1.51's delayed completion triggered site run `35663824434` after `main` already advertised v0.1.52, so it failed the exact-release gate before v0.1.52 was published. | Fixed at source — 2026-09-21. A `workflow_run` site job now requires the completed Release's successful `head_branch` and `head_sha` to match the default-branch checkout; stale completions are skipped, while the current release event remains authoritative. `site ignores a late Release completion for an older commit`. |
 | L-387 | **P1 — Ask discarded the precise screen-read failure after a tier-one action.** `observe_after` replaced the screenshot with its fresh post-launch look but retained the prior action observation's empty `reading` and `reading_error`; Jev therefore fell back to “the app may not expose its controls” even when the log correctly recorded, for example, that Safari's window was on another display. Reproduced in the installed v0.1.52 app on 2026-09-21. | Fixed at source — 2026-09-21. The post-action observation now takes both the structured reading and its failure reason from the authoritative follow-up look, so Ask gives the actionable display/permission reason without weakening its fail-closed behavior. `post_action_look_keeps_its_precise_reading_failure`. |
 | L-388 | **P1 — The release-triggered site workflow skipped every tag-triggered Release.** Its stale-event guard also required `workflow_run.head_branch == 'main'`, but the Release workflow runs from `v0.1.53` when its tag is pushed. The exact SHA matched, yet the job was skipped and the public updater remained on v0.1.52. Reproduced by site run `35667765957`. | Fixed at source — 2026-09-21. The guard now relies on the successful Release's exact `head_sha`, which rejects stale releases while accepting the release tag that built the same default-branch commit. `site ignores a late Release completion for an older commit`. |
+| L-389 | **P1 — An installed v0.1.52 desktop says it is up to date while the public signed v0.1.53 release exists.** The running app's bundle and startup log both identify `0.1.52`; its updater logged `update check: up to date` repeatedly after the site served v0.1.53 with `Cache-Control: no-cache` and valid Darwin targets. This prevents the signed Ask repair from reaching the very device that reproduced L-387. | Open — 2026-09-21. The feed, installed endpoint, target entries, signatures and semver ordering are confirmed; collect the updater plugin's native debug response before changing release or updater code. |
 
 Evidence limits: provider UI fixture = **8 existing tests pass, 1 new expected
 failure**. Billing harness executes the current TypeScript service functions
