@@ -124,12 +124,18 @@ pub struct ScreenReading {
 }
 
 /// One listed element: the id actions name it by, its role in words
-/// ("button", "text field") and its label.
+/// ("button", "text field"), its label, and roughly where it sits.
+///
+/// The position is coarse on purpose ("top left", not a coordinate). It is
+/// what tells two controls of the same name apart — a Send in the toolbar and
+/// a Send in the sheet in front of it — on a screen a text-only model can only
+/// read about.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReadElement {
     pub id: usize,
     pub role: String,
     pub label: String,
+    pub at: Option<String>,
 }
 
 /// An encoded screenshot and the pixel size the model will see it at. The

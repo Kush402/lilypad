@@ -1129,6 +1129,7 @@ mod tests {
             id,
             role: role.into(),
             label: label.into(),
+            at: None,
         }
     }
 

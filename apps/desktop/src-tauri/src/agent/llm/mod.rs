@@ -2635,6 +2635,7 @@ mod tests {
                 id: 3,
                 role: "button".into(),
                 label: "Compose".into(),
+                at: None,
             }],
         });
         look

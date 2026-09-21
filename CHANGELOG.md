@@ -13,6 +13,18 @@ All notable changes to Lilypad are documented here. The format follows
   another display or who had not granted Accessibility — both fixable in
   seconds once named. The reason also goes to the Mac's log file, so a report
   arrives with its own diagnosis.
+- **Ask waits for a screen that is still loading** instead of guessing at a
+  half-drawn window or giving up on it. Three waits, then it says the screen
+  never became ready.
+- **Ask checks its own claim against the screen before it says a task is
+  done.** Where the screen plainly still shows the task undone, it says so and
+  tells you to look, rather than reporting success.
+- **Ask will not type into a list or a button.** Keystrokes there are
+  shortcuts, not words — in a mail list, some of them delete mail. It now says
+  which thing has the keyboard and asks you to click the field first.
+- **Ask can tell two controls of the same name apart.** The screen it works
+  from now says roughly where each control sits, so a Send in a toolbar and a
+  Send in the sheet in front of it are no longer the same button.
 
 ## [0.1.48] — 2026-09-20
 

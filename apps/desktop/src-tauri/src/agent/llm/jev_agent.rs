@@ -50,6 +50,23 @@ const CONTROL_MARGIN: f64 = 0.2;
 const TEXT_MIN: f64 = 0.85;
 const ARGUMENT_MIN: f64 = 0.9;
 const DIRECTION_MIN: f64 = 0.8;
+/// When the screen actively contradicts "done", rather than merely failing to
+/// show it. Measured against the real API (`jev_agent_fixtures.json`): a
+/// screen that genuinely cannot show the outcome — an inbox after a reply was
+/// sent — answers 0.37–0.41, which is "cannot tell"; a step that plainly has
+/// not happened yet answers 0.02–0.06.
+///
+/// So this is not a completion bar. A list of control names is too thin a
+/// description for one: nothing in "button Send, table Inbox" shows whether
+/// the mail went. It is a disagreement detector, and a warning that fired on
+/// every success would be a warning nobody reads.
+const CONTRADICTED_MAX: f64 = 0.15;
+
+/// How long one wait lasts, and how many may run together. A screen that is
+/// still not ready after three of these is not loading, it is stuck.
+const WAIT_MS: u64 = 1200;
+const MAX_WAITS: usize = 3;
+const WAIT_KEY: &str = "wait";
 
 /// Controls asked about in one request. Each costs one yes/no question; the
 /// command's own words choose them, so this is a bound, not a budget.
@@ -87,6 +104,11 @@ const KINDS: &[(&str, &str)] = &[
         "Go to a website address written out in the command",
     ),
     (
+        "wait",
+        "Nothing can be done yet: the screen is still loading, or what the last step started has \
+         not appeared",
+    ),
+    (
         "impossible",
         "This step needs something this screen cannot give: writing new words that are not in the \
          command, reading the screen back to the person, or answering a question",
@@ -116,6 +138,9 @@ pub struct JevBrain {
     /// changes nothing twice ends the run instead of repeating for ever.
     last: Option<(String, String)>,
     repeats: usize,
+    /// Waits taken in a row. A wait is the one step that is meant to change
+    /// nothing, so the repeat guard cannot be what bounds it.
+    waits: usize,
     /// Installed apps, read once.
     installed: Option<Vec<String>>,
 }
@@ -130,6 +155,7 @@ impl JevBrain {
             steps: 0,
             last: None,
             repeats: 0,
+            waits: 0,
             installed: None,
         }
     }
@@ -295,6 +321,14 @@ pub fn request(
         }),
     );
     questions.insert(
+        "evidence".into(),
+        json!({
+            "type": "noul",
+            "instructions": "Setting aside what was attempted, does what is on the screen right \
+                             now show that the command has been carried out?",
+        }),
+    );
+    questions.insert(
         "step".into(),
         jev::choice(
             "The command has not been carried out yet. What is the very next step a person would \
@@ -367,7 +401,10 @@ pub fn request(
             "controls on the screen": reading
                 .elements
                 .iter()
-                .map(|e| format!("e{}: {} \u{201c}{}\u{201d}", e.id, e.role, e.label))
+                .map(|e| match &e.at {
+                    Some(at) => format!("e{}: {} \u{201c}{}\u{201d} ({at})", e.id, e.role, e.label),
+                    None => format!("e{}: {} \u{201c}{}\u{201d}", e.id, e.role, e.label),
+                })
                 .collect::<Vec<_>>(),
             "what has happened so far": if history.is_empty() {
                 vec!["nothing yet".to_string()]
@@ -398,7 +435,9 @@ fn selection_of(reading: &ScreenReading) -> String {
 /// sentence the person reads.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Step {
-    Done,
+    /// The command has been carried out. `contradicted` is the screen saying
+    /// otherwise — not merely failing to show it, which is the ordinary case.
+    Done { contradicted: bool },
     /// A summary, a key that identifies a repeat, the tier and the action.
     /// Boxed: an `Action` dwarfs the other variants.
     Act(Box<Acting>),
@@ -519,13 +558,19 @@ pub fn decide(
     candidates: &[&crate::agent::runner::ReadElement],
     answers: &Value,
 ) -> Step {
-    if answers
-        .get("done")
-        .and_then(|a| a.get("noul"))
-        .and_then(Value::as_f64)
-        .is_some_and(|p| p >= DONE_MIN)
-    {
-        return Step::Done;
+    let noul = |key: &str| {
+        answers
+            .get(key)
+            .and_then(|a| a.get("noul"))
+            .and_then(Value::as_f64)
+    };
+    if noul("done").is_some_and(|p| p >= DONE_MIN) {
+        // Two questions, because they can disagree: one asks whether the
+        // command has been carried out, the other asks only what is on the
+        // screen. A missing answer is not a contradiction.
+        return Step::Done {
+            contradicted: noul("evidence").is_some_and(|p| p <= CONTRADICTED_MAX),
+        };
     }
     let Some((kind, p)) = jev::pick(answers, "step") else {
         return Step::Stop("Ask could not read the answer about what to do next.".into());
@@ -590,6 +635,12 @@ pub fn decide(
             )
         }
         "type" => {
+            // Typed words go wherever the keyboard already is. On a list or a
+            // button the same keystrokes are shortcuts instead, and in a mail
+            // list a few of them delete mail.
+            if let Some(why) = nowhere_to_type(reading) {
+                return Step::Stop(why);
+            }
             let Some((chosen, p)) = jev::pick(answers, "text") else {
                 return Step::Stop(NEEDS_WORDS.into());
             };
@@ -686,6 +737,12 @@ pub fn decide(
                 Action::OpenApp { name: name.into() },
             )
         }
+        "wait" => Acting::step(
+            "Wait for the screen".into(),
+            WAIT_KEY.into(),
+            AgentTier::Ax,
+            Action::Wait { ms: WAIT_MS },
+        ),
         "open_website" => match jev::the_one_address(task) {
             Some(url) => Acting::step(
                 format!("Open {url}"),
@@ -698,6 +755,47 @@ pub fn decide(
             ),
         },
         _ => Step::Stop(NEEDS_A_MODEL.into()),
+    }
+}
+
+/// Why the words cannot be typed yet, if they cannot.
+///
+/// Named as the roles that keystrokes do something OTHER than appear in,
+/// rather than as the roles that take text: a web page puts focus on all
+/// sorts of things, and refusing everything unfamiliar would refuse most of
+/// the web.
+pub fn nowhere_to_type(reading: &ScreenReading) -> Option<String> {
+    const NOT_A_FIELD: &[&str] = &[
+        "button",
+        "check box",
+        "radio button",
+        "row",
+        "cell",
+        "table",
+        "outline",
+        "list",
+        "menu",
+        "link",
+        "image",
+        "toolbar",
+        "tab",
+        "pop up button",
+        "slider",
+        "static text",
+        "window",
+    ];
+    match reading.focused.as_deref() {
+        None => Some(
+            "Nothing on this screen has the keyboard, so the words have nowhere to go. Click the \
+             field you want them in, then say it again."
+                .into(),
+        ),
+        Some(focused) => NOT_A_FIELD.iter().any(|r| focused.starts_with(r)).then(|| {
+            format!(
+                "The keyboard is on {focused}, which is not somewhere words go — they would be \
+                 shortcuts instead. Click the field you want them in, then say it again."
+            )
+        }),
     }
 }
 
@@ -740,8 +838,23 @@ impl Brain for JevBrain {
                 .as_ref()
                 .map(fingerprint_of)
                 .unwrap_or_default();
+            if repeat_key == WAIT_KEY {
+                self.waits += 1;
+                if self.waits > MAX_WAITS {
+                    return Self::finish(
+                        "The screen never became ready, so Ask stopped waiting for it.",
+                        FinishReason::Incomplete,
+                    );
+                }
+            } else {
+                self.waits = 0;
+            }
             match &self.last {
-                Some((key, before)) if key == repeat_key && *before == screen => {
+                // A wait changes nothing on purpose, so it is bounded by the
+                // count above rather than by this.
+                Some((key, before))
+                    if key == repeat_key && *before == screen && key != WAIT_KEY =>
+                {
                     self.repeats += 1;
                 }
                 _ => self.repeats = 0,
@@ -835,7 +948,9 @@ impl Brain for JevBrain {
             "jev step {}: {} ({} ms)",
             self.steps + 1,
             match &step {
-                Step::Done => "done".to_string(),
+                Step::Done { contradicted } => {
+                    format!("done (screen disagrees: {contradicted})")
+                }
                 Step::Act(acting) => acting.summary.clone(),
                 Step::Ambiguous(ids) => format!("ambiguous {ids:?}"),
                 Step::Stop(why) => format!("stopping — {why}"),
@@ -843,11 +958,20 @@ impl Brain for JevBrain {
             started.elapsed().as_millis(),
         );
         match step {
-            Step::Done => Self::finish(
-                self.history
-                    .last()
-                    .cloned()
-                    .unwrap_or_else(|| "Done.".into()),
+            Step::Done { contradicted } => Self::finish(
+                match (contradicted, self.history.last()) {
+                    (false, Some(last)) => last.clone(),
+                    (false, None) => "Done.".into(),
+                    // Said, not hidden. The model has answered two questions
+                    // that disagree with each other, and the person is the
+                    // one who can look.
+                    (true, Some(last)) => {
+                        format!("{last}. The screen still shows it undone, so check it yourself.")
+                    }
+                    (true, None) => "Ask believes that is done, but the screen still shows it \
+                                     undone. Check it yourself."
+                        .into(),
+                },
                 FinishReason::Completed,
             ),
             Step::Stop(why) => Self::finish(why, FinishReason::Incomplete),
@@ -909,6 +1033,7 @@ mod tests {
             id,
             role: role.into(),
             label: label.into(),
+            at: None,
         }
     }
 
@@ -1016,9 +1141,35 @@ mod tests {
         assert!(matches!(decide_with(0.55, 0.10), Step::Stop(_)));
     }
 
+    /// The words go wherever the keyboard already is, so a screen whose
+    /// keyboard is on a mail list is not a screen to type into: the same
+    /// keystrokes there are shortcuts.
+    #[test]
+    fn words_are_not_typed_at_a_list_or_a_button() {
+        let task = "reply to Rae saying I'll be there";
+        let spans = spans_to_type(task);
+        let typing = json!({
+            "done": noul(0.05),
+            "step": chose("type", 0.99),
+            "text": chose("t0", 0.99),
+        });
+        let refused =
+            |reading: &ScreenReading| match decide(task, reading, &spans, &[], &[], &typing) {
+                Step::Stop(why) => why,
+                other => panic!("{other:?}"),
+            };
+        // mail()'s keyboard is on the Inbox table.
+        assert!(refused(&mail()).contains("Click the field"));
+        let mut nothing = mail();
+        nothing.focused = None;
+        assert!(refused(&nothing).contains("nowhere to go"));
+        // A text area is where words go, and is not refused.
+        assert!(nowhere_to_type(&reply_screen()).is_none());
+    }
+
     #[test]
     fn it_types_only_the_persons_own_words() {
-        let reading = mail();
+        let reading = reply_screen();
         let task = "reply to Rae saying I'll be there";
         let spans = spans_to_type(task);
         let candidates = candidates(task, &reading);
@@ -1133,6 +1284,39 @@ mod tests {
     #[test]
     fn done_ends_the_task() {
         let reading = mail();
+        let ended = |done: f64, evidence: f64| {
+            decide(
+                "archive it",
+                &reading,
+                &[],
+                &[],
+                &[],
+                &json!({
+                    "done": noul(done),
+                    "evidence": noul(evidence),
+                    "step": chose("press", 0.99),
+                }),
+            )
+        };
+        assert_eq!(
+            ended(0.95, 0.93),
+            Step::Done {
+                contradicted: false
+            }
+        );
+        // Not sure it is done is not done.
+        assert!(matches!(ended(0.6, 0.1), Step::Stop(_)));
+        // "Cannot tell" is the ordinary answer on a screen made of control
+        // names, and it is not a warning.
+        assert_eq!(
+            ended(0.95, 0.4),
+            Step::Done {
+                contradicted: false
+            }
+        );
+        // The screen saying the opposite is.
+        assert_eq!(ended(0.95, 0.04), Step::Done { contradicted: true });
+        // A missing answer is not a contradiction either.
         assert_eq!(
             decide(
                 "archive it",
@@ -1142,20 +1326,36 @@ mod tests {
                 &[],
                 &json!({ "done": noul(0.95), "step": chose("press", 0.99) })
             ),
-            Step::Done
+            Step::Done {
+                contradicted: false
+            }
         );
-        // Not sure it is done is not done.
-        assert!(matches!(
-            decide(
-                "archive it",
-                &reading,
-                &[],
-                &[],
-                &[],
-                &json!({ "done": noul(0.6), "step": chose("impossible", 0.99) })
-            ),
-            Step::Stop(_)
-        ));
+    }
+
+    /// A screen that is still loading is a step of its own. Without it the
+    /// next-step answer is about a screen that is not finished, and the run
+    /// either guesses or hands back.
+    #[test]
+    fn a_loading_screen_is_waited_for_a_few_times_and_no_more() {
+        let reading = mail();
+        let step = decide(
+            "archive it",
+            &reading,
+            &[],
+            &[],
+            &[],
+            &json!({ "done": noul(0.01), "step": chose("wait", 0.96) }),
+        );
+        match step {
+            Step::Act(a) => {
+                assert_eq!(a.action, Action::Wait { ms: WAIT_MS });
+                assert_eq!(a.repeat_key, WAIT_KEY);
+            }
+            other => panic!("{other:?}"),
+        }
+        // The bound is the count, not the repeat guard: a wait is the one
+        // step that is supposed to change nothing.
+        assert!(MAX_WAITS >= 2 && WAIT_MS * MAX_WAITS as u64 <= 5_000);
     }
 
     #[test]
@@ -1183,6 +1383,7 @@ mod tests {
             "Click row \u{201c}GitHub…\u{201d}: done"
         );
         assert!(body["questions"]["done"]["type"] == "noul");
+        assert!(body["questions"]["evidence"]["type"] == "noul");
         assert!(body["questions"]["is_e21"]["type"] == "noul");
         assert!(body["questions"].get("text").is_none(), "nothing to type");
         assert_eq!(
@@ -1191,6 +1392,21 @@ mod tests {
         );
         // Every candidate gets its own yes/no, the named ones included.
         assert!(body["questions"]["is_e3"]["type"] == "noul");
+
+        // Where a control sits reaches the model as words. Two Sends on one
+        // screen are told apart by this and nothing else.
+        let mut placed = mail();
+        placed.elements[0].at = Some("top left".into());
+        let placed_candidates = crate::agent::llm::jev_agent::candidates(task, &placed);
+        let body = request(jev::MODEL, task, &placed, &[], &[], &[], &placed_candidates);
+        assert!(
+            body["state"]["controls on the screen"]
+                .as_array()
+                .and_then(|c| c.iter().find_map(Value::as_str))
+                .is_some_and(|s| s.ends_with("(top left)")),
+            "{}",
+            body["state"]["controls on the screen"]
+        );
     }
 
     // ── a scripted Mac, and the real answers it drew ──
@@ -1212,6 +1428,14 @@ mod tests {
         }
     }
 
+    /// The inbox after the GitHub mail was archived: one row fewer.
+    fn archived() -> ScreenReading {
+        let mut out = mail();
+        out.elements.retain(|e| e.id != 21);
+        out.focused = Some("table \u{201c}Inbox\u{201d}".into());
+        out
+    }
+
     fn selected(row: &str) -> ScreenReading {
         ScreenReading {
             focused: Some(format!("row \u{201c}{row}\u{201d}")),
@@ -1228,7 +1452,11 @@ mod tests {
             "press:20" => selected("Rae Chen, Lunch Thursday?, 9:41 AM"),
             "press:21" => selected("GitHub, CI failed on main, Yesterday"),
             "press:4" | "press:5" => reply_screen(),
-            "press:7" => mail(),
+            // Archiving takes the mail out of the list. A scripted Mac that
+            // leaves it there is asking the model whether a row that is still
+            // in front of it has been archived, and the honest answer to that
+            // is no.
+            "press:7" => archived(),
             "press:30" => mail(),
             _ => screen.clone(),
         };
@@ -1301,8 +1529,9 @@ mod tests {
                     );
                     step = decide_tie(&screen, &tied, first);
                 }
-                if step == Step::Done {
+                if let Step::Done { contradicted } = step {
                     done = true;
+                    assert!(!contradicted, "{task}: the screen disagreed at the end");
                     break;
                 }
                 assert!(
@@ -1340,7 +1569,7 @@ mod tests {
                 let (step, ..) = one_step(&jev, task, &screen, &history, &spans).await;
                 println!("  {:?} in {} ms", step, started.elapsed().as_millis());
                 match &step {
-                    Step::Done => {
+                    Step::Done { .. } => {
                         done = true;
                         break;
                     }

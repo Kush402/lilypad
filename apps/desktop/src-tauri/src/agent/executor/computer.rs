@@ -786,7 +786,7 @@ impl ComputerExecutor {
 fn screen_reading(snapshot: &ax::AxSnapshot, listed: &[(usize, [f64; 4])]) -> ScreenReading {
     let elements = listed
         .iter()
-        .filter_map(|(id, _)| {
+        .filter_map(|(id, rect)| {
             let node = snapshot.nodes.get(*id)?;
             let label = node
                 .label
@@ -797,6 +797,7 @@ fn screen_reading(snapshot: &ax::AxSnapshot, listed: &[(usize, [f64; 4])]) -> Sc
                 id: *id,
                 role: role_in_words(&node.role),
                 label: tree::clip(label),
+                at: Some(coarse(*rect)),
             })
         })
         .collect();
@@ -821,6 +822,21 @@ fn screen_reading(snapshot: &ax::AxSnapshot, listed: &[(usize, [f64; 4])]) -> Sc
             .map(|n| n.id),
         elements,
     }
+}
+
+/// Roughly where a control sits on the shared screen, from its normalized
+/// rectangle. Thirds, in the words a person would use: enough to separate two
+/// controls with the same name, not enough to aim at.
+fn coarse(rect: [f64; 4]) -> String {
+    fn third(v: f64, names: [&str; 3]) -> &str {
+        names[((v * 3.0).floor().max(0.0) as usize).min(2)]
+    }
+    let [x, y, w, h] = rect;
+    format!(
+        "{} {}",
+        third(y + h / 2.0, ["top", "middle", "bottom"]),
+        third(x + w / 2.0, ["left", "centre", "right"]),
+    )
 }
 
 /// "AXPopUpButton" → "pop up button".
@@ -1100,7 +1116,7 @@ mod tests {
         ];
         let mut snapshot = ax::AxSnapshot::for_test(nodes.clone());
         snapshot.app = "Mail".into();
-        let listed = vec![(1usize, [0.0; 4]), (2usize, [0.0; 4])];
+        let listed = vec![(1usize, [0.6, 0.0, 0.2, 0.1]), (2usize, [0.0; 4])];
         let reading = screen_reading(&snapshot, &listed);
         assert_eq!(reading.app, "Mail");
         assert_eq!(reading.window, Some(0));
@@ -1110,6 +1126,9 @@ mod tests {
                 id: 1,
                 role: "pop up button".into(),
                 label: "Mailbox".into(),
+                // Coarse, and only coarse: two Sends are told apart by this,
+                // and nothing is aimed by it.
+                at: Some("top right".into()),
             }],
             "no value, and nothing unnamed"
         );
