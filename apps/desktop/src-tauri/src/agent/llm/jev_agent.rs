@@ -762,8 +762,14 @@ impl Brain for JevBrain {
             );
         }
         let Some(reading) = latest.reading.as_ref() else {
+            // The elements ARE this way of running's screen, so a failed
+            // reading ends the task — but it ends it saying which failure.
+            // "The app may not expose its controls" was told to somebody whose
+            // focused window was simply on another display, and to somebody
+            // who had not granted Accessibility, neither of whom could act on
+            // it (L-369).
             return Self::finish(
-                "Ask could not read this screen. The app may not expose its controls.",
+                unreadable(latest.reading_error.as_deref()),
                 FinishReason::Incomplete,
             );
         };
@@ -868,6 +874,20 @@ impl Brain for JevBrain {
 }
 
 /// Enough of a reading to tell "the screen did not change" from "it did".
+/// What to say when this way of running has no screen to work from.
+///
+/// It ends the task either way — the elements are the whole input — but the
+/// reason decides whether the person can do anything about it. "Grant
+/// Accessibility" and "that window is on another display" are both fixable in
+/// seconds; "the app may not expose its controls" is a dead end, and was being
+/// said to everyone (L-369).
+pub fn unreadable(reason: Option<&str>) -> String {
+    match reason.map(str::trim).filter(|r| !r.is_empty()) {
+        Some(reason) => format!("Ask could not read this screen: {reason}."),
+        None => "Ask could not read this screen. The app may not expose its controls.".to_string(),
+    }
+}
+
 fn fingerprint_of(reading: &ScreenReading) -> String {
     let mut out = String::from(&reading.app);
     out.push('|');
@@ -915,6 +935,30 @@ mod tests {
 
     fn chose(option: &str, p: f64) -> Value {
         json!({ "type": "choice", "choice": option, "confidence": p, "probabilities": { option: p } })
+    }
+
+    /// The owner's v0.1.48 run: Ask ended with "the app may not expose its
+    /// controls" when the reading had failed for a reason the code already
+    /// knew and threw away. Nothing in the log said which failure it was.
+    #[test]
+    fn an_unreadable_screen_says_which_failure_it_was() {
+        assert_eq!(
+            unreadable(Some(
+                "no focused application (grant Accessibility, focus an app)"
+            )),
+            "Ask could not read this screen: no focused application (grant Accessibility, focus \
+             an app)."
+        );
+        assert!(
+            unreadable(Some("the focused app has no window on the shared display"))
+                .contains("no window on the shared display")
+        );
+        // No reason is the only case that may fall back to the old sentence.
+        assert_eq!(
+            unreadable(None),
+            "Ask could not read this screen. The app may not expose its controls."
+        );
+        assert_eq!(unreadable(Some("   ")), unreadable(None));
     }
 
     #[test]

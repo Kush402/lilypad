@@ -6,6 +6,14 @@ All notable changes to Lilypad are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **When Ask cannot read the screen, it now says why.** “The app may not expose
+  its controls” was said to everyone, including people whose window was on
+  another display or who had not granted Accessibility — both fixable in
+  seconds once named. The reason also goes to the Mac's log file, so a report
+  arrives with its own diagnosis.
+
 ## [0.1.48] — 2026-09-20
 
 ### Fixed

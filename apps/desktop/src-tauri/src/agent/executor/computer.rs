@@ -579,6 +579,17 @@ impl ComputerExecutor {
             (Ok(()), Some(snapshot)) => Some(screen_reading(snapshot, &listed)),
             _ => None,
         };
+        // Said once, out loud. A run that cannot read the screen is the one
+        // failure a customer's log has to explain, and until this line it
+        // recorded nothing at all.
+        let reading_error = match (&reading, structured.is_some()) {
+            (Err(e), _) => Some(e.clone()),
+            (Ok(()), false) => Some("the reading arrived empty".to_string()),
+            _ => None,
+        };
+        if let Some(e) = &reading_error {
+            log::warn!(target: "lilypad::agent", "screen reading failed: {e}");
+        }
         let text = self.describe_screen(
             target,
             changed,
@@ -593,6 +604,7 @@ impl ComputerExecutor {
             screen: frame.as_ref().map(Frame::fingerprint),
             image,
             reading: structured,
+            reading_error,
         }
     }
 
@@ -866,6 +878,7 @@ impl Executor for ComputerExecutor {
                         image: Some(image),
                         screen: None,
                         reading: None,
+                        reading_error: None,
                     },
                     Err(e) => Observation::fail(format!("Could not zoom: {e}")),
                 })

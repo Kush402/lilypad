@@ -97,6 +97,16 @@ pub struct Observation {
     /// chooses among the listed elements instead of reading about them.
     /// `None` for everything but a look whose element reading succeeded.
     pub reading: Option<ScreenReading>,
+    /// Why `reading` is absent, when a look tried and failed.
+    ///
+    /// A model with eyes does not need this: the screenshot still stands and
+    /// the same sentence is in `summary` for it to read. A System One run has
+    /// no eyes and no prose — the elements ARE its screen — so without this
+    /// the one thing that knows why ("no focused application", "the focused
+    /// app has no window on the shared display") is thrown away, and the
+    /// person is told the app "may not expose its controls" whatever actually
+    /// happened.
+    pub reading_error: Option<String>,
 }
 
 /// The app in front and the elements a look listed, in listing order.
@@ -145,6 +155,7 @@ impl Observation {
             image: None,
             screen: None,
             reading: None,
+            reading_error: None,
         }
     }
     pub fn fail(summary: impl Into<String>) -> Self {
@@ -154,6 +165,7 @@ impl Observation {
             image: None,
             screen: None,
             reading: None,
+            reading_error: None,
         }
     }
     /// A successful observation carrying a screenshot for a vision-capable
@@ -165,6 +177,7 @@ impl Observation {
             image: Some(image),
             screen: None,
             reading: None,
+            reading_error: None,
         }
     }
 }
