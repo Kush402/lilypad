@@ -213,7 +213,7 @@ export type AgentDestination = z.infer<typeof AgentDestinationSchema>;
  * agreeing to changes materially; a stored grant against an older revision is
  * not a grant for the new one.
  */
-export const AI_CONSENT_POLICY = 3 as const;
+export const AI_CONSENT_POLICY = 4 as const;
 
 const agentHello = WithTs.extend({ kind: z.literal('agent_hello'), runId: RunId });
 

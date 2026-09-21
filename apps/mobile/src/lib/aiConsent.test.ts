@@ -1,3 +1,4 @@
+import { AI_CONSENT_POLICY } from '@lilypad/protocol';
 import {
   grantAiConsent,
   hasAiConsent,
@@ -200,7 +201,7 @@ describe('instant actions are a second destination (ADR-0019)', () => {
     origin: 'https://api.openai.com',
     model: 'gpt-4o-mini',
     local: false,
-    consentPolicy: 3,
+    consentPolicy: AI_CONSENT_POLICY,
     consentRevision: 'rev-model',
     source: 'settings',
   };

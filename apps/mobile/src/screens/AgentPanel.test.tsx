@@ -1,3 +1,4 @@
+import { AI_CONSENT_POLICY } from '@lilypad/protocol';
 import React from 'react';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react-native';
 import { StyleSheet } from 'react-native';
@@ -62,7 +63,7 @@ const DESTINATION = {
   origin: 'https://api.openai.com',
   model: 'gpt-4o-mini',
   local: false,
-  consentPolicy: 3,
+  consentPolicy: AI_CONSENT_POLICY,
   consentRevision: 'rev-1',
   source: 'settings',
 };
@@ -717,7 +718,7 @@ describe('the destination sentence names instant actions too (ADR-0019)', () => 
     origin: 'http://localhost:11434',
     model: 'qwen3-vl',
     local: true,
-    consentPolicy: 3,
+    consentPolicy: AI_CONSENT_POLICY,
     consentRevision: 'rev-model',
     source: 'settings',
   };
@@ -730,7 +731,7 @@ describe('the destination sentence names instant actions too (ADR-0019)', () => 
       model: 'jev-1.13.0',
       local: false,
       mode: 'system_one',
-      consentPolicy: 3,
+      consentPolicy: AI_CONSENT_POLICY,
       consentRevision: 'rev',
       source: 'settings',
     });
@@ -756,7 +757,7 @@ describe('the destination sentence names instant actions too (ADR-0019)', () => 
       local: false,
       mode: 'system_one',
       hostedVia: 'TypeSafe Jev',
-      consentPolicy: 3,
+      consentPolicy: AI_CONSENT_POLICY,
       consentRevision: 'rev-hosted',
       source: 'settings',
     });

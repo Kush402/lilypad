@@ -83,13 +83,17 @@ export function destinationSentence(destination: AgentDestination | undefined): 
     // What the reading is, in both ways of running it. Written once because
     // the two sentences differing in this list is how a disclosure drifts.
     const sent = `your command, the app in front, what has keyboard focus, the names of actionable controls on screen (including buttons, links, fields, rows and menu items), matching installed-app names, and what Ask has done so far \u2014 never a screenshot and never field contents`;
+    // An app that exposes no controls at all used to end the task. Now the
+    // Mac reads the screen's own words instead (ADR-0021) — a new kind of
+    // thing to disclose, so the consent revision moved with it.
+    const blind = `Where an app exposes no controls at all, your Mac reads short names off the screen itself and sends those in their place, still never a picture and never what is inside a field.`;
     const limits = `It types only words you said, and it stops and says so when a task needs writing or reading instead.`;
     // The hosted way: Lilypad is in the path, and a second company receives
     // exactly the same text. Naming only Lilypad here would understate it.
     if (destination.hostedVia) {
-      return `${destination.providerName} runs this task on its own account: each step goes to ${destination.providerName} at ${destination.origin}, which sends the same text on to ${destination.hostedVia}${model} and returns one answer. What goes there each step: ${sent}. Lilypad counts your tasks for the day and keeps no copy of the text. ${limits}`;
+      return `${destination.providerName} runs this task on its own account: each step goes to ${destination.providerName} at ${destination.origin}, which sends the same text on to ${destination.hostedVia}${model} and returns one answer. What goes there each step: ${sent}. ${blind} Lilypad counts your tasks for the day and keeps no copy of the text. ${limits}`;
     }
-    return `This Mac runs the task itself, one step at a time, with ${destination.providerName} at ${destination.origin}${model}. What goes there each step: ${sent}. ${limits}`;
+    return `This Mac runs the task itself, one step at a time, with ${destination.providerName} at ${destination.origin}${model}. What goes there each step: ${sent}. ${blind} ${limits}`;
   }
   if (destination.local) {
     const privacy = destination.instant

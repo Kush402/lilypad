@@ -402,7 +402,7 @@ pub struct InstantDestination {
 /// Revision of the consent wording. Must match `AI_CONSENT_POLICY` in
 /// `@lilypad/protocol`; a stored grant against an older revision is not a
 /// grant for this one.
-pub const AI_CONSENT_POLICY: u32 = 3;
+pub const AI_CONSENT_POLICY: u32 = 4;
 
 /// Messages the desktop agent sends to the phone (desktop → phone). Built on
 /// this side, so summaries are truncated at construction rather than rejected.

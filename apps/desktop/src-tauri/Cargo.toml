@@ -90,6 +90,9 @@ libc = "0.2"
 # (agent/executor/vision). `image` with only the png codec; the base64 the
 # model receives comes from the cross-platform dependency above.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+objc2-vision = "0.3"
+objc2 = "0.6"
+objc2-foundation = "0.3"
 
 [features]
 # by default Tauri runs in production mode unless `tauri dev` sets this.

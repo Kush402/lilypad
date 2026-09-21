@@ -857,9 +857,24 @@ the model, the mode and every step's summary from the phone.
     key on the Mac. Confirm several steps consume one daily task, task 26 is
     refused until the next UTC day, and “Your own TypeSafe key” still works on
     the free account. Revoke the Mac and confirm the next hosted step stops.
-    The phone re-asks once (`AI_CONSENT_POLICY` 3), and its card for this way
+    The phone re-asks once (`AI_CONSENT_POLICY` 4), and its card for this way
     must name **both** Lilypad and the company Lilypad forwards to — a card
-    naming only Lilypad is L-360 back.
+    naming only Lilypad is L-360 back. The card must also say that where an
+    app exposes no controls, the Mac reads short names off the screen itself
+    ([ADR-0021](adr/0021-ask-reads-the-screen-when-accessibility-cannot.md)).
+13. **Hosted Jev on an app that exposes nothing**
+    ([ADR-0021](adr/0021-ask-reads-the-screen-when-accessibility-cannot.md)).
+    Bring an Electron app in front (VS Code, Slack, Discord, or any Chrome
+    window with accessibility off) and give a hosted task naming something
+    visible on it. Expect the step feed to show a click chosen from a name
+    read off the screen, an approval card naming what is really under the
+    point, and `accessibility listed nothing; read N names off the screen` in
+    `~/Library/Logs/Lilypad`. Then check what it must NOT do: open a document
+    with a long line of your own text in it and confirm no line of that text
+    is offered as something to click, and type a few words into a field on a
+    screen that exposes no controls and confirm they never appear in a step.
+    Finally, deny Screen Recording and confirm the same task ends with the
+    accessibility reason (L-369) rather than failing some other way.
 
 ## Results
 

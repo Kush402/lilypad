@@ -9,6 +9,7 @@
 
 pub mod ax_exec;
 pub mod computer;
+pub mod ocr;
 pub mod sandbox_exec;
 pub mod skills;
 pub mod verify;

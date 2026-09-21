@@ -1,4 +1,5 @@
 import {
+  AI_CONSENT_POLICY,
   ANSWERER_PEER_REPLACEMENT_CAPABILITY,
   iceRecoveryTimeoutMs,
   MAX_ICE_RESTARTS,
@@ -206,7 +207,7 @@ function readyFrame(runId: string, over: Record<string, unknown> = {}) {
       origin: 'https://api.openai.com',
       model: 'gpt-4o-mini',
       local: false,
-      consentPolicy: 3,
+      consentPolicy: AI_CONSENT_POLICY,
       consentRevision: 'rev-abc',
       source: 'settings',
     },

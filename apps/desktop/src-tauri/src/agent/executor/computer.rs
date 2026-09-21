@@ -20,6 +20,7 @@ use std::time::Duration;
 use anyhow::{anyhow, bail, Result};
 
 use crate::agent::ax::{self, tree};
+use crate::agent::executor::ocr;
 use crate::agent::executor::vision::{self, Frame, Mark};
 use crate::agent::executor::{AxExecutor, SharedDisplay};
 use crate::agent::runner::{Executor, Observation, ReadElement, ScreenReading};
@@ -47,6 +48,10 @@ pub struct ComputerConfig {
     /// trained computer tool, which works from the plain screen.
     pub marks: bool,
 }
+
+/// Where the ids of words read off the screen start. Past any element id a
+/// reading can hold, so a target is one or the other and never both.
+const OCR_ID_BASE: usize = 100_000;
 
 /// Most elements listed in one look. Enough for a busy window; past this the
 /// list costs more than it helps, and the model can zoom or scroll.
@@ -84,6 +89,11 @@ pub struct ComputerExecutor {
     left_pointer: Option<(f64, f64)>,
     /// Set when a person used the Mac mid-run; the run is being stopped.
     taken_over: bool,
+    /// Words read off the screen at the last look, and the display they were
+    /// read on, for the runs where accessibility offered nothing to act on.
+    /// They are targets like any element, and they go stale the same way.
+    words: Vec<(usize, [f64; 4])>,
+    words_on: Option<u32>,
 }
 
 impl ComputerExecutor {
@@ -104,6 +114,8 @@ impl ComputerExecutor {
             last_image: None,
             left_pointer: None,
             taken_over: false,
+            words: Vec::new(),
+            words_on: None,
         }
     }
 
@@ -154,6 +166,19 @@ impl ComputerExecutor {
             Target::Point { x, y } => Ok((*x, *y)),
             Target::Here => vision::pointer_in(self.bounds())
                 .ok_or_else(|| anyhow!("the pointer is not on the shared screen")),
+            // A word read off the screen. Same contract as an element: the
+            // centre of what was seen, refused once the shared screen changed.
+            Target::Element(id) if *id >= OCR_ID_BASE => {
+                if self.words_on != self.display.get() {
+                    bail!("the shared screen changed since that reading — look again");
+                }
+                let (_, [x, y, w, h]) = self
+                    .words
+                    .iter()
+                    .find(|(i, _)| i == id)
+                    .ok_or_else(|| anyhow!("[{id}] is not in the latest reading"))?;
+                Ok((x + w / 2.0, y + h / 2.0))
+            }
             Target::Element(id) => {
                 let snapshot =
                     self.ax.last.as_ref().ok_or_else(|| {
@@ -187,6 +212,27 @@ impl ComputerExecutor {
         let [bx, by, bw, bh] = self.bounds();
         let info = ax::hit_test(bx + x * bw, by + y * bh)?;
         Some(to_hit(info, false))
+    }
+
+    /// Rectangles that words must not be taken from. What a person has typed
+    /// is theirs, and a password field's contents most of all.
+    fn fields(&self) -> Vec<[f64; 4]> {
+        const FIELDS: &[&str] = &[
+            "AXTextField",
+            "AXTextArea",
+            "AXSecureTextField",
+            "AXSearchField",
+            "AXComboBox",
+        ];
+        let Some(snapshot) = self.ax.last.as_ref() else {
+            return Vec::new();
+        };
+        snapshot
+            .nodes
+            .iter()
+            .filter(|n| FIELDS.contains(&n.role.as_str()))
+            .filter_map(|n| tree::normalized_frame(n.frame?, snapshot.bounds))
+            .collect()
     }
 
     /// What has keyboard focus, for typing and keys.
@@ -575,10 +621,51 @@ impl ComputerExecutor {
             self.last_image = Some((image.width, image.height));
         }
 
-        let structured = match (&reading, self.ax.last.as_ref()) {
+        let mut structured = match (&reading, self.ax.last.as_ref()) {
             (Ok(()), Some(snapshot)) => Some(screen_reading(snapshot, &listed)),
             _ => None,
         };
+        // Accessibility offered nothing to act on — an Electron window, a
+        // canvas, a game, a screen shared from another machine, or a reading
+        // that failed outright. A model that is never sent a picture has no
+        // other input, so the task used to end here (L-369). Read the words
+        // on the screen instead, on this Mac (ADR-0021).
+        //
+        // Only for that model: one that can see already has the picture, and
+        // this costs a capture and a second of recognition.
+        self.words.clear();
+        self.words_on = target;
+        if !self.config.vision && listed.is_empty() {
+            let found = tokio::task::spawn_blocking(move || {
+                let frame = vision::grab(target)?;
+                ocr::read(&frame)
+            })
+            .await;
+            match found {
+                Ok(Ok(words)) => {
+                    let named = ocr::labels(words, &self.fields());
+                    if !named.is_empty() {
+                        log::info!(
+                            target: "lilypad::agent",
+                            "accessibility listed nothing; read {} names off the screen",
+                            named.len(),
+                        );
+                        self.words = named
+                            .iter()
+                            .enumerate()
+                            .map(|(i, w)| (OCR_ID_BASE + i, w.rect))
+                            .collect();
+                        structured = Some(words_reading(self.focus_hit(), &named, &self.words));
+                    }
+                }
+                Ok(Err(e)) => {
+                    log::warn!(target: "lilypad::agent", "could not read the screen's words: {e}")
+                }
+                Err(e) => {
+                    log::warn!(target: "lilypad::agent", "reading the screen's words stopped: {e}")
+                }
+            }
+        }
         // Said once, out loud. A run that cannot read the screen is the one
         // failure a customer's log has to explain, and until this line it
         // recorded nothing at all.
@@ -824,6 +911,50 @@ fn screen_reading(snapshot: &ax::AxSnapshot, listed: &[(usize, [f64; 4])]) -> Sc
     }
 }
 
+/// A screen made of the words on it: what a model with no picture gets when
+/// the app in front exposes no controls at all. Every word is a target, by an
+/// id that continues past the element ids.
+fn words_reading(
+    focus: Option<Hit>,
+    named: &[ocr::Word],
+    ids: &[(usize, [f64; 4])],
+) -> ScreenReading {
+    let app = focus
+        .as_ref()
+        .map(|h| h.app.clone())
+        .filter(|a| !a.is_empty())
+        // Named as what it is. A reading that cannot say which app this is has
+        // not proved it is not Lilypad's own window, and the run's own guard
+        // on that reads this field.
+        .unwrap_or_else(|| "an app that exposes no controls".to_string());
+    ScreenReading {
+        app,
+        focused: focus.and_then(|h| h.element).map(|e| {
+            if e.label.is_empty() {
+                role_in_words(&e.role)
+            } else {
+                format!(
+                    "{} \u{201c}{}\u{201d}",
+                    role_in_words(&e.role),
+                    tree::clip(&e.label)
+                )
+            }
+        }),
+        // No element is the window, so "scroll the window" aims at the pointer.
+        window: None,
+        elements: named
+            .iter()
+            .zip(ids)
+            .map(|(w, (id, rect))| ReadElement {
+                id: *id,
+                role: "text".into(),
+                label: tree::clip(w.text.trim()),
+                at: Some(coarse(*rect)),
+            })
+            .collect(),
+    }
+}
+
 /// Roughly where a control sits on the shared screen, from its normalized
 /// rectangle. Thirds, in the words a person would use: enough to separate two
 /// controls with the same name, not enough to aim at.
@@ -940,6 +1071,115 @@ mod tests {
                 marks: true,
             },
         )
+    }
+
+    /// The screen an agent is blind to. Every word is a target with an id of
+    /// its own, and nothing about the rest of the pipeline changes.
+    #[test]
+    fn words_read_off_the_screen_are_targets_like_any_element() {
+        let named = vec![
+            ocr::Word {
+                text: "  Continue  ".into(),
+                rect: [0.4, 0.8, 0.2, 0.05],
+            },
+            ocr::Word {
+                text: "Cancel".into(),
+                rect: [0.1, 0.8, 0.1, 0.05],
+            },
+        ];
+        let ids: Vec<(usize, [f64; 4])> = named
+            .iter()
+            .enumerate()
+            .map(|(i, w)| (OCR_ID_BASE + i, w.rect))
+            .collect();
+        let focus = Hit {
+            app: "Figma".into(),
+            element: Some(AxTarget::new("AXGroup", "Canvas")),
+            ..Default::default()
+        };
+        let reading = words_reading(Some(focus), &named, &ids);
+        assert_eq!(reading.app, "Figma");
+        assert_eq!(
+            reading.focused.as_deref(),
+            Some("group \u{201c}Canvas\u{201d}")
+        );
+        // No element is the window: "scroll the window" has to aim at the
+        // pointer rather than at a word.
+        assert_eq!(reading.window, None);
+        assert_eq!(reading.elements[0].id, OCR_ID_BASE);
+        assert_eq!(reading.elements[0].label, "Continue");
+        assert_eq!(reading.elements[0].at.as_deref(), Some("bottom centre"));
+
+        // And the id resolves to the middle of what was read, under the same
+        // staleness rule an element has.
+        let mut ex = executor(Grid::Pixels);
+        ex.words = ids;
+        ex.words_on = ex.display.get();
+        let (x, y) = ex.point_of(&Target::Element(OCR_ID_BASE)).unwrap();
+        assert!(
+            (x - 0.5).abs() < 1e-9 && (y - 0.825).abs() < 1e-9,
+            "{x}, {y}"
+        );
+        ex.display.set(Some(7));
+        let err = ex
+            .point_of(&Target::Element(OCR_ID_BASE))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("changed"), "{err}");
+    }
+
+    /// A reading that cannot even name the app must not be able to claim it is
+    /// not Lilypad's own window, because the run's guard on that reads this
+    /// one field.
+    #[test]
+    fn a_screen_with_no_name_is_not_given_one() {
+        let reading = words_reading(None, &[], &[]);
+        assert_eq!(reading.app, "an app that exposes no controls");
+        assert!(!reading.app.eq_ignore_ascii_case("lilypad"));
+    }
+
+    /// What a person typed is theirs, so the rectangles words may not be read
+    /// from are every kind of field — a password field above all.
+    #[test]
+    fn every_kind_of_field_is_off_limits_to_the_reader() {
+        let mut ex = executor(Grid::Pixels);
+        let nodes = vec![
+            tree::AxNode {
+                id: 0,
+                role: "AXWindow".into(),
+                frame: Some([0.0, 0.0, 1000.0, 500.0]),
+                ..Default::default()
+            },
+            tree::AxNode {
+                id: 1,
+                depth: 1,
+                role: "AXSecureTextField".into(),
+                frame: Some([100.0, 50.0, 200.0, 20.0]),
+                ..Default::default()
+            },
+            tree::AxNode {
+                id: 2,
+                depth: 1,
+                role: "AXButton".into(),
+                label: Some("Sign in".into()),
+                frame: Some([100.0, 100.0, 80.0, 20.0]),
+                ..Default::default()
+            },
+        ];
+        let mut snapshot = ax::AxSnapshot::for_test(nodes);
+        snapshot.bounds = [0.0, 0.0, 1000.0, 500.0];
+        ex.ax.last = Some(snapshot);
+        let fields = ex.fields();
+        assert_eq!(fields.len(), 1, "the field, not the button");
+        let close = fields[0]
+            .iter()
+            .zip([0.1, 0.1, 0.2, 0.04])
+            .all(|(got, want)| (got - want).abs() < 1e-9);
+        assert!(close, "{:?}", fields[0]);
+        // With nothing read yet there is nothing to protect, and nothing is
+        // claimed to be safe either.
+        ex.ax.last = None;
+        assert!(ex.fields().is_empty());
     }
 
     #[test]
