@@ -64,6 +64,8 @@ const SETTLE_MAX: Duration = Duration::from_millis(2500);
 const SETTLE_MAX_QUICK: Duration = Duration::from_millis(900);
 /// After launching an app or opening a URL.
 const SETTLE_MAX_LAUNCH: Duration = Duration::from_millis(4000);
+/// Poll interval while a newly focused app is publishing its AX identity.
+const FOCUS_READ_RETRY: Duration = Duration::from_millis(100);
 
 /// How far the pointer may drift between two of Ask's gestures before it
 /// counts as a person moving the mouse, in points. Generous: a false takeover
@@ -241,6 +243,21 @@ impl ComputerExecutor {
     /// What has keyboard focus, for typing and keys.
     fn focus_hit(&self) -> Option<Hit> {
         focus_of(ax::focus(), ax::secure_input_enabled())
+    }
+
+    /// Keyboard input is addressed to the focused element, not to a stable
+    /// handle. Refuse to inject if that identity changed after the action was
+    /// resolved; otherwise a user switch or an app transition could send the
+    /// approved text/shortcut to a different surface.
+    fn require_current_focus(&self, expected: Option<&Hit>) -> Result<()> {
+        let current = self.focus_hit();
+        if focus_is_current(expected, current.as_ref()) {
+            Ok(())
+        } else {
+            bail!(
+                "keyboard focus was not the same verified target when this action ran — look again"
+            )
+        }
     }
 
     /// What an element from the latest reading is, and whose it is.
@@ -505,11 +522,23 @@ impl ComputerExecutor {
                 .await?;
                 Ok("scrolled".into())
             }
-            Action::TypeText { text, .. } => {
+            Action::TypeText { text, focus } => {
+                // Keep the old direct-executor error for perception-only
+                // instances used in tests and in non-control sessions.
+                if self.input.is_some() {
+                    self.require_current_focus(focus.as_ref())?;
+                }
                 self.perform(AgentOp::Type { text: text.clone() }).await?;
                 Ok(format!("typed {} characters", text.chars().count()))
             }
-            Action::Key { chords, repeat, .. } => {
+            Action::Key {
+                chords,
+                repeat,
+                focus,
+            } => {
+                if self.input.is_some() {
+                    self.require_current_focus(focus.as_ref())?;
+                }
                 self.perform(AgentOp::Keys {
                     chords: chords.clone(),
                     repeat: *repeat,
@@ -517,7 +546,10 @@ impl ComputerExecutor {
                 .await?;
                 Ok("pressed".into())
             }
-            Action::HoldKey { chord, ms, .. } => {
+            Action::HoldKey { chord, ms, focus } => {
+                if self.input.is_some() {
+                    self.require_current_focus(focus.as_ref())?;
+                }
                 self.perform(AgentOp::HoldKeys {
                     chord: chord.clone(),
                     ms: *ms,
@@ -566,6 +598,7 @@ impl ComputerExecutor {
     /// Take a fused look: settle, screenshot, read the elements.
     async fn look(&mut self, settle_max: Duration) -> Observation {
         let target = self.display.get();
+        let settle_started = std::time::Instant::now();
         let changed = matches!(self.last_looked, Some(prev) if prev != target);
         self.last_looked = Some(target);
 
@@ -595,7 +628,8 @@ impl ComputerExecutor {
 
         // The element reading. A failure here is not a failure to see — the
         // screenshot still stands — so it is reported, not returned.
-        let reading = self.ax.read().await;
+        let reading_budget = settle_max.saturating_sub(settle_started.elapsed());
+        let reading = self.read_with_settle(reading_budget).await;
 
         let bounds = frame
             .as_ref()
@@ -716,6 +750,35 @@ impl ComputerExecutor {
             image,
             reading: structured,
             reading_error,
+        }
+    }
+
+    /// A launch can briefly leave the system with no focused AX application
+    /// (or with the app's window not yet on the shared display). Retry only
+    /// those transient focus states, and only inside the caller's bounded
+    /// settle budget. Permission and tree failures remain immediate.
+    async fn read_with_settle(&mut self, budget: Duration) -> std::result::Result<(), String> {
+        let mut error = match self.ax.read().await {
+            Ok(()) => return Ok(()),
+            Err(error) => error,
+        };
+        if budget.is_zero() || !retryable_focus_read_error(&error) {
+            return Err(error);
+        }
+        let deadline = std::time::Instant::now() + budget;
+        loop {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                return Err(error);
+            }
+            tokio::time::sleep(FOCUS_READ_RETRY.min(remaining)).await;
+            error = match self.ax.read().await {
+                Ok(()) => return Ok(()),
+                Err(error) => error,
+            };
+            if !retryable_focus_read_error(&error) {
+                return Err(error);
+            }
         }
     }
 
@@ -1001,6 +1064,15 @@ fn focus_of(info: Option<ax::HitInfo>, secure_input: bool) -> Option<Hit> {
         }),
         None => None,
     }
+}
+
+fn focus_is_current(expected: Option<&Hit>, current: Option<&Hit>) -> bool {
+    expected.is_some() && expected == current
+}
+
+fn retryable_focus_read_error(error: &str) -> bool {
+    error.starts_with("no focused application")
+        || error.starts_with("the focused app has no window on the shared display")
 }
 
 fn to_hit(info: ax::HitInfo, secure_input: bool) -> Hit {
@@ -1338,6 +1410,35 @@ mod tests {
         };
         assert!(focus_of(Some(field.clone()), true).is_some_and(|h| h.secure));
         assert!(focus_of(Some(field), false).is_some_and(|h| !h.secure));
+    }
+
+    #[test]
+    fn keyboard_actions_require_the_same_verified_focus() {
+        let field = Hit {
+            element: Some(AxTarget::new("AXTextField", "Search")),
+            app: "Safari".into(),
+            ..Default::default()
+        };
+        let same = field.clone();
+        let other = Hit {
+            app: "Mail".into(),
+            ..field.clone()
+        };
+        assert!(focus_is_current(Some(&field), Some(&same)));
+        assert!(!focus_is_current(Some(&field), Some(&other)));
+        assert!(!focus_is_current(Some(&field), None));
+        assert!(!focus_is_current(None, Some(&field)));
+    }
+
+    #[test]
+    fn only_transient_focus_read_failures_are_retried() {
+        assert!(retryable_focus_read_error(
+            "no focused application (grant Accessibility, focus an app)"
+        ));
+        assert!(retryable_focus_read_error(
+            "the focused app has no window on the shared display — move it to the screen you are sharing"
+        ));
+        assert!(!retryable_focus_read_error("AX permission denied"));
     }
 
     #[test]

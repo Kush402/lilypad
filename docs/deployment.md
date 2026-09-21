@@ -99,10 +99,12 @@ the page, and does not meter egress:
 | `/download/Lilypad.app.tar.gz` | the archive the updater downloads               |
 | `/download/latest.json`        | the updater manifest, `Cache-Control: no-cache` |
 
-`site.yml` stages these after building the page. It fetches the release matching
-the **exact** version in `tauri.conf.json` — not `latest` — because a page that
-says v0.1.3 while serving v0.1.2's bytes is the same lie in a different place,
-and `release: published` plus a version-bump push otherwise race. It rewrites
+`site.yml` stages these after building the page. A successful `Release`
+`workflow_run` starts the site job only after the release is public, so a
+version-bump push cannot race an asset that does not exist yet. It fetches the
+release matching the **exact** version in `tauri.conf.json` — not `latest` —
+because a page that says v0.1.3 while serving v0.1.2's bytes is the same lie in
+a different place. It rewrites
 the manifest's asset URLs to this site; the signatures still verify, because
 minisign covers the archive's bytes and not the address they came from. It then
 refuses to pass unless an anonymous `curl` can fetch the installer, its bytes

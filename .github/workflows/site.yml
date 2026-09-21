@@ -32,11 +32,9 @@ on:
       - 'apps/site/**'
       - 'packages/design/**'
       - '.github/workflows/site.yml'
-      # The desktop version lives here, and this workflow refuses to deploy
-      # unless a matching release exists — so a version bump has to re-run it.
-      - 'apps/desktop/src-tauri/tauri.conf.json'
-  # The site SERVES the installer, so a new release is a new site. Without this
-  # the page would advertise a version whose bytes were never uploaded.
+  # The site SERVES the installer, so a new release is a new site. The
+  # successful Release workflow_run below is the only artifact-dependent
+  # trigger; a version-bump push must not race the release asset into a red run.
   #
   # `release: [published]` is the obvious trigger and it does NOT work here:
   # `tauri-action` creates the release with `secrets.GITHUB_TOKEN`, and GitHub
@@ -85,9 +83,8 @@ jobs:
       #
       # Assets are fetched for the EXACT version in tauri.conf.json rather than
       # "latest". A page that says v0.1.3 while serving v0.1.2's bytes is the
-      # same class of lie this workflow already guards against, and "latest"
-      # makes it a race: `release: published` and a version-bump push both land
-      # here within seconds of each other.
+      # same class of lie this workflow already guards against. The workflow_run
+      # trigger starts only after Release has published the exact version.
       - name: Stage the installer the site hands out
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
