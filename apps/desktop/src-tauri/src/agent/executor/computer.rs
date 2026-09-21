@@ -936,12 +936,7 @@ impl ComputerExecutor {
         if !look.ok {
             return obs;
         }
-        Observation {
-            summary: format!("{}\n{}", obs.summary, look.summary),
-            image: look.image,
-            screen: look.screen,
-            ..obs
-        }
+        merge_post_action_observation(obs, look)
     }
 
     /// Let go of anything a `left_mouse_down` left held.
@@ -951,6 +946,22 @@ impl ComputerExecutor {
                 .perform(AgentOp::ReleaseHeld, Arc::new(AtomicBool::new(false)))
                 .await;
         }
+    }
+}
+
+/// A tier-one action has changed the desktop, so its follow-up look becomes
+/// the authoritative screen state. Keep the action's result, but never leave
+/// its old (usually absent) reading attached to the new screenshot: doing so
+/// turns a precise screen-read failure into the generic "may not expose its
+/// controls" answer.
+fn merge_post_action_observation(obs: Observation, look: Observation) -> Observation {
+    Observation {
+        summary: format!("{}\n{}", obs.summary, look.summary),
+        image: look.image,
+        screen: look.screen,
+        reading: look.reading,
+        reading_error: look.reading_error,
+        ..obs
     }
 }
 
@@ -1439,6 +1450,25 @@ mod tests {
             "the focused app has no window on the shared display — move it to the screen you are sharing"
         ));
         assert!(!retryable_focus_read_error("AX permission denied"));
+    }
+
+    #[test]
+    fn post_action_look_keeps_its_precise_reading_failure() {
+        let after = merge_post_action_observation(
+            Observation::ok("Opened Safari."),
+            Observation {
+                summary: "Safari is in front.".into(),
+                ok: true,
+                image: None,
+                screen: None,
+                reading: None,
+                reading_error: Some("the focused app has no window on the shared display".into()),
+            },
+        );
+        assert_eq!(
+            after.reading_error.as_deref(),
+            Some("the focused app has no window on the shared display")
+        );
     }
 
     #[test]

@@ -16,9 +16,9 @@ This file exists because the list used to live only in a conversation. Six rows
 (L-20, L-38 through L-42) were reconstructed from later summaries after the
 earlier record was compacted away, which is the argument for the file.
 
-**Status counts:** 333 fixed · 35 shipped · 7 partially fixed · 0 open ·
+**Status counts:** 334 fixed · 35 shipped · 7 partially fixed · 0 open ·
 1 blocked on something outside the code · 4 deliberately unchanged · 4 not a bug ·
-1 unrecoverable (L-20). 385 rows.
+1 unrecoverable (L-20). 386 rows.
 
 "Fixed" here means _fixed at source_. Fixed, released and device-verified are
 three different states and this file keeps them apart. L-227 through L-259 are
@@ -1946,6 +1946,7 @@ acceptance matrix are in [v0.1.34-customer-review.md](v0.1.34-customer-review.md
 | L-384 | **P2 — After launching an app, text-only Jev could report a transient focus failure before the new app published its AX identity.** Production v0.1.50 logs show `Open Google Chrome` followed by `no focused application`; the text-only look slept only 300 ms even though launch observations had a 4 s settle budget. | Fixed at source — 2026-09-21. A launch observation now retries only the two known transient focus/window states, at 100 ms intervals inside the remaining bounded settle budget; permission and other AX failures remain immediate. `only_transient_focus_read_failures_are_retried`. |
 | L-385 | **P2 — Every release's site workflow raced its own release artifact.** Run `35660869976` started from the v0.1.51 version-bump push and failed because `v0.1.51` had not been published yet; the later release-triggered run was the one that could succeed. This made a normal release produce a misleading red workflow. | Fixed at source — 2026-09-21. Removed `tauri.conf.json` from the site push trigger; artifact staging now starts only from the successful `Release` `workflow_run` (or an explicit manual run), after the exact stable release exists. |
 | L-386 | **P2 — A late `Release` completion for the previous version could still run the site against the new version.** v0.1.51's delayed completion triggered site run `35663824434` after `main` already advertised v0.1.52, so it failed the exact-release gate before v0.1.52 was published. | Fixed at source — 2026-09-21. A `workflow_run` site job now requires the completed Release's successful `head_branch` and `head_sha` to match the default-branch checkout; stale completions are skipped, while the current release event remains authoritative. `site ignores a late Release completion for an older commit`. |
+| L-387 | **P1 — Ask discarded the precise screen-read failure after a tier-one action.** `observe_after` replaced the screenshot with its fresh post-launch look but retained the prior action observation's empty `reading` and `reading_error`; Jev therefore fell back to “the app may not expose its controls” even when the log correctly recorded, for example, that Safari's window was on another display. Reproduced in the installed v0.1.52 app on 2026-09-21. | Fixed at source — 2026-09-21. The post-action observation now takes both the structured reading and its failure reason from the authoritative follow-up look, so Ask gives the actionable display/permission reason without weakening its fail-closed behavior. `post_action_look_keeps_its_precise_reading_failure`. |
 
 Evidence limits: provider UI fixture = **8 existing tests pass, 1 new expected
 failure**. Billing harness executes the current TypeScript service functions
