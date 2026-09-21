@@ -6,6 +6,8 @@ All notable changes to Lilypad are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.49] — 2026-09-21
+
 ### Fixed
 
 - **When Ask cannot read the screen, it now says why.** “The app may not expose
