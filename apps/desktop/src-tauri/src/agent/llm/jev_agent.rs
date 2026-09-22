@@ -84,6 +84,25 @@ fn done_reason(contradicted: bool) -> FinishReason {
     }
 }
 
+/// A command can name the application or web address needed to obtain the
+/// first usable screen. That decision depends on the command, not on the
+/// unreadable/Lilypad window currently in front. In that narrow bootstrap
+/// state, keep Jev's job as a typed choice and keep code's job as the safety
+/// boundary: only deterministic launch skills may escape without a reading.
+fn launch_only_without_screen(step: Step, failure: &str) -> Step {
+    match step {
+        Step::Act(acting)
+            if matches!(
+                &acting.action,
+                Action::OpenApp { .. } | Action::OpenUrl { .. }
+            ) =>
+        {
+            Step::Act(acting)
+        }
+        _ => Step::Stop(failure.to_string()),
+    }
+}
+
 /// Controls asked about in one request. Each costs one yes/no question; the
 /// command's own words choose them, so this is a bound, not a budget.
 const MAX_CANDIDATES: usize = 8;
@@ -1000,24 +1019,30 @@ impl Brain for JevBrain {
                 FinishReason::Incomplete,
             );
         }
-        let Some(reading) = latest.reading.as_ref() else {
-            // The elements ARE this way of running's screen, so a failed
-            // reading ends the task — but it ends it saying which failure.
-            // "The app may not expose its controls" was told to somebody whose
-            // focused window was simply on another display, and to somebody
-            // who had not granted Accessibility, neither of whom could act on
-            // it (L-369).
-            return Self::finish(
-                unreadable(latest.reading_error.as_deref()),
-                FinishReason::Incomplete,
-            );
+        // A missing focused app — or Lilypad itself in front after the person
+        // sent the command from the phone — is not enough screen context for
+        // clicks or keys. It is enough context for one narrower decision:
+        // whether the command names an installed app or a literal web address
+        // that should be opened to obtain the first usable screen. Jev sees an
+        // explicit empty state, and `launch_only_without_screen` below rejects
+        // every other kind of answer. This is not an AX/focus bypass.
+        let unavailable = match latest.reading.as_ref() {
+            None => Some(unreadable(latest.reading_error.as_deref())),
+            Some(reading) if reading.app.eq_ignore_ascii_case("lilypad") => Some(
+                "Ask never operates Lilypad itself. Bring the app you mean to the front."
+                    .to_string(),
+            ),
+            Some(_) => None,
         };
-        if reading.app.eq_ignore_ascii_case("lilypad") {
-            return Self::finish(
-                "Ask never operates Lilypad itself. Bring the app you mean to the front.",
-                FinishReason::Incomplete,
-            );
-        }
+        let empty_reading = ScreenReading {
+            app: "no readable application".into(),
+            ..ScreenReading::default()
+        };
+        let reading = latest
+            .reading
+            .as_ref()
+            .filter(|reading| !reading.app.eq_ignore_ascii_case("lilypad"))
+            .unwrap_or(&empty_reading);
 
         // Raw OCR text never crosses the hosted boundary. Only OCR words the
         // person already used in the command survive, and their labels are
@@ -1063,6 +1088,9 @@ impl Brain for JevBrain {
             &self.history,
             &answers,
         );
+        if let Some(failure) = unavailable.as_deref() {
+            step = launch_only_without_screen(step, failure);
+        }
         // Two controls that both look like the next step: ask which comes
         // first, about those alone. One more request, only when it is needed.
         if let Step::Ambiguous(ids) = &step {
@@ -1224,6 +1252,75 @@ mod tests {
             "Ask could not read this screen. The app may not expose its controls."
         );
         assert_eq!(unreadable(Some("   ")), unreadable(None));
+    }
+
+    /// v0.1.54 failed before Jev was ever asked: the first look had no
+    /// focused AX app, and later attempts saw Lilypad in front. A command
+    /// that names another app still has enough bounded state to launch it and
+    /// obtain the real first screen. Nothing screen-dependent gets the same
+    /// exception.
+    #[tokio::test]
+    async fn a_missing_or_lilypad_first_screen_can_only_bootstrap_a_launch() {
+        let no_focus = Observation {
+            summary: "Look at the screen".into(),
+            ok: true,
+            image: None,
+            screen: None,
+            reading: None,
+            reading_error: Some(
+                "no focused application (grant Accessibility, focus an app)".into(),
+            ),
+        };
+        let lilypad = Observation {
+            reading: Some(ScreenReading {
+                app: "Lilypad".into(),
+                ..ScreenReading::default()
+            }),
+            reading_error: None,
+            ..no_focus.clone()
+        };
+
+        for first_look in [no_focus, lilypad] {
+            let mut brain = JevBrain::new(Jev::new(jev::InstantConfig::new("not-used")));
+            *brain.canned() = Some(json!({
+                "done": noul(0.01),
+                "evidence": noul(0.01),
+                "step": chose("open_app", 0.99),
+                "app": chose("Finder", 0.99),
+            }));
+            assert!(matches!(
+                brain.next("open Finder", &[]).await.unwrap(),
+                Decision::Act {
+                    action: Action::ReadScreen,
+                    ..
+                }
+            ));
+            assert!(matches!(
+                brain
+                    .next("open Finder", &[first_look])
+                    .await
+                    .unwrap(),
+                Decision::Act {
+                    action: Action::OpenApp { ref name },
+                    ..
+                } if name == "Finder"
+            ));
+        }
+
+        let blocked = launch_only_without_screen(
+            Acting::step(
+                "Press Return".into(),
+                "key:return".into(),
+                AgentTier::Ax,
+                Action::Key {
+                    chords: crate::input::keys::parse_keys("RETURN").unwrap(),
+                    repeat: 1,
+                    focus: None,
+                },
+            ),
+            "no screen",
+        );
+        assert_eq!(blocked, Step::Stop("no screen".into()));
     }
 
     #[test]

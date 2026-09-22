@@ -16,9 +16,9 @@ This file exists because the list used to live only in a conversation. Six rows
 (L-20, L-38 through L-42) were reconstructed from later summaries after the
 earlier record was compacted away, which is the argument for the file.
 
-**Status counts:** 336 fixed · 35 shipped · 7 partially fixed · 1 open ·
+**Status counts:** 337 fixed · 35 shipped · 7 partially fixed · 1 open ·
 1 blocked on something outside the code · 4 deliberately unchanged · 4 not a bug ·
-1 unrecoverable (L-20). 389 rows.
+1 unrecoverable (L-20). 390 rows.
 
 "Fixed" here means _fixed at source_. Fixed, released and device-verified are
 three different states and this file keeps them apart. L-227 through L-259 are
@@ -1950,6 +1950,7 @@ acceptance matrix are in [v0.1.34-customer-review.md](v0.1.34-customer-review.md
 | L-388 | **P1 — The release-triggered site workflow skipped every tag-triggered Release.** Its stale-event guard also required `workflow_run.head_branch == 'main'`, but the Release workflow runs from `v0.1.53` when its tag is pushed. The exact SHA matched, yet the job was skipped and the public updater remained on v0.1.52. Reproduced by site run `35667765957`. | Fixed at source — 2026-09-21. The guard now relies on the successful Release's exact `head_sha`, which rejects stale releases while accepting the release tag that built the same default-branch commit. `site ignores a late Release completion for an older commit`. |
 | L-389 | **P1 — An installed v0.1.52 desktop says it is up to date while the public signed v0.1.53 release exists.** The running app's bundle and startup log both identify `0.1.52`; its updater logged `update check: up to date` repeatedly after the site served v0.1.53 with `Cache-Control: no-cache` and valid Darwin targets. This prevents the signed Ask repair from reaching the very device that reproduced L-387. | Open — 2026-09-21. The feed, installed endpoint, target entries, signatures and semver ordering are confirmed; collect the updater plugin's native debug response before changing release or updater code. |
 | L-390 | **P1 — A successful hosted Ask decision to open Google Chrome can leave macOS with no focused AX application for the entire launch-recovery budget.** On signed v0.1.53, `Open Google Chrome` was issued at 02:13:41 UTC. The follow-up look exhausted its 4 s bounded retry with `no focused application`; two later direct looks still had no focus. Ask correctly did not type or guess, but the requested app was not ready to continue. | Fixed at source — 2026-09-22. The same fail-closed retry now allows an 8 s bounded app-launch window, while continuing to return permission and non-focus AX errors immediately; it is not a broad delay or a focus bypass. `only_transient_focus_read_failures_are_retried`. Device verification remains required. |
+| L-391 | **P1 — v0.1.54 could fail before Jev ever received the command.** The signed-device trace starts Ask with no focused AX application, so the mandatory first look immediately ended the run. Retrying after the phone's command UI brought Lilypad forward ended at the own-window floor. The v0.1.54 launch-recovery change could not help because no launch action was ever chosen. | Fixed at source — 2026-09-22. An unreadable or Lilypad-frontmost first look is now explicit empty state for one bounded Jev decision. Code accepts only a command-grounded `OpenApp` from the offered installed-app names or `OpenUrl` from the literal command; every click, type, key, scroll, wait and completion claim still fails closed until a real non-Lilypad screen is readable. This matches Jev's intended role as a typed probabilistic decision inside a code-constrained workflow, not a free-form agent or a focus bypass. `a_missing_or_lilypad_first_screen_can_only_bootstrap_a_launch`. Device verification remains required. |
 
 Evidence limits: provider UI fixture = **8 existing tests pass, 1 new expected
 failure**. Billing harness executes the current TypeScript service functions

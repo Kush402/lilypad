@@ -20,7 +20,12 @@ how it works.
    display (long edge ≤ 1366 px, ≤ 1.15 MP, the pointer drawn in), the focused
    app's actionable elements (id, role, label, value, centre), what is in front
    and what has keyboard focus. Models without a trained computer tool also
-   see numbered boxes on the screenshot for those elements.
+   see numbered boxes on the screenshot for those elements. If the text-only
+   Jev path has no readable focused app, or Lilypad itself is in front, Jev
+   may make only the command-grounded decision needed to obtain a screen:
+   open one offered installed app or a web address written in the command.
+   Code rejects every screen-dependent action until a real non-Lilypad reading
+   exists.
 2. **Decide.** The model replies with one or more tool calls. They are queued
    (at most 8 run per reply) and handed to the runner one at a time.
 3. **Resolve.** The executor attaches what the action would touch: the element
