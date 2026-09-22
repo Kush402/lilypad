@@ -62,8 +62,11 @@ const MAX_LISTED: usize = 120;
 const SETTLE_MIN: Duration = Duration::from_millis(150);
 const SETTLE_MAX: Duration = Duration::from_millis(2500);
 const SETTLE_MAX_QUICK: Duration = Duration::from_millis(900);
-/// After launching an app or opening a URL.
-const SETTLE_MAX_LAUNCH: Duration = Duration::from_millis(4000);
+/// After launching an app or opening a URL. A signed v0.1.53 device run showed
+/// Chrome can still be publishing its focused AX identity at the former 4 s
+/// cutoff. This remains bounded, and only retries the two focus-transition
+/// errors below; a permission or tree error still returns immediately.
+const SETTLE_MAX_LAUNCH: Duration = Duration::from_millis(8000);
 /// Poll interval while a newly focused app is publishing its AX identity.
 const FOCUS_READ_RETRY: Duration = Duration::from_millis(100);
 
