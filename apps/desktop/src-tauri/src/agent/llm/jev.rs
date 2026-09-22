@@ -573,7 +573,7 @@ pub fn request(model: &str, task: &str, reading: &ScreenReading, apps: &[String]
         // reader may contain hundreds of actionable nodes, but TypeSafe's
         // criteria and the hosted state are intentionally small; named
         // controls are ordered first by `jev_agent::candidates`.
-        let offered = super::jev_agent::candidates(task, reading);
+        let offered = super::jev_agent::instant_candidates(task, reading);
         let mut controls: Vec<(String, Value)> = offered
             .iter()
             .map(|e| {
@@ -659,7 +659,7 @@ pub fn decide(
             let id: usize = chosen.strip_prefix('e')?.parse().ok()?;
             // Only an element this request offered; the model's word is not
             // enough to name one that was never on the list.
-            let offered = super::jev_agent::candidates(task, reading);
+            let offered = super::jev_agent::instant_candidates(task, reading);
             let element = offered.iter().find(|e| e.id == id)?;
             let score = control_match(task, &element.label)?;
             let matching: Vec<usize> = reading

@@ -1,7 +1,7 @@
 ---
 status: Implemented
 owner: @kushsharma024
-last-verified: 2026-09-19
+last-verified: 2026-09-22
 summary: How Ask sees, points, clicks and types on the Mac with any provider — instant actions, the toolset, the flow of one step, the safety floor, takeover, and where each part lives.
 ---
 
@@ -112,6 +112,31 @@ feed. The hosted path sends the command, front app, keyboard focus, control
 roles/labels, matching installed-app names, and one-line step summaries to
 Lilypad and then TypeSafe. It never sends a screenshot or field value.
 
+The whole-task loop asks one **grounded action Choice** per observation. Its
+options are the concrete code-offered operations for that state: an eligible
+control id, words extracted from the command for a verified focused field, a
+command-named app/URL/shortcut/scroll, search submission, wait, blocked, and
+done. Goal and visible-evidence Noul questions travel in the same request.
+There is no preliminary `press`/`type`/`key`/`scroll` classification and no
+minimum probability that discards the selected offered action: a split
+distribution often means several useful controls, not that none is usable.
+Code still validates the selected option, constrains text to the command,
+rejects screen actions without a readable non-Lilypad app, and sends every
+effect through the normal floor and autonomy gate. If an action changes no
+observable state and Jev proposes it again, the loop tries the next-best
+nonterminal offered option rather than repeating the known no-op.
+
+This follows TypeSafe's documented division of responsibility—typed
+probabilistic decisions inside a code-owned workflow—and the grounded loop
+used by the published `jev-browser` implementation: concrete actions in one
+Choice, independent goal/stuck judgments, and next-best recovery rather than
+a blanket low-confidence abort. Laya exposes the same Choice/Score/Noul
+contract; it is corroborating architecture, not a second model hidden in the
+product. References: [TypeSafe's Jev introduction](https://typesafe.ai/blog/introducing-system-one-models-and-jev),
+[System One API](https://api.typesafe.ai/docs),
+[`jev-browser`](https://github.com/jkudish/jev-browser), and
+[Laya](https://github.com/NandhaKishorM/laya).
+
 ## The toolset
 
 Every provider gets the same tools
@@ -212,7 +237,9 @@ changed AI setup, a different run id or an expired thread starts a new task.
 - Instant actions cover one action per command and need the person's own
   TypeSafe key. Whole-task Jev can use either that key on every plan or
   Lilypad's hosted Pro path; Jev only types words already present in the
-  command.
+  command. The whole-task loop offers at most 32 prioritized AX controls per
+  observation, within Jev's high-cardinality Choice rather than as 32
+  independent questions.
 
 ## Checking it
 
