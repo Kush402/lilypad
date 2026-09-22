@@ -1,6 +1,6 @@
 {
   "name": "@lilypad/mobile",
-  "version": "0.1.55",
+  "version": "0.1.56",
   "description": "Lilypad mobile (bare React Native): QR scanner, viewer, dev input toolbar",
   "private": true,
   "scripts": {

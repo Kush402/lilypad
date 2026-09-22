@@ -1,6 +1,6 @@
 [package]
 name = "lilypad-desktop"
-version = "0.1.55"
+version = "0.1.56"
 description = "Lilypad desktop — floating bubble, QR pairing, plugin host"
 authors = ["Lilypad"]
 edition = "2021"
