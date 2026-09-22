@@ -20,8 +20,15 @@ All notable changes to Lilypad are documented here. The format follows
   plainly it is on the screen. It now offers up to 120, which is still well
   inside what one request may carry.
 - **Ask no longer acts on an answer that contradicts itself.** Where the reply
-  names one control but scores another higher, Ask stops instead of clicking
-  the one its own numbers ranked second.
+  names one control but scores another higher, Ask takes the one its own
+  numbers rank first instead of the one the label named.
+- **A step Ask cannot act on no longer ends the task.** Where the answer named
+  something this screen does not offer, the run stopped. It now falls back to
+  the highest-scoring action the screen did offer, and stops only when there is
+  no offered action in the answer at all.
+- **One lost request no longer ends a task.** A step whose request never
+  reached the service is asked once more before Ask gives up, so a dropped
+  packet part-way through a task is not the end of it.
 
 ## [0.1.49] — 2026-09-21
 

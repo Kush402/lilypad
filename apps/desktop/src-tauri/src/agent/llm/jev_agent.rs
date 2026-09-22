@@ -685,13 +685,33 @@ fn decide_grounded(
     history: &[String],
     answers: &Value,
 ) -> Option<Step> {
-    let (chosen, _) = jev::pick(answers, "action")?;
     let offered = action_options(task, reading, history, spans, apps, candidates);
-    if !offered.iter().any(|(id, _)| id == chosen) {
-        return Some(Step::Stop(
-            "Ask returned an action this screen did not offer.".into(),
-        ));
-    }
+    let named = jev::pick(answers, "action").map(|(chosen, _)| chosen);
+    let chosen_id = match named {
+        Some(chosen) if offered.iter().any(|(id, _)| id == chosen) => chosen.to_string(),
+        // The label is not something this screen can act on — missing, never
+        // offered, or ranked below another option in its own distribution.
+        // The numbers beside it still are an answer, and ending the run over
+        // the label while they plainly rank an offered option first is the
+        // expensive way to be strict.
+        other => match grounded_leader(answers, &offered) {
+            Some(leading) => {
+                log::info!(
+                    target: "lilypad::agent",
+                    "jev named {other:?}, which this screen cannot act on; \
+                     using the offered option its own numbers rank first: {leading}"
+                );
+                leading
+            }
+            None if other.is_some() => {
+                return Some(Step::Stop(
+                    "Ask returned an action this screen did not offer.".into(),
+                ))
+            }
+            None => return None,
+        },
+    };
+    let chosen = chosen_id.as_str();
 
     let step = if let Some(raw) = chosen.strip_prefix("press:e") {
         let id = raw.parse::<usize>().ok();
@@ -841,6 +861,23 @@ fn decide_grounded(
         }
     };
     Some(step)
+}
+
+/// The offered option this answer's own numbers rank first, terminals
+/// included. This is what the reply meant when its `choice` cannot be read as
+/// an answer, and it is read from the same calibrated distribution the choice
+/// came from rather than from a second guess.
+fn grounded_leader(answers: &Value, offered: &[(String, Value)]) -> Option<String> {
+    let probabilities = answers.get("action")?.get("probabilities")?.as_object()?;
+    probabilities
+        .iter()
+        .filter_map(|(id, probability)| {
+            let probability = probability.as_f64()?;
+            (probability > 0.0 && offered.iter().any(|(offered, _)| offered == id))
+                .then_some((id.clone(), probability))
+        })
+        .max_by(|left, right| left.1.total_cmp(&right.1))
+        .map(|(id, _)| id)
 }
 
 fn grounded_alternate(
@@ -1466,6 +1503,41 @@ mod tests {
             ),
             Step::Stop(_)
         ));
+    }
+
+    #[test]
+    fn a_choice_that_loses_its_own_ranking_falls_back_to_the_leader() {
+        // The reply names the row, but ranks Archive higher. Before L-395 the
+        // row was clicked; after it the run ended. Neither is the answer the
+        // numbers gave.
+        let task = "archive the email from GitHub";
+        let reading = mail();
+        let candidates = candidates(task, &reading);
+        let step = decide(
+            task,
+            &reading,
+            &[],
+            &[],
+            &candidates,
+            &json!({
+                "done": noul(0.01),
+                "evidence": noul(0.01),
+                "action": {
+                    "type": "choice",
+                    "choice": "press:e21",
+                    "confidence": 0.3,
+                    "probabilities": { "press:e21": 0.2, "press:e7": 0.6 },
+                },
+            }),
+        );
+        match step {
+            Step::Act(acting) => assert!(
+                acting.summary.contains("Archive"),
+                "{}",
+                acting.summary
+            ),
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]

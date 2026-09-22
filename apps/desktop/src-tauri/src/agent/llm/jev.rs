@@ -977,7 +977,21 @@ impl Jev {
     /// One step of a task (ADR-0020). Unlike [`Jev::instant`], a failure here
     /// is the caller's to report: the run has already started.
     pub(super) async fn ask_step(&self, body: &Value) -> Result<Value> {
-        let answers = self.ask(body).await;
+        let mut answers = self.ask(body).await;
+        // One retry, and only for a failure that is the network rather than
+        // an answer. The instant classifier deliberately has none, because a
+        // miss there costs one suggestion; this is the whole-task loop, where
+        // the same hiccup ends a task that may already have done several
+        // things, and where the request is a question with nothing to repeat.
+        if matches!(&answers, Err(e) if Self::is_transient(e)) {
+            let delay = super::retry_delay(0, None);
+            log::info!(
+                target: "lilypad::agent",
+                "the step request did not reach the service; retrying once in {delay:?}"
+            );
+            tokio::time::sleep(delay).await;
+            answers = self.ask(body).await;
+        }
         if let Err(e) = &answers {
             if e.downcast_ref::<ProviderFailure>()
                 .is_some_and(|f| f.kind == FailureKind::Auth)
@@ -986,6 +1000,13 @@ impl Jev {
             }
         }
         answers
+    }
+
+    /// Whether a failed request failed for a reason that another request
+    /// could get past.
+    fn is_transient(e: &anyhow::Error) -> bool {
+        e.downcast_ref::<ProviderFailure>()
+            .is_some_and(|failure| failure.kind.is_transient())
     }
 
     async fn ask(&self, body: &Value) -> Result<Value> {
@@ -1036,7 +1057,10 @@ fn answers_of<'a>(reply: &'a Value, model: &str) -> Result<&'a Value> {
 
 /// One request, with the same boundaries as every provider request: no
 /// redirects, a bounded body, classified failures (L-275, L-276, L-284).
-/// No retries — a retry costs more than the step saves.
+/// No retries here: on the instant path a retry costs more than the
+/// suggestion saves. The whole-task loop asks once more for a transient
+/// failure, in `ask_step`, where a lost request ends a task rather than a
+/// suggestion.
 async fn send(
     client: &reqwest::Client,
     config: &InstantConfig,
@@ -1981,6 +2005,27 @@ mod tests {
         let body = json!({ "model": MODEL, "state": {}, "questions": {} });
         assert_eq!(jev.envelope(&body), body);
         assert!(jev.envelope(&body).get("taskId").is_none());
+    }
+
+    /// A whole-task step that fails on the network is asked once more. The
+    /// second attempt fetches its own bearer, so the token counter is the
+    /// evidence that it happened; the server is gone by then, which is why
+    /// the call still ends in an error.
+    #[tokio::test]
+    async fn a_step_that_fails_on_the_network_is_asked_once_more() {
+        let (bearer, calls) = bearer_of("device-token-abc");
+        let (base, server) = serve_once("503 Service Unavailable", "{}");
+        let jev = Jev::new(InstantConfig::hosted(base, bearer));
+        let failed = jev
+            .ask_step(&json!({ "model": MODEL, "state": {}, "questions": {} }))
+            .await;
+        server.join().unwrap();
+        assert!(failed.is_err());
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "a transient failure is asked once more"
+        );
     }
 
     #[tokio::test]
