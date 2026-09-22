@@ -6,6 +6,23 @@ All notable changes to Lilypad are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **Ask tells two controls of the same name apart when it chooses one, not
+  only when it looks at them.** Where each control sits has been part of what
+  Ask reads since 0.1.49, but the list it actually chooses from left it out, so
+  two buttons both called Reply arrived as the same description twice. That is
+  not a close call to the model that answers — it is a tie, and a tie is
+  answered by whichever one came first, with the confidence of a decision that
+  was never made.
+- **Ask can reach the controls further down a busy screen.** It offered the
+  first 32 controls, and a control that is not offered cannot be chosen however
+  plainly it is on the screen. It now offers up to 120, which is still well
+  inside what one request may carry.
+- **Ask no longer acts on an answer that contradicts itself.** Where the reply
+  names one control but scores another higher, Ask stops instead of clicking
+  the one its own numbers ranked second.
+
 ## [0.1.49] — 2026-09-21
 
 ### Fixed

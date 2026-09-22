@@ -633,9 +633,17 @@ pub fn request(model: &str, task: &str, reading: &ScreenReading, apps: &[String]
 pub(super) fn pick<'a>(answers: &'a Value, question: &str) -> Option<(&'a str, f64)> {
     let answer = answers.get(question)?;
     let chosen = answer.get("choice")?.as_str()?;
-    let p = answer.get("probabilities")?.get(chosen)?.as_f64()?;
+    let all = answer.get("probabilities")?.as_object()?;
+    let p = all.get(chosen)?.as_f64()?;
     // A probability outside [0, 1] is not one; it is never a reason to act.
-    (0.0..=1.0).contains(&p).then_some((chosen, p))
+    if !(0.0..=1.0).contains(&p) {
+        return None;
+    }
+    // The named choice must also lead its own distribution. A reply whose
+    // `choice` is not the most likely option contradicts itself, and acting on
+    // it would act on something the same answer ranked below another offered
+    // option.
+    (!all.values().filter_map(Value::as_f64).any(|other| other > p)).then_some((chosen, p))
 }
 
 /// Turn the answers into one action, or `None`. Pure: the whole policy of
@@ -1378,6 +1386,24 @@ mod tests {
 
     fn chose(option: &str, p: f64) -> Value {
         json!({ "type": "choice", "choice": option, "confidence": p, "probabilities": { option: p } })
+    }
+
+    #[test]
+    fn an_answer_that_does_not_lead_its_own_distribution_is_not_read() {
+        let ranked = |choice: &str| {
+            json!({
+                "control": {
+                    "type": "choice",
+                    "choice": choice,
+                    "confidence": 0.9,
+                    "probabilities": { "e1": 0.7, "e2": 0.2 },
+                }
+            })
+        };
+        assert_eq!(pick(&ranked("e1"), "control"), Some(("e1", 0.7)));
+        // The same numbers naming the option they rank second. The answer
+        // contradicts itself, so there is nothing in it to act on.
+        assert_eq!(pick(&ranked("e2"), "control"), None);
     }
 
     #[test]

@@ -88,9 +88,21 @@ fn launch_only_without_screen(step: Step, failure: &str) -> Step {
 }
 
 /// Controls offered in one action choice. Jev supports high-cardinality
-/// choices; 32 keeps busy consumer apps useful without sending an unbounded AX
-/// tree or crowding the model's input with menu chrome.
-const MAX_CANDIDATES: usize = 32;
+/// choices — the hosted protocol's hard limit is 255 options — so the cap is
+/// there to keep the request bounded, not to keep it small: a control the cap
+/// drops is one the loop cannot choose at all, however obvious it is on the
+/// screen. 120 leaves room for the other options one step can carry (up to 20
+/// applications, 5 dictated spans, 26 shortcuts, 6 scroll directions, a
+/// website, a search submit and the three terminals) and still stays well
+/// under the limit.
+const MAX_CANDIDATES: usize = 120;
+/// Everything one step can offer beside the controls: the application
+/// shortlist, a website, the dictated spans, a search submit, every shortcut
+/// and scroll direction the command could name, and wait/blocked/done. A
+/// request over the protocol's 255 options is refused rather than answered, so
+/// the two are held under it here rather than discovered on a busy screen.
+const OTHER_OPTIONS: usize = 20 + 1 + 5 + 1 + jev::KEYS.len() + jev::DIRECTIONS.len() + 3;
+const _: () = assert!(MAX_CANDIDATES + OTHER_OPTIONS <= 255);
 /// The legacy one-action classifier was measured with eight controls. Keep
 /// that independent from the whole-task loop's larger grounded action space.
 const MAX_INSTANT_CANDIDATES: usize = 8;
@@ -478,12 +490,17 @@ fn action_options(
         .iter()
         .filter(|element| offer_control(task, history, spans, element))
     {
+        // The position belongs here as well as in the state list: the two
+        // must describe the same control, and without it a screen with two
+        // identically labelled controls offers Jev two identical descriptions
+        // under different keys — a tie it does not answer as one.
         options.push((
             format!("press:e{}", element.id),
             json!({
                 "operation": "click",
                 "role": element.role,
                 "label": element.label,
+                "where": element.at.clone().unwrap_or_else(|| "not placed".into()),
             }),
         ));
     }
@@ -2002,11 +2019,37 @@ mod tests {
         assert_eq!(named.len(), reading.elements.len().min(MAX_CANDIDATES));
         // A command that names nothing on screen still gets a short list.
         assert_eq!(candidates("do something", &reading).len(), 7);
-        // A busy screen stays a short request.
+        // A busy screen stays a bounded request.
         let busy = ScreenReading {
-            elements: (0..40).map(|i| el(i, "button", "x")).collect(),
+            elements: (0..MAX_CANDIDATES + 8)
+                .map(|i| el(i, "button", "x"))
+                .collect(),
             ..mail()
         };
         assert_eq!(candidates("press x", &busy).len(), MAX_CANDIDATES);
+    }
+
+    #[test]
+    fn two_controls_with_the_same_label_are_described_apart() {
+        // Identical descriptions under different keys are a tie Jev does not
+        // answer as one: it leans on the first key and still reports the
+        // confidence of a decision it did not make.
+        let mut first = el(4, "button", "Reply");
+        first.at = Some("top right".into());
+        let mut second = el(9, "button", "Reply");
+        second.at = Some("bottom left".into());
+        let reading = ScreenReading {
+            elements: vec![first, second],
+            ..mail()
+        };
+        let task = "reply to the email";
+        let candidates = candidates(task, &reading);
+        let described: Vec<Value> = action_options(task, &reading, &[], &[], &[], &candidates)
+            .into_iter()
+            .filter(|(id, _)| id.starts_with("press:"))
+            .map(|(_, described)| described)
+            .collect();
+        assert_eq!(described.len(), 2, "both controls are offered");
+        assert_ne!(described[0], described[1], "{described:?}");
     }
 }
