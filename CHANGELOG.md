@@ -29,6 +29,10 @@ All notable changes to Lilypad are documented here. The format follows
 - **One lost request no longer ends a task.** A step whose request never
   reached the service is asked once more before Ask gives up, so a dropped
   packet part-way through a task is not the end of it.
+- **A slow moment no longer ends a task either.** Ask gave every request the
+  two and a half seconds that suit the single-action shortcut, where your own
+  AI takes over if it runs long. A whole task has nothing behind it to take
+  over, so it now waits up to ten seconds for a step before giving up.
 
 ## [0.1.49] — 2026-09-21
 

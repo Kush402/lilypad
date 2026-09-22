@@ -1531,11 +1531,7 @@ mod tests {
             }),
         );
         match step {
-            Step::Act(acting) => assert!(
-                acting.summary.contains("Archive"),
-                "{}",
-                acting.summary
-            ),
+            Step::Act(acting) => assert!(acting.summary.contains("Archive"), "{}", acting.summary),
             other => panic!("{other:?}"),
         }
     }

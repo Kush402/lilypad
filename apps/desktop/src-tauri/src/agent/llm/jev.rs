@@ -79,6 +79,13 @@ const MAX_CHARS: usize = 160;
 /// answered by then is abandoned and the language model takes the task.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 const DEADLINE: Duration = Duration::from_millis(2500);
+/// The whole-task loop's own deadline. Abandoning an instant request hands
+/// the task to the language model; abandoning a step request hands it
+/// nowhere, because in that loop Jev is the brain — it ends the run. The
+/// question is a larger one too: up to `MAX_CANDIDATES` controls in the
+/// state. Still bounded, so the phone is never silent for long, but not the
+/// instant path's "fast or not worth having".
+const STEP_DEADLINE: Duration = Duration::from_secs(10);
 
 /// How sure the model must be of the kind of action, and of its argument.
 /// Measured on real answers (`jev_fixtures.json`): every command there that
@@ -643,7 +650,11 @@ pub(super) fn pick<'a>(answers: &'a Value, question: &str) -> Option<(&'a str, f
     // `choice` is not the most likely option contradicts itself, and acting on
     // it would act on something the same answer ranked below another offered
     // option.
-    (!all.values().filter_map(Value::as_f64).any(|other| other > p)).then_some((chosen, p))
+    (!all
+        .values()
+        .filter_map(Value::as_f64)
+        .any(|other| other > p))
+    .then_some((chosen, p))
 }
 
 /// Turn the answers into one action, or `None`. Pure: the whole policy of
@@ -947,7 +958,7 @@ impl Jev {
         );
         let body = request(&self.config.model, task, reading, &apps);
         let started = std::time::Instant::now();
-        let answers = match self.ask(&body).await {
+        let answers = match self.ask(&body, DEADLINE).await {
             Ok(answers) => answers,
             Err(e) => {
                 if e.downcast_ref::<ProviderFailure>()
@@ -977,7 +988,7 @@ impl Jev {
     /// One step of a task (ADR-0020). Unlike [`Jev::instant`], a failure here
     /// is the caller's to report: the run has already started.
     pub(super) async fn ask_step(&self, body: &Value) -> Result<Value> {
-        let mut answers = self.ask(body).await;
+        let mut answers = self.ask(body, STEP_DEADLINE).await;
         // One retry, and only for a failure that is the network rather than
         // an answer. The instant classifier deliberately has none, because a
         // miss there costs one suggestion; this is the whole-task loop, where
@@ -990,7 +1001,7 @@ impl Jev {
                 "the step request did not reach the service; retrying once in {delay:?}"
             );
             tokio::time::sleep(delay).await;
-            answers = self.ask(body).await;
+            answers = self.ask(body, STEP_DEADLINE).await;
         }
         if let Err(e) = &answers {
             if e.downcast_ref::<ProviderFailure>()
@@ -1009,13 +1020,20 @@ impl Jev {
             .is_some_and(|failure| failure.kind.is_transient())
     }
 
-    async fn ask(&self, body: &Value) -> Result<Value> {
+    async fn ask(&self, body: &Value, deadline: Duration) -> Result<Value> {
         #[cfg(test)]
         if let Some(canned) = &self.canned {
             return Ok(canned.clone());
         }
         let body = self.envelope(body);
-        let reply = send(&self.client, &self.config, self.config.path(), Some(&body)).await?;
+        let reply = send(
+            &self.client,
+            &self.config,
+            self.config.path(),
+            Some(&body),
+            deadline,
+        )
+        .await?;
         answers_of(&reply, &self.config.model).cloned()
     }
 
@@ -1066,6 +1084,7 @@ async fn send(
     config: &InstantConfig,
     path: &str,
     body: Option<&Value>,
+    deadline: Duration,
 ) -> std::result::Result<Value, ProviderFailure> {
     let url = format!("{}{path}", config.base_url.trim_end_matches('/'));
     let request = match body {
@@ -1086,6 +1105,7 @@ async fn send(
     };
     let resp = request
         .header("authorization", format!("Bearer {bearer}"))
+        .timeout(deadline)
         .send()
         .await
         .map_err(|e| http::classify_transport(&e))?;
@@ -1136,7 +1156,15 @@ async fn check_key_at(config: InstantConfig) -> std::result::Result<(), String> 
         return Err(problem);
     }
     let client = super::client_with(Duration::from_secs(5), Duration::from_secs(10));
-    let reply = match send(&client, &config, "/v1/systemone", Some(&check_request())).await {
+    let reply = match send(
+        &client,
+        &config,
+        "/v1/systemone",
+        Some(&check_request()),
+        DEADLINE,
+    )
+    .await
+    {
         Ok(reply) => reply,
         Err(f) if f.kind == FailureKind::Auth => {
             return Err(
@@ -1782,6 +1810,16 @@ mod tests {
     /// A one-request server: answers `status` with `body`, and hands back
     /// the request it received.
     fn serve_once(status: &str, body: &str) -> (String, std::thread::JoinHandle<String>) {
+        serve_once_after(Duration::ZERO, status, body)
+    }
+
+    /// The same one-shot server, answering only after `delay` — a service that
+    /// is alive and slow rather than gone.
+    fn serve_once_after(
+        delay: Duration,
+        status: &str,
+        body: &str,
+    ) -> (String, std::thread::JoinHandle<String>) {
         use std::io::{Read, Write};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
@@ -1815,6 +1853,7 @@ mod tests {
                     break;
                 }
             }
+            std::thread::sleep(delay);
             stream.write_all(reply.as_bytes()).unwrap();
             String::from_utf8_lossy(&seen).into_owned()
         });
@@ -2007,6 +2046,26 @@ mod tests {
         assert!(jev.envelope(&body).get("taskId").is_none());
     }
 
+    /// A step request survives a service that is alive and slow. The instant
+    /// path abandons at 2.5s because the language model takes the task from
+    /// there; in the whole-task loop there is nothing behind Jev, so the same
+    /// deadline would end the run.
+    #[tokio::test]
+    async fn a_slow_service_does_not_end_a_whole_task() {
+        let (bearer, _) = bearer_of("device-token-abc");
+        let (base, server) = serve_once_after(
+            DEADLINE + Duration::from_millis(600),
+            "200 OK",
+            &real_check_reply(),
+        );
+        let jev = Jev::new(InstantConfig::hosted(base, bearer));
+        let answered = jev
+            .ask_step(&json!({ "model": MODEL, "state": {}, "questions": {} }))
+            .await;
+        server.join().unwrap();
+        assert!(answered.is_ok(), "{answered:?}");
+    }
+
     /// A whole-task step that fails on the network is asked once more. The
     /// second attempt fetches its own bearer, so the token counter is the
     /// evidence that it happened; the server is gone by then, which is why
@@ -2158,7 +2217,7 @@ mod tests {
         for (command, on, _) in CASES {
             let apps = app_candidates(command, &installed());
             let body = request(&config.model, command, &screen(on), &apps);
-            let reply = send(&client, &config, "/v1/systemone", Some(&body))
+            let reply = send(&client, &config, "/v1/systemone", Some(&body), DEADLINE)
                 .await
                 .unwrap_or_else(|e| panic!("{command}: {e}"));
             out.insert((*command).to_string(), reply);
