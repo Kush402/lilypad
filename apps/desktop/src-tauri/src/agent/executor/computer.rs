@@ -69,6 +69,11 @@ const SETTLE_MAX_QUICK: Duration = Duration::from_millis(900);
 const SETTLE_MAX_LAUNCH: Duration = Duration::from_millis(8000);
 /// Poll interval while a newly focused app is publishing its AX identity.
 const FOCUS_READ_RETRY: Duration = Duration::from_millis(100);
+/// The first explicit look has no post-action settle budget. macOS can still
+/// be publishing focus just as a remote Ask command starts, so give only the
+/// two transient focus errors a short retry without delaying a good reading
+/// or inventing a frontmost target.
+const FIRST_LOOK_FOCUS_RETRY: Duration = Duration::from_millis(500);
 
 /// How far the pointer may drift between two of Ask's gestures before it
 /// counts as a person moving the mouse, in points. Generous: a false takeover
@@ -639,6 +644,7 @@ impl ComputerExecutor {
     async fn look(&mut self, settle_max: Duration) -> Observation {
         let target = self.display.get();
         let settle_started = std::time::Instant::now();
+        let first_look = self.last_looked.is_none();
         let changed = matches!(self.last_looked, Some(prev) if prev != target);
         self.last_looked = Some(target);
 
@@ -668,7 +674,7 @@ impl ComputerExecutor {
 
         // The element reading. A failure here is not a failure to see — the
         // screenshot still stands — so it is reported, not returned.
-        let reading_budget = settle_max.saturating_sub(settle_started.elapsed());
+        let reading_budget = focus_read_budget(settle_max, settle_started.elapsed(), first_look);
         let reading = self.read_with_settle(reading_budget).await;
 
         let bounds = frame
@@ -1126,6 +1132,14 @@ fn retryable_focus_read_error(error: &str) -> bool {
         || error.starts_with("the focused app has no window on the shared display")
 }
 
+fn focus_read_budget(settle_max: Duration, elapsed: Duration, first_look: bool) -> Duration {
+    if first_look && settle_max.is_zero() {
+        FIRST_LOOK_FOCUS_RETRY
+    } else {
+        settle_max.saturating_sub(elapsed)
+    }
+}
+
 fn to_hit(info: ax::HitInfo, secure_input: bool) -> Hit {
     let (protected, terminal) = ax::surface_of(&info.path);
     Hit {
@@ -1506,6 +1520,22 @@ mod tests {
         assert!(!retryable_focus_read_error(
             "Accessibility permission not granted — allow Lilypad in System Settings"
         ));
+    }
+
+    #[test]
+    fn the_first_look_gets_a_brief_focus_retry_without_extending_later_looks() {
+        assert_eq!(
+            focus_read_budget(Duration::ZERO, Duration::ZERO, true),
+            FIRST_LOOK_FOCUS_RETRY
+        );
+        assert_eq!(
+            focus_read_budget(Duration::ZERO, Duration::ZERO, false),
+            Duration::ZERO
+        );
+        assert_eq!(
+            focus_read_budget(Duration::from_secs(2), Duration::from_millis(300), true),
+            Duration::from_millis(1700)
+        );
     }
 
     #[test]

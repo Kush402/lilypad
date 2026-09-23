@@ -8,6 +8,11 @@ All notable changes to Lilypad are documented here. The format follows
 
 ### Fixed
 
+- **Ask briefly retries an unreadable first focus reading.** When macOS is
+  still publishing the focused app or its shared-screen window as a task
+  starts, the first look retries for up to half a second. Missing permission
+  and other reading failures still return immediately; Ask never guesses a
+  keyboard target from a window that merely looks frontmost.
 - **A stalled Ask model reply no longer ties up the hosted service.** The
   ten-second upstream deadline now covers the entire response, including a
   body that stops streaming after its headers. A broken body becomes a safe
