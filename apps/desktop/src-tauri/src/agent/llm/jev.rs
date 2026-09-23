@@ -86,6 +86,10 @@ const DEADLINE: Duration = Duration::from_millis(2500);
 /// state. Still bounded, so the phone is never silent for long, but not the
 /// instant path's "fast or not worth having".
 const STEP_DEADLINE: Duration = Duration::from_secs(10);
+/// The hosted backend has its own ten-second *upstream* deadline. Allow the
+/// control plane and network time to deliver its named failure instead of
+/// timing out locally at the same instant and retrying a still-running step.
+const HOSTED_STEP_DEADLINE: Duration = Duration::from_secs(12);
 
 /// How sure the model must be of the kind of action, and of its argument.
 /// Measured on real answers (`jev_fixtures.json`): every command there that
@@ -1010,10 +1014,19 @@ impl Jev {
         &self.config.model
     }
 
+    fn step_deadline(&self) -> Duration {
+        if self.config.is_hosted() {
+            HOSTED_STEP_DEADLINE
+        } else {
+            STEP_DEADLINE
+        }
+    }
+
     /// One step of a task (ADR-0020). Unlike [`Jev::instant`], a failure here
     /// is the caller's to report: the run has already started.
     pub(super) async fn ask_step(&self, body: &Value) -> Result<Value> {
-        let mut answers = self.ask(body, STEP_DEADLINE).await;
+        let deadline = self.step_deadline();
+        let mut answers = self.ask(body, deadline).await;
         // One retry, and only for a failure that is the network rather than
         // an answer. The instant classifier deliberately has none, because a
         // miss there costs one suggestion; this is the whole-task loop, where
@@ -1026,7 +1039,7 @@ impl Jev {
                 "the step request did not reach the service; retrying once in {delay:?}"
             );
             tokio::time::sleep(delay).await;
-            answers = self.ask(body, STEP_DEADLINE).await;
+            answers = self.ask(body, deadline).await;
         }
         if let Err(e) = &answers {
             if e.downcast_ref::<ProviderFailure>()
@@ -2202,6 +2215,17 @@ mod tests {
             .await;
         server.join().unwrap();
         assert!(answered.is_ok(), "{answered:?}");
+    }
+
+    #[test]
+    fn hosted_step_deadline_outlasts_the_backend_upstream_deadline() {
+        // askSystemOne.ts spends ten seconds on the upstream response, then
+        // still needs to send Lilypad's own 502 back to this Mac.
+        let (bearer, _) = bearer_of("device-token-abc");
+        let hosted = Jev::new(InstantConfig::hosted("https://api.lilypad.example", bearer));
+        let direct = Jev::new(InstantConfig::new("ts_personal_key"));
+        assert!(hosted.step_deadline() > Duration::from_secs(10));
+        assert_eq!(direct.step_deadline(), Duration::from_secs(10));
     }
 
     /// A whole-task step that fails on the network is asked once more. The

@@ -8,6 +8,12 @@ All notable changes to Lilypad are documented here. The format follows
 
 ### Fixed
 
+- **A stalled Ask model reply no longer ties up the hosted service.** The
+  ten-second upstream deadline now covers the entire response, including a
+  body that stops streaming after its headers. A broken body becomes a safe
+  failure reason instead of an unhandled server error. The Mac gives this
+  hosted path two seconds to return that reason; direct-key steps keep their
+  existing deadline.
 - **Lilypad's own-account Ask now accepts the actions Jev is asked to choose
   from.** The hosted service had rejected structured action descriptions and
   busy screens before Jev could answer. It now accepts the bounded action

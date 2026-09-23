@@ -26,8 +26,9 @@ import { config } from '../config.js';
  *     heap.
  */
 
-/** Bounded so a hung upstream cannot hold a device's step open. One step
- *  measured ~250 ms live; ten seconds is a failure, not slowness. */
+/** Bounded across response headers and the entire body, so a stalled stream
+ *  cannot hold a device's step open. One step measured ~250 ms live; ten
+ *  seconds is a failure, not slowness. */
 const REQUEST_TIMEOUT_MS = 10_000;
 
 /** The System One endpoint. One path, not a base a caller can steer. */
@@ -70,61 +71,83 @@ export async function askSystemOne(
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-  let res: Response;
   try {
-    res = await fetchImpl(`${config.env.TYPESAFE_BASE_URL.replace(/\/+$/, '')}${PATH}`, {
-      method: 'POST',
-      headers: {
-        authorization: `Bearer ${apiKey}`,
-        'content-type': 'application/json',
-      },
-      body,
-      signal: controller.signal,
-      // A redirect is a request to send the bearer somewhere else. Refuse it
-      // rather than follow it — the desktop's own client takes the same line
-      // (`agent/llm/http.rs`, L-275).
-      redirect: 'manual',
-    });
-  } catch (err) {
-    // The message is the transport's ("fetch failed", "The operation was
-    // aborted"). It names no payload, so it is safe to pass on; the body is
-    // not in scope here and never becomes one.
-    return {
-      ok: false,
-      reason: 'upstream',
-      status: null,
-      detail: err instanceof Error ? err.name : 'transport',
-    };
+    let res: Response;
+    try {
+      res = await fetchImpl(`${config.env.TYPESAFE_BASE_URL.replace(/\/+$/, '')}${PATH}`, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${apiKey}`,
+          'content-type': 'application/json',
+        },
+        body,
+        signal: controller.signal,
+        // A redirect is a request to send the bearer somewhere else. Refuse it
+        // rather than follow it — the desktop's own client takes the same line
+        // (`agent/llm/http.rs`, L-275).
+        redirect: 'manual',
+      });
+    } catch (err) {
+      // The error type is the transport's, never a returned body. Keep the
+      // timer's own reason distinct from an ordinary connection failure.
+      return {
+        ok: false,
+        reason: 'upstream',
+        status: null,
+        detail: controller.signal.aborted
+          ? 'timeout'
+          : err instanceof Error
+            ? err.name
+            : 'transport',
+      };
+    }
+
+    if (res.status >= 300 && res.status < 400) {
+      return { ok: false, reason: 'upstream', status: res.status, detail: 'redirect refused' };
+    }
+
+    let raw: string | null;
+    try {
+      raw = await readBounded(res);
+    } catch {
+      // A failed stream can reject after headers arrived. Neither that
+      // rejection nor an abort may escape as a route-level 500.
+      return {
+        ok: false,
+        reason: 'upstream',
+        status: res.status,
+        detail: controller.signal.aborted ? 'timeout' : 'reply unreadable',
+      };
+    }
+    if (raw === null) {
+      return { ok: false, reason: 'upstream', status: res.status, detail: 'reply too large' };
+    }
+    if (!res.ok) {
+      // TypeSafe's own error text is deliberately dropped. It is written for
+      // whoever holds the account — which is Lilypad, not the caller — and it
+      // is exactly the sort of string that quotes back what was sent.
+      return { ok: false, reason: 'upstream', status: res.status, detail: 'refused' };
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return { ok: false, reason: 'upstream', status: res.status, detail: 'malformed reply' };
+    }
+    const reply = parsed as { model?: unknown; answers?: unknown };
+    if (typeof reply.model !== 'string' || !isPlainObject(reply.answers)) {
+      return {
+        ok: false,
+        reason: 'upstream',
+        status: res.status,
+        detail: 'unexpected reply shape',
+      };
+    }
+    return { ok: true, model: reply.model, answers: reply.answers };
   } finally {
     clearTimeout(timer);
   }
-
-  if (res.status >= 300 && res.status < 400) {
-    return { ok: false, reason: 'upstream', status: res.status, detail: 'redirect refused' };
-  }
-
-  const raw = await readBounded(res);
-  if (raw === null) {
-    return { ok: false, reason: 'upstream', status: res.status, detail: 'reply too large' };
-  }
-  if (!res.ok) {
-    // TypeSafe's own error text is deliberately dropped. It is written for
-    // whoever holds the account — which is Lilypad, not the caller — and it
-    // is exactly the sort of string that quotes back what was sent.
-    return { ok: false, reason: 'upstream', status: res.status, detail: 'refused' };
-  }
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return { ok: false, reason: 'upstream', status: res.status, detail: 'malformed reply' };
-  }
-  const reply = parsed as { model?: unknown; answers?: unknown };
-  if (typeof reply.model !== 'string' || !isPlainObject(reply.answers)) {
-    return { ok: false, reason: 'upstream', status: res.status, detail: 'unexpected reply shape' };
-  }
-  return { ok: true, model: reply.model, answers: reply.answers };
 }
 
 /** The body, or null if it exceeds what a step's answers can plausibly be.

@@ -150,6 +150,64 @@ describe('the hosted System One call', () => {
     expect(result).toEqual({ ok: false, reason: 'upstream', status: null, detail: 'TypeError' });
   });
 
+  it('times out a stalled response body after headers instead of hanging the route', async () => {
+    vi.useFakeTimers();
+    try {
+      let aborted = false;
+      fetchImpl = ((_url: string, init: RequestInit) =>
+        Promise.resolve(
+          new Response(
+            new ReadableStream({
+              start(stream) {
+                (init.signal as AbortSignal).addEventListener(
+                  'abort',
+                  () => {
+                    aborted = true;
+                    stream.error(new Error('aborted'));
+                  },
+                  { once: true },
+                );
+              },
+            }),
+            { status: 200 },
+          ),
+        )) as unknown as typeof fetch;
+      const pending = askSystemOne(STEP, fetchImpl);
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(await pending).toEqual({
+        ok: false,
+        reason: 'upstream',
+        status: 200,
+        detail: 'timeout',
+      });
+      expect(aborted).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('turns a broken response stream into a bounded reason', async () => {
+    fetchImpl = (() =>
+      Promise.resolve(
+        new Response(
+          new ReadableStream({
+            start(stream) {
+              stream.error(new Error('upstream-private-message'));
+            },
+          }),
+          { status: 200 },
+        ),
+      )) as never;
+    const result = await askSystemOne(STEP, fetchImpl);
+    expect(result).toEqual({
+      ok: false,
+      reason: 'upstream',
+      status: 200,
+      detail: 'reply unreadable',
+    });
+    expect(JSON.stringify(result)).not.toContain('upstream-private-message');
+  });
+
   it('passes the answers through exactly as they arrived', async () => {
     // The calibrated numbers are the whole product of the call; rounding or
     // reshaping them here would silently move every threshold the Mac
