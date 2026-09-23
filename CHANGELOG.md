@@ -26,6 +26,11 @@ All notable changes to Lilypad are documented here. The format follows
   the focused-application attribute is temporarily missing but the focused
   control has a valid process, the reader can still scope that app’s windows
   to the shared display. It still refuses a screen with no verified focus.
+- **A click cannot silently move to a different app.** An accessibility
+  control chosen on one app is checked against the current focused app and
+  the control under its point before input is sent. Browser and Electron
+  helper processes count as their owning app; an app switch asks for a fresh
+  look instead of clicking the newcomer.
 - **Ask tells two controls of the same name apart when it chooses one, not
   only when it looks at them.** Where each control sits has been part of what
   Ask reads since 0.1.49, but the list it actually chooses from left it out, so

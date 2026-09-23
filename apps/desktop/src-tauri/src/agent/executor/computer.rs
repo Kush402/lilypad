@@ -76,6 +76,24 @@ const FOCUS_READ_RETRY: Duration = Duration::from_millis(100);
 /// sooner anyway.
 const DRIFT_POINTS: f64 = 12.0;
 
+/// The app bundle owning an executable. Browser and Electron accessibility
+/// elements can live in helper processes inside the same outer app bundle;
+/// comparing their process names or PIDs alone would reject a valid click.
+fn app_bundle(path: &str) -> Option<&str> {
+    let end = path.find(".app/")? + ".app".len();
+    Some(&path[..end])
+}
+
+fn same_read_app(read_pid: i32, read_path: &str, live_pid: i32, live_path: &str) -> bool {
+    if read_pid <= 0 || live_pid <= 0 {
+        return false;
+    }
+    match (app_bundle(read_path), app_bundle(live_path)) {
+        (Some(read), Some(live)) => read == live,
+        _ => read_pid == live_pid,
+    }
+}
+
 pub struct ComputerExecutor {
     pub(super) ax: AxExecutor,
     display: SharedDisplay,
@@ -440,6 +458,25 @@ impl ComputerExecutor {
                     }
                 }
                 let at = self.point_of(target)?;
+                if matches!(target, Target::Element(id) if *id < OCR_ID_BASE) {
+                    let snapshot = self.ax.last.as_ref().ok_or_else(|| {
+                        anyhow!("the screen reading is no longer current — look again")
+                    })?;
+                    let focus = ax::focus().ok_or_else(|| {
+                        anyhow!("the focused app changed since that screen was read — look again")
+                    })?;
+                    let [bx, by, bw, bh] = self.bounds();
+                    let under = ax::hit_test(bx + at.0 * bw, by + at.1 * bh).ok_or_else(|| {
+                        anyhow!(
+                            "the control at that point can no longer be identified — look again"
+                        )
+                    })?;
+                    if !same_read_app(snapshot.pid, &snapshot.path, focus.pid, &focus.path)
+                        || !same_read_app(snapshot.pid, &snapshot.path, under.pid, &under.path)
+                    {
+                        bail!("the app changed since that control was read — look again");
+                    }
+                }
                 // The approval named what was under the point. If something
                 // else is there now — a page that moved, a dialog that
                 // appeared — this is a different click (L-272's rule, for
@@ -1442,6 +1479,20 @@ mod tests {
         assert!(!focus_is_current(Some(&field), Some(&other)));
         assert!(!focus_is_current(Some(&field), None));
         assert!(!focus_is_current(None, Some(&field)));
+    }
+
+    #[test]
+    fn an_ax_click_stays_in_the_app_that_was_read() {
+        let chrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+        let helper = "/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/Current/Helpers/Google Chrome Helper.app/Contents/MacOS/Google Chrome Helper";
+        let safari = "/System/Applications/Safari.app/Contents/MacOS/Safari";
+        assert_eq!(app_bundle(helper), Some("/Applications/Google Chrome.app"));
+        assert!(same_read_app(100, chrome, 200, helper));
+        assert!(!same_read_app(100, chrome, 300, safari));
+        assert!(!same_read_app(100, chrome, 0, chrome));
+        // An app outside a bundle can still be checked by its process id.
+        assert!(same_read_app(100, "/opt/app", 100, "/opt/app"));
+        assert!(!same_read_app(100, "/opt/app", 200, "/opt/other"));
     }
 
     #[test]
