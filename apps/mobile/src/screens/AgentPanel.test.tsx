@@ -115,6 +115,31 @@ const noop = () => {};
  * make has to read like a decision.
  */
 describe('what the step feed shows a customer', () => {
+  it('shows the complete failure explanation in a scrollable card, not only a two-line row', async () => {
+    const reason =
+      'Ask could not read this screen: the focused app has no window on the shared display — move it to the screen you are sharing, or share the screen it is on.';
+    render(
+      <AgentPanel
+        {...DISCLOSED}
+        feed={feed({
+          phase: 'ended',
+          outcome: 'failed',
+          steps: [step({ step: 'result', state: 'failed', summary: reason })],
+        })}
+        onSend={noop}
+        onStop={noop}
+        onDecide={noop}
+      />,
+    );
+    await shown('agent-failure-card');
+    expect(
+      StyleSheet.flatten(screen.getByTestId('agent-panel').props.style).maxHeight,
+    ).toBeUndefined();
+    const detail = within(screen.getByTestId('agent-failure-detail')).getByText(reason);
+    expect(detail.props.numberOfLines).toBeUndefined();
+    expect(detail.props.selectable).toBe(true);
+  });
+
   it('does not print the executor tier', async () => {
     // `skill` / `sandbox` / `ax` / `vision` are the four executor tiers, an
     // internal cost/capability ladder. The feed used to append them to every

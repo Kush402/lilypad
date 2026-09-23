@@ -87,6 +87,41 @@ fn launch_only_without_screen(step: Step, failure: &str) -> Step {
     }
 }
 
+/// A one-step app request is complete when a successful launch is followed
+/// by a fresh reading of that very app on the shared display. This is a fact
+/// code can verify; asking Jev to re-guess it can turn "open Safari" into a
+/// failed task even though Safari is visibly in front. Commands with any
+/// further work still go through the whole-task loop.
+fn launched_app_completes_task(task: &str, history: &[String], reading: &ScreenReading) -> bool {
+    let Some(name) = history
+        .last()
+        .and_then(|line| line.strip_prefix("Open "))
+        .and_then(|line| line.strip_suffix(": done"))
+    else {
+        return false;
+    };
+    if !reading.app.eq_ignore_ascii_case(name) {
+        return false;
+    }
+    let words: Vec<String> = task
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(str::to_ascii_lowercase)
+        .filter(|word| word != "please")
+        .collect();
+    let app_words: std::collections::HashSet<String> = name
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(str::to_ascii_lowercase)
+        .collect();
+    let rest = match words.as_slice() {
+        [verb, rest @ ..] if matches!(verb.as_str(), "open" | "launch" | "start") => rest,
+        [switch, to, rest @ ..] if switch == "switch" && to == "to" => rest,
+        _ => return false,
+    };
+    !rest.is_empty() && rest.iter().all(|word| app_words.contains(word))
+}
+
 /// Controls offered in one action choice. Jev supports high-cardinality
 /// choices — the hosted protocol's hard limit is 255 options — so the cap is
 /// there to keep the request bounded, not to keep it small: a control the cap
@@ -480,7 +515,7 @@ fn action_options(
             json!({ "operation": "open application", "application": app }),
         ));
     }
-    if let Some(url) = jev::the_one_address(task) {
+    if let Some(url) = jev::website_for_command(task) {
         options.push((
             "website".into(),
             json!({ "operation": "open website", "address": url }),
@@ -817,7 +852,7 @@ fn decide_grounded(
         }
     } else {
         match chosen {
-            "website" => match jev::the_one_address(task) {
+            "website" => match jev::website_for_command(task) {
                 Some(url) => Acting::step(
                     format!("Open {url}"),
                     format!("url:{url}"),
@@ -1068,6 +1103,10 @@ impl Brain for JevBrain {
         let outbound_reading = reading_for_task(task, reading);
         let reading = &outbound_reading;
 
+        if unavailable.is_none() && launched_app_completes_task(task, &self.history, reading) {
+            return Self::finish(format!("Opened {}.", reading.app), FinishReason::Completed);
+        }
+
         if self.installed.is_none() {
             self.installed = Some(
                 tokio::task::spawn_blocking(jev::installed_apps)
@@ -1091,10 +1130,7 @@ impl Brain for JevBrain {
             Ok(answers) => answers,
             Err(e) => {
                 log::warn!(target: "lilypad::agent", "step could not be decided: {e}");
-                return Self::finish(
-                    "Ask could not reach the service that decides its next step.",
-                    FinishReason::Incomplete,
-                );
+                return Self::finish(self.jev.step_failure_message(&e), FinishReason::Incomplete);
             }
         };
         let mut step = decide_with_history(
@@ -1373,6 +1409,117 @@ mod tests {
             "no screen",
         );
         assert_eq!(blocked, Step::Stop("no screen".into()));
+    }
+
+    #[test]
+    fn opening_youtube_is_a_grounded_website_action_without_a_literal_dot() {
+        let reading = ScreenReading::default();
+        let offered = action_options("open YouTube", &reading, &[], &[], &[], &[]);
+        assert!(offered.iter().any(|(id, description)| {
+            id == "website" && description["address"] == "https://www.youtube.com/"
+        }));
+        assert!(matches!(
+            decide(
+                "open YouTube",
+                &reading,
+                &[],
+                &[],
+                &[],
+                &json!({
+                    "done": noul(0.01),
+                    "evidence": noul(0.01),
+                    "action": chose("website", 0.51),
+                }),
+            ),
+            Step::Act(ref action)
+                if matches!(&action.action, Action::OpenUrl { url } if url == "https://www.youtube.com/")
+        ));
+    }
+
+    #[test]
+    fn a_visible_app_completes_only_a_simple_launch_command() {
+        let chrome = ScreenReading {
+            app: "Google Chrome".into(),
+            ..ScreenReading::default()
+        };
+        let done = vec!["Open Google Chrome: done".into()];
+        assert!(launched_app_completes_task("open Chrome", &done, &chrome));
+        assert!(launched_app_completes_task(
+            "please switch to Google Chrome",
+            &done,
+            &chrome
+        ));
+        for command in [
+            "open Chrome and search for coffee shops",
+            "open Chrome in a new window",
+            "search for Chrome",
+        ] {
+            assert!(!launched_app_completes_task(command, &done, &chrome));
+        }
+        assert!(!launched_app_completes_task(
+            "open Chrome",
+            &["Open Google Chrome: did not work".into()],
+            &chrome
+        ));
+        assert!(!launched_app_completes_task(
+            "open Chrome",
+            &done,
+            &ScreenReading {
+                app: "Safari".into(),
+                ..ScreenReading::default()
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_successful_simple_launch_does_not_need_a_second_model_guess() {
+        let task = "open Safari";
+        let mut brain = JevBrain::new(Jev::new(jev::InstantConfig::new("not-used")));
+        *brain.canned() = Some(json!({
+            "done": noul(0.01),
+            "evidence": noul(0.01),
+            "action": chose("app:Safari", 0.51),
+        }));
+        assert!(matches!(
+            brain.next(task, &[]).await.unwrap(),
+            Decision::Act {
+                action: Action::ReadScreen,
+                ..
+            }
+        ));
+        let first = Observation {
+            summary: "Look at the screen".into(),
+            ok: true,
+            image: None,
+            screen: None,
+            reading: None,
+            reading_error: Some("no focused application".into()),
+        };
+        assert!(matches!(
+            brain.next(task, &[first]).await.unwrap(),
+            Decision::Act {
+                action: Action::OpenApp { .. },
+                ..
+            }
+        ));
+        let after = Observation {
+            summary: "Open Safari".into(),
+            ok: true,
+            image: None,
+            screen: None,
+            reading: Some(ScreenReading {
+                app: "Safari".into(),
+                ..ScreenReading::default()
+            }),
+            reading_error: None,
+        };
+        assert!(matches!(
+            brain.next(task, &[after]).await.unwrap(),
+            Decision::Finish {
+                reason: FinishReason::Completed,
+                ..
+            }
+        ));
     }
 
     /// The owner's v0.1.55 run got as far as opening Safari, then the abstract

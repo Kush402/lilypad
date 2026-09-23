@@ -473,11 +473,40 @@ pub fn read_focused_tree(display: Option<u32>) -> Result<AxSnapshot> {
     // asks which application is focused, too (L-270).
     unsafe { AXUIElementSetMessagingTimeout(system.0, AX_MESSAGE_TIMEOUT_SECS) };
     let started = std::time::Instant::now();
-    let app = copy_attribute(system.0, "AXFocusedApplication")
-        .ok_or_else(|| anyhow!("no focused application (grant Accessibility, focus an app)"))?;
-    // Promote the app value to an owned handle.
-    let app_handle = AxHandle {
-        raw: unsafe { CFRetain(app.0) },
+    // Some transitions publish the focused control before the system-wide
+    // focused-application attribute. Both are OS-reported focus, not a guess
+    // from a window title: when the app attribute is absent, the control's
+    // process is the only safe way to recover a scoped app reading. If both
+    // are absent, do not pick a frontmost-looking window or inject a key.
+    let focused = copy_attribute(system.0, "AXFocusedUIElement");
+    let app_handle = if let Some(app) = copy_attribute(system.0, "AXFocusedApplication") {
+        // Promote the app value to an owned handle.
+        AxHandle {
+            raw: unsafe { CFRetain(app.0) },
+        }
+    } else {
+        let mut focused_pid = 0i32;
+        let valid_pid = focused.as_ref().is_some_and(|element| {
+            let read = unsafe { AXUIElementGetPid(element.0, &mut focused_pid) == AX_SUCCESS };
+            read && focused_pid > 0
+        });
+        let app = if valid_pid {
+            unsafe { AXUIElementCreateApplication(focused_pid) }
+        } else {
+            std::ptr::null()
+        };
+        if app.is_null() {
+            if !crate::input::macos::accessibility_trusted() {
+                bail!("Accessibility permission not granted — allow Lilypad in System Settings");
+            }
+            bail!("no focused application or keyboard element (focus an app on the shared screen)");
+        }
+        log::info!(
+            target: "lilypad::agent",
+            "focused application was unavailable; recovered its identity from the focused element"
+        );
+        // AXUIElementCreateApplication returns a retained handle.
+        AxHandle { raw: app }
     };
     unsafe { AXUIElementSetMessagingTimeout(app_handle.raw, AX_MESSAGE_TIMEOUT_SECS) };
 
@@ -486,7 +515,6 @@ pub fn read_focused_tree(display: Option<u32>) -> Result<AxSnapshot> {
     unsafe { AXUIElementGetPid(app_handle.raw, &mut pid) };
     let (app_name, path) = app_of(pid);
     // Asked once, then matched by identity per node — no extra messages.
-    let focused = copy_attribute(system.0, "AXFocusedUIElement");
     let roots = scoped_roots(&app_handle, bounds);
     if roots.is_empty() {
         bail!(

@@ -1447,12 +1447,14 @@ mod tests {
     #[test]
     fn only_transient_focus_read_failures_are_retried() {
         assert!(retryable_focus_read_error(
-            "no focused application (grant Accessibility, focus an app)"
+            "no focused application or keyboard element (focus an app on the shared screen)"
         ));
         assert!(retryable_focus_read_error(
             "the focused app has no window on the shared display — move it to the screen you are sharing"
         ));
-        assert!(!retryable_focus_read_error("AX permission denied"));
+        assert!(!retryable_focus_read_error(
+            "Accessibility permission not granted — allow Lilypad in System Settings"
+        ));
     }
 
     #[test]

@@ -835,6 +835,31 @@ pub fn the_one_address(task: &str) -> Option<String> {
     found.next().is_none().then_some(first)
 }
 
+/// A literal address always wins. A few unambiguous site names can also be
+/// opened without asking the model to invent a URL. Keep this mapping closed
+/// and narrow: "search for YouTube" or a multi-step command is not permission
+/// to navigate to a guessed destination.
+pub fn website_for_command(task: &str) -> Option<String> {
+    if let Some(address) = the_one_address(task) {
+        return Some(address);
+    }
+    let words: Vec<String> = task
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(str::to_ascii_lowercase)
+        .filter(|word| word != "please")
+        .collect();
+    match words.as_slice() {
+        [verb, site] if matches!(verb.as_str(), "open" | "visit") && site == "youtube" => {
+            Some("https://www.youtube.com/".into())
+        }
+        [go, to, site] if go == "go" && to == "to" && site == "youtube" => {
+            Some("https://www.youtube.com/".into())
+        }
+        _ => None,
+    }
+}
+
 /// Words that do not identify an app on their own.
 const COMMON_WORDS: &[&str] = &[
     "the", "and", "app", "apps", "for", "with", "from", "into", "onto", "open", "launch", "start",
@@ -1018,6 +1043,54 @@ impl Jev {
     fn is_transient(e: &anyhow::Error) -> bool {
         e.downcast_ref::<ProviderFailure>()
             .is_some_and(|failure| failure.kind.is_transient())
+    }
+
+    /// The whole-task loop must tell the person *why* a decision failed. A
+    /// hosted 402/429 is Lilypad's own actionable refusal, not a lost network
+    /// request. Other provider text stays in the log: it may be technical or
+    /// from a configured third-party endpoint, so the phone gets a bounded
+    /// explanation rather than arbitrary response-body prose.
+    pub(super) fn step_failure_message(&self, error: &anyhow::Error) -> String {
+        let Some(failure) = error.downcast_ref::<ProviderFailure>() else {
+            return "Ask received a reply it could not use. Try again; if it repeats, update Lilypad."
+                .into();
+        };
+        if self.config.is_hosted()
+            && failure.kind == FailureKind::Quota
+            && matches!(failure.status, Some(402 | 429))
+        {
+            return failure.message.clone();
+        }
+        match failure.kind {
+            FailureKind::Auth if self.config.is_hosted() => {
+                "Ask could not confirm this Mac's account. Try again; if it repeats, reconnect the Mac."
+                    .into()
+            }
+            FailureKind::Auth => {
+                "TypeSafe did not accept your Ask key. Check it in Lilypad's settings on the Mac."
+                    .into()
+            }
+            FailureKind::Quota => {
+                "The TypeSafe account has reached its allowance. Check that account before retrying."
+                    .into()
+            }
+            FailureKind::UnknownModel | FailureKind::BadRequest => {
+                "Ask and the decision service could not agree on this request. Update Lilypad; if it repeats, send diagnostics."
+                    .into()
+            }
+            FailureKind::Unavailable | FailureKind::Transport => {
+                "Ask could not reach its decision service after retrying. Check the connection and try again."
+                    .into()
+            }
+            FailureKind::Malformed => {
+                "Ask's decision service sent a reply Lilypad could not read. Try again; if it repeats, send diagnostics."
+                    .into()
+            }
+            FailureKind::Redirected => {
+                "Ask's decision-service address redirected elsewhere. Check the provider address in Lilypad's settings."
+                    .into()
+            }
+        }
     }
 
     async fn ask(&self, body: &Value, deadline: Duration) -> Result<Value> {
@@ -1763,6 +1836,29 @@ mod tests {
     }
 
     #[test]
+    fn a_named_site_is_mapped_only_for_a_direct_navigation_command() {
+        for command in ["open YouTube", "visit youtube please", "go to YouTube"] {
+            assert_eq!(
+                website_for_command(command).as_deref(),
+                Some("https://www.youtube.com/"),
+                "{command}"
+            );
+        }
+        for command in [
+            "search for YouTube",
+            "open YouTube and Mail",
+            "open YouTube app",
+            "open an article about YouTube",
+        ] {
+            assert_eq!(website_for_command(command), None, "{command}");
+        }
+        assert_eq!(
+            website_for_command("open youtube.com").as_deref(),
+            Some("https://youtube.com")
+        );
+    }
+
+    #[test]
     fn app_candidates_share_a_word_with_the_command() {
         let apps = installed();
         assert_eq!(app_candidates("open chrome", &apps), ["Google Chrome"]);
@@ -2018,6 +2114,48 @@ mod tests {
     }
 
     #[test]
+    fn whole_task_failures_keep_actionable_hosted_refusals() {
+        let (bearer, _) = bearer_of("t");
+        let hosted = Jev::new(InstantConfig::hosted("https://api.lilypad.example", bearer));
+        for (status, message) in [
+            (
+                402,
+                "Running tasks on Lilypad’s own account needs an active Pro or Team plan.",
+            ),
+            (429, "That is all 25 of today’s tasks on Lilypad’s account."),
+        ] {
+            let error = anyhow::Error::new(ProviderFailure {
+                kind: FailureKind::Quota,
+                status: Some(status),
+                message: message.into(),
+            });
+            assert_eq!(hosted.step_failure_message(&error), message);
+        }
+        let auth = anyhow::Error::new(ProviderFailure {
+            kind: FailureKind::Auth,
+            status: Some(401),
+            message: "device token expired".into(),
+        });
+        assert!(hosted
+            .step_failure_message(&auth)
+            .contains("reconnect the Mac"));
+        assert!(!hosted.step_failure_message(&auth).contains("device token"));
+
+        let personal = Jev::new(InstantConfig::new("personal-key"));
+        let quota = anyhow::Error::new(ProviderFailure {
+            kind: FailureKind::Quota,
+            status: Some(429),
+            message: "raw third-party text".into(),
+        });
+        assert!(personal
+            .step_failure_message(&quota)
+            .contains("TypeSafe account"));
+        assert!(!personal
+            .step_failure_message(&quota)
+            .contains("raw third-party"));
+    }
+
+    #[test]
     fn every_step_of_one_task_carries_the_same_id_and_a_new_run_does_not() {
         // This is the desktop half of "25 tasks a day, not 25 steps": the
         // backend counts an id, and one `Jev` is one run.
@@ -2119,6 +2257,10 @@ mod tests {
             .unwrap_err();
         server.join().unwrap();
         assert!(failed.to_string().contains("Pro or Team"), "{failed}");
+        assert_eq!(
+            jev.step_failure_message(&failed),
+            "Running tasks on Lilypad’s own account needs an active Pro or Team plan."
+        );
     }
 
     #[tokio::test]

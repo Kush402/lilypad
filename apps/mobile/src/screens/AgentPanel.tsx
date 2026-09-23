@@ -250,6 +250,17 @@ export function AgentPanel({
   const [text, setText] = useState('');
   const held = heldStep(feed);
   const status = phaseLabel(feed.phase);
+  // The final explanation is often longer than two lines. Keep it visible
+  // above the compact history instead of hiding the only useful part of a
+  // failed Ask run behind the history row's truncation.
+  const failure =
+    feed.phase === 'ended' && feed.outcome === 'failed'
+      ? [...feed.steps]
+          .reverse()
+          .find(
+            (step) => (step.step === 'result' || step.step === 'error') && step.state === 'failed',
+          )
+      : undefined;
   // Something may be happening on the Mac in any of these, so Stop stays
   // reachable throughout — a command that is still `sending` used to have no
   // Stop at all, and a `stopping` one lost it the moment it was pressed.
@@ -492,7 +503,7 @@ export function AgentPanel({
   const full = fullControlAvailable && autonomy === 'full';
 
   return (
-    <View style={[styles.panel, !held && styles.panelCapped]} testID="agent-panel">
+    <View style={[styles.panel, !held && !failure && styles.panelCapped]} testID="agent-panel">
       {fullControlAvailable && onChooseAutonomy ? (
         <Pressable
           testID="agent-autonomy-toggle"
@@ -695,6 +706,23 @@ export function AgentPanel({
         </View>
       ) : null}
 
+      {failure ? (
+        <View style={styles.failureCard} testID="agent-failure-card">
+          <Text style={styles.failureTitle} accessibilityRole="alert">
+            Ask couldn't finish
+          </Text>
+          <ScrollView
+            style={styles.failureScroll}
+            nestedScrollEnabled
+            testID="agent-failure-detail"
+          >
+            <Text style={styles.failureDetail} selectable>
+              {failure.summary}
+            </Text>
+          </ScrollView>
+        </View>
+      ) : null}
+
       <ScrollView style={styles.feed} contentContainerStyle={styles.feedContent}>
         {feed.steps.length === 0 ? (
           <Text style={styles.empty}>
@@ -796,9 +824,8 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     flexShrink: 1,
   },
-  /** The idle cap. Deliberately not applied while a step is held: an approval
-   *  card does not fit in 260pt, and it is the most important thing on screen
-   *  when it exists. */
+  /** The idle cap. Neither an approval card nor a failure explanation belongs
+   *  in 260pt; both have to remain readable while the panel yields to video. */
   panelCapped: { maxHeight: 260 },
   inputRow: { flexDirection: 'row', alignItems: 'flex-end', gap: 8 },
   input: {
@@ -862,6 +889,18 @@ const styles = StyleSheet.create({
   declineText: { color: theme.ink, fontWeight: '700', fontSize: 14 },
   withdraw: { color: theme.muted, fontSize: 11, textDecorationLine: 'underline' },
   feed: { maxHeight: 130, flexShrink: 1 },
+  failureCard: {
+    backgroundColor: theme.bg,
+    borderColor: theme.danger,
+    borderWidth: 1,
+    borderRadius: 8,
+    padding: 8,
+    gap: 4,
+    flexShrink: 0,
+  },
+  failureTitle: { color: theme.danger, fontSize: 13, fontWeight: '700' },
+  failureScroll: { maxHeight: 92 },
+  failureDetail: { color: theme.ink, fontSize: 13, lineHeight: 18 },
   feedContent: { gap: 6, paddingVertical: 2 },
   empty: { color: theme.muted, fontSize: 13, fontStyle: 'italic' },
   stepRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 8 },

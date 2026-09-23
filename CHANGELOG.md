@@ -8,6 +8,24 @@ All notable changes to Lilypad are documented here. The format follows
 
 ### Fixed
 
+- **“Open YouTube” now has a real destination.** Ask can open YouTube's
+  homepage from that short command without making you spell out the URL. It
+  still does not turn a search or a longer instruction into a guessed website.
+- **Opening an app can finish when the app is visibly open.** For a simple
+  request like “open Safari,” a successful launch followed by a fresh reading
+  of Safari on the shared screen is enough; Ask no longer needs a second model
+  guess to say it is done. Commands with more work still continue step by step.
+- **The phone shows why Ask failed.** The full explanation appears in a
+  scrollable, selectable card instead of being cut to two lines in the step
+  history above a generic “Failed.”
+- **Ask now names account and allowance refusals honestly.** A Pro requirement
+  or a day’s-task limit is no longer reported as though the decision service
+  could not be reached. Connection, key, and malformed-reply failures also
+  receive distinct next steps without displaying arbitrary provider text.
+- **Ask can recover a focused app from its focused control.** On macOS, when
+  the focused-application attribute is temporarily missing but the focused
+  control has a valid process, the reader can still scope that app’s windows
+  to the shared display. It still refuses a screen with no verified focus.
 - **Ask tells two controls of the same name apart when it chooses one, not
   only when it looks at them.** Where each control sits has been part of what
   Ask reads since 0.1.49, but the list it actually chooses from left it out, so
