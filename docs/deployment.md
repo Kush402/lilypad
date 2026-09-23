@@ -668,7 +668,9 @@ Stated explicitly so nothing here reads as more finished than it is.
   relay VM (see below). Still true, and the residual risk: **both machines are
   Always Free instances in the same Oracle tenancy and region.** A disk failure,
   a bad migration, or losing one VM is covered; losing the tenancy is not.
-- No staging environment exists yet — the workflow supports it, nothing runs it.
+- No staging environment exists yet. The deploy workflow accepts only
+  `production`; a stale or API-supplied `staging` input fails before building or
+  touching a host. Do not use a staging-labelled dispatch as a smoke test.
 - ~~**The website is not deployed by CI.**~~ It is, since 2026-08-23.
   `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` were added 2026-08-21 and
   the workflow could not run until the repository went public two days later;
