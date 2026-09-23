@@ -8,6 +8,10 @@ All notable changes to Lilypad are documented here. The format follows
 
 ### Fixed
 
+- **Ask does not leave an accepted task hanging when startup fails.** If this
+  Mac cannot prepare its work area or start the configured AI, the phone now
+  gets a specific failure and a finished task instead of a spinner or a bare
+  “Failed.”
 - **“Open YouTube” now has a real destination.** Ask can open YouTube's
   homepage from that short command without making you spell out the URL. It
   still does not turn a search or a longer instruction into a guessed website.

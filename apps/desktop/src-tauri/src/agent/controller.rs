@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use tokio::sync::mpsc::{channel, unbounded_channel, Sender};
+use tokio::sync::mpsc::{channel, unbounded_channel, Sender, UnboundedSender};
 use tokio::task::JoinHandle;
 
 use crate::agent::executor::{ComputerConfig, Grid};
@@ -70,6 +70,29 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+/// A run admitted by the phone must always end with both a readable reason
+/// and a terminal frame, even if construction fails before AgentRunner owns
+/// the feed. Otherwise the accepted step can be left spinning indefinitely.
+fn fail_before_runner(
+    run_id: &str,
+    message: &str,
+    steps: &UnboundedSender<AgentOutbound>,
+    outcome: &Arc<Mutex<Option<RunOutcome>>>,
+) {
+    let _ = steps.send(AgentOutbound::step(
+        run_id,
+        format!("{run_id}-setup"),
+        StepKind::Error,
+        message,
+        None,
+        None,
+        StepState::Failed,
+        now_ms(),
+    ));
+    let _ = steps.send(AgentOutbound::run_end(run_id, RunOutcome::Failed, now_ms()));
+    *outcome.lock().unwrap() = Some(RunOutcome::Failed);
 }
 
 /// Whether a received `agent_command` may start a run, and if not, why. Pure —
@@ -639,6 +662,12 @@ impl AgentController {
                             target: "lilypad::agent",
                             "run {run_id_task}: nothing to run the task with"
                         );
+                        fail_before_runner(
+                            &run_id_task,
+                            "Ask could not start its configured AI. Recheck Ask setup on this Mac and try again.",
+                            &steps_tx,
+                            &outcome_record,
+                        );
                         return;
                     }
                 },
@@ -661,15 +690,15 @@ impl AgentController {
                 Ok(e) => e,
                 Err(e) => {
                     // Can only fail if HOME is unset — the sandbox tier needs a
-                    // run-artifact root. End the run with a clear reason rather
-                    // than acting with a half-built executor.
-                    let _ = steps_tx.send(AgentOutbound::run_end(
-                        &run_id_task,
-                        RunOutcome::Failed,
-                        now_ms(),
-                    ));
-                    *outcome_record.lock().unwrap() = Some(RunOutcome::Failed);
+                    // run-artifact root. Tell the person what to restore,
+                    // rather than acting with a half-built executor.
                     log::error!(target: "lilypad::agent", "agent executor init failed: {e}");
+                    fail_before_runner(
+                        &run_id_task,
+                        "Ask could not locate your home folder on this Mac. Restart Lilypad and try again.",
+                        &steps_tx,
+                        &outcome_record,
+                    );
                     return;
                 }
             };
@@ -824,6 +853,28 @@ impl Drop for AgentController {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_setup_failure_sends_a_reason_and_finishes_the_admitted_run() {
+        let (tx, mut rx) = unbounded_channel();
+        let outcome = Arc::new(Mutex::new(None));
+        fail_before_runner("run-1", "Check Ask setup on this Mac.", &tx, &outcome);
+
+        let step: serde_json::Value =
+            serde_json::from_str(&rx.try_recv().unwrap().encode()).unwrap();
+        assert_eq!(step["kind"], "agent_step");
+        assert_eq!(step["runId"], "run-1");
+        assert_eq!(step["step"], "error");
+        assert_eq!(step["state"], "failed");
+        assert_eq!(step["summary"], "Check Ask setup on this Mac.");
+
+        let end: serde_json::Value =
+            serde_json::from_str(&rx.try_recv().unwrap().encode()).unwrap();
+        assert_eq!(end["kind"], "agent_run_end");
+        assert_eq!(end["outcome"], "failed");
+        assert!(rx.try_recv().is_err());
+        assert_eq!(*outcome.lock().unwrap(), Some(RunOutcome::Failed));
+    }
 
     /// L-285. Four situations, four answers. They used to arrive as one absent
     /// `destination`, and the phone could not tell a Mac that was still
