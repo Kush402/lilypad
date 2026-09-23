@@ -1377,6 +1377,28 @@ mod tests {
         }
     }
 
+    #[test]
+    fn grounded_bootstrap_wire_fixture_matches_desktop_request() {
+        let reading = ScreenReading {
+            app: "no readable application".into(),
+            ..ScreenReading::default()
+        };
+        let actual = request(
+            "jev-1.13.0",
+            "open Safari",
+            &reading,
+            &[],
+            &[],
+            &["Safari".into()],
+            &[],
+        );
+        let hosted_contract: Value = serde_json::from_str(include_str!(
+            "../../../../../../packages/protocol/fixtures/grounded-bootstrap-step.json"
+        ))
+        .unwrap();
+        assert_eq!(actual, hosted_contract);
+    }
+
     fn noul(p: f64) -> Value {
         json!({ "type": "noul", "noul": p })
     }

@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { ASK_MAX_REQUEST_BYTES, HostedAskStatusSchema } from '@lilypad/protocol';
 import type * as AuthTokens from '../auth/tokens.js';
@@ -193,6 +194,25 @@ describe('/ask/v1 routes', () => {
     const res = await post('device-token', body);
     expect(res.statusCode).toBe(200);
     expect(askSystemOne).toHaveBeenCalledOnce();
+  });
+
+  it('accepts the Rust desktop’s unreadable-screen app bootstrap request', async () => {
+    // The Rust request builder asserts that it still emits this same shared
+    // fixture. This side proves the hosted route accepts those exact bytes,
+    // including structured Choice criteria, before a device gets the build.
+    const desktopBody = JSON.parse(
+      readFileSync(
+        new URL(
+          '../../../../packages/protocol/fixtures/grounded-bootstrap-step.json',
+          import.meta.url,
+        ),
+        'utf8',
+      ),
+    ) as Record<string, unknown>;
+    const body = { taskId: 'task-aaaaaaaa', ...desktopBody };
+    const res = await post('device-token', body);
+    expect(res.statusCode).toBe(200);
+    expect(askSystemOne).toHaveBeenCalledWith(body);
   });
 
   it('needs a token at all', async () => {
