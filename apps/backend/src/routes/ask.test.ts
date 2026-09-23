@@ -156,6 +156,45 @@ describe('/ask/v1 routes', () => {
     });
   });
 
+  it('accepts the dense grounded action choice the desktop actually sends', async () => {
+    const controls = Array.from({ length: 120 }, (_, id) => ({
+      id,
+      role: 'button',
+      label: `Action ${id}`,
+      where: 'middle centre',
+    }));
+    const body = {
+      ...step(),
+      state: {
+        ...step().state,
+        'controls on the screen': controls.map(
+          ({ id, role, label, where }) => `e${id}: ${role} “${label}” (${where})`,
+        ),
+      },
+      questions: {
+        done: { type: 'noul', instructions: 'Is the command complete?' },
+        evidence: { type: 'noul', instructions: 'Does the screen show it complete?' },
+        action: {
+          type: 'choice',
+          instructions: 'Choose the next offered action.',
+          criteria: Object.fromEntries([
+            ...controls.map(({ id, role, label, where }) => [
+              `press:e${id}`,
+              { operation: 'click', role, label, where },
+            ]),
+            ['wait', 'Wait briefly'],
+            ['blocked', 'No offered action can make progress'],
+            ['done', 'The screen proves the command is complete'],
+          ]),
+        },
+      },
+    };
+    expect(Buffer.byteLength(JSON.stringify(body))).toBeLessThan(ASK_MAX_REQUEST_BYTES);
+    const res = await post('device-token', body);
+    expect(res.statusCode).toBe(200);
+    expect(askSystemOne).toHaveBeenCalledOnce();
+  });
+
   it('needs a token at all', async () => {
     expect((await post(null)).statusCode).toBe(401);
     expect((await post('nonsense')).statusCode).toBe(401);

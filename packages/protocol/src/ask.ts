@@ -27,29 +27,66 @@ import { z } from 'zod';
  * are what stop an image arriving base64-encoded in one of them.
  */
 
-/** Longest single string anywhere in a request. A control label, a question's
- *  instructions, one history line — all well under this; a data URL is not. */
+/** Longest ordinary string in a request. Control labels, question instructions
+ *  and history lines are below this; only a command or literal address may
+ *  use the separate phone-command-sized exception. */
 const MAX_TEXT = 1_000;
-/** Most questions one step may ask. The desktop asks at most one `done`, one
- *  `step`, one per candidate control (8), plus text/key/direction/app. */
+/** The phone accepts a 4 KiB command; the hosted boundary must not reject
+ *  a command the phone already admitted solely because it is longer than a
+ *  control label. The whole request still has its independent byte bound. */
+const MAX_COMMAND_TEXT = 4 * 1024;
+/** Most questions one step may ask. The grounded whole-task request currently
+ *  asks three: completion, screen evidence, and one concrete action Choice. */
 export const ASK_MAX_QUESTIONS = 24;
 /** Most options one `choice` question may offer. */
-export const ASK_MAX_CRITERIA = 64;
+export const ASK_MAX_CRITERIA = 255;
 /** Most keys the state may describe, and most lines in a list-valued one. */
 const MAX_STATE_KEYS = 16;
-const MAX_STATE_LINES = 64;
+const MAX_STATE_LINES = 120;
 
 /**
  * Bytes of JSON the hosted route will accept in one step, and accept back
  * from TypeSafe.
  *
- * Fastify's default body limit is 1 MiB, which is three orders of magnitude
- * more than a step needs and exactly the room a screenshot would want. The
+ * Fastify's default body limit is 1 MiB, eight times this route's limit and
+ * ample room for an encoded screenshot. The
  * schema above bounds each field; this bounds the whole, so a request with
  * thousands of legal little strings is refused before it is parsed.
  */
 export const ASK_MAX_REQUEST_BYTES = 128 * 1024;
 export const ASK_MAX_REPLY_BYTES = 128 * 1024;
+
+/** The concrete actions the desktop's whole-task Choice offers. Strict
+ *  variants preserve structured descriptions without opening an arbitrary
+ *  object channel for screenshots, credentials or nested screen data. */
+const GroundedActionCriterionSchema = z.discriminatedUnion('operation', [
+  z
+    .object({
+      operation: z.literal('open application'),
+      application: z.string().min(1).max(MAX_TEXT),
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal('open website'),
+      address: z.string().min(1).max(MAX_COMMAND_TEXT),
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal('click'),
+      role: z.string().min(1).max(MAX_TEXT),
+      label: z.string().max(MAX_TEXT),
+      where: z.string().max(MAX_TEXT),
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal('type'),
+      'text from the command': z.string().min(1).max(MAX_TEXT),
+    })
+    .strict(),
+]);
 
 /** One question, in the two shapes the System One API documents and the two
  *  the desktop actually builds. */
@@ -69,7 +106,10 @@ export const AskQuestionSchema = z.discriminatedUnion('type', [
       /** Option id → what it means, or null when the id speaks for itself (an
        *  application name). */
       criteria: z
-        .record(z.string().min(1).max(128), z.string().max(MAX_TEXT).nullable())
+        .record(
+          z.string().min(1).max(128),
+          z.union([z.string().max(MAX_TEXT), z.null(), GroundedActionCriterionSchema]),
+        )
         .refine((c) => Object.keys(c).length <= ASK_MAX_CRITERIA, {
           message: `at most ${ASK_MAX_CRITERIA} criteria`,
         }),
@@ -99,10 +139,24 @@ export const AskSystemOneRequestSchema = z
     state: z
       .record(
         z.string().min(1).max(64),
-        z.union([z.string().max(MAX_TEXT), z.array(z.string().max(MAX_TEXT)).max(MAX_STATE_LINES)]),
+        z.union([
+          z.string().max(MAX_COMMAND_TEXT),
+          z.array(z.string().max(MAX_TEXT)).max(MAX_STATE_LINES),
+        ]),
       )
       .refine((s) => Object.keys(s).length <= MAX_STATE_KEYS, {
         message: `at most ${MAX_STATE_KEYS} state keys`,
+      })
+      .superRefine((state, ctx) => {
+        for (const [key, value] of Object.entries(state)) {
+          if (key !== 'command' && typeof value === 'string' && value.length > MAX_TEXT) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: [key],
+              message: `at most ${MAX_TEXT} characters outside the command`,
+            });
+          }
+        }
       }),
     questions: z
       .record(z.string().min(1).max(64), AskQuestionSchema)

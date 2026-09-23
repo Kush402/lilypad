@@ -138,6 +138,10 @@ const MAX_CANDIDATES: usize = 120;
 /// the two are held under it here rather than discovered on a busy screen.
 const OTHER_OPTIONS: usize = 20 + 1 + 5 + 1 + jev::KEYS.len() + jev::DIRECTIONS.len() + 3;
 const _: () = assert!(MAX_CANDIDATES + OTHER_OPTIONS <= 255);
+/// Mirrors `ASK_MAX_REQUEST_BYTES` in `@lilypad/protocol`. A screen can have
+/// 120 legal controls with long or heavily escaped labels and still exceed
+/// Fastify's byte limit, so cardinality alone is not a payload bound.
+const MAX_STEP_WIRE_BYTES: usize = 128 * 1024;
 /// The legacy one-action classifier was measured with eight controls. Keep
 /// that independent from the whole-task loop's larger grounded action space.
 const MAX_INSTANT_CANDIDATES: usize = 8;
@@ -646,6 +650,53 @@ pub fn request(
     })
 }
 
+/// Keep the highest-priority controls that fit the hosted route's whole-body
+/// limit, including its task-id envelope. The command's named controls are
+/// first, so dropping from the end preserves them as long as possible. The
+/// same bound applies to BYOK for parity; only hosted adds the envelope.
+fn bounded_request<'a>(
+    jev: &Jev,
+    task: &str,
+    reading: &ScreenReading,
+    history: &[String],
+    spans: &[String],
+    apps: &[String],
+    candidates: &[&'a crate::agent::runner::ReadElement],
+) -> Result<(Value, Vec<&'a crate::agent::runner::ReadElement>)> {
+    let full = request(jev.model(), task, reading, history, spans, apps, candidates);
+    if serde_json::to_vec(&jev.envelope(&full))?.len() <= MAX_STEP_WIRE_BYTES {
+        return Ok((full, candidates.to_vec()));
+    }
+    let fits = |count: usize| -> Result<bool> {
+        let body = request(
+            jev.model(),
+            task,
+            reading,
+            history,
+            spans,
+            apps,
+            &candidates[..count],
+        );
+        Ok(serde_json::to_vec(&jev.envelope(&body))?.len() <= MAX_STEP_WIRE_BYTES)
+    };
+    if !fits(0)? {
+        anyhow::bail!("Ask's command or screen context exceeds the hosted request limit");
+    }
+    let mut low = 0;
+    let mut high = candidates.len();
+    while low < high {
+        let middle = low + (high - low).div_ceil(2);
+        if fits(middle)? {
+            low = middle;
+        } else {
+            high = middle - 1;
+        }
+    }
+    let kept = candidates[..low].to_vec();
+    let body = request(jev.model(), task, reading, history, spans, apps, &kept);
+    Ok((body, kept))
+}
+
 /// What the keyboard focus says about selection. Focus on a list rather than
 /// on a row inside it means nothing in that list is chosen yet, and that is
 /// the difference between "select the message" and "press Reply" — measured:
@@ -1115,16 +1166,33 @@ impl Brain for JevBrain {
             );
         }
         let apps = jev::app_candidates(task, self.installed.as_deref().unwrap_or_default());
-        let candidates = candidates(task, reading);
-        let body = request(
-            self.jev.model(),
+        let all_candidates = candidates(task, reading);
+        let (body, candidates) = match bounded_request(
+            &self.jev,
             task,
             reading,
             &self.history,
             &self.spans,
             &apps,
-            &candidates,
-        );
+            &all_candidates,
+        ) {
+            Ok(bounded) => bounded,
+            Err(e) => {
+                log::warn!(target: "lilypad::agent", "could not bound Jev step: {e}");
+                return Self::finish(
+                    "This command or screen has too much text for Ask to send safely. Shorten the command or simplify the screen, then try again.",
+                    FinishReason::Incomplete,
+                );
+            }
+        };
+        if candidates.len() < all_candidates.len() {
+            log::info!(
+                target: "lilypad::agent",
+                "bounded Jev step to {} of {} controls for the request byte limit",
+                candidates.len(),
+                all_candidates.len(),
+            );
+        }
         let started = std::time::Instant::now();
         let answers = match self.jev.ask_step(&body).await {
             Ok(answers) => answers,
@@ -2242,6 +2310,59 @@ mod tests {
             ..mail()
         };
         assert_eq!(candidates("press x", &busy).len(), MAX_CANDIDATES);
+    }
+
+    #[test]
+    fn a_dense_hosted_step_fits_the_control_plane_body_limit() {
+        let bearer: jev::BearerSource =
+            std::sync::Arc::new(|| Box::pin(async { Ok("unused".into()) }));
+        let jev = Jev::new(jev::InstantConfig::hosted(
+            "https://api.lilypad.example",
+            bearer,
+        ));
+        let apps: Vec<String> = (0..20).map(|id| format!("App {id}")).collect();
+        let spans = vec!["words ".repeat(30); 5];
+        let history = vec!["Action: done ".repeat(35); 12];
+        for (index, label) in ["x".repeat(512), "\"".repeat(512), "\n".repeat(512)]
+            .into_iter()
+            .enumerate()
+        {
+            let reading = ScreenReading {
+                app: "Safari".into(),
+                elements: (0..MAX_CANDIDATES)
+                    .map(|id| el(id, "button", &label))
+                    .collect(),
+                ..ScreenReading::default()
+            };
+            let candidates = candidates("click x", &reading);
+            let (body, kept) = bounded_request(
+                &jev,
+                "click x",
+                &reading,
+                &history,
+                &spans,
+                &apps,
+                &candidates,
+            )
+            .unwrap();
+            let bytes = serde_json::to_vec(&jev.envelope(&body)).unwrap().len();
+            assert!(bytes <= MAX_STEP_WIRE_BYTES, "hosted step is {bytes} bytes");
+            assert!(!kept.is_empty());
+            if index == 0 {
+                assert_eq!(
+                    kept.len(),
+                    MAX_CANDIDATES,
+                    "ordinary labels keep full coverage"
+                );
+            }
+            assert_eq!(
+                body["state"]["controls on the screen"]
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                kept.len()
+            );
+        }
     }
 
     #[test]

@@ -8,6 +8,11 @@ All notable changes to Lilypad are documented here. The format follows
 
 ### Fixed
 
+- **Lilypad's own-account Ask now accepts the actions Jev is asked to choose
+  from.** The hosted service had rejected structured action descriptions and
+  busy screens before Jev could answer. It now accepts the bounded action
+  shapes and up to 120 visible controls; long labels shrink the offered list
+  to fit the existing request-size limit instead of failing the whole task.
 - **Ask does not leave an accepted task hanging when startup fails.** If this
   Mac cannot prepare its work area or start the configured AI, the phone now
   gets a specific failure and a finished task instead of a spinner or a bare

@@ -117,6 +117,10 @@ options are the concrete code-offered operations for that state: an eligible
 control id, words extracted from the command for a verified focused field, a
 command-named app/URL/shortcut/scroll, search submission, wait, blocked, and
 done. Goal and visible-evidence Noul questions travel in the same request.
+The hosted wire contract accepts the same structured action descriptions and
+up to 120 control lines. It still caps the whole request at 128 KiB; when long
+labels would exceed that, code keeps the highest-priority controls that fit
+and sends the identical bounded list in state and Choice.
 There is no preliminary `press`/`type`/`key`/`scroll` classification and no
 minimum probability that discards the selected offered action: a split
 distribution often means several useful controls, not that none is usable.
