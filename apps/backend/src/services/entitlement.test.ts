@@ -10,7 +10,10 @@ import { users } from '../db/schema.js';
  * earlier version of this fake build a nonsense subscription out of `{tier}`
  * and still pass.
  */
-function fakeDb(accounts: { tier: string }[], subscriptionRows: unknown[] = []) {
+function fakeDb(
+  accounts: { tier: string; isBillingTester?: boolean }[],
+  subscriptionRows: unknown[] = [],
+) {
   return {
     select: () => ({
       from: (table: unknown) => {
@@ -163,6 +166,25 @@ describe('who may run a task on Lilypad’s own account', () => {
         now,
       ),
     ).toBe('not_entitled');
+  });
+
+  it('does not let an expired commercial row hide a current tester subscription', async () => {
+    // The test deployment sells in Sandbox. Production is the other
+    // environment here; on the live service these two labels are reversed.
+    // The selection rule must be symmetric, and only an approved tester may
+    // use the current row from the other environment.
+    const expiredSandbox = subscription(now - day)[0]!;
+    const currentProduction = {
+      ...subscription(now + day, 'active', 'Production')[0]!,
+      originalTransactionId: 'orig-2',
+    };
+    const rows = [expiredSandbox, currentProduction];
+    expect(
+      await hostedAskAccessFor('u', fakeDb([{ tier: 'free', isBillingTester: true }], rows), now),
+    ).toBe('entitled');
+    expect(await hostedAskAccessFor('u', fakeDb([{ tier: 'free' }], rows), now)).toBe(
+      'not_entitled',
+    );
   });
 
   it('fails closed on an account that no longer exists', async () => {

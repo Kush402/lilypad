@@ -94,7 +94,7 @@ async function entitlementInputsFor(
     config.env.APPLE_IAP_ENVIRONMENT === 'Production' ? 'Production' : 'Sandbox';
   return {
     manualTier: account.tier,
-    subscription: await subscriptionForOwner(database, userId, commercialEnvironment),
+    subscription: await subscriptionForOwner(database, userId, commercialEnvironment, now),
     commercialEnvironment,
     isApprovedTester: account.isBillingTester,
     now,

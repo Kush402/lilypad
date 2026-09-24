@@ -9,7 +9,12 @@
 import { and, eq } from 'drizzle-orm';
 import type { db as DefaultDb } from '../db/client.js';
 import { subscriptions } from '../db/schema.js';
-import { reduce, type SubscriptionEvent, type SubscriptionState } from './subscription.js';
+import {
+  reduce,
+  subscriptionIsCurrent,
+  type SubscriptionEvent,
+  type SubscriptionState,
+} from './subscription.js';
 
 type Database = typeof DefaultDb;
 type SubscriptionRow = typeof subscriptions.$inferSelect;
@@ -174,13 +179,18 @@ export async function applySubscriptionEvent(
  * nothing, while the subscription they actually paid for sits unread.
  *
  * The rows per account are a handful, so they are ordered here rather than in
- * SQL: the environment this deployment sells in first, then the period that
- * ends last.
+ * SQL: a subscription that still grants its period first, then the environment
+ * this deployment sells in, then the period that ends last. An expired or
+ * revoked Production row must not hide a current Sandbox row for an approved
+ * tester (L-410). The entitlement evaluator still decides whether that
+ * environment is allowed for this account; this selection grants nothing by
+ * itself.
  */
 export async function subscriptionForOwner(
   database: Database,
   userId: string,
   commercialEnvironment: SubscriptionState['environment'],
+  now = Date.now(),
 ): Promise<SubscriptionState | null> {
   const rows = await database
     .select()
@@ -190,6 +200,8 @@ export async function subscriptionForOwner(
   const states = rows.map(toState);
   if (states.length === 1) return states[0]!;
   return states.sort((a, b) => {
+    const current = Number(subscriptionIsCurrent(b, now)) - Number(subscriptionIsCurrent(a, now));
+    if (current !== 0) return current;
     const environment =
       Number(b.environment === commercialEnvironment) -
       Number(a.environment === commercialEnvironment);

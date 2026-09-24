@@ -136,7 +136,7 @@ async function statusFor(
     .where(eq(users.id, userId))
     .limit(1);
   if (!account) return null;
-  const state = await subscriptionForOwner(database, userId, commercialEnvironment());
+  const state = await subscriptionForOwner(database, userId, commercialEnvironment(), now);
   const tier = effectiveTier({
     manualTier: account.tier,
     subscription: state,
