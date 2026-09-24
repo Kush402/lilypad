@@ -521,6 +521,35 @@ pub(super) fn names_key(task: &str, chosen: &str) -> bool {
     matching.as_slice() == [chosen]
 }
 
+/// Cmd-W closes a window in an app without tabs. A command that says "tab"
+/// must not silently become "close this unrelated window" just because the
+/// shortcut itself is valid. Browser identity or a visible AX tab supplies
+/// the missing context; an unreadable screen supplies neither.
+pub(super) fn has_tab_context(reading: &ScreenReading) -> bool {
+    let app = reading.app.trim().to_ascii_lowercase();
+    matches!(
+        app.as_str(),
+        "safari"
+            | "safari technology preview"
+            | "google chrome"
+            | "chromium"
+            | "firefox"
+            | "brave browser"
+            | "microsoft edge"
+            | "arc"
+            | "opera"
+            | "vivaldi"
+            | "orion"
+    ) || reading
+        .elements
+        .iter()
+        .any(|element| element.role.eq_ignore_ascii_case("tab"))
+}
+
+pub(super) fn names_key_on_screen(task: &str, chosen: &str, reading: &ScreenReading) -> bool {
+    names_key(task, chosen) && (chosen != "close_tab" || has_tab_context(reading))
+}
+
 /// A scroll direction is an action argument, not permission to follow Jev's
 /// most likely option. Require the command to name exactly one direction so a
 /// wrong high-confidence answer cannot scroll the opposite way.
@@ -784,7 +813,7 @@ pub fn decide(
             if p < ARGUMENT_MIN {
                 return None;
             }
-            if !names_key(task, chosen) {
+            if !names_key_on_screen(task, chosen, reading) {
                 return None;
             }
             let (_, _, chord, done) = KEYS.iter().find(|(k, ..)| *k == chosen)?;
@@ -1687,6 +1716,7 @@ mod tests {
         };
 
         assert!(key("new tab", "new_tab").is_some());
+        assert!(key("close this tab", "close_tab").is_some());
         assert_eq!(
             key("new tab", "close_tab"),
             None,
@@ -1701,6 +1731,36 @@ mod tests {
             None,
             "a search task is not the Find shortcut"
         );
+    }
+
+    #[test]
+    fn close_tab_never_becomes_close_an_unrelated_window() {
+        let answer = answers(("key", 0.99), json!({ "key": chose("close_tab", 0.99) }));
+        let mail = screen("mail");
+        assert!(names_key("close this tab", "close_tab"));
+        assert!(!has_tab_context(&mail));
+        assert_eq!(decide("close this tab", &mail, &[], &answer), None);
+
+        let safari = screen("safari");
+        assert!(has_tab_context(&safari));
+        assert!(matches!(
+            decide("close this tab", &safari, &[], &answer),
+            Some(InstantAction {
+                action: Action::Key { .. },
+                ..
+            })
+        ));
+
+        let mut tabbed_mail = mail;
+        tabbed_mail.elements.push(el(50, "tab", "Inbox"));
+        assert!(has_tab_context(&tabbed_mail));
+        assert!(matches!(
+            decide("close this tab", &tabbed_mail, &[], &answer),
+            Some(InstantAction {
+                action: Action::Key { .. },
+                ..
+            })
+        ));
     }
 
     #[test]

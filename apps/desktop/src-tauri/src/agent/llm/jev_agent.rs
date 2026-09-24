@@ -558,7 +558,7 @@ fn action_options(
         ));
     }
     for (key, description, ..) in jev::KEYS {
-        if jev::names_key(task, key) {
+        if jev::names_key_on_screen(task, key, reading) {
             options.push((format!("key:{key}"), (*description).into()));
         }
     }
@@ -850,10 +850,9 @@ fn decide_grounded(
             Step::Stop("Ask returned an application the command did not offer.".into())
         }
     } else if let Some(key) = chosen.strip_prefix("key:") {
-        match jev::KEYS
-            .iter()
-            .find(|(candidate, ..)| *candidate == key && jev::names_key(task, candidate))
-        {
+        match jev::KEYS.iter().find(|(candidate, ..)| {
+            *candidate == key && jev::names_key_on_screen(task, candidate, reading)
+        }) {
             Some((_, _, chord, done)) => match crate::input::keys::parse_keys(chord) {
                 Ok(chords) => Acting::step(
                     format!("Press {chord} ({done})"),
@@ -1147,6 +1146,16 @@ impl Brain for JevBrain {
             .as_ref()
             .filter(|reading| !reading.app.eq_ignore_ascii_case("lilypad"))
             .unwrap_or(&empty_reading);
+
+        if unavailable.is_none()
+            && jev::names_key(task, "close_tab")
+            && !jev::has_tab_context(reading)
+        {
+            return Self::finish(
+                "Bring the tab you want to close to the front, then ask again. Ask will not close a different app's window instead.",
+                FinishReason::Incomplete,
+            );
+        }
 
         // Raw OCR text never crosses the hosted boundary. Only OCR words the
         // person already used in the command survive, and their labels are
@@ -1887,6 +1896,66 @@ mod tests {
         };
         assert!(matches!(scroll("up"), Step::Stop(_)));
         assert!(matches!(scroll("down"), Step::Act(_)));
+    }
+
+    #[test]
+    fn close_tab_is_offered_only_when_the_screen_can_have_a_tab() {
+        let mail = mail();
+        let browser = ScreenReading {
+            app: "Safari".into(),
+            ..mail.clone()
+        };
+        let mut tabbed_mail = mail.clone();
+        tabbed_mail.elements.push(el(50, "tab", "Inbox"));
+        let offered = |reading: &ScreenReading| {
+            action_options("close this tab", reading, &[], &[], &[], &[])
+                .iter()
+                .any(|(key, _)| key == "key:close_tab")
+        };
+        assert!(!offered(&mail));
+        assert!(offered(&browser));
+        assert!(offered(&tabbed_mail));
+
+        let answer = json!({
+            "done": noul(0.01),
+            "action": chose("key:close_tab", 0.8),
+        });
+        assert!(matches!(
+            decide("close this tab", &mail, &[], &[], &[], &answer),
+            Step::Stop(_)
+        ));
+        assert!(matches!(
+            decide("close this tab", &browser, &[], &[], &[], &answer),
+            Step::Act(ref action) if matches!(action.action, Action::Key { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn close_tab_in_an_unrelated_app_explains_what_to_focus() {
+        let task = "close this tab";
+        let mut brain = JevBrain::new(Jev::new(jev::InstantConfig::new("not-used")));
+        assert!(matches!(
+            brain.next(task, &[]).await.unwrap(),
+            Decision::Act {
+                action: Action::ReadScreen,
+                ..
+            }
+        ));
+        let first = Observation {
+            summary: "Look at the screen".into(),
+            ok: true,
+            image: None,
+            screen: None,
+            reading: Some(mail()),
+            reading_error: None,
+        };
+        assert!(matches!(
+            brain.next(task, &[first]).await.unwrap(),
+            Decision::Finish {
+                summary,
+                reason: FinishReason::Incomplete,
+            } if summary.contains("Bring the tab you want to close to the front")
+        ));
     }
 
     /// The words go wherever the keyboard already is, so a screen whose
