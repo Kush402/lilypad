@@ -876,6 +876,11 @@ pub fn website_for_command(task: &str) -> Option<String> {
     if let Some(address) = the_one_address(task) {
         return Some(address);
     }
+    if let Some(query) = youtube_video_query(task) {
+        let mut url = url::Url::parse("https://www.youtube.com/results").ok()?;
+        url.query_pairs_mut().append_pair("search_query", &query);
+        return Some(url.to_string());
+    }
     let words: Vec<String> = task
         .split(|c: char| !c.is_alphanumeric())
         .filter(|word| !word.is_empty())
@@ -891,6 +896,36 @@ pub fn website_for_command(task: &str) -> Option<String> {
         }
         _ => None,
     }
+}
+
+/// A narrow, user-authored video title that may be sent to YouTube search.
+/// This does not guess a video URL or accept a second instruction after the
+/// destination; choosing a result still requires a fresh screen reading.
+pub fn youtube_video_query(task: &str) -> Option<String> {
+    let task = task.trim().trim_end_matches(['.', '!', '?']).trim();
+    let lower = task.to_ascii_lowercase();
+    let before_site = [" on youtube", " on yt"]
+        .iter()
+        .find_map(|suffix| lower.strip_suffix(suffix))?;
+    let mut title = &task[..before_site.len()];
+    let lower_title = title.to_ascii_lowercase();
+    let verb_len = ["open ", "play ", "watch "]
+        .iter()
+        .find(|verb| lower_title.starts_with(**verb))?
+        .len();
+    title = title[verb_len..].trim();
+    if title.to_ascii_lowercase().starts_with("the ") {
+        title = title[4..].trim();
+    }
+    if title.to_ascii_lowercase().ends_with(" video") {
+        title = title[..title.len() - 6].trim();
+    } else {
+        return None;
+    }
+    if title.is_empty() || title.chars().count() > 120 {
+        return None;
+    }
+    Some(title.into())
 }
 
 /// Words that do not identify an app on their own.
@@ -1929,6 +1964,31 @@ mod tests {
             website_for_command("open youtube.com").as_deref(),
             Some("https://youtube.com")
         );
+    }
+
+    #[test]
+    fn a_named_youtube_video_starts_with_a_search_not_a_guessed_watch_url() {
+        let task = "open the NASA Artemis I launch video on YouTube";
+        assert_eq!(
+            youtube_video_query(task).as_deref(),
+            Some("NASA Artemis I launch")
+        );
+        assert_eq!(
+            website_for_command(task).as_deref(),
+            Some("https://www.youtube.com/results?search_query=NASA+Artemis+I+launch")
+        );
+        assert_eq!(
+            website_for_command("play the NASA Artemis I launch video on yt").as_deref(),
+            Some("https://www.youtube.com/results?search_query=NASA+Artemis+I+launch")
+        );
+        for task in [
+            "open YouTube",
+            "open the NASA Artemis I launch video on Safari",
+            "open the NASA Artemis I launch video on YouTube and email it",
+            "open the video on YouTube",
+        ] {
+            assert_eq!(youtube_video_query(task), None, "{task}");
+        }
     }
 
     #[test]

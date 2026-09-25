@@ -516,6 +516,33 @@ fn may_submit_focused_search(reading: &ScreenReading, history: &[String]) -> boo
     typed && search_focus
 }
 
+/// Search results are not the requested video. The only local evidence we
+/// have for this narrow command is a clicked result whose label contains the
+/// user's title, followed by player controls on the new screen. Jev's `done`
+/// score cannot substitute for those two observations.
+fn youtube_video_complete(task: &str, reading: &ScreenReading, history: &[String]) -> bool {
+    let Some(query) = jev::youtube_video_query(task) else {
+        return true;
+    };
+    let wanted = key_words(&query);
+    if wanted.is_empty() {
+        return false;
+    }
+    let opened_result = history.iter().any(|line| {
+        let Some(label) = line.strip_prefix("Click link \u{201c}") else {
+            return false;
+        };
+        let label = label.split('\u{201d}').next().unwrap_or_default();
+        let found = key_words(label);
+        wanted.iter().filter(|word| found.contains(*word)).count() >= wanted.len().min(2)
+            && line.ends_with(": done")
+    });
+    let player = reading.elements.iter().any(|element| {
+        element.role == "slider" && element.label.to_ascii_lowercase().contains("seek")
+    });
+    opened_result && player
+}
+
 /// One grounded choice over executable operations. This is the shape used by
 /// successful Jev/Laya computer-use loops: the model compares concrete
 /// targets with waiting and stopping in one distribution. There is no
@@ -593,11 +620,13 @@ fn action_options(
             "blocked".into(),
             "No offered action can make progress on the command from this screen".into(),
         ),
-        (
+    ]);
+    if youtube_video_complete(task, reading, history) {
+        options.push((
             "done".into(),
             "The current screen shows that every part of the command is complete".into(),
-        ),
-    ]);
+        ));
+    }
     options
 }
 
@@ -1029,7 +1058,8 @@ pub fn decide_with_history(
             .and_then(|a| a.get("noul"))
             .and_then(Value::as_f64)
     };
-    if noul("done").is_some_and(|p| p >= DONE_MIN)
+    if youtube_video_complete(task, reading, history)
+        && noul("done").is_some_and(|p| p >= DONE_MIN)
         && !history
             .last()
             .is_some_and(|line| line.ends_with(": did not work"))
@@ -1560,6 +1590,58 @@ mod tests {
             Step::Act(ref action)
                 if matches!(&action.action, Action::OpenUrl { url } if url == "https://www.youtube.com/")
         ));
+    }
+
+    #[test]
+    fn opening_a_named_youtube_video_offers_a_search_then_grounded_result() {
+        let task = "open the NASA Artemis I launch video on YouTube";
+        let empty = ScreenReading::default();
+        let offered = action_options(task, &empty, &[], &[], &[], &[]);
+        assert!(offered.iter().any(|(id, description)| {
+            id == "website"
+                && description["address"]
+                    == "https://www.youtube.com/results?search_query=NASA+Artemis+I+launch"
+        }));
+        let result = crate::agent::runner::ReadElement {
+            id: 7,
+            role: "link".into(),
+            label: "NASA's Artemis I Rocket Launch (Official Broadcast)".into(),
+            at: Some("middle".into()),
+        };
+        let reading = ScreenReading {
+            app: "Safari".into(),
+            elements: vec![result],
+            ..ScreenReading::default()
+        };
+        let candidates = candidates(task, &reading);
+        let offered = action_options(task, &reading, &[], &[], &[], &candidates);
+        assert!(offered.iter().any(|(id, _)| id == "press:e7"));
+        assert!(!offered.iter().any(|(id, _)| id == "done"));
+        assert!(!youtube_video_complete(
+            task,
+            &reading,
+            &[
+                "Open https://www.youtube.com/results?search_query=NASA+Artemis+I+launch: done"
+                    .into()
+            ]
+        ));
+        let clicked = vec![
+            "Click link \u{201c}NASA's Artemis I Rocket Launch (Official Broadcast)\u{201d} in Safari: done"
+                .into(),
+        ];
+        let player = ScreenReading {
+            elements: vec![crate::agent::runner::ReadElement {
+                id: 8,
+                role: "slider".into(),
+                label: "Seek slider".into(),
+                at: Some("middle".into()),
+            }],
+            ..reading
+        };
+        assert!(youtube_video_complete(task, &player, &clicked));
+        assert!(action_options(task, &player, &clicked, &[], &[], &[])
+            .iter()
+            .any(|(id, _)| id == "done"));
     }
 
     #[test]
