@@ -467,8 +467,8 @@ impl ComputerExecutor {
                     let snapshot = self.ax.last.as_ref().ok_or_else(|| {
                         anyhow!("the screen reading is no longer current — look again")
                     })?;
-                    let focus = ax::focus().ok_or_else(|| {
-                        anyhow!("the focused app changed since that screen was read — look again")
+                    let focus = ax::active_app().ok_or_else(|| {
+                        anyhow!("the active app changed since that screen was read — look again")
                     })?;
                     let [bx, by, bw, bh] = self.bounds();
                     let under = ax::hit_test(bx + at.0 * bw, by + at.1 * bh).ok_or_else(|| {
@@ -778,6 +778,20 @@ impl ComputerExecutor {
             (Ok(()), false) => Some("the reading arrived empty".to_string()),
             _ => None,
         };
+        if let Some(screen) = &structured {
+            // The old signed-device trace had a successful first read but no
+            // record of *which* app it read, leaving a grounded "blocked"
+            // choice impossible to diagnose. Names and counts are enough;
+            // labels, field values and the person's command stay out of logs.
+            log::info!(
+                target: "lilypad::agent",
+                "screen reading: app={:?}, controls={}, window={}, focused={}, shared_display={target:?}",
+                screen.app,
+                screen.elements.len(),
+                screen.window.is_some(),
+                screen.focused.is_some(),
+            );
+        }
         if let Some(e) = &reading_error {
             log::warn!(target: "lilypad::agent", "screen reading failed: {e}");
         }

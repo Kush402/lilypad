@@ -16,8 +16,10 @@ use std::ffi::c_void;
 use anyhow::{anyhow, bail, Result};
 use core_foundation::base::{CFTypeID, CFTypeRef, TCFType};
 use core_foundation::string::{CFString, CFStringRef};
+use objc2_app_kit::NSWorkspace;
 
 use super::tree::{self, AxNode, MAX_DEPTH, MAX_NODES};
+use super::AppIdentity;
 
 /// Longest label or value copied out of one element (L-270).
 ///
@@ -114,6 +116,33 @@ struct CGPointRaw {
 struct CGSizeRaw {
     width: f64,
     height: f64,
+}
+
+/// The WindowServer's active-application identity. This is not a window-order
+/// guess: `frontmostApplication` is macOS's own activation state. The AX walk
+/// below still refuses every window outside the shared display.
+fn frontmost_pid() -> Option<i32> {
+    NSWorkspace::sharedWorkspace()
+        .frontmostApplication()
+        .map(|app| app.processIdentifier())
+        .filter(|pid| *pid > 0)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FallbackFocus {
+    KeyboardElement(i32),
+    FrontmostApplication(i32),
+}
+
+fn fallback_focus(element_pid: Option<i32>, frontmost_pid: Option<i32>) -> Option<FallbackFocus> {
+    element_pid
+        .filter(|pid| *pid > 0)
+        .map(FallbackFocus::KeyboardElement)
+        .or_else(|| {
+            frontmost_pid
+                .filter(|pid| *pid > 0)
+                .map(FallbackFocus::FrontmostApplication)
+        })
 }
 
 #[link(name = "Carbon", kind = "framework")]
@@ -474,10 +503,11 @@ pub fn read_focused_tree(display: Option<u32>) -> Result<AxSnapshot> {
     unsafe { AXUIElementSetMessagingTimeout(system.0, AX_MESSAGE_TIMEOUT_SECS) };
     let started = std::time::Instant::now();
     // Some transitions publish the focused control before the system-wide
-    // focused-application attribute. Both are OS-reported focus, not a guess
-    // from a window title: when the app attribute is absent, the control's
-    // process is the only safe way to recover a scoped app reading. If both
-    // are absent, do not pick a frontmost-looking window or inject a key.
+    // focused-application attribute. On the owner's signed build, there were
+    // also stretches where both AX attributes were absent even after `open`
+    // activated Chrome. NSWorkspace's active application is a third OS-owned
+    // identity source, not a guess from window order. It only selects the
+    // process; `scoped_roots` below still refuses every off-display window.
     let focused = copy_attribute(system.0, "AXFocusedUIElement");
     let app_handle = if let Some(app) = copy_attribute(system.0, "AXFocusedApplication") {
         // Promote the app value to an owned handle.
@@ -486,25 +516,36 @@ pub fn read_focused_tree(display: Option<u32>) -> Result<AxSnapshot> {
         }
     } else {
         let mut focused_pid = 0i32;
-        let valid_pid = focused.as_ref().is_some_and(|element| {
-            let read = unsafe { AXUIElementGetPid(element.0, &mut focused_pid) == AX_SUCCESS };
-            read && focused_pid > 0
-        });
-        let app = if valid_pid {
-            unsafe { AXUIElementCreateApplication(focused_pid) }
-        } else {
-            std::ptr::null()
-        };
+        let element_pid = focused
+            .as_ref()
+            .and_then(|element| {
+                (unsafe { AXUIElementGetPid(element.0, &mut focused_pid) } == AX_SUCCESS)
+                    .then_some(focused_pid)
+            })
+            .filter(|pid| *pid > 0);
+        let source = fallback_focus(
+            element_pid,
+            element_pid.is_none().then(frontmost_pid).flatten(),
+        );
+        let app =
+            source
+                .map(|source| match source {
+                    FallbackFocus::KeyboardElement(pid)
+                    | FallbackFocus::FrontmostApplication(pid) => unsafe {
+                        AXUIElementCreateApplication(pid)
+                    },
+                })
+                .unwrap_or(std::ptr::null());
         if app.is_null() {
             if !crate::input::macos::accessibility_trusted() {
                 bail!("Accessibility permission not granted — allow Lilypad in System Settings");
             }
-            bail!("no focused application or keyboard element (focus an app on the shared screen)");
+            bail!(
+                "no focused application, keyboard element, or frontmost app \
+                 (focus an app on the shared screen)"
+            );
         }
-        log::info!(
-            target: "lilypad::agent",
-            "focused application was unavailable; recovered its identity from the focused element"
-        );
+        log::info!(target: "lilypad::agent", "focused application was unavailable; recovered its identity from {source:?}");
         // AXUIElementCreateApplication returns a retained handle.
         AxHandle { raw: app }
     };
@@ -822,9 +863,46 @@ pub fn focus() -> Option<HitInfo> {
     Some(info_for(app.0))
 }
 
+/// App identity for revalidating a click, not for keyboard input. A click is
+/// also checked against the live element under its point; when AX publishes
+/// neither focused attribute, macOS activation still tells us whether that
+/// visible element belongs to the app that was read. `focus()` deliberately
+/// remains stricter: frontmost identity alone is not a typing target.
+pub fn active_app() -> Option<AppIdentity> {
+    if let Some(focused) = focus() {
+        return Some(AppIdentity {
+            pid: focused.pid,
+            path: focused.path,
+        });
+    }
+    let pid = frontmost_pid()?;
+    let (_, path) = app_of(pid);
+    Some(AppIdentity { pid, path })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn keyboard_identity_precedes_frontmost_activation_but_either_can_recover_a_read() {
+        assert_eq!(
+            fallback_focus(Some(41), Some(42)),
+            Some(FallbackFocus::KeyboardElement(41))
+        );
+        assert_eq!(
+            fallback_focus(None, Some(42)),
+            Some(FallbackFocus::FrontmostApplication(42))
+        );
+        assert_eq!(fallback_focus(Some(0), Some(-1)), None);
+        assert_eq!(fallback_focus(None, None), None);
+    }
+
+    #[test]
+    #[ignore = "requires a logged-in macOS GUI session"]
+    fn windowserver_reports_a_frontmost_process_without_an_ax_grant() {
+        assert!(frontmost_pid().is_some());
+    }
 
     /// Live FFI link + memory smoke test. The test process is not Accessibility-
     /// trusted, so this exercises the graceful error path (no focused app) — the
