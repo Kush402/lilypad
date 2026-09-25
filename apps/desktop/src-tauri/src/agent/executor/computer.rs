@@ -814,11 +814,25 @@ impl ComputerExecutor {
     }
 
     /// A launch can briefly leave the system with no focused AX application
-    /// (or with the app's window not yet on the shared display). Retry only
-    /// those transient focus states, and only inside the caller's bounded
-    /// settle budget. Permission and tree failures remain immediate.
+    /// (or with the app's window not yet on the shared display). A successful
+    /// read can also be premature: the window exists but has not published any
+    /// named, on-screen controls yet. Take one fresh read of that sparse state
+    /// before offering it to the decision loop. Focus errors keep their
+    /// bounded retry; permission and other tree failures remain immediate.
     async fn read_with_settle(&mut self, budget: Duration) -> std::result::Result<(), String> {
-        let mut error = match self.ax.read().await {
+        let mut result = self.ax.read().await;
+        if result.is_ok()
+            && !budget.is_zero()
+            && self.ax.last.as_ref().is_some_and(sparse_ax_snapshot)
+        {
+            log::info!(
+                target: "lilypad::agent",
+                "AX reading has no named on-screen controls; refreshing once"
+            );
+            tokio::time::sleep(FOCUS_READ_RETRY.min(budget)).await;
+            result = self.ax.read().await;
+        }
+        let mut error = match result {
             Ok(()) => return Ok(()),
             Err(error) => error,
         };
@@ -1144,6 +1158,20 @@ fn focus_is_current(expected: Option<&Hit>, current: Option<&Hit>) -> bool {
 fn retryable_focus_read_error(error: &str) -> bool {
     error.starts_with("no focused application")
         || error.starts_with("the focused app has no window on the shared display")
+}
+
+/// A window root alone is not a usable choice set. Match the controls the
+/// structured reading can actually offer: named actionable nodes with an
+/// on-display frame. This is only a signal to refresh once, not a reason to
+/// invent or execute a control when the second read is still sparse.
+fn sparse_ax_snapshot(snapshot: &ax::AxSnapshot) -> bool {
+    !tree::on_screen_actionable(&snapshot.nodes, snapshot.bounds)
+        .iter()
+        .any(|(node, _)| {
+            node.label
+                .as_deref()
+                .is_some_and(|label| !label.trim().is_empty())
+        })
 }
 
 fn focus_read_budget(settle_max: Duration, elapsed: Duration, first_look: bool) -> Duration {
@@ -1534,6 +1562,33 @@ mod tests {
         assert!(!retryable_focus_read_error(
             "Accessibility permission not granted — allow Lilypad in System Settings"
         ));
+    }
+
+    #[test]
+    fn a_window_without_named_on_screen_controls_needs_one_fresh_read() {
+        let root = tree::AxNode {
+            id: 0,
+            role: "AXWindow".into(),
+            frame: Some([0.0, 0.0, 1000.0, 500.0]),
+            ..Default::default()
+        };
+        let mut snapshot = ax::AxSnapshot::for_test(vec![root]);
+        snapshot.bounds = [0.0, 0.0, 1000.0, 500.0];
+        assert!(sparse_ax_snapshot(&snapshot));
+
+        snapshot.nodes.push(tree::AxNode {
+            id: 1,
+            depth: 1,
+            role: "AXButton".into(),
+            label: Some("Open profile".into()),
+            pressable: true,
+            frame: Some([100.0, 100.0, 100.0, 30.0]),
+            ..Default::default()
+        });
+        assert!(!sparse_ax_snapshot(&snapshot));
+
+        snapshot.nodes[1].frame = Some([2000.0, 100.0, 100.0, 30.0]);
+        assert!(sparse_ax_snapshot(&snapshot));
     }
 
     #[test]
