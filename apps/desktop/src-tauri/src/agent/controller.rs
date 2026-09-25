@@ -357,10 +357,16 @@ impl AgentController {
 
     /// Instant human takeover — any real input frame during a run cancels it.
     pub fn on_human_input(&mut self) {
-        if self.active.is_some() {
-            log::info!(target: "lilypad::agent", "human input during agent run — taking over, cancelling");
-            self.cancel_active();
+        let Some(active) = &self.active else { return };
+        // Keep the finished handle for run-ID replay and successor drain, but
+        // do not treat every later phone gesture as a new takeover. Likewise,
+        // the first gesture already revoked a live run's authority; repeating
+        // the cancellation for every event in a drag only floods the log.
+        if active.task.is_finished() || active.cancel.is_cancelled() {
+            return;
         }
+        log::info!(target: "lilypad::agent", "human input during agent run — taking over, cancelling");
+        self.cancel_active();
     }
 
     /// Cancel the active run, retaining its identity while the task drains.
@@ -969,6 +975,39 @@ mod tests {
             observer.is_cancelled(),
             "the session's Ask run was detached alive"
         );
+    }
+    #[tokio::test]
+    async fn human_input_cancels_only_a_live_run_once() {
+        let mut controller = AgentController::new();
+        let cancel = Cancel::new();
+        let (decisions_tx, _decisions_rx) = channel(DECISION_QUEUE_CAPACITY);
+        controller.active = Some(ActiveRun {
+            run_id: "live".into(),
+            cancel: cancel.clone(),
+            decisions_tx,
+            task: tokio::spawn(std::future::pending()),
+            _forwarder: tokio::spawn(async {}),
+        });
+        controller.on_human_input();
+        assert!(cancel.is_cancelled());
+        controller.on_human_input();
+        assert!(cancel.is_cancelled());
+        controller.active.take().unwrap().task.abort();
+
+        let finished = Cancel::new();
+        let (decisions_tx, _decisions_rx) = channel(DECISION_QUEUE_CAPACITY);
+        let task = tokio::spawn(async {});
+        tokio::task::yield_now().await;
+        assert!(task.is_finished());
+        controller.active = Some(ActiveRun {
+            run_id: "finished".into(),
+            cancel: finished.clone(),
+            decisions_tx,
+            task,
+            _forwarder: tokio::spawn(async {}),
+        });
+        controller.on_human_input();
+        assert!(!finished.is_cancelled());
     }
     #[tokio::test]
     async fn superseding_a_run_hands_over_a_join_point_not_just_a_cancel_flag() {

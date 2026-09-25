@@ -11,7 +11,7 @@ import { users } from '../db/schema.js';
  * and still pass.
  */
 function fakeDb(
-  accounts: { tier: string; isBillingTester?: boolean }[],
+  accounts: { tier: string; isBillingTester?: boolean; tierExpiresAt?: Date | null }[],
   subscriptionRows: unknown[] = [],
 ) {
   return {
@@ -38,6 +38,15 @@ describe('who may reach a laptop from another network', () => {
 
   it('holds the free tier to its own network', async () => {
     expect(await remoteAccessFor('u', fakeDb([{ tier: 'free' }]))).toBe('not_entitled');
+  });
+
+  it('stops a time-limited Pro grant at its deadline without a cleanup event', async () => {
+    const now = Date.parse('2026-09-24T00:00:00Z');
+    const db = fakeDb([{ tier: 'pro', tierExpiresAt: new Date(now) }]);
+    expect(await remoteAccessFor('u', db, now - 1)).toBe('entitled');
+    expect(await remoteAccessFor('u', db, now)).toBe('not_entitled');
+    expect(await hostedAskAccessFor('u', db, now - 1)).toBe('entitled');
+    expect(await hostedAskAccessFor('u', db, now)).toBe('not_entitled');
   });
 
   it('is decided by the subscription, not only by the manual tier', async () => {

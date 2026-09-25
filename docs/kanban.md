@@ -1,7 +1,7 @@
 ---
 status: Reference
 owner: @kushsharma024
-last-verified: 2026-09-23
+last-verified: 2026-09-24
 summary: Every defect found during the pre-launch product review, and what happened to it.
 ---
 
@@ -16,9 +16,9 @@ This file exists because the list used to live only in a conversation. Six rows
 (L-20, L-38 through L-42) were reconstructed from later summaries after the
 earlier record was compacted away, which is the argument for the file.
 
-**Status counts:** 356 fixed · 35 shipped · 7 partially fixed · 1 open ·
+**Status counts:** 357 fixed · 35 shipped · 7 partially fixed · 1 open ·
 1 blocked on something outside the code · 4 deliberately unchanged · 4 not a bug ·
-1 unrecoverable (L-20). 409 rows.
+1 unrecoverable (L-20). 410 rows.
 
 "Fixed" here means _fixed at source_. Fixed, released and device-verified are
 three different states and this file keeps them apart. L-227 through L-259 are
@@ -1970,6 +1970,7 @@ acceptance matrix are in [v0.1.34-customer-review.md](v0.1.34-customer-review.md
 | L-408 | **P1 — A deployment labelled “staging” would use the production host.** The manual workflow offered `staging` as its default choice, but `docs/deployment.md` says no staging environment exists and the deploy job used the same `DEPLOY_HOST`, `DEPLOY_PATH`, compose file, production container name, and `.env.production` for either choice. A person attempting a safe staging smoke test could therefore mutate production. This was found while preparing the Ask backend contract rollout; no staging dispatch was run. | Fixed at source — 2026-09-23. The manual dispatch now offers only `production`, and preflight explicitly rejects any other target before image build or SSH. A real staging target needs its own host, secrets, URLs, and compose state before it can be offered again. No deployment has been performed by this fix. |
 | L-409 | **P1 — “Close this tab” could become “close an unrelated window.”** The grounded action list and instant Jev decoder accepted `close_tab` from the command text alone; on a readable Mail window with no tab, `cmd+w` is a valid shortcut but would close that Mail window. This is source-proven, not a diagnosis of the owner's failed v0.1.56 close-tab attempt. | Fixed at source — 2026-09-23. `close_tab` is offered and revalidated only when the focused app is a known browser or the AX reading shows an actual tab. A readable unrelated app ends with a direct instruction to bring the intended tab forward, before a model request is billed; an unreadable first screen remains subject to the existing no-blind-keyboard boundary. Instant and whole-task tests cover Mail refusal and Safari/visible-tab allowance. Signed-device verification remains required. |
 | L-410 | **P1 — an expired Production subscription could hide an active Sandbox subscription from an approved tester.** `subscriptionForOwner` always ranked the deployment's commercial environment first, regardless of whether that row's period still entitled anything. With an expired Production row and current Sandbox row, the one selected row was expired, so both Ask and the billing screen reported Free even for `is_billing_tester=true`. This was source-proven, **not** the owner's current `not_entitled` cause: read-only production SQL showed that account has only one Sandbox subscription, expired on 2026-09-23, and no manual grant. | Fixed and deployed — 2026-09-23. Select a current period before environment preference, then let the existing `effectiveTier` enforce whether the selected environment counts for this account. Both billing and Ask pass the same injected clock. Unit regression covers the high-level Ask answer and keeps an unapproved account denied; a real-Postgres regression covers the dual-row selection. Exact-commit CI `35962247980` passed; production deploy `35962558395` and independent `/health` confirmed `4291d5a`. Mac Settings still says `Needs Pro`, correctly, after this rollout. |
+| L-411 | **P2 — every phone gesture after a completed Ask run logged a false “human input during agent run” takeover.** The controller retained the finished run handle for replay and successor draining, while `on_human_input` checked only whether that handle existed. In the owner's 2026-09-24 Mac trace, two failed hosted runs ended at 21:52:50 UTC and over 100 later input frames produced takeover/cancellation log lines until the session ended. The repeated calls did not re-run the task, but buried the actual HTTP 402 and made the log misleading. | Fixed at source — 2026-09-24. Human takeover now ignores a finished run and a run already cancelled by the first input event. `human_input_cancels_only_a_live_run_once` passes. This has not been installed or signed-device verified. |
 
 Evidence limits: provider UI fixture = **8 existing tests pass, 1 new expected
 failure**. Billing harness executes the current TypeScript service functions

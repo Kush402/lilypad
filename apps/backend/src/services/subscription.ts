@@ -301,6 +301,9 @@ export interface EntitlementInputs {
   /** The tier granted outside Apple — a Team plan, a manual comp. Apple
    *  lifecycle events never write this (L-299). */
   manualTier: Tier;
+  /** NULL/absent means an indefinite manual grant; time-limited tester grants
+   * stop entitling at this instant even if no cleanup job runs. */
+  manualTierExpiresAt?: number | null;
   /** The account's Apple subscription, if it has one. */
   subscription: SubscriptionState | null;
   /** Which environment counts as commercial here. A Sandbox subscription
@@ -325,14 +328,23 @@ const RANK: Record<Tier, number> = { free: 0, pro: 1, team: 2 };
  * was never overwritten.
  */
 export function effectiveTier(inputs: EntitlementInputs): Tier {
-  const { manualTier, subscription, commercialEnvironment, isApprovedTester, now } = inputs;
+  const {
+    manualTier,
+    manualTierExpiresAt,
+    subscription,
+    commercialEnvironment,
+    isApprovedTester,
+    now,
+  } = inputs;
+  const currentManualTier =
+    manualTierExpiresAt != null && manualTierExpiresAt <= now ? 'free' : manualTier;
   let fromApple: Tier = 'free';
   if (subscription && subscriptionIsCurrent(subscription, now)) {
     const environmentCounts =
       subscription.environment === commercialEnvironment || isApprovedTester === true;
     if (environmentCounts) fromApple = 'pro';
   }
-  return RANK[manualTier] >= RANK[fromApple] ? manualTier : fromApple;
+  return RANK[currentManualTier] >= RANK[fromApple] ? currentManualTier : fromApple;
 }
 
 /** Tiers that include reaching a laptop from another network. */

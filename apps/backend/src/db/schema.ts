@@ -57,6 +57,10 @@ export const users = pgTable('users', {
    */
   emailVerifiedAt: timestamp('email_verified_at', { withTimezone: true }),
   tier: tierEnum('tier').notNull().default('free'),
+  /** Optional deadline for a manual Pro/Team grant. NULL keeps existing
+   * grants indefinite; an elapsed deadline makes the grant Free at read time,
+   * without relying on a cleanup job to revoke paid access. */
+  tierExpiresAt: timestamp('tier_expires_at', { withTimezone: true }),
   /**
    * Apple's original transaction id for the Pro subscription that currently
    * entitles this account ([ADR-0016](../../../../docs/adr/0016-storekit-and-the-price.md)).
