@@ -100,7 +100,9 @@ fn launched_app_completes_task(task: &str, history: &[String], reading: &ScreenR
     else {
         return false;
     };
-    if !reading.app.eq_ignore_ascii_case(name) {
+    // The scoped AX reader found an on-screen window, not merely a running
+    // process or the model's belief that `/usr/bin/open` worked.
+    if !reading.app.eq_ignore_ascii_case(name) || reading.window.is_none() {
         return false;
     }
     let words: Vec<String> = task
@@ -120,6 +122,21 @@ fn launched_app_completes_task(task: &str, history: &[String], reading: &ScreenR
         _ => return false,
     };
     !rest.is_empty() && rest.iter().all(|word| app_words.contains(word))
+}
+
+/// The last launch's exit code is not a completion oracle. When Jev proposes
+/// `done` after a launch but the fresh screen has no window of that app, do
+/// not turn the provider's answer into a verified success. URL launches use
+/// different evidence and are not classified as app names here.
+fn launched_app_without_visible_window(history: &[String], reading: &ScreenReading) -> bool {
+    let Some(name) = history
+        .last()
+        .and_then(|line| line.strip_prefix("Open "))
+        .and_then(|line| line.strip_suffix(": done"))
+    else {
+        return false;
+    };
+    !name.contains("://") && (!reading.app.eq_ignore_ascii_case(name) || reading.window.is_none())
 }
 
 /// Controls offered in one action choice. Jev supports high-cardinality
@@ -1299,22 +1316,32 @@ impl Brain for JevBrain {
             started.elapsed().as_millis(),
         );
         match step {
-            Step::Done { contradicted } => Self::finish(
-                match (contradicted, self.history.last()) {
-                    (false, Some(last)) => last.clone(),
-                    (false, None) => "Done.".into(),
-                    // Said, not hidden. The model has answered two questions
-                    // that disagree with each other, and the person is the
-                    // one who can look.
-                    (true, Some(last)) => {
-                        format!("{last}. The screen still shows it undone, so check it yourself.")
-                    }
-                    (true, None) => "Ask believes that is done, but the screen still shows it \
-                                     undone. Check it yourself."
-                        .into(),
-                },
-                done_reason(contradicted),
-            ),
+            Step::Done { contradicted } => {
+                if launched_app_without_visible_window(&self.history, reading) {
+                    return Self::finish(
+                        "The app launch returned successfully, but Ask could not verify its window on the shared screen.",
+                        FinishReason::Incomplete,
+                    );
+                }
+                Self::finish(
+                    match (contradicted, self.history.last()) {
+                        (false, Some(last)) => last.clone(),
+                        (false, None) => "Done.".into(),
+                        // Said, not hidden. The model has answered two questions
+                        // that disagree with each other, and the person is the
+                        // one who can look.
+                        (true, Some(last)) => {
+                            format!(
+                                "{last}. The screen still shows it undone, so check it yourself."
+                            )
+                        }
+                        (true, None) => "Ask believes that is done, but the screen still shows it \
+                                         undone. Check it yourself."
+                            .into(),
+                    },
+                    done_reason(contradicted),
+                )
+            }
             Step::Stop(why) => Self::finish(why, FinishReason::Incomplete),
             Step::Act(acting) => {
                 let Acting {
@@ -1539,6 +1566,7 @@ mod tests {
     fn a_visible_app_completes_only_a_simple_launch_command() {
         let chrome = ScreenReading {
             app: "Google Chrome".into(),
+            window: Some(0),
             ..ScreenReading::default()
         };
         let done = vec!["Open Google Chrome: done".into()];
@@ -1565,8 +1593,29 @@ mod tests {
             &done,
             &ScreenReading {
                 app: "Safari".into(),
+                window: Some(0),
                 ..ScreenReading::default()
             }
+        ));
+        assert!(!launched_app_completes_task(
+            "open Chrome",
+            &done,
+            &ScreenReading {
+                window: None,
+                ..chrome.clone()
+            }
+        ));
+        assert!(launched_app_without_visible_window(
+            &done,
+            &ScreenReading {
+                window: None,
+                ..chrome.clone()
+            }
+        ));
+        assert!(!launched_app_without_visible_window(&done, &chrome));
+        assert!(!launched_app_without_visible_window(
+            &["Open https://www.youtube.com/: done".into()],
+            &chrome
         ));
     }
 
@@ -1608,6 +1657,7 @@ mod tests {
             screen: None,
             reading: Some(ScreenReading {
                 app: "Safari".into(),
+                window: Some(0),
                 ..ScreenReading::default()
             }),
             reading_error: None,
@@ -1616,6 +1666,63 @@ mod tests {
             brain.next(task, &[after]).await.unwrap(),
             Decision::Finish {
                 reason: FinishReason::Completed,
+                ..
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn model_done_cannot_verify_an_app_launch_without_an_on_screen_window() {
+        let task = "open Google Chrome";
+        let mut brain = JevBrain::new(Jev::new(jev::InstantConfig::new("not-used")));
+        *brain.canned() = Some(json!({
+            "done": noul(0.01),
+            "evidence": noul(0.01),
+            "action": chose("app:Google Chrome", 0.83),
+        }));
+        assert!(matches!(
+            brain.next(task, &[]).await.unwrap(),
+            Decision::Act {
+                action: Action::ReadScreen,
+                ..
+            }
+        ));
+        let first = Observation {
+            summary: "Look at the screen".into(),
+            ok: true,
+            image: None,
+            screen: None,
+            reading: None,
+            reading_error: Some("no focused application".into()),
+        };
+        assert!(matches!(
+            brain.next(task, &[first]).await.unwrap(),
+            Decision::Act {
+                action: Action::OpenApp { .. },
+                ..
+            }
+        ));
+        *brain.canned() = Some(json!({
+            "done": noul(0.97),
+            "evidence": noul(0.97),
+            "action": chose("done", 0.97),
+        }));
+        let after = Observation {
+            summary: "Open Google Chrome".into(),
+            ok: true,
+            image: None,
+            screen: None,
+            reading: Some(ScreenReading {
+                app: "Google Chrome".into(),
+                window: None,
+                ..ScreenReading::default()
+            }),
+            reading_error: None,
+        };
+        assert!(matches!(
+            brain.next(task, &[after]).await.unwrap(),
+            Decision::Finish {
+                reason: FinishReason::Incomplete,
                 ..
             }
         ));

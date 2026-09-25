@@ -16,7 +16,7 @@ use std::ffi::c_void;
 use anyhow::{anyhow, bail, Result};
 use core_foundation::base::{CFTypeID, CFTypeRef, TCFType};
 use core_foundation::string::{CFString, CFStringRef};
-use objc2_app_kit::NSWorkspace;
+use objc2_app_kit::{NSRunningApplication, NSWorkspace};
 
 use super::tree::{self, AxNode, MAX_DEPTH, MAX_NODES};
 use super::AppIdentity;
@@ -380,8 +380,10 @@ fn describe(element: AXUIElementRef, id: usize, depth: usize) -> AxNode {
         pressable: is_pressable(element),
         ..Default::default()
     };
-    // Two more messages, spent only on elements a model might point at.
-    if tree::is_actionable(&node) {
+    // A window is not actionable, but its frame is the evidence that this
+    // reading contains a visible window on the shared display. Without it
+    // `screen_reading` reports `window=None` even for a scoped AX window.
+    if depth == 0 || tree::is_actionable(&node) {
         node.frame = frame_of(element).map(|(x, y, w, h)| [x, y, w, h]);
     }
     node
@@ -545,7 +547,7 @@ pub fn read_focused_tree(display: Option<u32>) -> Result<AxSnapshot> {
                  (focus an app on the shared screen)"
             );
         }
-        log::info!(target: "lilypad::agent", "focused application was unavailable; recovered its identity from {source:?}");
+        log::debug!(target: "lilypad::agent", "focused application was unavailable; recovered its identity from {source:?}");
         // AXUIElementCreateApplication returns a retained handle.
         AxHandle { raw: app }
     };
@@ -559,10 +561,11 @@ pub fn read_focused_tree(display: Option<u32>) -> Result<AxSnapshot> {
     let roots = scoped_roots(&app_handle, bounds);
     if roots.is_empty() {
         bail!(
-            "the focused app has no window on the shared display — move it to the screen \
+            "the focused app has no window on the shared display ({app_name}) — move it to the screen \
              you are sharing, or share the screen it is on"
         );
     }
+    let root_count = roots.len();
 
     let mut nodes = Vec::new();
     let mut handles: Vec<AxHandle> = Vec::new();
@@ -597,6 +600,14 @@ pub fn read_focused_tree(display: Option<u32>) -> Result<AxSnapshot> {
         .first()
         .filter(|n| n.depth == 0)
         .and_then(|n| n.label.clone());
+    log::info!(
+        target: "lilypad::agent",
+        "AX walk: app={app_name:?}, roots={root_count}, nodes={}, framed_controls={}, elapsed_ms={}, deadline_hit={}",
+        nodes.len(),
+        nodes.iter().filter(|n| tree::is_actionable(n) && n.frame.is_some()).count(),
+        started.elapsed().as_millis(),
+        started.elapsed() >= AX_WALK_DEADLINE,
+    );
     Ok(AxSnapshot {
         nodes,
         handles,
@@ -780,14 +791,23 @@ fn app_of(pid: i32) -> (String, String) {
     } else {
         String::new()
     };
-    let app_element = unsafe { AXUIElementCreateApplication(pid) };
-    let name = if app_element.is_null() {
-        None
-    } else {
-        let owned = OwnedCF(app_element);
-        unsafe { AXUIElementSetMessagingTimeout(owned.0, AX_MESSAGE_TIMEOUT_SECS) };
-        copy_string_attribute(owned.0, "AXTitle")
-    };
+    // The AX application title can abbreviate the user's installed app
+    // ("Chrome" versus "Google Chrome"). Launch verification compares the
+    // app name Jev opened with this observation, so prefer LaunchServices'
+    // localized application name before falling back to AX/path names.
+    let name = NSRunningApplication::runningApplicationWithProcessIdentifier(pid)
+        .and_then(|app| app.localizedName())
+        .map(|name| name.to_string())
+        .filter(|name| !name.is_empty())
+        .or_else(|| {
+            let app_element = unsafe { AXUIElementCreateApplication(pid) };
+            if app_element.is_null() {
+                return None;
+            }
+            let owned = OwnedCF(app_element);
+            unsafe { AXUIElementSetMessagingTimeout(owned.0, AX_MESSAGE_TIMEOUT_SECS) };
+            copy_string_attribute(owned.0, "AXTitle")
+        });
     let name = name.filter(|n| !n.is_empty()).unwrap_or_else(|| {
         // "…/Mail.app/Contents/MacOS/Mail" → "Mail"
         path.split('/')
