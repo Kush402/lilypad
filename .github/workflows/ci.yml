@@ -188,8 +188,8 @@ jobs:
       #
       # Two advisories are explicitly ignored via `pnpm.auditConfig.ignoreGhsas`:
       # GHSA-w3rx-r6r6-pgpr and GHSA-5p2g-fcmc-qvqq (image-size DoS via the ICNS
-      # and JXL/HEIF parsers). There is no patched release — npm reports the
-      # patched range as `<0.0.0`. It reaches us only through
+      # and JXL/HEIF parsers). A patched 2.x exists, but pinned Metro requires
+      # 1.x and calls the synchronous API removed in 2.x. It reaches us only through
       # metro-config → metro, i.e. React Native's *bundler*, which runs at build
       # time over our own asset files and never ships in the app or processes
       # untrusted input. Re-evaluate when metro bumps it; do not extend this list
@@ -198,9 +198,9 @@ jobs:
         run: pnpm audit --audit-level high
 
       # "Re-evaluate when metro bumps it" is a sentence in a comment, and nobody
-      # re-reads comments. This asks GitHub whether either advisory has a
-      # patched version yet, and fails when one does — so a suppression cannot
-      # outlive its reason. It also fails if a GHSA is added to the ignore list
+      # re-reads comments. This asks GitHub whether a compatible patch exists,
+      # and pins the exact Metro 1.x call site while its 2.x-only fix is
+      # incompatible. It fails when that reason changes, or a GHSA is added
       # without the justification the comment above demands.
       - name: Audit suppressions are still justified
         run: pnpm audit:exceptions

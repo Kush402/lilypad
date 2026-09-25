@@ -398,14 +398,15 @@ a real crash triggers `restart: unless-stopped`.
 `pnpm.auditConfig.ignoreGhsas`, and the reason is recorded here because an
 unexplained suppression is indistinguishable from one added to make CI green:
 
-| Advisory                                                      | Package              | Why it is suppressed                                                                                                                                                                        |
-| ------------------------------------------------------------- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GHSA-w3rx-r6r6-pgpr` — ICNS parser infinite loop (high)      | `image-size` ≤ 2.0.2 | **No patched version exists.** Reached only through `metro`, React Native's build-time bundler, and never at runtime on any device. Triggering it needs a malicious image inside this repo. |
-| `GHSA-5p2g-fcmc-qvqq` — JXL/HEIF parser infinite loops (high) | `image-size` ≤ 2.0.2 | Same package, same path, same reasoning.                                                                                                                                                    |
+| Advisory                                                      | Package              | Why it is suppressed                                                                                                                                                                                                                                                                  |
+| ------------------------------------------------------------- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GHSA-w3rx-r6r6-pgpr` — ICNS parser infinite loop (high)      | `image-size` ≤ 2.0.2 | A patched 2.x now exists, but pinned Metro 0.81.5 requires `^1.0.2` and calls `require('image-size')(content)` synchronously; 2.x removed that API. A forced override breaks the mobile bundle. This path runs only in the build-time bundler over our own assets, never on a device. |
+| `GHSA-5p2g-fcmc-qvqq` — JXL/HEIF parser infinite loops (high) | `image-size` ≤ 2.0.2 | Same package, incompatible 2.x fix, and build-time-only path.                                                                                                                                                                                                                         |
 
 Both are denial-of-service in an image parser, both are build-time only, and
-neither ships. Re-check when `image-size` publishes a fix, or when React Native
-moves off it: `pnpm -r why image-size`.
+neither ships. `scripts/audit-exceptions.mjs` verifies the exact Metro 1.x
+dependency and synchronous call site, and fails if that changes or a compatible
+1.x fix appears. Re-check on a React Native/Metro upgrade: `pnpm -r why image-size`.
 
 ### Monitoring
 
