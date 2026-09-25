@@ -14,8 +14,8 @@
  *     and nothing enforced it.
  *
  * So: every ignored GHSA must be named in docs/deployment.md, and must still
- * have no patched version. When either stops being true this fails, and the
- * remedy is to remove the suppression — not to update this script.
+ * have no installable, compatible patched version. When either stops being
+ * true this fails, and the remedy is to remove the suppression.
  *
  * Dependency-free, matching the other checks. The advisory lookup is public and
  * unauthenticated; no network is treated as unknown rather than as a pass.
@@ -37,6 +37,30 @@ if (ignored.length === 0) {
 
 const DOC = 'docs/deployment.md';
 const doc = readFileSync(join(ROOT, DOC), 'utf8');
+const metroImageSizeAdvisories = new Set(['GHSA-w3rx-r6r6-pgpr', 'GHSA-5p2g-fcmc-qvqq']);
+
+/** The current Metro calls image-size as a synchronous CommonJS function.
+ * image-size 2.x removed that API. Re-evaluate immediately if Metro, its
+ * declared range, its call site, or our installed 1.x version changes. */
+function metroStillNeedsImageSize1() {
+  try {
+    const lock = readFileSync(join(ROOT, 'pnpm-lock.yaml'), 'utf8');
+    const metroRoot = join(ROOT, 'node_modules/.pnpm/metro@0.81.5/node_modules/metro');
+    const metro = JSON.parse(readFileSync(join(metroRoot, 'package.json'), 'utf8'));
+    const assets = readFileSync(join(metroRoot, 'src/Assets.js'), 'utf8');
+    const consumers = [...lock.matchAll(/^ {6}image-size: (\S+)$/gm)].map((match) => match[1]);
+    return (
+      lock.includes('  image-size@1.2.1:') &&
+      consumers.length === 1 &&
+      consumers[0] === '1.2.1' &&
+      metro.dependencies?.['image-size'] === '^1.0.2' &&
+      assets.includes('const getImageSize = require("image-size");') &&
+      assets.includes('getImageSize(content)')
+    );
+  } catch {
+    return false;
+  }
+}
 
 for (const ghsa of ignored) {
   if (!doc.includes(ghsa)) {
@@ -64,15 +88,25 @@ for (const ghsa of ignored) {
     continue;
   }
 
-  // Any affected package having a fix is enough: the suppression was justified
-  // by "no patched version exists", and that is now false.
+  // A patched version is actionable only if the pinned consumer can use it.
+  // For the two image-size advisories, Metro 0.81.5 still calls the removed
+  // synchronous 1.x API. Do not force 2.x into that build-time path just to
+  // silence the audit: the iOS/Android bundle would fail to build.
   const fixed = (advisory.vulnerabilities ?? [])
     .map((v) => v.first_patched_version)
     .filter(Boolean);
   if (fixed.length) {
-    problems.push(
-      `${ghsa} now has a patched version (${fixed.join(', ')}) — upgrade and remove the suppression`,
-    );
+    const incompatibleMetroFix =
+      metroImageSizeAdvisories.has(ghsa) &&
+      fixed.every((version) => Number(version.split('.')[0]) >= 2) &&
+      metroStillNeedsImageSize1();
+    if (incompatibleMetroFix) {
+      console.log(`  ok    ${ghsa} — 2.x is patched but breaks pinned Metro's synchronous 1.x API`);
+    } else {
+      problems.push(
+        `${ghsa} now has a patched version (${fixed.join(', ')}) — upgrade and remove the suppression`,
+      );
+    }
   } else {
     console.log(`  ok    ${ghsa} — still unpatched upstream, and explained in ${DOC}`);
   }

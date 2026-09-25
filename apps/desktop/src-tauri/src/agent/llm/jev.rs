@@ -79,6 +79,17 @@ const MAX_CHARS: usize = 160;
 /// answered by then is abandoned and the language model takes the task.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 const DEADLINE: Duration = Duration::from_millis(2500);
+/// The whole-task loop's own deadline. Abandoning an instant request hands
+/// the task to the language model; abandoning a step request hands it
+/// nowhere, because in that loop Jev is the brain — it ends the run. The
+/// question is a larger one too: up to `MAX_CANDIDATES` controls in the
+/// state. Still bounded, so the phone is never silent for long, but not the
+/// instant path's "fast or not worth having".
+const STEP_DEADLINE: Duration = Duration::from_secs(10);
+/// The hosted backend has its own ten-second *upstream* deadline. Allow the
+/// control plane and network time to deliver its named failure instead of
+/// timing out locally at the same instant and retrying a still-running step.
+const HOSTED_STEP_DEADLINE: Duration = Duration::from_secs(12);
 
 /// How sure the model must be of the kind of action, and of its argument.
 /// Measured on real answers (`jev_fixtures.json`): every command there that
@@ -510,6 +521,35 @@ pub(super) fn names_key(task: &str, chosen: &str) -> bool {
     matching.as_slice() == [chosen]
 }
 
+/// Cmd-W closes a window in an app without tabs. A command that says "tab"
+/// must not silently become "close this unrelated window" just because the
+/// shortcut itself is valid. Browser identity or a visible AX tab supplies
+/// the missing context; an unreadable screen supplies neither.
+pub(super) fn has_tab_context(reading: &ScreenReading) -> bool {
+    let app = reading.app.trim().to_ascii_lowercase();
+    matches!(
+        app.as_str(),
+        "safari"
+            | "safari technology preview"
+            | "google chrome"
+            | "chromium"
+            | "firefox"
+            | "brave browser"
+            | "microsoft edge"
+            | "arc"
+            | "opera"
+            | "vivaldi"
+            | "orion"
+    ) || reading
+        .elements
+        .iter()
+        .any(|element| element.role.eq_ignore_ascii_case("tab"))
+}
+
+pub(super) fn names_key_on_screen(task: &str, chosen: &str, reading: &ScreenReading) -> bool {
+    names_key(task, chosen) && (chosen != "close_tab" || has_tab_context(reading))
+}
+
 /// A scroll direction is an action argument, not permission to follow Jev's
 /// most likely option. Require the command to name exactly one direction so a
 /// wrong high-confidence answer cannot scroll the opposite way.
@@ -633,9 +673,21 @@ pub fn request(model: &str, task: &str, reading: &ScreenReading, apps: &[String]
 pub(super) fn pick<'a>(answers: &'a Value, question: &str) -> Option<(&'a str, f64)> {
     let answer = answers.get(question)?;
     let chosen = answer.get("choice")?.as_str()?;
-    let p = answer.get("probabilities")?.get(chosen)?.as_f64()?;
+    let all = answer.get("probabilities")?.as_object()?;
+    let p = all.get(chosen)?.as_f64()?;
     // A probability outside [0, 1] is not one; it is never a reason to act.
-    (0.0..=1.0).contains(&p).then_some((chosen, p))
+    if !(0.0..=1.0).contains(&p) {
+        return None;
+    }
+    // The named choice must also lead its own distribution. A reply whose
+    // `choice` is not the most likely option contradicts itself, and acting on
+    // it would act on something the same answer ranked below another offered
+    // option.
+    (!all
+        .values()
+        .filter_map(Value::as_f64)
+        .any(|other| other > p))
+    .then_some((chosen, p))
 }
 
 /// Turn the answers into one action, or `None`. Pure: the whole policy of
@@ -761,7 +813,7 @@ pub fn decide(
             if p < ARGUMENT_MIN {
                 return None;
             }
-            if !names_key(task, chosen) {
+            if !names_key_on_screen(task, chosen, reading) {
                 return None;
             }
             let (_, _, chord, done) = KEYS.iter().find(|(k, ..)| *k == chosen)?;
@@ -814,6 +866,66 @@ pub fn the_one_address(task: &str) -> Option<String> {
     });
     let first = found.next()?;
     found.next().is_none().then_some(first)
+}
+
+/// A literal address always wins. A few unambiguous site names can also be
+/// opened without asking the model to invent a URL. Keep this mapping closed
+/// and narrow: "search for YouTube" or a multi-step command is not permission
+/// to navigate to a guessed destination.
+pub fn website_for_command(task: &str) -> Option<String> {
+    if let Some(address) = the_one_address(task) {
+        return Some(address);
+    }
+    if let Some(query) = youtube_video_query(task) {
+        let mut url = url::Url::parse("https://www.youtube.com/results").ok()?;
+        url.query_pairs_mut().append_pair("search_query", &query);
+        return Some(url.to_string());
+    }
+    let words: Vec<String> = task
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(str::to_ascii_lowercase)
+        .filter(|word| word != "please")
+        .collect();
+    match words.as_slice() {
+        [verb, site] if matches!(verb.as_str(), "open" | "visit") && site == "youtube" => {
+            Some("https://www.youtube.com/".into())
+        }
+        [go, to, site] if go == "go" && to == "to" && site == "youtube" => {
+            Some("https://www.youtube.com/".into())
+        }
+        _ => None,
+    }
+}
+
+/// A narrow, user-authored video title that may be sent to YouTube search.
+/// This does not guess a video URL or accept a second instruction after the
+/// destination; choosing a result still requires a fresh screen reading.
+pub fn youtube_video_query(task: &str) -> Option<String> {
+    let task = task.trim().trim_end_matches(['.', '!', '?']).trim();
+    let lower = task.to_ascii_lowercase();
+    let before_site = [" on youtube", " on yt"]
+        .iter()
+        .find_map(|suffix| lower.strip_suffix(suffix))?;
+    let mut title = &task[..before_site.len()];
+    let lower_title = title.to_ascii_lowercase();
+    let verb_len = ["open ", "play ", "watch "]
+        .iter()
+        .find(|verb| lower_title.starts_with(**verb))?
+        .len();
+    title = title[verb_len..].trim();
+    if title.to_ascii_lowercase().starts_with("the ") {
+        title = title[4..].trim();
+    }
+    if title.to_ascii_lowercase().ends_with(" video") {
+        title = title[..title.len() - 6].trim();
+    } else {
+        return None;
+    }
+    if title.is_empty() || title.chars().count() > 120 {
+        return None;
+    }
+    Some(title.into())
 }
 
 /// Words that do not identify an app on their own.
@@ -939,7 +1051,7 @@ impl Jev {
         );
         let body = request(&self.config.model, task, reading, &apps);
         let started = std::time::Instant::now();
-        let answers = match self.ask(&body).await {
+        let answers = match self.ask(&body, DEADLINE).await {
             Ok(answers) => answers,
             Err(e) => {
                 if e.downcast_ref::<ProviderFailure>()
@@ -966,10 +1078,33 @@ impl Jev {
         &self.config.model
     }
 
+    fn step_deadline(&self) -> Duration {
+        if self.config.is_hosted() {
+            HOSTED_STEP_DEADLINE
+        } else {
+            STEP_DEADLINE
+        }
+    }
+
     /// One step of a task (ADR-0020). Unlike [`Jev::instant`], a failure here
     /// is the caller's to report: the run has already started.
     pub(super) async fn ask_step(&self, body: &Value) -> Result<Value> {
-        let answers = self.ask(body).await;
+        let deadline = self.step_deadline();
+        let mut answers = self.ask(body, deadline).await;
+        // One retry, and only for a failure that is the network rather than
+        // an answer. The instant classifier deliberately has none, because a
+        // miss there costs one suggestion; this is the whole-task loop, where
+        // the same hiccup ends a task that may already have done several
+        // things, and where the request is a question with nothing to repeat.
+        if matches!(&answers, Err(e) if Self::is_transient(e)) {
+            let delay = super::retry_delay(0, None);
+            log::info!(
+                target: "lilypad::agent",
+                "the step request did not reach the service; retrying once in {delay:?}"
+            );
+            tokio::time::sleep(delay).await;
+            answers = self.ask(body, deadline).await;
+        }
         if let Err(e) = &answers {
             if e.downcast_ref::<ProviderFailure>()
                 .is_some_and(|f| f.kind == FailureKind::Auth)
@@ -980,13 +1115,75 @@ impl Jev {
         answers
     }
 
-    async fn ask(&self, body: &Value) -> Result<Value> {
+    /// Whether a failed request failed for a reason that another request
+    /// could get past.
+    fn is_transient(e: &anyhow::Error) -> bool {
+        e.downcast_ref::<ProviderFailure>()
+            .is_some_and(|failure| failure.kind.is_transient())
+    }
+
+    /// The whole-task loop must tell the person *why* a decision failed. A
+    /// hosted 402/429 is Lilypad's own actionable refusal, not a lost network
+    /// request. Other provider text stays in the log: it may be technical or
+    /// from a configured third-party endpoint, so the phone gets a bounded
+    /// explanation rather than arbitrary response-body prose.
+    pub(super) fn step_failure_message(&self, error: &anyhow::Error) -> String {
+        let Some(failure) = error.downcast_ref::<ProviderFailure>() else {
+            return "Ask received a reply it could not use. Try again; if it repeats, update Lilypad."
+                .into();
+        };
+        if self.config.is_hosted()
+            && failure.kind == FailureKind::Quota
+            && matches!(failure.status, Some(402 | 429))
+        {
+            return failure.message.clone();
+        }
+        match failure.kind {
+            FailureKind::Auth if self.config.is_hosted() => {
+                "Ask could not confirm this Mac's account. Try again; if it repeats, reconnect the Mac."
+                    .into()
+            }
+            FailureKind::Auth => {
+                "TypeSafe did not accept your Ask key. Check it in Lilypad's settings on the Mac."
+                    .into()
+            }
+            FailureKind::Quota => {
+                "The TypeSafe account has reached its allowance. Check that account before retrying."
+                    .into()
+            }
+            FailureKind::UnknownModel | FailureKind::BadRequest => {
+                "Ask and the decision service could not agree on this request. Update Lilypad; if it repeats, send diagnostics."
+                    .into()
+            }
+            FailureKind::Unavailable | FailureKind::Transport => {
+                "Ask could not reach its decision service after retrying. Check the connection and try again."
+                    .into()
+            }
+            FailureKind::Malformed => {
+                "Ask's decision service sent a reply Lilypad could not read. Try again; if it repeats, send diagnostics."
+                    .into()
+            }
+            FailureKind::Redirected => {
+                "Ask's decision-service address redirected elsewhere. Check the provider address in Lilypad's settings."
+                    .into()
+            }
+        }
+    }
+
+    async fn ask(&self, body: &Value, deadline: Duration) -> Result<Value> {
         #[cfg(test)]
         if let Some(canned) = &self.canned {
             return Ok(canned.clone());
         }
         let body = self.envelope(body);
-        let reply = send(&self.client, &self.config, self.config.path(), Some(&body)).await?;
+        let reply = send(
+            &self.client,
+            &self.config,
+            self.config.path(),
+            Some(&body),
+            deadline,
+        )
+        .await?;
         answers_of(&reply, &self.config.model).cloned()
     }
 
@@ -1028,12 +1225,16 @@ fn answers_of<'a>(reply: &'a Value, model: &str) -> Result<&'a Value> {
 
 /// One request, with the same boundaries as every provider request: no
 /// redirects, a bounded body, classified failures (L-275, L-276, L-284).
-/// No retries — a retry costs more than the step saves.
+/// No retries here: on the instant path a retry costs more than the
+/// suggestion saves. The whole-task loop asks once more for a transient
+/// failure, in `ask_step`, where a lost request ends a task rather than a
+/// suggestion.
 async fn send(
     client: &reqwest::Client,
     config: &InstantConfig,
     path: &str,
     body: Option<&Value>,
+    deadline: Duration,
 ) -> std::result::Result<Value, ProviderFailure> {
     let url = format!("{}{path}", config.base_url.trim_end_matches('/'));
     let request = match body {
@@ -1054,6 +1255,7 @@ async fn send(
     };
     let resp = request
         .header("authorization", format!("Bearer {bearer}"))
+        .timeout(deadline)
         .send()
         .await
         .map_err(|e| http::classify_transport(&e))?;
@@ -1104,7 +1306,15 @@ async fn check_key_at(config: InstantConfig) -> std::result::Result<(), String> 
         return Err(problem);
     }
     let client = super::client_with(Duration::from_secs(5), Duration::from_secs(10));
-    let reply = match send(&client, &config, "/v1/systemone", Some(&check_request())).await {
+    let reply = match send(
+        &client,
+        &config,
+        "/v1/systemone",
+        Some(&check_request()),
+        DEADLINE,
+    )
+    .await
+    {
         Ok(reply) => reply,
         Err(f) if f.kind == FailureKind::Auth => {
             return Err(
@@ -1381,6 +1591,24 @@ mod tests {
     }
 
     #[test]
+    fn an_answer_that_does_not_lead_its_own_distribution_is_not_read() {
+        let ranked = |choice: &str| {
+            json!({
+                "control": {
+                    "type": "choice",
+                    "choice": choice,
+                    "confidence": 0.9,
+                    "probabilities": { "e1": 0.7, "e2": 0.2 },
+                }
+            })
+        };
+        assert_eq!(pick(&ranked("e1"), "control"), Some(("e1", 0.7)));
+        // The same numbers naming the option they rank second. The answer
+        // contradicts itself, so there is nothing in it to act on.
+        assert_eq!(pick(&ranked("e2"), "control"), None);
+    }
+
+    #[test]
     fn nothing_happens_below_the_thresholds_or_outside_the_offer() {
         let mail = screen("mail");
         let apps = installed();
@@ -1523,6 +1751,7 @@ mod tests {
         };
 
         assert!(key("new tab", "new_tab").is_some());
+        assert!(key("close this tab", "close_tab").is_some());
         assert_eq!(
             key("new tab", "close_tab"),
             None,
@@ -1537,6 +1766,36 @@ mod tests {
             None,
             "a search task is not the Find shortcut"
         );
+    }
+
+    #[test]
+    fn close_tab_never_becomes_close_an_unrelated_window() {
+        let answer = answers(("key", 0.99), json!({ "key": chose("close_tab", 0.99) }));
+        let mail = screen("mail");
+        assert!(names_key("close this tab", "close_tab"));
+        assert!(!has_tab_context(&mail));
+        assert_eq!(decide("close this tab", &mail, &[], &answer), None);
+
+        let safari = screen("safari");
+        assert!(has_tab_context(&safari));
+        assert!(matches!(
+            decide("close this tab", &safari, &[], &answer),
+            Some(InstantAction {
+                action: Action::Key { .. },
+                ..
+            })
+        ));
+
+        let mut tabbed_mail = mail;
+        tabbed_mail.elements.push(el(50, "tab", "Inbox"));
+        assert!(has_tab_context(&tabbed_mail));
+        assert!(matches!(
+            decide("close this tab", &tabbed_mail, &[], &answer),
+            Some(InstantAction {
+                action: Action::Key { .. },
+                ..
+            })
+        ));
     }
 
     #[test]
@@ -1685,6 +1944,54 @@ mod tests {
     }
 
     #[test]
+    fn a_named_site_is_mapped_only_for_a_direct_navigation_command() {
+        for command in ["open YouTube", "visit youtube please", "go to YouTube"] {
+            assert_eq!(
+                website_for_command(command).as_deref(),
+                Some("https://www.youtube.com/"),
+                "{command}"
+            );
+        }
+        for command in [
+            "search for YouTube",
+            "open YouTube and Mail",
+            "open YouTube app",
+            "open an article about YouTube",
+        ] {
+            assert_eq!(website_for_command(command), None, "{command}");
+        }
+        assert_eq!(
+            website_for_command("open youtube.com").as_deref(),
+            Some("https://youtube.com")
+        );
+    }
+
+    #[test]
+    fn a_named_youtube_video_starts_with_a_search_not_a_guessed_watch_url() {
+        let task = "open the NASA Artemis I launch video on YouTube";
+        assert_eq!(
+            youtube_video_query(task).as_deref(),
+            Some("NASA Artemis I launch")
+        );
+        assert_eq!(
+            website_for_command(task).as_deref(),
+            Some("https://www.youtube.com/results?search_query=NASA+Artemis+I+launch")
+        );
+        assert_eq!(
+            website_for_command("play the NASA Artemis I launch video on yt").as_deref(),
+            Some("https://www.youtube.com/results?search_query=NASA+Artemis+I+launch")
+        );
+        for task in [
+            "open YouTube",
+            "open the NASA Artemis I launch video on Safari",
+            "open the NASA Artemis I launch video on YouTube and email it",
+            "open the video on YouTube",
+        ] {
+            assert_eq!(youtube_video_query(task), None, "{task}");
+        }
+    }
+
+    #[test]
     fn app_candidates_share_a_word_with_the_command() {
         let apps = installed();
         assert_eq!(app_candidates("open chrome", &apps), ["Google Chrome"]);
@@ -1732,6 +2039,16 @@ mod tests {
     /// A one-request server: answers `status` with `body`, and hands back
     /// the request it received.
     fn serve_once(status: &str, body: &str) -> (String, std::thread::JoinHandle<String>) {
+        serve_once_after(Duration::ZERO, status, body)
+    }
+
+    /// The same one-shot server, answering only after `delay` — a service that
+    /// is alive and slow rather than gone.
+    fn serve_once_after(
+        delay: Duration,
+        status: &str,
+        body: &str,
+    ) -> (String, std::thread::JoinHandle<String>) {
         use std::io::{Read, Write};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
@@ -1765,6 +2082,7 @@ mod tests {
                     break;
                 }
             }
+            std::thread::sleep(delay);
             stream.write_all(reply.as_bytes()).unwrap();
             String::from_utf8_lossy(&seen).into_owned()
         });
@@ -1929,6 +2247,48 @@ mod tests {
     }
 
     #[test]
+    fn whole_task_failures_keep_actionable_hosted_refusals() {
+        let (bearer, _) = bearer_of("t");
+        let hosted = Jev::new(InstantConfig::hosted("https://api.lilypad.example", bearer));
+        for (status, message) in [
+            (
+                402,
+                "Running tasks on Lilypad’s own account needs an active Pro or Team plan.",
+            ),
+            (429, "That is all 25 of today’s tasks on Lilypad’s account."),
+        ] {
+            let error = anyhow::Error::new(ProviderFailure {
+                kind: FailureKind::Quota,
+                status: Some(status),
+                message: message.into(),
+            });
+            assert_eq!(hosted.step_failure_message(&error), message);
+        }
+        let auth = anyhow::Error::new(ProviderFailure {
+            kind: FailureKind::Auth,
+            status: Some(401),
+            message: "device token expired".into(),
+        });
+        assert!(hosted
+            .step_failure_message(&auth)
+            .contains("reconnect the Mac"));
+        assert!(!hosted.step_failure_message(&auth).contains("device token"));
+
+        let personal = Jev::new(InstantConfig::new("personal-key"));
+        let quota = anyhow::Error::new(ProviderFailure {
+            kind: FailureKind::Quota,
+            status: Some(429),
+            message: "raw third-party text".into(),
+        });
+        assert!(personal
+            .step_failure_message(&quota)
+            .contains("TypeSafe account"));
+        assert!(!personal
+            .step_failure_message(&quota)
+            .contains("raw third-party"));
+    }
+
+    #[test]
     fn every_step_of_one_task_carries_the_same_id_and_a_new_run_does_not() {
         // This is the desktop half of "25 tasks a day, not 25 steps": the
         // backend counts an id, and one `Jev` is one run.
@@ -1955,6 +2315,58 @@ mod tests {
         let body = json!({ "model": MODEL, "state": {}, "questions": {} });
         assert_eq!(jev.envelope(&body), body);
         assert!(jev.envelope(&body).get("taskId").is_none());
+    }
+
+    /// A step request survives a service that is alive and slow. The instant
+    /// path abandons at 2.5s because the language model takes the task from
+    /// there; in the whole-task loop there is nothing behind Jev, so the same
+    /// deadline would end the run.
+    #[tokio::test]
+    async fn a_slow_service_does_not_end_a_whole_task() {
+        let (bearer, _) = bearer_of("device-token-abc");
+        let (base, server) = serve_once_after(
+            DEADLINE + Duration::from_millis(600),
+            "200 OK",
+            &real_check_reply(),
+        );
+        let jev = Jev::new(InstantConfig::hosted(base, bearer));
+        let answered = jev
+            .ask_step(&json!({ "model": MODEL, "state": {}, "questions": {} }))
+            .await;
+        server.join().unwrap();
+        assert!(answered.is_ok(), "{answered:?}");
+    }
+
+    #[test]
+    fn hosted_step_deadline_outlasts_the_backend_upstream_deadline() {
+        // askSystemOne.ts spends ten seconds on the upstream response, then
+        // still needs to send Lilypad's own 502 back to this Mac.
+        let (bearer, _) = bearer_of("device-token-abc");
+        let hosted = Jev::new(InstantConfig::hosted("https://api.lilypad.example", bearer));
+        let direct = Jev::new(InstantConfig::new("ts_personal_key"));
+        assert!(hosted.step_deadline() > Duration::from_secs(10));
+        assert_eq!(direct.step_deadline(), Duration::from_secs(10));
+    }
+
+    /// A whole-task step that fails on the network is asked once more. The
+    /// second attempt fetches its own bearer, so the token counter is the
+    /// evidence that it happened; the server is gone by then, which is why
+    /// the call still ends in an error.
+    #[tokio::test]
+    async fn a_step_that_fails_on_the_network_is_asked_once_more() {
+        let (bearer, calls) = bearer_of("device-token-abc");
+        let (base, server) = serve_once("503 Service Unavailable", "{}");
+        let jev = Jev::new(InstantConfig::hosted(base, bearer));
+        let failed = jev
+            .ask_step(&json!({ "model": MODEL, "state": {}, "questions": {} }))
+            .await;
+        server.join().unwrap();
+        assert!(failed.is_err());
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "a transient failure is asked once more"
+        );
     }
 
     #[tokio::test]
@@ -1989,6 +2401,10 @@ mod tests {
             .unwrap_err();
         server.join().unwrap();
         assert!(failed.to_string().contains("Pro or Team"), "{failed}");
+        assert_eq!(
+            jev.step_failure_message(&failed),
+            "Running tasks on Lilypad’s own account needs an active Pro or Team plan."
+        );
     }
 
     #[tokio::test]
@@ -2087,7 +2503,7 @@ mod tests {
         for (command, on, _) in CASES {
             let apps = app_candidates(command, &installed());
             let body = request(&config.model, command, &screen(on), &apps);
-            let reply = send(&client, &config, "/v1/systemone", Some(&body))
+            let reply = send(&client, &config, "/v1/systemone", Some(&body), DEADLINE)
                 .await
                 .unwrap_or_else(|e| panic!("{command}: {e}"));
             out.insert((*command).to_string(), reply);

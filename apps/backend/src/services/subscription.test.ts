@@ -330,6 +330,36 @@ describe('an Apple subscription never overwrites a Team grant (L-299)', () => {
   });
 });
 
+describe('a time-limited manual grant expires without a cleanup job', () => {
+  const endsAt = T0 + DAY;
+
+  it('grants Pro until, but not at, its exact deadline', () => {
+    const grant = { manualTier: 'pro' as const, manualTierExpiresAt: endsAt };
+    expect(effectiveTier(inputs({ ...grant, now: endsAt - 1 }))).toBe('pro');
+    expect(entitlesRemoteAccess(inputs({ ...grant, now: endsAt - 1 }))).toBe(true);
+    expect(effectiveTier(inputs({ ...grant, now: endsAt }))).toBe('free');
+    expect(entitlesRemoteAccess(inputs({ ...grant, now: endsAt }))).toBe(false);
+  });
+
+  it('falls back to a current Apple period after the manual grant ends', () => {
+    const apple = purchased();
+    expect(
+      effectiveTier(
+        inputs({
+          manualTier: 'team',
+          manualTierExpiresAt: endsAt,
+          subscription: apple,
+          now: endsAt,
+        }),
+      ),
+    ).toBe('pro');
+  });
+
+  it('keeps existing manual grants with no deadline indefinite', () => {
+    expect(effectiveTier(inputs({ manualTier: 'team', now: T0 + 365 * DAY }))).toBe('team');
+  });
+});
+
 describe('a termination is not a duplicate of the state it lands on', () => {
   /**
    * The duplicate guard on the terminal path asked "same transaction, and not

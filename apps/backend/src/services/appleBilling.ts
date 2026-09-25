@@ -131,14 +131,19 @@ async function statusFor(
   now = Date.now(),
 ): Promise<BillingStatus | null> {
   const [account] = await database
-    .select({ tier: users.tier, isBillingTester: users.isBillingTester })
+    .select({
+      tier: users.tier,
+      tierExpiresAt: users.tierExpiresAt,
+      isBillingTester: users.isBillingTester,
+    })
     .from(users)
     .where(eq(users.id, userId))
     .limit(1);
   if (!account) return null;
-  const state = await subscriptionForOwner(database, userId, commercialEnvironment());
+  const state = await subscriptionForOwner(database, userId, commercialEnvironment(), now);
   const tier = effectiveTier({
     manualTier: account.tier,
+    manualTierExpiresAt: account.tierExpiresAt?.getTime() ?? null,
     subscription: state,
     commercialEnvironment: commercialEnvironment(),
     isApprovedTester: account.isBillingTester,

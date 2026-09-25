@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { ASK_MAX_REQUEST_BYTES, HostedAskStatusSchema } from '@lilypad/protocol';
 import type * as AuthTokens from '../auth/tokens.js';
@@ -154,6 +155,64 @@ describe('/ask/v1 routes', () => {
       answers: { done: { noul: 0.02 } },
       allowance: ALLOWANCE,
     });
+  });
+
+  it('accepts the dense grounded action choice the desktop actually sends', async () => {
+    const controls = Array.from({ length: 120 }, (_, id) => ({
+      id,
+      role: 'button',
+      label: `Action ${id}`,
+      where: 'middle centre',
+    }));
+    const body = {
+      ...step(),
+      state: {
+        ...step().state,
+        'controls on the screen': controls.map(
+          ({ id, role, label, where }) => `e${id}: ${role} “${label}” (${where})`,
+        ),
+      },
+      questions: {
+        done: { type: 'noul', instructions: 'Is the command complete?' },
+        evidence: { type: 'noul', instructions: 'Does the screen show it complete?' },
+        action: {
+          type: 'choice',
+          instructions: 'Choose the next offered action.',
+          criteria: Object.fromEntries([
+            ...controls.map(({ id, role, label, where }) => [
+              `press:e${id}`,
+              { operation: 'click', role, label, where },
+            ]),
+            ['wait', 'Wait briefly'],
+            ['blocked', 'No offered action can make progress'],
+            ['done', 'The screen proves the command is complete'],
+          ]),
+        },
+      },
+    };
+    expect(Buffer.byteLength(JSON.stringify(body))).toBeLessThan(ASK_MAX_REQUEST_BYTES);
+    const res = await post('device-token', body);
+    expect(res.statusCode).toBe(200);
+    expect(askSystemOne).toHaveBeenCalledOnce();
+  });
+
+  it('accepts the Rust desktop’s unreadable-screen app bootstrap request', async () => {
+    // The Rust request builder asserts that it still emits this same shared
+    // fixture. This side proves the hosted route accepts those exact bytes,
+    // including structured Choice criteria, before a device gets the build.
+    const desktopBody = JSON.parse(
+      readFileSync(
+        new URL(
+          '../../../../packages/protocol/fixtures/grounded-bootstrap-step.json',
+          import.meta.url,
+        ),
+        'utf8',
+      ),
+    ) as Record<string, unknown>;
+    const body = { taskId: 'task-aaaaaaaa', ...desktopBody };
+    const res = await post('device-token', body);
+    expect(res.statusCode).toBe(200);
+    expect(askSystemOne).toHaveBeenCalledWith(body);
   });
 
   it('needs a token at all', async () => {

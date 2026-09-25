@@ -82,8 +82,8 @@ export async function askRoutes(app: FastifyInstance): Promise<void> {
     '/ask/v1/systemone',
     {
       preHandler: [requireDevice, rejectRevokedActor],
-      // Fastify's default is 1 MiB — three orders of magnitude more than a
-      // step needs, and exactly the room a screenshot would want. Refused
+      // Fastify's default is 1 MiB — eight times our step limit and ample
+      // room for a screenshot. Refused
       // before the body is parsed, let alone validated.
       bodyLimit: ASK_MAX_REQUEST_BYTES,
       // A generous per-minute ceiling on top of the daily allowance: twelve

@@ -24,8 +24,8 @@ on:
       environment:
         description: Target environment
         type: choice
-        options: [staging, production]
-        default: staging
+        options: [production]
+        default: production
   push:
     tags: ['v*']
 
@@ -52,6 +52,14 @@ jobs:
     name: required secrets are present
     runs-on: ubuntu-latest
     steps:
+      - name: Reject an unconfigured deployment environment
+        env:
+          TARGET_ENV: ${{ github.event.inputs.environment || 'production' }}
+        run: |
+          if [ "$TARGET_ENV" != production ]; then
+            echo "::error::No staging environment exists. Refusing to deploy with production host settings."
+            exit 1
+          fi
       - name: Fail loudly on a missing secret
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}

@@ -8,6 +8,13 @@
 
 pub mod tree;
 
+/// Activation identity for click revalidation. Deliberately not a `HitInfo`:
+/// the OS saying which app is frontmost is not evidence of a keyboard target.
+pub struct AppIdentity {
+    pub pid: i32,
+    pub path: String,
+}
+
 /// What kind of app a process is, judged from its executable path — which
 /// macOS surfaces Ask must never operate, and which apps take typed text as
 /// commands. Pure, so the lists are table-tested without the apps running.
@@ -81,14 +88,15 @@ pub mod macos;
 
 #[cfg(target_os = "macos")]
 pub use macos::{
-    describe_live, focus, hit_test, perform, read_focused_tree, secure_input_enabled, set_value,
-    AxHandle, AxSnapshot, HitInfo,
+    active_app, describe_live, focus, hit_test, perform, read_focused_tree, secure_input_enabled,
+    set_value, AxHandle, AxSnapshot, HitInfo,
 };
 
 // Non-macOS stub so the crate builds everywhere; the AX tier is macOS-only.
 #[cfg(not(target_os = "macos"))]
 mod stub {
     use super::tree::AxNode;
+    use super::AppIdentity;
     use anyhow::{bail, Result};
 
     pub type AxHandle = ();
@@ -137,6 +145,9 @@ mod stub {
     pub fn focus() -> Option<HitInfo> {
         None
     }
+    pub fn active_app() -> Option<AppIdentity> {
+        None
+    }
     pub fn secure_input_enabled() -> bool {
         false
     }
@@ -150,6 +161,6 @@ mod stub {
 
 #[cfg(not(target_os = "macos"))]
 pub use stub::{
-    describe_live, focus, hit_test, perform, read_focused_tree, secure_input_enabled, set_value,
-    AxHandle, AxSnapshot, HitInfo,
+    active_app, describe_live, focus, hit_test, perform, read_focused_tree, secure_input_enabled,
+    set_value, AxHandle, AxSnapshot, HitInfo,
 };

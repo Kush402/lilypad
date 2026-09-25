@@ -74,6 +74,7 @@ import { PRO_MONTHLY_PRODUCT_ID } from '@lilypad/protocol';
 type UserRow = {
   id: string;
   tier: 'free' | 'pro' | 'team';
+  tierExpiresAt?: Date | null;
   isBillingTester: boolean;
   appleOriginalTransactionId: string | null;
   subscriptionProductId: string | null;
@@ -171,6 +172,14 @@ describe('applySignedTransaction', () => {
       ],
       subs: [],
     };
+  });
+
+  it('shows a temporary manual Pro grant only while its deadline is current', async () => {
+    store.users[0]!.tier = 'pro';
+    store.users[0]!.tierExpiresAt = new Date(Date.now() + 60_000);
+    expect((await billingStatusFor('user-1', fakeDb(store)))?.tier).toBe('pro');
+    store.users[0]!.tierExpiresAt = new Date(Date.now() - 1);
+    expect((await billingStatusFor('user-1', fakeDb(store)))?.tier).toBe('free');
   });
 
   it('grants pro for a live monthly subscription', async () => {

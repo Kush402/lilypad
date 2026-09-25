@@ -6,6 +6,77 @@ All notable changes to Lilypad are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **Ask briefly retries an unreadable first focus reading.** When macOS is
+  still publishing the focused app or its shared-screen window as a task
+  starts, the first look retries for up to half a second. Missing permission
+  and other reading failures still return immediately; Ask never guesses a
+  keyboard target from a window that merely looks frontmost.
+- **A stalled Ask model reply no longer ties up the hosted service.** The
+  ten-second upstream deadline now covers the entire response, including a
+  body that stops streaming after its headers. A broken body becomes a safe
+  failure reason instead of an unhandled server error. The Mac gives this
+  hosted path two seconds to return that reason; direct-key steps keep their
+  existing deadline.
+- **Lilypad's own-account Ask now accepts the actions Jev is asked to choose
+  from.** The hosted service had rejected structured action descriptions and
+  busy screens before Jev could answer. It now accepts the bounded action
+  shapes and up to 120 visible controls; long labels shrink the offered list
+  to fit the existing request-size limit instead of failing the whole task.
+- **Ask does not leave an accepted task hanging when startup fails.** If this
+  Mac cannot prepare its work area or start the configured AI, the phone now
+  gets a specific failure and a finished task instead of a spinner or a bare
+  “Failed.”
+- **“Open YouTube” now has a real destination.** Ask can open YouTube's
+  homepage from that short command without making you spell out the URL. It
+  still does not turn a search or a longer instruction into a guessed website.
+- **Opening an app can finish when the app is visibly open.** For a simple
+  request like “open Safari,” a successful launch followed by a fresh reading
+  of Safari on the shared screen is enough; Ask no longer needs a second model
+  guess to say it is done. Commands with more work still continue step by step.
+- **The phone shows why Ask failed.** The full explanation appears in a
+  scrollable, selectable card instead of being cut to two lines in the step
+  history above a generic “Failed.”
+- **Ask now names account and allowance refusals honestly.** A Pro requirement
+  or a day’s-task limit is no longer reported as though the decision service
+  could not be reached. Connection, key, and malformed-reply failures also
+  receive distinct next steps without displaying arbitrary provider text.
+- **Ask can recover a focused app from its focused control.** On macOS, when
+  the focused-application attribute is temporarily missing but the focused
+  control has a valid process, the reader can still scope that app’s windows
+  to the shared display. It still refuses a screen with no verified focus.
+- **A click cannot silently move to a different app.** An accessibility
+  control chosen on one app is checked against the current focused app and
+  the control under its point before input is sent. Browser and Electron
+  helper processes count as their owning app; an app switch asks for a fresh
+  look instead of clicking the newcomer.
+- **Ask tells two controls of the same name apart when it chooses one, not
+  only when it looks at them.** Where each control sits has been part of what
+  Ask reads since 0.1.49, but the list it actually chooses from left it out, so
+  two buttons both called Reply arrived as the same description twice. That is
+  not a close call to the model that answers — it is a tie, and a tie is
+  answered by whichever one came first, with the confidence of a decision that
+  was never made.
+- **Ask can reach the controls further down a busy screen.** It offered the
+  first 32 controls, and a control that is not offered cannot be chosen however
+  plainly it is on the screen. It now offers up to 120, which is still well
+  inside what one request may carry.
+- **Ask no longer acts on an answer that contradicts itself.** Where the reply
+  names one control but scores another higher, Ask takes the one its own
+  numbers rank first instead of the one the label named.
+- **A step Ask cannot act on no longer ends the task.** Where the answer named
+  something this screen does not offer, the run stopped. It now falls back to
+  the highest-scoring action the screen did offer, and stops only when there is
+  no offered action in the answer at all.
+- **One lost request no longer ends a task.** A step whose request never
+  reached the service is asked once more before Ask gives up, so a dropped
+  packet part-way through a task is not the end of it.
+- **A slow moment no longer ends a task either.** Ask gave every request the
+  two and a half seconds that suit the single-action shortcut, where your own
+  AI takes over if it runs long. A whole task has nothing behind it to take
+  over, so it now waits up to ten seconds for a step before giving up.
+
 ## [0.1.49] — 2026-09-21
 
 ### Fixed

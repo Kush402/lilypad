@@ -69,12 +69,35 @@ const SETTLE_MAX_QUICK: Duration = Duration::from_millis(900);
 const SETTLE_MAX_LAUNCH: Duration = Duration::from_millis(8000);
 /// Poll interval while a newly focused app is publishing its AX identity.
 const FOCUS_READ_RETRY: Duration = Duration::from_millis(100);
+/// The first explicit look has no post-action settle budget. macOS can still
+/// be publishing focus just as a remote Ask command starts, so give only the
+/// two transient focus errors a short retry without delaying a good reading
+/// or inventing a frontmost target.
+const FIRST_LOOK_FOCUS_RETRY: Duration = Duration::from_millis(500);
 
 /// How far the pointer may drift between two of Ask's gestures before it
 /// counts as a person moving the mouse, in points. Generous: a false takeover
 /// stops a run the person wanted, and the event tap catches real movement
 /// sooner anyway.
 const DRIFT_POINTS: f64 = 12.0;
+
+/// The app bundle owning an executable. Browser and Electron accessibility
+/// elements can live in helper processes inside the same outer app bundle;
+/// comparing their process names or PIDs alone would reject a valid click.
+fn app_bundle(path: &str) -> Option<&str> {
+    let end = path.find(".app/")? + ".app".len();
+    Some(&path[..end])
+}
+
+fn same_read_app(read_pid: i32, read_path: &str, live_pid: i32, live_path: &str) -> bool {
+    if read_pid <= 0 || live_pid <= 0 {
+        return false;
+    }
+    match (app_bundle(read_path), app_bundle(live_path)) {
+        (Some(read), Some(live)) => read == live,
+        _ => read_pid == live_pid,
+    }
+}
 
 pub struct ComputerExecutor {
     pub(super) ax: AxExecutor,
@@ -440,6 +463,25 @@ impl ComputerExecutor {
                     }
                 }
                 let at = self.point_of(target)?;
+                if matches!(target, Target::Element(id) if *id < OCR_ID_BASE) {
+                    let snapshot = self.ax.last.as_ref().ok_or_else(|| {
+                        anyhow!("the screen reading is no longer current — look again")
+                    })?;
+                    let focus = ax::active_app().ok_or_else(|| {
+                        anyhow!("the active app changed since that screen was read — look again")
+                    })?;
+                    let [bx, by, bw, bh] = self.bounds();
+                    let under = ax::hit_test(bx + at.0 * bw, by + at.1 * bh).ok_or_else(|| {
+                        anyhow!(
+                            "the control at that point can no longer be identified — look again"
+                        )
+                    })?;
+                    if !same_read_app(snapshot.pid, &snapshot.path, focus.pid, &focus.path)
+                        || !same_read_app(snapshot.pid, &snapshot.path, under.pid, &under.path)
+                    {
+                        bail!("the app changed since that control was read — look again");
+                    }
+                }
                 // The approval named what was under the point. If something
                 // else is there now — a page that moved, a dialog that
                 // appeared — this is a different click (L-272's rule, for
@@ -602,6 +644,7 @@ impl ComputerExecutor {
     async fn look(&mut self, settle_max: Duration) -> Observation {
         let target = self.display.get();
         let settle_started = std::time::Instant::now();
+        let first_look = self.last_looked.is_none();
         let changed = matches!(self.last_looked, Some(prev) if prev != target);
         self.last_looked = Some(target);
 
@@ -631,7 +674,7 @@ impl ComputerExecutor {
 
         // The element reading. A failure here is not a failure to see — the
         // screenshot still stands — so it is reported, not returned.
-        let reading_budget = settle_max.saturating_sub(settle_started.elapsed());
+        let reading_budget = focus_read_budget(settle_max, settle_started.elapsed(), first_look);
         let reading = self.read_with_settle(reading_budget).await;
 
         let bounds = frame
@@ -735,6 +778,20 @@ impl ComputerExecutor {
             (Ok(()), false) => Some("the reading arrived empty".to_string()),
             _ => None,
         };
+        if let Some(screen) = &structured {
+            // The old signed-device trace had a successful first read but no
+            // record of *which* app it read, leaving a grounded "blocked"
+            // choice impossible to diagnose. Names and counts are enough;
+            // labels, field values and the person's command stay out of logs.
+            log::info!(
+                target: "lilypad::agent",
+                "screen reading: app={:?}, controls={}, window={}, focused={}, shared_display={target:?}",
+                screen.app,
+                screen.elements.len(),
+                screen.window.is_some(),
+                screen.focused.is_some(),
+            );
+        }
         if let Some(e) = &reading_error {
             log::warn!(target: "lilypad::agent", "screen reading failed: {e}");
         }
@@ -757,11 +814,25 @@ impl ComputerExecutor {
     }
 
     /// A launch can briefly leave the system with no focused AX application
-    /// (or with the app's window not yet on the shared display). Retry only
-    /// those transient focus states, and only inside the caller's bounded
-    /// settle budget. Permission and tree failures remain immediate.
+    /// (or with the app's window not yet on the shared display). A successful
+    /// read can also be premature: the window exists but has not published any
+    /// named, on-screen controls yet. Take one fresh read of that sparse state
+    /// before offering it to the decision loop. Focus errors keep their
+    /// bounded retry; permission and other tree failures remain immediate.
     async fn read_with_settle(&mut self, budget: Duration) -> std::result::Result<(), String> {
-        let mut error = match self.ax.read().await {
+        let mut result = self.ax.read().await;
+        if result.is_ok()
+            && !budget.is_zero()
+            && self.ax.last.as_ref().is_some_and(sparse_ax_snapshot)
+        {
+            log::info!(
+                target: "lilypad::agent",
+                "AX reading has no named on-screen controls; refreshing once"
+            );
+            tokio::time::sleep(FOCUS_READ_RETRY.min(budget)).await;
+            result = self.ax.read().await;
+        }
+        let mut error = match result {
             Ok(()) => return Ok(()),
             Err(error) => error,
         };
@@ -1087,6 +1158,28 @@ fn focus_is_current(expected: Option<&Hit>, current: Option<&Hit>) -> bool {
 fn retryable_focus_read_error(error: &str) -> bool {
     error.starts_with("no focused application")
         || error.starts_with("the focused app has no window on the shared display")
+}
+
+/// A window root alone is not a usable choice set. Match the controls the
+/// structured reading can actually offer: named actionable nodes with an
+/// on-display frame. This is only a signal to refresh once, not a reason to
+/// invent or execute a control when the second read is still sparse.
+fn sparse_ax_snapshot(snapshot: &ax::AxSnapshot) -> bool {
+    !tree::on_screen_actionable(&snapshot.nodes, snapshot.bounds)
+        .iter()
+        .any(|(node, _)| {
+            node.label
+                .as_deref()
+                .is_some_and(|label| !label.trim().is_empty())
+        })
+}
+
+fn focus_read_budget(settle_max: Duration, elapsed: Duration, first_look: bool) -> Duration {
+    if first_look && settle_max.is_zero() {
+        FIRST_LOOK_FOCUS_RETRY
+    } else {
+        settle_max.saturating_sub(elapsed)
+    }
 }
 
 fn to_hit(info: ax::HitInfo, secure_input: bool) -> Hit {
@@ -1445,14 +1538,73 @@ mod tests {
     }
 
     #[test]
+    fn an_ax_click_stays_in_the_app_that_was_read() {
+        let chrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+        let helper = "/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/Current/Helpers/Google Chrome Helper.app/Contents/MacOS/Google Chrome Helper";
+        let safari = "/System/Applications/Safari.app/Contents/MacOS/Safari";
+        assert_eq!(app_bundle(helper), Some("/Applications/Google Chrome.app"));
+        assert!(same_read_app(100, chrome, 200, helper));
+        assert!(!same_read_app(100, chrome, 300, safari));
+        assert!(!same_read_app(100, chrome, 0, chrome));
+        // An app outside a bundle can still be checked by its process id.
+        assert!(same_read_app(100, "/opt/app", 100, "/opt/app"));
+        assert!(!same_read_app(100, "/opt/app", 200, "/opt/other"));
+    }
+
+    #[test]
     fn only_transient_focus_read_failures_are_retried() {
         assert!(retryable_focus_read_error(
-            "no focused application (grant Accessibility, focus an app)"
+            "no focused application or keyboard element (focus an app on the shared screen)"
         ));
         assert!(retryable_focus_read_error(
             "the focused app has no window on the shared display — move it to the screen you are sharing"
         ));
-        assert!(!retryable_focus_read_error("AX permission denied"));
+        assert!(!retryable_focus_read_error(
+            "Accessibility permission not granted — allow Lilypad in System Settings"
+        ));
+    }
+
+    #[test]
+    fn a_window_without_named_on_screen_controls_needs_one_fresh_read() {
+        let root = tree::AxNode {
+            id: 0,
+            role: "AXWindow".into(),
+            frame: Some([0.0, 0.0, 1000.0, 500.0]),
+            ..Default::default()
+        };
+        let mut snapshot = ax::AxSnapshot::for_test(vec![root]);
+        snapshot.bounds = [0.0, 0.0, 1000.0, 500.0];
+        assert!(sparse_ax_snapshot(&snapshot));
+
+        snapshot.nodes.push(tree::AxNode {
+            id: 1,
+            depth: 1,
+            role: "AXButton".into(),
+            label: Some("Open profile".into()),
+            pressable: true,
+            frame: Some([100.0, 100.0, 100.0, 30.0]),
+            ..Default::default()
+        });
+        assert!(!sparse_ax_snapshot(&snapshot));
+
+        snapshot.nodes[1].frame = Some([2000.0, 100.0, 100.0, 30.0]);
+        assert!(sparse_ax_snapshot(&snapshot));
+    }
+
+    #[test]
+    fn the_first_look_gets_a_brief_focus_retry_without_extending_later_looks() {
+        assert_eq!(
+            focus_read_budget(Duration::ZERO, Duration::ZERO, true),
+            FIRST_LOOK_FOCUS_RETRY
+        );
+        assert_eq!(
+            focus_read_budget(Duration::ZERO, Duration::ZERO, false),
+            Duration::ZERO
+        );
+        assert_eq!(
+            focus_read_budget(Duration::from_secs(2), Duration::from_millis(300), true),
+            Duration::from_millis(1700)
+        );
     }
 
     #[test]

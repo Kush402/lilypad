@@ -84,7 +84,11 @@ async function entitlementInputsFor(
   now: number,
 ): Promise<EntitlementInputs | null> {
   const rows = await database
-    .select({ tier: users.tier, isBillingTester: users.isBillingTester })
+    .select({
+      tier: users.tier,
+      tierExpiresAt: users.tierExpiresAt,
+      isBillingTester: users.isBillingTester,
+    })
     .from(users)
     .where(eq(users.id, userId))
     .limit(1);
@@ -94,7 +98,8 @@ async function entitlementInputsFor(
     config.env.APPLE_IAP_ENVIRONMENT === 'Production' ? 'Production' : 'Sandbox';
   return {
     manualTier: account.tier,
-    subscription: await subscriptionForOwner(database, userId, commercialEnvironment),
+    manualTierExpiresAt: account.tierExpiresAt?.getTime() ?? null,
+    subscription: await subscriptionForOwner(database, userId, commercialEnvironment, now),
     commercialEnvironment,
     isApprovedTester: account.isBillingTester,
     now,

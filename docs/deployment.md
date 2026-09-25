@@ -398,14 +398,15 @@ a real crash triggers `restart: unless-stopped`.
 `pnpm.auditConfig.ignoreGhsas`, and the reason is recorded here because an
 unexplained suppression is indistinguishable from one added to make CI green:
 
-| Advisory                                                      | Package              | Why it is suppressed                                                                                                                                                                        |
-| ------------------------------------------------------------- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GHSA-w3rx-r6r6-pgpr` — ICNS parser infinite loop (high)      | `image-size` ≤ 2.0.2 | **No patched version exists.** Reached only through `metro`, React Native's build-time bundler, and never at runtime on any device. Triggering it needs a malicious image inside this repo. |
-| `GHSA-5p2g-fcmc-qvqq` — JXL/HEIF parser infinite loops (high) | `image-size` ≤ 2.0.2 | Same package, same path, same reasoning.                                                                                                                                                    |
+| Advisory                                                      | Package              | Why it is suppressed                                                                                                                                                                                                                                                                  |
+| ------------------------------------------------------------- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GHSA-w3rx-r6r6-pgpr` — ICNS parser infinite loop (high)      | `image-size` ≤ 2.0.2 | A patched 2.x now exists, but pinned Metro 0.81.5 requires `^1.0.2` and calls `require('image-size')(content)` synchronously; 2.x removed that API. A forced override breaks the mobile bundle. This path runs only in the build-time bundler over our own assets, never on a device. |
+| `GHSA-5p2g-fcmc-qvqq` — JXL/HEIF parser infinite loops (high) | `image-size` ≤ 2.0.2 | Same package, incompatible 2.x fix, and build-time-only path.                                                                                                                                                                                                                         |
 
 Both are denial-of-service in an image parser, both are build-time only, and
-neither ships. Re-check when `image-size` publishes a fix, or when React Native
-moves off it: `pnpm -r why image-size`.
+neither ships. `scripts/audit-exceptions.mjs` verifies the exact Metro 1.x
+dependency and synchronous call site, and fails if that changes or a compatible
+1.x fix appears. Re-check on a React Native/Metro upgrade: `pnpm -r why image-size`.
 
 ### Monitoring
 
@@ -668,7 +669,9 @@ Stated explicitly so nothing here reads as more finished than it is.
   relay VM (see below). Still true, and the residual risk: **both machines are
   Always Free instances in the same Oracle tenancy and region.** A disk failure,
   a bad migration, or losing one VM is covered; losing the tenancy is not.
-- No staging environment exists yet — the workflow supports it, nothing runs it.
+- No staging environment exists yet. The deploy workflow accepts only
+  `production`; a stale or API-supplied `staging` input fails before building or
+  touching a host. Do not use a staging-labelled dispatch as a smoke test.
 - ~~**The website is not deployed by CI.**~~ It is, since 2026-08-23.
   `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` were added 2026-08-21 and
   the workflow could not run until the repository went public two days later;

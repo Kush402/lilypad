@@ -392,8 +392,16 @@ pub(crate) fn provider_error_message(body: &serde_json::Value) -> String {
         // FastAPI-style services, TypeSafe among them:
         // `{"detail": {"error_type": …, "message": …}}`.
         .or_else(|| body.get("detail"));
-    if let Some(msg) = obj.and_then(|e| e.get("message")).and_then(|m| m.as_str()) {
-        return msg.to_string();
+    if let Some(msg) = obj
+        .and_then(|e| e.get("message"))
+        .or_else(|| body.get("message"))
+        .and_then(|m| m.as_str())
+    {
+        let mut bounded: String = msg.chars().take(200).collect();
+        if bounded.len() < msg.len() {
+            bounded.push('…');
+        }
+        return bounded;
     }
     let raw = body.to_string();
     let mut snippet: String = raw.chars().take(200).collect();
@@ -2120,6 +2128,8 @@ mod tests {
         assert_eq!(provider_error_message(&obj), "rate limited");
         let arr = json!([{ "error": { "message": "quota exceeded", "code": 429 } }]);
         assert_eq!(provider_error_message(&arr), "quota exceeded");
+        let hosted = json!({ "error": "daily_limit", "message": "All 25 tasks used today." });
+        assert_eq!(provider_error_message(&hosted), "All 25 tasks used today.");
         let odd = json!({ "detail": "boom" });
         assert!(provider_error_message(&odd).contains("boom"));
         // TypeSafe's real 400 for a model it does not serve.

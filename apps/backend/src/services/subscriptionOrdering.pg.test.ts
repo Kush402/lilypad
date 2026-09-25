@@ -20,7 +20,7 @@ import postgres from 'postgres';
 import { drizzle, type PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 import { subscriptions, users } from '../db/schema.js';
 import { applySubscriptionEvent, subscriptionForOwner } from './subscriptionStore.js';
-import type { SubscriptionEvent, SubscriptionState } from './subscription.js';
+import { effectiveTier, type SubscriptionEvent, type SubscriptionState } from './subscription.js';
 
 const DATABASE_URL = process.env.DATABASE_URL;
 const PRO = 'com.takedia.lilypad.pro.monthly';
@@ -260,6 +260,41 @@ describeWithDb('subscription ordering, against a real database', () => {
     const chosen = await subscriptionForOwner(db as never, userId, 'Production');
     expect(chosen?.environment).toBe('Production');
     expect(chosen?.originalTransactionId).toBe(originalTransactionId);
+  });
+
+  it('an expired real subscription cannot hide a current test subscription from an approved tester', async () => {
+    const now = T0 + 2 * DAY;
+    await apply(event({ expiresAt: T0 + DAY }), userId);
+    const sandboxOnly = `ot-${randomUUID()}`;
+    await db.insert(subscriptions).values({
+      environment: 'Sandbox',
+      originalTransactionId: sandboxOnly,
+      ownerUserId: userId,
+      productId: PRO,
+      status: 'active',
+      expiresAt: new Date(T0 + 3 * DAY),
+    });
+
+    const chosen = await subscriptionForOwner(db as never, userId, 'Production', now);
+    expect(chosen?.originalTransactionId).toBe(sandboxOnly);
+    expect(
+      effectiveTier({
+        manualTier: 'free',
+        subscription: chosen,
+        commercialEnvironment: 'Production',
+        isApprovedTester: true,
+        now,
+      }),
+    ).toBe('pro');
+    expect(
+      effectiveTier({
+        manualTier: 'free',
+        subscription: chosen,
+        commercialEnvironment: 'Production',
+        isApprovedTester: false,
+        now,
+      }),
+    ).toBe('free');
   });
 
   afterAll(async () => {

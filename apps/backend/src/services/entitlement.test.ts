@@ -10,7 +10,10 @@ import { users } from '../db/schema.js';
  * earlier version of this fake build a nonsense subscription out of `{tier}`
  * and still pass.
  */
-function fakeDb(accounts: { tier: string }[], subscriptionRows: unknown[] = []) {
+function fakeDb(
+  accounts: { tier: string; isBillingTester?: boolean; tierExpiresAt?: Date | null }[],
+  subscriptionRows: unknown[] = [],
+) {
   return {
     select: () => ({
       from: (table: unknown) => {
@@ -35,6 +38,15 @@ describe('who may reach a laptop from another network', () => {
 
   it('holds the free tier to its own network', async () => {
     expect(await remoteAccessFor('u', fakeDb([{ tier: 'free' }]))).toBe('not_entitled');
+  });
+
+  it('stops a time-limited Pro grant at its deadline without a cleanup event', async () => {
+    const now = Date.parse('2026-09-24T00:00:00Z');
+    const db = fakeDb([{ tier: 'pro', tierExpiresAt: new Date(now) }]);
+    expect(await remoteAccessFor('u', db, now - 1)).toBe('entitled');
+    expect(await remoteAccessFor('u', db, now)).toBe('not_entitled');
+    expect(await hostedAskAccessFor('u', db, now - 1)).toBe('entitled');
+    expect(await hostedAskAccessFor('u', db, now)).toBe('not_entitled');
   });
 
   it('is decided by the subscription, not only by the manual tier', async () => {
@@ -163,6 +175,25 @@ describe('who may run a task on Lilypad’s own account', () => {
         now,
       ),
     ).toBe('not_entitled');
+  });
+
+  it('does not let an expired commercial row hide a current tester subscription', async () => {
+    // The test deployment sells in Sandbox. Production is the other
+    // environment here; on the live service these two labels are reversed.
+    // The selection rule must be symmetric, and only an approved tester may
+    // use the current row from the other environment.
+    const expiredSandbox = subscription(now - day)[0]!;
+    const currentProduction = {
+      ...subscription(now + day, 'active', 'Production')[0]!,
+      originalTransactionId: 'orig-2',
+    };
+    const rows = [expiredSandbox, currentProduction];
+    expect(
+      await hostedAskAccessFor('u', fakeDb([{ tier: 'free', isBillingTester: true }], rows), now),
+    ).toBe('entitled');
+    expect(await hostedAskAccessFor('u', fakeDb([{ tier: 'free' }], rows), now)).toBe(
+      'not_entitled',
+    );
   });
 
   it('fails closed on an account that no longer exists', async () => {

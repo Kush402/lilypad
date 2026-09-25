@@ -87,10 +87,78 @@ fn launch_only_without_screen(step: Step, failure: &str) -> Step {
     }
 }
 
+/// A one-step app request is complete when a successful launch is followed
+/// by a fresh reading of that very app on the shared display. This is a fact
+/// code can verify; asking Jev to re-guess it can turn "open Safari" into a
+/// failed task even though Safari is visibly in front. Commands with any
+/// further work still go through the whole-task loop.
+fn launched_app_completes_task(task: &str, history: &[String], reading: &ScreenReading) -> bool {
+    let Some(name) = history
+        .last()
+        .and_then(|line| line.strip_prefix("Open "))
+        .and_then(|line| line.strip_suffix(": done"))
+    else {
+        return false;
+    };
+    // The scoped AX reader found an on-screen window, not merely a running
+    // process or the model's belief that `/usr/bin/open` worked.
+    if !reading.app.eq_ignore_ascii_case(name) || reading.window.is_none() {
+        return false;
+    }
+    let words: Vec<String> = task
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(str::to_ascii_lowercase)
+        .filter(|word| word != "please")
+        .collect();
+    let app_words: std::collections::HashSet<String> = name
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(str::to_ascii_lowercase)
+        .collect();
+    let rest = match words.as_slice() {
+        [verb, rest @ ..] if matches!(verb.as_str(), "open" | "launch" | "start") => rest,
+        [switch, to, rest @ ..] if switch == "switch" && to == "to" => rest,
+        _ => return false,
+    };
+    !rest.is_empty() && rest.iter().all(|word| app_words.contains(word))
+}
+
+/// The last launch's exit code is not a completion oracle. When Jev proposes
+/// `done` after a launch but the fresh screen has no window of that app, do
+/// not turn the provider's answer into a verified success. URL launches use
+/// different evidence and are not classified as app names here.
+fn launched_app_without_visible_window(history: &[String], reading: &ScreenReading) -> bool {
+    let Some(name) = history
+        .last()
+        .and_then(|line| line.strip_prefix("Open "))
+        .and_then(|line| line.strip_suffix(": done"))
+    else {
+        return false;
+    };
+    !name.contains("://") && (!reading.app.eq_ignore_ascii_case(name) || reading.window.is_none())
+}
+
 /// Controls offered in one action choice. Jev supports high-cardinality
-/// choices; 32 keeps busy consumer apps useful without sending an unbounded AX
-/// tree or crowding the model's input with menu chrome.
-const MAX_CANDIDATES: usize = 32;
+/// choices — the hosted protocol's hard limit is 255 options — so the cap is
+/// there to keep the request bounded, not to keep it small: a control the cap
+/// drops is one the loop cannot choose at all, however obvious it is on the
+/// screen. 120 leaves room for the other options one step can carry (up to 20
+/// applications, 5 dictated spans, 26 shortcuts, 6 scroll directions, a
+/// website, a search submit and the three terminals) and still stays well
+/// under the limit.
+const MAX_CANDIDATES: usize = 120;
+/// Everything one step can offer beside the controls: the application
+/// shortlist, a website, the dictated spans, a search submit, every shortcut
+/// and scroll direction the command could name, and wait/blocked/done. A
+/// request over the protocol's 255 options is refused rather than answered, so
+/// the two are held under it here rather than discovered on a busy screen.
+const OTHER_OPTIONS: usize = 20 + 1 + 5 + 1 + jev::KEYS.len() + jev::DIRECTIONS.len() + 3;
+const _: () = assert!(MAX_CANDIDATES + OTHER_OPTIONS <= 255);
+/// Mirrors `ASK_MAX_REQUEST_BYTES` in `@lilypad/protocol`. A screen can have
+/// 120 legal controls with long or heavily escaped labels and still exceed
+/// Fastify's byte limit, so cardinality alone is not a payload bound.
+const MAX_STEP_WIRE_BYTES: usize = 128 * 1024;
 /// The legacy one-action classifier was measured with eight controls. Keep
 /// that independent from the whole-task loop's larger grounded action space.
 const MAX_INSTANT_CANDIDATES: usize = 8;
@@ -448,6 +516,33 @@ fn may_submit_focused_search(reading: &ScreenReading, history: &[String]) -> boo
     typed && search_focus
 }
 
+/// Search results are not the requested video. The only local evidence we
+/// have for this narrow command is a clicked result whose label contains the
+/// user's title, followed by player controls on the new screen. Jev's `done`
+/// score cannot substitute for those two observations.
+fn youtube_video_complete(task: &str, reading: &ScreenReading, history: &[String]) -> bool {
+    let Some(query) = jev::youtube_video_query(task) else {
+        return true;
+    };
+    let wanted = key_words(&query);
+    if wanted.is_empty() {
+        return false;
+    }
+    let opened_result = history.iter().any(|line| {
+        let Some(label) = line.strip_prefix("Click link \u{201c}") else {
+            return false;
+        };
+        let label = label.split('\u{201d}').next().unwrap_or_default();
+        let found = key_words(label);
+        wanted.iter().filter(|word| found.contains(*word)).count() >= wanted.len().min(2)
+            && line.ends_with(": done")
+    });
+    let player = reading.elements.iter().any(|element| {
+        element.role == "slider" && element.label.to_ascii_lowercase().contains("seek")
+    });
+    opened_result && player
+}
+
 /// One grounded choice over executable operations. This is the shape used by
 /// successful Jev/Laya computer-use loops: the model compares concrete
 /// targets with waiting and stopping in one distribution. There is no
@@ -468,7 +563,7 @@ fn action_options(
             json!({ "operation": "open application", "application": app }),
         ));
     }
-    if let Some(url) = jev::the_one_address(task) {
+    if let Some(url) = jev::website_for_command(task) {
         options.push((
             "website".into(),
             json!({ "operation": "open website", "address": url }),
@@ -478,12 +573,17 @@ fn action_options(
         .iter()
         .filter(|element| offer_control(task, history, spans, element))
     {
+        // The position belongs here as well as in the state list: the two
+        // must describe the same control, and without it a screen with two
+        // identically labelled controls offers Jev two identical descriptions
+        // under different keys — a tie it does not answer as one.
         options.push((
             format!("press:e{}", element.id),
             json!({
                 "operation": "click",
                 "role": element.role,
                 "label": element.label,
+                "where": element.at.clone().unwrap_or_else(|| "not placed".into()),
             }),
         ));
     }
@@ -502,7 +602,7 @@ fn action_options(
         ));
     }
     for (key, description, ..) in jev::KEYS {
-        if jev::names_key(task, key) {
+        if jev::names_key_on_screen(task, key, reading) {
             options.push((format!("key:{key}"), (*description).into()));
         }
     }
@@ -520,11 +620,13 @@ fn action_options(
             "blocked".into(),
             "No offered action can make progress on the command from this screen".into(),
         ),
-        (
+    ]);
+    if youtube_video_complete(task, reading, history) {
+        options.push((
             "done".into(),
             "The current screen shows that every part of the command is complete".into(),
-        ),
-    ]);
+        ));
+    }
     options
 }
 
@@ -592,6 +694,53 @@ pub fn request(
         },
         "questions": questions,
     })
+}
+
+/// Keep the highest-priority controls that fit the hosted route's whole-body
+/// limit, including its task-id envelope. The command's named controls are
+/// first, so dropping from the end preserves them as long as possible. The
+/// same bound applies to BYOK for parity; only hosted adds the envelope.
+fn bounded_request<'a>(
+    jev: &Jev,
+    task: &str,
+    reading: &ScreenReading,
+    history: &[String],
+    spans: &[String],
+    apps: &[String],
+    candidates: &[&'a crate::agent::runner::ReadElement],
+) -> Result<(Value, Vec<&'a crate::agent::runner::ReadElement>)> {
+    let full = request(jev.model(), task, reading, history, spans, apps, candidates);
+    if serde_json::to_vec(&jev.envelope(&full))?.len() <= MAX_STEP_WIRE_BYTES {
+        return Ok((full, candidates.to_vec()));
+    }
+    let fits = |count: usize| -> Result<bool> {
+        let body = request(
+            jev.model(),
+            task,
+            reading,
+            history,
+            spans,
+            apps,
+            &candidates[..count],
+        );
+        Ok(serde_json::to_vec(&jev.envelope(&body))?.len() <= MAX_STEP_WIRE_BYTES)
+    };
+    if !fits(0)? {
+        anyhow::bail!("Ask's command or screen context exceeds the hosted request limit");
+    }
+    let mut low = 0;
+    let mut high = candidates.len();
+    while low < high {
+        let middle = low + (high - low).div_ceil(2);
+        if fits(middle)? {
+            low = middle;
+        } else {
+            high = middle - 1;
+        }
+    }
+    let kept = candidates[..low].to_vec();
+    let body = request(jev.model(), task, reading, history, spans, apps, &kept);
+    Ok((body, kept))
 }
 
 /// What the keyboard focus says about selection. Focus on a list rather than
@@ -668,13 +817,33 @@ fn decide_grounded(
     history: &[String],
     answers: &Value,
 ) -> Option<Step> {
-    let (chosen, _) = jev::pick(answers, "action")?;
     let offered = action_options(task, reading, history, spans, apps, candidates);
-    if !offered.iter().any(|(id, _)| id == chosen) {
-        return Some(Step::Stop(
-            "Ask returned an action this screen did not offer.".into(),
-        ));
-    }
+    let named = jev::pick(answers, "action").map(|(chosen, _)| chosen);
+    let chosen_id = match named {
+        Some(chosen) if offered.iter().any(|(id, _)| id == chosen) => chosen.to_string(),
+        // The label is not something this screen can act on — missing, never
+        // offered, or ranked below another option in its own distribution.
+        // The numbers beside it still are an answer, and ending the run over
+        // the label while they plainly rank an offered option first is the
+        // expensive way to be strict.
+        other => match grounded_leader(answers, &offered) {
+            Some(leading) => {
+                log::info!(
+                    target: "lilypad::agent",
+                    "jev named {other:?}, which this screen cannot act on; \
+                     using the offered option its own numbers rank first: {leading}"
+                );
+                leading
+            }
+            None if other.is_some() => {
+                return Some(Step::Stop(
+                    "Ask returned an action this screen did not offer.".into(),
+                ))
+            }
+            None => return None,
+        },
+    };
+    let chosen = chosen_id.as_str();
 
     let step = if let Some(raw) = chosen.strip_prefix("press:e") {
         let id = raw.parse::<usize>().ok();
@@ -727,10 +896,9 @@ fn decide_grounded(
             Step::Stop("Ask returned an application the command did not offer.".into())
         }
     } else if let Some(key) = chosen.strip_prefix("key:") {
-        match jev::KEYS
-            .iter()
-            .find(|(candidate, ..)| *candidate == key && jev::names_key(task, candidate))
-        {
+        match jev::KEYS.iter().find(|(candidate, ..)| {
+            *candidate == key && jev::names_key_on_screen(task, candidate, reading)
+        }) {
             Some((_, _, chord, done)) => match crate::input::keys::parse_keys(chord) {
                 Ok(chords) => Acting::step(
                     format!("Press {chord} ({done})"),
@@ -780,7 +948,7 @@ fn decide_grounded(
         }
     } else {
         match chosen {
-            "website" => match jev::the_one_address(task) {
+            "website" => match jev::website_for_command(task) {
                 Some(url) => Acting::step(
                     format!("Open {url}"),
                     format!("url:{url}"),
@@ -824,6 +992,23 @@ fn decide_grounded(
         }
     };
     Some(step)
+}
+
+/// The offered option this answer's own numbers rank first, terminals
+/// included. This is what the reply meant when its `choice` cannot be read as
+/// an answer, and it is read from the same calibrated distribution the choice
+/// came from rather than from a second guess.
+fn grounded_leader(answers: &Value, offered: &[(String, Value)]) -> Option<String> {
+    let probabilities = answers.get("action")?.get("probabilities")?.as_object()?;
+    probabilities
+        .iter()
+        .filter_map(|(id, probability)| {
+            let probability = probability.as_f64()?;
+            (probability > 0.0 && offered.iter().any(|(offered, _)| offered == id))
+                .then_some((id.clone(), probability))
+        })
+        .max_by(|left, right| left.1.total_cmp(&right.1))
+        .map(|(id, _)| id)
 }
 
 fn grounded_alternate(
@@ -873,7 +1058,8 @@ pub fn decide_with_history(
             .and_then(|a| a.get("noul"))
             .and_then(Value::as_f64)
     };
-    if noul("done").is_some_and(|p| p >= DONE_MIN)
+    if youtube_video_complete(task, reading, history)
+        && noul("done").is_some_and(|p| p >= DONE_MIN)
         && !history
             .last()
             .is_some_and(|line| line.ends_with(": did not work"))
@@ -1008,11 +1194,25 @@ impl Brain for JevBrain {
             .filter(|reading| !reading.app.eq_ignore_ascii_case("lilypad"))
             .unwrap_or(&empty_reading);
 
+        if unavailable.is_none()
+            && jev::names_key(task, "close_tab")
+            && !jev::has_tab_context(reading)
+        {
+            return Self::finish(
+                "Bring the tab you want to close to the front, then ask again. Ask will not close a different app's window instead.",
+                FinishReason::Incomplete,
+            );
+        }
+
         // Raw OCR text never crosses the hosted boundary. Only OCR words the
         // person already used in the command survive, and their labels are
         // rebuilt from that command rather than from the screen.
         let outbound_reading = reading_for_task(task, reading);
         let reading = &outbound_reading;
+
+        if unavailable.is_none() && launched_app_completes_task(task, &self.history, reading) {
+            return Self::finish(format!("Opened {}.", reading.app), FinishReason::Completed);
+        }
 
         if self.installed.is_none() {
             self.installed = Some(
@@ -1022,25 +1222,39 @@ impl Brain for JevBrain {
             );
         }
         let apps = jev::app_candidates(task, self.installed.as_deref().unwrap_or_default());
-        let candidates = candidates(task, reading);
-        let body = request(
-            self.jev.model(),
+        let all_candidates = candidates(task, reading);
+        let (body, candidates) = match bounded_request(
+            &self.jev,
             task,
             reading,
             &self.history,
             &self.spans,
             &apps,
-            &candidates,
-        );
+            &all_candidates,
+        ) {
+            Ok(bounded) => bounded,
+            Err(e) => {
+                log::warn!(target: "lilypad::agent", "could not bound Jev step: {e}");
+                return Self::finish(
+                    "This command or screen has too much text for Ask to send safely. Shorten the command or simplify the screen, then try again.",
+                    FinishReason::Incomplete,
+                );
+            }
+        };
+        if candidates.len() < all_candidates.len() {
+            log::info!(
+                target: "lilypad::agent",
+                "bounded Jev step to {} of {} controls for the request byte limit",
+                candidates.len(),
+                all_candidates.len(),
+            );
+        }
         let started = std::time::Instant::now();
         let answers = match self.jev.ask_step(&body).await {
             Ok(answers) => answers,
             Err(e) => {
                 log::warn!(target: "lilypad::agent", "step could not be decided: {e}");
-                return Self::finish(
-                    "Ask could not reach the service that decides its next step.",
-                    FinishReason::Incomplete,
-                );
+                return Self::finish(self.jev.step_failure_message(&e), FinishReason::Incomplete);
             }
         };
         let mut step = decide_with_history(
@@ -1132,22 +1346,32 @@ impl Brain for JevBrain {
             started.elapsed().as_millis(),
         );
         match step {
-            Step::Done { contradicted } => Self::finish(
-                match (contradicted, self.history.last()) {
-                    (false, Some(last)) => last.clone(),
-                    (false, None) => "Done.".into(),
-                    // Said, not hidden. The model has answered two questions
-                    // that disagree with each other, and the person is the
-                    // one who can look.
-                    (true, Some(last)) => {
-                        format!("{last}. The screen still shows it undone, so check it yourself.")
-                    }
-                    (true, None) => "Ask believes that is done, but the screen still shows it \
-                                     undone. Check it yourself."
-                        .into(),
-                },
-                done_reason(contradicted),
-            ),
+            Step::Done { contradicted } => {
+                if launched_app_without_visible_window(&self.history, reading) {
+                    return Self::finish(
+                        "The app launch returned successfully, but Ask could not verify its window on the shared screen.",
+                        FinishReason::Incomplete,
+                    );
+                }
+                Self::finish(
+                    match (contradicted, self.history.last()) {
+                        (false, Some(last)) => last.clone(),
+                        (false, None) => "Done.".into(),
+                        // Said, not hidden. The model has answered two questions
+                        // that disagree with each other, and the person is the
+                        // one who can look.
+                        (true, Some(last)) => {
+                            format!(
+                                "{last}. The screen still shows it undone, so check it yourself."
+                            )
+                        }
+                        (true, None) => "Ask believes that is done, but the screen still shows it \
+                                         undone. Check it yourself."
+                            .into(),
+                    },
+                    done_reason(contradicted),
+                )
+            }
             Step::Stop(why) => Self::finish(why, FinishReason::Incomplete),
             Step::Act(acting) => {
                 let Acting {
@@ -1217,6 +1441,28 @@ mod tests {
                 el(21, "row", "GitHub, CI failed on main, Yesterday"),
             ],
         }
+    }
+
+    #[test]
+    fn grounded_bootstrap_wire_fixture_matches_desktop_request() {
+        let reading = ScreenReading {
+            app: "no readable application".into(),
+            ..ScreenReading::default()
+        };
+        let actual = request(
+            "jev-1.13.0",
+            "open Safari",
+            &reading,
+            &[],
+            &[],
+            &["Safari".into()],
+            &[],
+        );
+        let hosted_contract: Value = serde_json::from_str(include_str!(
+            "../../../../../../packages/protocol/fixtures/grounded-bootstrap-step.json"
+        ))
+        .unwrap();
+        assert_eq!(actual, hosted_contract);
     }
 
     fn noul(p: f64) -> Value {
@@ -1319,6 +1565,249 @@ mod tests {
             "no screen",
         );
         assert_eq!(blocked, Step::Stop("no screen".into()));
+    }
+
+    #[test]
+    fn opening_youtube_is_a_grounded_website_action_without_a_literal_dot() {
+        let reading = ScreenReading::default();
+        let offered = action_options("open YouTube", &reading, &[], &[], &[], &[]);
+        assert!(offered.iter().any(|(id, description)| {
+            id == "website" && description["address"] == "https://www.youtube.com/"
+        }));
+        assert!(matches!(
+            decide(
+                "open YouTube",
+                &reading,
+                &[],
+                &[],
+                &[],
+                &json!({
+                    "done": noul(0.01),
+                    "evidence": noul(0.01),
+                    "action": chose("website", 0.51),
+                }),
+            ),
+            Step::Act(ref action)
+                if matches!(&action.action, Action::OpenUrl { url } if url == "https://www.youtube.com/")
+        ));
+    }
+
+    #[test]
+    fn opening_a_named_youtube_video_offers_a_search_then_grounded_result() {
+        let task = "open the NASA Artemis I launch video on YouTube";
+        let empty = ScreenReading::default();
+        let offered = action_options(task, &empty, &[], &[], &[], &[]);
+        assert!(offered.iter().any(|(id, description)| {
+            id == "website"
+                && description["address"]
+                    == "https://www.youtube.com/results?search_query=NASA+Artemis+I+launch"
+        }));
+        let result = crate::agent::runner::ReadElement {
+            id: 7,
+            role: "link".into(),
+            label: "NASA's Artemis I Rocket Launch (Official Broadcast)".into(),
+            at: Some("middle".into()),
+        };
+        let reading = ScreenReading {
+            app: "Safari".into(),
+            elements: vec![result],
+            ..ScreenReading::default()
+        };
+        let candidates = candidates(task, &reading);
+        let offered = action_options(task, &reading, &[], &[], &[], &candidates);
+        assert!(offered.iter().any(|(id, _)| id == "press:e7"));
+        assert!(!offered.iter().any(|(id, _)| id == "done"));
+        assert!(!youtube_video_complete(
+            task,
+            &reading,
+            &[
+                "Open https://www.youtube.com/results?search_query=NASA+Artemis+I+launch: done"
+                    .into()
+            ]
+        ));
+        let clicked = vec![
+            "Click link \u{201c}NASA's Artemis I Rocket Launch (Official Broadcast)\u{201d} in Safari: done"
+                .into(),
+        ];
+        let player = ScreenReading {
+            elements: vec![crate::agent::runner::ReadElement {
+                id: 8,
+                role: "slider".into(),
+                label: "Seek slider".into(),
+                at: Some("middle".into()),
+            }],
+            ..reading
+        };
+        assert!(youtube_video_complete(task, &player, &clicked));
+        assert!(action_options(task, &player, &clicked, &[], &[], &[])
+            .iter()
+            .any(|(id, _)| id == "done"));
+    }
+
+    #[test]
+    fn a_visible_app_completes_only_a_simple_launch_command() {
+        let chrome = ScreenReading {
+            app: "Google Chrome".into(),
+            window: Some(0),
+            ..ScreenReading::default()
+        };
+        let done = vec!["Open Google Chrome: done".into()];
+        assert!(launched_app_completes_task("open Chrome", &done, &chrome));
+        assert!(launched_app_completes_task(
+            "please switch to Google Chrome",
+            &done,
+            &chrome
+        ));
+        for command in [
+            "open Chrome and search for coffee shops",
+            "open Chrome in a new window",
+            "search for Chrome",
+        ] {
+            assert!(!launched_app_completes_task(command, &done, &chrome));
+        }
+        assert!(!launched_app_completes_task(
+            "open Chrome",
+            &["Open Google Chrome: did not work".into()],
+            &chrome
+        ));
+        assert!(!launched_app_completes_task(
+            "open Chrome",
+            &done,
+            &ScreenReading {
+                app: "Safari".into(),
+                window: Some(0),
+                ..ScreenReading::default()
+            }
+        ));
+        assert!(!launched_app_completes_task(
+            "open Chrome",
+            &done,
+            &ScreenReading {
+                window: None,
+                ..chrome.clone()
+            }
+        ));
+        assert!(launched_app_without_visible_window(
+            &done,
+            &ScreenReading {
+                window: None,
+                ..chrome.clone()
+            }
+        ));
+        assert!(!launched_app_without_visible_window(&done, &chrome));
+        assert!(!launched_app_without_visible_window(
+            &["Open https://www.youtube.com/: done".into()],
+            &chrome
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_successful_simple_launch_does_not_need_a_second_model_guess() {
+        let task = "open Safari";
+        let mut brain = JevBrain::new(Jev::new(jev::InstantConfig::new("not-used")));
+        *brain.canned() = Some(json!({
+            "done": noul(0.01),
+            "evidence": noul(0.01),
+            "action": chose("app:Safari", 0.51),
+        }));
+        assert!(matches!(
+            brain.next(task, &[]).await.unwrap(),
+            Decision::Act {
+                action: Action::ReadScreen,
+                ..
+            }
+        ));
+        let first = Observation {
+            summary: "Look at the screen".into(),
+            ok: true,
+            image: None,
+            screen: None,
+            reading: None,
+            reading_error: Some("no focused application".into()),
+        };
+        assert!(matches!(
+            brain.next(task, &[first]).await.unwrap(),
+            Decision::Act {
+                action: Action::OpenApp { .. },
+                ..
+            }
+        ));
+        let after = Observation {
+            summary: "Open Safari".into(),
+            ok: true,
+            image: None,
+            screen: None,
+            reading: Some(ScreenReading {
+                app: "Safari".into(),
+                window: Some(0),
+                ..ScreenReading::default()
+            }),
+            reading_error: None,
+        };
+        assert!(matches!(
+            brain.next(task, &[after]).await.unwrap(),
+            Decision::Finish {
+                reason: FinishReason::Completed,
+                ..
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn model_done_cannot_verify_an_app_launch_without_an_on_screen_window() {
+        let task = "open Google Chrome";
+        let mut brain = JevBrain::new(Jev::new(jev::InstantConfig::new("not-used")));
+        *brain.canned() = Some(json!({
+            "done": noul(0.01),
+            "evidence": noul(0.01),
+            "action": chose("app:Google Chrome", 0.83),
+        }));
+        assert!(matches!(
+            brain.next(task, &[]).await.unwrap(),
+            Decision::Act {
+                action: Action::ReadScreen,
+                ..
+            }
+        ));
+        let first = Observation {
+            summary: "Look at the screen".into(),
+            ok: true,
+            image: None,
+            screen: None,
+            reading: None,
+            reading_error: Some("no focused application".into()),
+        };
+        assert!(matches!(
+            brain.next(task, &[first]).await.unwrap(),
+            Decision::Act {
+                action: Action::OpenApp { .. },
+                ..
+            }
+        ));
+        *brain.canned() = Some(json!({
+            "done": noul(0.97),
+            "evidence": noul(0.97),
+            "action": chose("done", 0.97),
+        }));
+        let after = Observation {
+            summary: "Open Google Chrome".into(),
+            ok: true,
+            image: None,
+            screen: None,
+            reading: Some(ScreenReading {
+                app: "Google Chrome".into(),
+                window: None,
+                ..ScreenReading::default()
+            }),
+            reading_error: None,
+        };
+        assert!(matches!(
+            brain.next(task, &[after]).await.unwrap(),
+            Decision::Finish {
+                reason: FinishReason::Incomplete,
+                ..
+            }
+        ));
     }
 
     /// The owner's v0.1.55 run got as far as opening Safari, then the abstract
@@ -1452,6 +1941,37 @@ mod tests {
     }
 
     #[test]
+    fn a_choice_that_loses_its_own_ranking_falls_back_to_the_leader() {
+        // The reply names the row, but ranks Archive higher. Before L-395 the
+        // row was clicked; after it the run ended. Neither is the answer the
+        // numbers gave.
+        let task = "archive the email from GitHub";
+        let reading = mail();
+        let candidates = candidates(task, &reading);
+        let step = decide(
+            task,
+            &reading,
+            &[],
+            &[],
+            &candidates,
+            &json!({
+                "done": noul(0.01),
+                "evidence": noul(0.01),
+                "action": {
+                    "type": "choice",
+                    "choice": "press:e21",
+                    "confidence": 0.3,
+                    "probabilities": { "press:e21": 0.2, "press:e7": 0.6 },
+                },
+            }),
+        );
+        match step {
+            Step::Act(acting) => assert!(acting.summary.contains("Archive"), "{}", acting.summary),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
     fn a_repeated_no_op_uses_the_next_best_nonterminal_action() {
         let offered = vec![
             ("press:e1".to_string(), Value::Null),
@@ -1565,6 +2085,66 @@ mod tests {
         };
         assert!(matches!(scroll("up"), Step::Stop(_)));
         assert!(matches!(scroll("down"), Step::Act(_)));
+    }
+
+    #[test]
+    fn close_tab_is_offered_only_when_the_screen_can_have_a_tab() {
+        let mail = mail();
+        let browser = ScreenReading {
+            app: "Safari".into(),
+            ..mail.clone()
+        };
+        let mut tabbed_mail = mail.clone();
+        tabbed_mail.elements.push(el(50, "tab", "Inbox"));
+        let offered = |reading: &ScreenReading| {
+            action_options("close this tab", reading, &[], &[], &[], &[])
+                .iter()
+                .any(|(key, _)| key == "key:close_tab")
+        };
+        assert!(!offered(&mail));
+        assert!(offered(&browser));
+        assert!(offered(&tabbed_mail));
+
+        let answer = json!({
+            "done": noul(0.01),
+            "action": chose("key:close_tab", 0.8),
+        });
+        assert!(matches!(
+            decide("close this tab", &mail, &[], &[], &[], &answer),
+            Step::Stop(_)
+        ));
+        assert!(matches!(
+            decide("close this tab", &browser, &[], &[], &[], &answer),
+            Step::Act(ref action) if matches!(action.action, Action::Key { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn close_tab_in_an_unrelated_app_explains_what_to_focus() {
+        let task = "close this tab";
+        let mut brain = JevBrain::new(Jev::new(jev::InstantConfig::new("not-used")));
+        assert!(matches!(
+            brain.next(task, &[]).await.unwrap(),
+            Decision::Act {
+                action: Action::ReadScreen,
+                ..
+            }
+        ));
+        let first = Observation {
+            summary: "Look at the screen".into(),
+            ok: true,
+            image: None,
+            screen: None,
+            reading: Some(mail()),
+            reading_error: None,
+        };
+        assert!(matches!(
+            brain.next(task, &[first]).await.unwrap(),
+            Decision::Finish {
+                summary,
+                reason: FinishReason::Incomplete,
+            } if summary.contains("Bring the tab you want to close to the front")
+        ));
     }
 
     /// The words go wherever the keyboard already is, so a screen whose
@@ -2002,11 +2582,90 @@ mod tests {
         assert_eq!(named.len(), reading.elements.len().min(MAX_CANDIDATES));
         // A command that names nothing on screen still gets a short list.
         assert_eq!(candidates("do something", &reading).len(), 7);
-        // A busy screen stays a short request.
+        // A busy screen stays a bounded request.
         let busy = ScreenReading {
-            elements: (0..40).map(|i| el(i, "button", "x")).collect(),
+            elements: (0..MAX_CANDIDATES + 8)
+                .map(|i| el(i, "button", "x"))
+                .collect(),
             ..mail()
         };
         assert_eq!(candidates("press x", &busy).len(), MAX_CANDIDATES);
+    }
+
+    #[test]
+    fn a_dense_hosted_step_fits_the_control_plane_body_limit() {
+        let bearer: jev::BearerSource =
+            std::sync::Arc::new(|| Box::pin(async { Ok("unused".into()) }));
+        let jev = Jev::new(jev::InstantConfig::hosted(
+            "https://api.lilypad.example",
+            bearer,
+        ));
+        let apps: Vec<String> = (0..20).map(|id| format!("App {id}")).collect();
+        let spans = vec!["words ".repeat(30); 5];
+        let history = vec!["Action: done ".repeat(35); 12];
+        for (index, label) in ["x".repeat(512), "\"".repeat(512), "\n".repeat(512)]
+            .into_iter()
+            .enumerate()
+        {
+            let reading = ScreenReading {
+                app: "Safari".into(),
+                elements: (0..MAX_CANDIDATES)
+                    .map(|id| el(id, "button", &label))
+                    .collect(),
+                ..ScreenReading::default()
+            };
+            let candidates = candidates("click x", &reading);
+            let (body, kept) = bounded_request(
+                &jev,
+                "click x",
+                &reading,
+                &history,
+                &spans,
+                &apps,
+                &candidates,
+            )
+            .unwrap();
+            let bytes = serde_json::to_vec(&jev.envelope(&body)).unwrap().len();
+            assert!(bytes <= MAX_STEP_WIRE_BYTES, "hosted step is {bytes} bytes");
+            assert!(!kept.is_empty());
+            if index == 0 {
+                assert_eq!(
+                    kept.len(),
+                    MAX_CANDIDATES,
+                    "ordinary labels keep full coverage"
+                );
+            }
+            assert_eq!(
+                body["state"]["controls on the screen"]
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                kept.len()
+            );
+        }
+    }
+
+    #[test]
+    fn two_controls_with_the_same_label_are_described_apart() {
+        // Identical descriptions under different keys are a tie Jev does not
+        // answer as one: it leans on the first key and still reports the
+        // confidence of a decision it did not make.
+        let mut first = el(4, "button", "Reply");
+        first.at = Some("top right".into());
+        let mut second = el(9, "button", "Reply");
+        second.at = Some("bottom left".into());
+        let reading = ScreenReading {
+            elements: vec![first, second],
+            ..mail()
+        };
+        let task = "reply to the email";
+        let candidates = candidates(task, &reading);
+        let described: Vec<Value> = action_options(task, &reading, &[], &[], &[], &candidates)
+            .into_iter()
+            .filter(|(id, _)| id.starts_with("press:"))
+            .map(|(_, described)| described)
+            .collect();
+        assert_eq!(described.len(), 2, "both controls are offered");
+        assert_ne!(described[0], described[1], "{described:?}");
     }
 }

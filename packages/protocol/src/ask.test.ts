@@ -67,6 +67,59 @@ describe('a hosted Ask step', () => {
     expect(AskSystemOneRequestSchema.safeParse(request).success).toBe(false);
   });
 
+  it('accepts the grounded desktop action shapes but no extra payload fields', () => {
+    const actions = {
+      'app:Safari': { operation: 'open application', application: 'Safari' },
+      website: { operation: 'open website', address: 'https://www.youtube.com/' },
+      'press:e2': { operation: 'click', role: 'button', label: 'Reply', where: 'top right' },
+      'type:t0': { operation: 'type', 'text from the command': 'hello' },
+      wait: 'Wait briefly',
+    };
+    const question = { type: 'choice', instructions: 'Choose the next action.', criteria: actions };
+    expect(
+      AskSystemOneRequestSchema.safeParse({
+        ...step(),
+        questions: { action: question },
+      }).success,
+    ).toBe(true);
+    expect(
+      AskSystemOneRequestSchema.safeParse({
+        ...step(),
+        questions: {
+          action: {
+            ...question,
+            criteria: {
+              ...actions,
+              'press:e3': {
+                operation: 'click',
+                role: 'button',
+                label: 'Reply',
+                where: 'top right',
+                screenshot: 'data:image/png;base64,AAAA',
+              },
+            },
+          },
+        },
+      }).success,
+    ).toBe(false);
+  });
+
+  it('accepts 120 displayed controls but refuses an unbounded state list', () => {
+    const lines = Array.from({ length: 120 }, (_, i) => `e${i}: button “Action ${i}”`);
+    expect(
+      AskSystemOneRequestSchema.safeParse({
+        ...step(),
+        state: { command: 'click Action 119', 'controls on the screen': lines },
+      }).success,
+    ).toBe(true);
+    expect(
+      AskSystemOneRequestSchema.safeParse({
+        ...step(),
+        state: { command: 'click Action 120', 'controls on the screen': [...lines, 'extra'] },
+      }).success,
+    ).toBe(false);
+  });
+
   it('refuses a question type nobody implemented', () => {
     const request = {
       ...step(),
@@ -86,8 +139,29 @@ describe('a hosted Ask step', () => {
   });
 
   it('refuses a state string long enough to be an encoded image', () => {
-    const request = { ...step(), state: { command: 'x'.repeat(1_001) } };
+    const request = { ...step(), state: { command: 'hello', 'app in front': 'x'.repeat(1_001) } };
     expect(AskSystemOneRequestSchema.safeParse(request).success).toBe(false);
+  });
+
+  it('accepts the phone’s maximum command without enlarging other state fields', () => {
+    expect(
+      AskSystemOneRequestSchema.safeParse({
+        ...step(),
+        state: { command: 'x'.repeat(4 * 1024) },
+      }).success,
+    ).toBe(true);
+    expect(
+      AskSystemOneRequestSchema.safeParse({
+        ...step(),
+        state: { command: 'x'.repeat(4 * 1024 + 1) },
+      }).success,
+    ).toBe(false);
+    expect(
+      AskSystemOneRequestSchema.safeParse({
+        ...step(),
+        state: { command: 'hello', 'app in front': 'x'.repeat(1_001) },
+      }).success,
+    ).toBe(false);
   });
 
   it('has nowhere to put a credential', () => {
